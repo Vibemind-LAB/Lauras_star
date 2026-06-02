@@ -160,15 +160,15 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **Verifiziert:** 140 Tests (+ Thumbnail-Assert) · ruff/mypy strict clean (86 Dateien) · App `tsc`/`vite build` grün
 - [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — sequenziert in Portion 15, siehe [`../docs/16-execution-plan.md`](../docs/16-execution-plan.md)
 
-## Portion 15 — Wave-B Backend-Abschluss  `[~]`  (Plan: docs/16 §1)
+## Portion 15 — Wave-B Backend-Abschluss  `[x]`  (Plan: docs/16 §1)
 - [x] 15.1 **Pagination** — `limit/offset` (defensiv geklemmt 1..200) + `X-Total-Count`-Header auf projects/assets/timelines; portabel (SQLite+PG); 5 Tests, **145 grün**
 - [x] 15.2 **Rate-Limiting** — Token-Bucket-Middleware pro Key/Host → `429 + Retry-After`; per Default aus (`rpm=0`), Env-konfigurierbar, `/healthz`+`/metrics` exempt; 4 Tests, **149 grün**
 - [x] 15.3 **Speed/Retiming** — `set_speed`-Op (Zeitkern-`retimed_seq_length`, Ripple), Migration 0003 (`speed_num/den`, v2→v3), Clip/ClipOut + OTIO `LinearTimeWarp` + exakter Metadaten-Round-Trip; EDL-Preflight flaggt Speed; 9 Tests, **160 grün**
 - [x] 15.4 **Timeline-Captions** — `GET /timelines/{id}/captions.{srt,vtt}`: 1 Cue je Transkript-Clip, getimt an **Sequence**-Position (Clip→origin_words→`get_words_in_range`); 4 Tests, **164 grün**
 - [x] 15.5 **Editorial-Import** — `POST /projects/{id}/timelines/import` (OTIO lesen, Relink via source_path, Offline-Platzhalter `online=0`, Migration 0004 v3→v4, Speed erhalten); 4 Tests, **168 grün**. EDL/FCP7-Import = Follow-up (kein Reader)
 - [x] 15.6 **origin_word-Link (Backend)** — `ClipOut` zeigt `origin_word_*`; `GET /timelines/{id}/clips/{cid}/source` löst Clip → Segment + Quell-Frames auf (Rücksprung); 2 Tests, **151 grün**
-- [ ] 15.7 **Queue-Routing** — CPU/GPU-Queues + Prioritäten; `analysis.align/embed`-Stubs; Beat-Reaper
-- **Exit:** Backend funktional vollständig; je Position pytest + ruff + mypy strict grün.
+- [x] 15.7 **Queue-Routing** — `jobs/queues.py` (CPU/GPU-Gruppen + `queue_for`); Claim ordnet bereits `priority DESC`; `analysis.align/embed`-Stubs (graceful-skip, GPU-Queue); Celery-Beat-Reaper (`laura.reap_expired`); 5 Tests, **173 grün**
+- **Exit:** ✓ Backend funktional vollständig; je Position pytest + ruff + mypy strict grün. **Portion 15 komplett.**
 
 ## Portion 16 — Wave-B/C Frontend  `[ ]`  (Plan: docs/16 §1)
 - [ ] 16.1 **Shot-Thumbnail-Strip** — UI nutzt `GET /shots/{id}/thumbnail` (Blob+Token)

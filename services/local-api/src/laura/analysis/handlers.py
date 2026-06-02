@@ -7,6 +7,7 @@ detection (light) typically runs; ASR/diarization run only when their extras are
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -145,5 +146,28 @@ def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:
     return diagnostics
 
 
+def _module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+def handle_analysis_align(ctx: JobContext) -> dict[str, Any]:
+    """Forced-alignment stage (WhisperX) — routed to the GPU queue. Optional extra;
+    graceful-skip when the extra/GPU is absent so the pipeline degrades instead of
+    failing. The real implementation is a GPU-only later portion."""
+    if not _module_available("whisperx"):
+        return {"status": "skipped", "reason": "align extra (whisperx) not installed"}
+    return {"status": "skipped", "reason": f"{ctx.kind} not yet implemented (GPU stage)"}
+
+
+def handle_analysis_embed(ctx: JobContext) -> dict[str, Any]:
+    """Semantic-embedding stage feeding Qdrant — routed to the GPU queue. Optional
+    extra; graceful-skip when absent."""
+    if not _module_available("qdrant_client"):
+        return {"status": "skipped", "reason": "embed extra (qdrant_client) not installed"}
+    return {"status": "skipped", "reason": f"{ctx.kind} not yet implemented (GPU stage)"}
+
+
 def register_analysis_handlers(registry: dict[str, JobHandler]) -> None:
     registry["analysis.run"] = handle_analysis_run
+    registry["analysis.align"] = handle_analysis_align
+    registry["analysis.embed"] = handle_analysis_embed

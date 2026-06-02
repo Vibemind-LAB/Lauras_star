@@ -13,6 +13,7 @@ from .. import PIPELINE_VERSION, audit
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
+from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from .models import (
     AnalysisAccepted,
@@ -64,7 +65,7 @@ def start_analysis(asset_id: str, body: AnalysisStart, request: Request) -> Anal
         db, asset_id=asset_id, pipeline_version=PIPELINE_VERSION, config=config
     )
     job_id = enqueue(
-        db, queue="analysis.scene", kind="analysis.run",
+        db, queue=queue_for("analysis.run"), kind="analysis.run",
         payload={"asset_id": asset_id, "analysis_run_id": run["id"], "config": config},
         idempotency_key=f"analysis:{run['id']}", pipeline_version=PIPELINE_VERSION,
     )

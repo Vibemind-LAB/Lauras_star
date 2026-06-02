@@ -18,6 +18,15 @@ celery_app = Celery(
     backend=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
 )
 
+# Celery Beat periodically reaps expired leases so crashed workers' jobs are requeued
+# without an in-process runner thread (the server-mode equivalent of the desktop reaper).
+celery_app.conf.beat_schedule = {
+    "reap-expired-leases": {
+        "task": "laura.reap_expired",
+        "schedule": float(os.environ.get("LAURA_REAP_INTERVAL", "30")),
+    }
+}
+
 
 @celery_app.task(name="laura.drain_jobs")  # type: ignore[untyped-decorator]
 def drain_jobs() -> int:
@@ -40,3 +49,17 @@ def drain_jobs() -> int:
     while runner.run_once():
         ran += 1
     return ran
+
+
+@celery_app.task(name="laura.reap_expired")  # type: ignore[untyped-decorator]
+def reap_expired() -> int:
+    """Requeue or fail jobs whose lease expired (Celery Beat). Returns count touched."""
+    from ..config import Settings
+    from ..db.database import create_database
+    from .runner import JobRunner
+
+    settings = Settings.load()
+    db = create_database(settings)
+    db.migrate()
+    runner = JobRunner(db, {}, lease_seconds=settings.lease_seconds)
+    return runner.reap_expired()
