@@ -22,6 +22,8 @@ class Settings:
     start_runner: bool = True         # background job runner thread
     lease_seconds: int = 60
     database_url: str | None = None   # postgresql://… for server mode; else SQLite
+    rate_limit_rpm: int = 0           # per-identity requests/minute; 0 disables the limiter
+    rate_limit_burst: int = 0         # bucket capacity; 0 -> falls back to rpm
 
     @property
     def db_path(self) -> Path:
@@ -41,6 +43,8 @@ class Settings:
             port=int(os.environ.get("LAURA_PORT", str(DEFAULT_PORT))),
             token=os.environ.get("LAURA_TOKEN") or None,
             database_url=os.environ.get("DATABASE_URL") or None,
+            rate_limit_rpm=int(os.environ.get("LAURA_RATE_LIMIT_RPM", "0")),
+            rate_limit_burst=int(os.environ.get("LAURA_RATE_LIMIT_BURST", "0")),
         )
 
 

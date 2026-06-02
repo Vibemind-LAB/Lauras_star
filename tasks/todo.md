@@ -162,7 +162,7 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 
 ## Portion 15 — Wave-B Backend-Abschluss  `[~]`  (Plan: docs/16 §1)
 - [x] 15.1 **Pagination** — `limit/offset` (defensiv geklemmt 1..200) + `X-Total-Count`-Header auf projects/assets/timelines; portabel (SQLite+PG); 5 Tests, **145 grün**
-- [ ] 15.2 **Rate-Limiting** — Token-Bucket-Middleware pro Key/Loopback → `429 + Retry-After`
+- [x] 15.2 **Rate-Limiting** — Token-Bucket-Middleware pro Key/Host → `429 + Retry-After`; per Default aus (`rpm=0`), Env-konfigurierbar, `/healthz`+`/metrics` exempt; 4 Tests, **149 grün**
 - [ ] 15.3 **Speed/Retiming** — Editing-Ops `speed_num/den`; OTIO `LinearTimeWarp`
 - [ ] 15.4 **Timeline-Captions** — SRT/VTT aus dem geschnittenen Rough Cut (Clip→origin_words)
 - [ ] 15.5 **Editorial-Import** — `POST …/timelines/import` (OTIO/EDL lesen + Media-Relink via sha256)

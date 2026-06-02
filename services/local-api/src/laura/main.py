@@ -15,6 +15,7 @@ from . import PIPELINE_VERSION, __version__
 from .analysis.handlers import register_analysis_handlers
 from .api import admin, analysis, assets, jobs, projects, search, timelines
 from .api.models import HealthOut
+from .api.ratelimit import RateLimiter, make_rate_limit_middleware
 from .config import Settings, ensure_workspace
 from .db.database import create_database
 from .ingest.handlers import register_ingest_handlers
@@ -46,6 +47,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.runner = runner
     app.middleware("http")(metrics_middleware)
+    if settings.rate_limit_rpm > 0:
+        capacity = settings.rate_limit_burst or settings.rate_limit_rpm
+        limiter = RateLimiter(capacity=capacity, refill_per_sec=settings.rate_limit_rpm / 60.0)
+        app.state.rate_limiter = limiter
+        app.middleware("http")(make_rate_limit_middleware(limiter))
 
     @app.get("/healthz", response_model=HealthOut, tags=["health"])
     def healthz() -> HealthOut:
