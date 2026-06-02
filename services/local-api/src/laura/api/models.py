@@ -159,6 +159,8 @@ class ClipOut(BaseModel):
     seq_out_frame_exclusive: int
     lane: int
     speaker_id: str | None = None
+    origin_word_start_id: str | None = None
+    origin_word_end_id: str | None = None
 
 
 class TimelineOut(BaseModel):
@@ -168,6 +170,20 @@ class TimelineOut(BaseModel):
     kind: str
     created_at: str
     clips: list[ClipOut] = Field(default_factory=list)
+
+
+class ClipSourceOut(BaseModel):
+    """Jump-back anchor for a timeline clip: where it came from in the source."""
+
+    clip_id: str
+    asset_id: str
+    src_in_frame: int
+    src_out_frame_exclusive: int
+    origin_word_start_id: str | None = None
+    origin_word_end_id: str | None = None
+    segment_id: str | None = None        # transcript segment the origin words belong to
+    word_start_frame: int | None = None  # source frame of the first origin word
+    word_end_frame: int | None = None    # source frame (exclusive) of the last origin word
 
 
 class ExportRequest(BaseModel):

@@ -27,6 +27,7 @@ from ..interchange.timeline import Timeline, timeline_from_rows
 from ..interchange.validate import validate_export
 from .models import (
     ClipOut,
+    ClipSourceOut,
     ExportOut,
     ExportRequest,
     OperationRequest,
@@ -110,6 +111,45 @@ def get_timeline(timeline_id: str, request: Request) -> TimelineOut:
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     return _timeline_out(db, row)
+
+
+@router.get(
+    "/timelines/{timeline_id}/clips/{clip_id}/source", response_model=ClipSourceOut
+)
+def clip_source(timeline_id: str, clip_id: str, request: Request) -> ClipSourceOut:
+    """Resolve a clip back to its source anchor: asset + source frames, plus the
+    transcript segment and word frames when the clip originated from words (jump-back)."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    clip = next(
+        (c for c in repos.list_timeline_clips(db, timeline_id) if c["id"] == clip_id), None
+    )
+    if clip is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "clip not found")
+
+    ws = clip.get("origin_word_start_id")
+    we = clip.get("origin_word_end_id")
+    seg_id: str | None = None
+    word_start: int | None = None
+    word_end: int | None = None
+    if ws and (w0 := repos.get_word(db, ws)) is not None:
+        seg_id = w0.get("segment_id")
+        word_start = w0.get("start_frame")
+    if we and (w1 := repos.get_word(db, we)) is not None:
+        word_end = w1.get("end_frame")
+
+    return ClipSourceOut(
+        clip_id=clip_id,
+        asset_id=clip["asset_id"],
+        src_in_frame=clip["src_in_frame"],
+        src_out_frame_exclusive=clip["src_out_frame_exclusive"],
+        origin_word_start_id=ws,
+        origin_word_end_id=we,
+        segment_id=seg_id,
+        word_start_frame=word_start,
+        word_end_frame=word_end,
+    )
 
 
 @router.patch("/timelines/{timeline_id}", response_model=TimelineOut)

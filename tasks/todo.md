@@ -166,7 +166,7 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [ ] 15.3 **Speed/Retiming** — Editing-Ops `speed_num/den`; OTIO `LinearTimeWarp`
 - [ ] 15.4 **Timeline-Captions** — SRT/VTT aus dem geschnittenen Rough Cut (Clip→origin_words)
 - [ ] 15.5 **Editorial-Import** — `POST …/timelines/import` (OTIO/EDL lesen + Media-Relink via sha256)
-- [ ] 15.6 **origin_word-Link (Backend)** — konsistente Anker für Rücksprung
+- [x] 15.6 **origin_word-Link (Backend)** — `ClipOut` zeigt `origin_word_*`; `GET /timelines/{id}/clips/{cid}/source` löst Clip → Segment + Quell-Frames auf (Rücksprung); 2 Tests, **151 grün**
 - [ ] 15.7 **Queue-Routing** — CPU/GPU-Queues + Prioritäten; `analysis.align/embed`-Stubs; Beat-Reaper
 - **Exit:** Backend funktional vollständig; je Position pytest + ruff + mypy strict grün.
 
