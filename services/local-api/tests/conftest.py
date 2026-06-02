@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from laura.config import Settings
-from laura.db.database import Database
+from laura.db.database import Database, SqliteDatabase
 from laura.main import create_app
 
 
@@ -21,7 +21,7 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def db(settings: Settings) -> Database:
-    database = Database(settings.db_path)
+    database = SqliteDatabase(settings.db_path)
     database.migrate()
     return database
 

@@ -16,7 +16,7 @@ from .analysis.handlers import register_analysis_handlers
 from .api import admin, analysis, assets, jobs, projects, timelines
 from .api.models import HealthOut
 from .config import Settings, ensure_workspace
-from .db.database import Database
+from .db.database import create_database
 from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
@@ -25,7 +25,7 @@ from .metrics import metrics_middleware, metrics_response
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
     ensure_workspace(settings)
-    db = Database(settings.db_path)
+    db = create_database(settings)
     db.migrate()
     registry = default_registry()
     register_ingest_handlers(registry)

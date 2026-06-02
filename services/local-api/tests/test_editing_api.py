@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import Database
+from laura.db.database import SqliteDatabase
 from laura.main import create_app
 
 
@@ -21,7 +21,7 @@ def _word(idx: int, sf: int, ef: int, text: str) -> dict[str, Any]:
 
 def test_append_from_words_then_delete(tmp_path: Path) -> None:
     settings = Settings(workspace_root=tmp_path, start_runner=False)
-    db = Database(settings.db_path)
+    db = SqliteDatabase(settings.db_path)
     db.migrate()
     client = TestClient(create_app(settings))
     client.__enter__()

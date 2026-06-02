@@ -132,13 +132,13 @@ class JobRunner:
     def reap_expired(self) -> int:
         """Requeue or fail jobs whose lease expired. Returns count touched."""
         now = utcnow_iso()
+        err = json.dumps({"error": "lease expired, max attempts reached"})
         with self.db.transaction(immediate=True) as conn:
             failed = conn.execute(
-                "UPDATE jobs SET status='failed', finished_at=?, updated_at=?, "
-                "error_json=json_object('error','lease expired, max attempts reached') "
+                "UPDATE jobs SET status='failed', finished_at=?, updated_at=?, error_json=? "
                 "WHERE status IN ('leased','running') AND lease_expires_at IS NOT NULL "
                 "AND lease_expires_at < ? AND attempt >= max_attempts",
-                (now, now, now),
+                (now, now, err, now),
             ).rowcount
             requeued = conn.execute(
                 "UPDATE jobs SET status='queued', worker_id=NULL, lease_expires_at=NULL, "
@@ -148,32 +148,6 @@ class JobRunner:
                 (now, now),
             ).rowcount
         return int(failed) + int(requeued)
-
-    # --- claim ------------------------------------------------------------
-    def _claim(self) -> dict[str, Any] | None:
-        now = _now()
-        expires = _iso(now + timedelta(seconds=self.lease_seconds))
-        with self.db.transaction(immediate=True) as conn:
-            if self.queues:
-                placeholders = ",".join("?" for _ in self.queues)
-                row = conn.execute(
-                    f"SELECT * FROM jobs WHERE status='queued' AND queue IN ({placeholders}) "
-                    "ORDER BY priority DESC, created_at ASC LIMIT 1",
-                    self.queues,
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM jobs WHERE status='queued' "
-                    "ORDER BY priority DESC, created_at ASC LIMIT 1"
-                ).fetchone()
-            if row is None:
-                return None
-            conn.execute(
-                "UPDATE jobs SET status='running', attempt=attempt+1, worker_id=?, "
-                "lease_expires_at=?, heartbeat_at=?, updated_at=? WHERE id=?",
-                (self.worker_id, expires, utcnow_iso(), utcnow_iso(), row["id"]),
-            )
-            return dict(row)
 
     # --- execute ----------------------------------------------------------
     def _finish_ok(self, job_id: str, result: dict[str, Any] | None) -> None:
@@ -230,7 +204,9 @@ class JobRunner:
     def run_once(self) -> bool:
         """Reap, then claim and run at most one job. Returns True if a job ran."""
         self.reap_expired()
-        job = self._claim()
+        job = self.db.claim_job(
+            worker_id=self.worker_id, lease_seconds=self.lease_seconds, queues=self.queues
+        )
         if job is None:
             return False
         self._execute(job)

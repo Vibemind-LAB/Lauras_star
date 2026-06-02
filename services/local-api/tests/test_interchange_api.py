@@ -8,13 +8,13 @@ from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import Database
+from laura.db.database import Database, SqliteDatabase
 from laura.main import create_app
 
 
 def _setup(tmp_path: Path) -> tuple[Database, TestClient, str, str]:
     settings = Settings(workspace_root=tmp_path, start_runner=False)
-    db = Database(settings.db_path)
+    db = SqliteDatabase(settings.db_path)
     db.migrate()
     client = TestClient(create_app(settings))
     client.__enter__()

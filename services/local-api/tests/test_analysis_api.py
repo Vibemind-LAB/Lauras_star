@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from laura.analysis.handlers import register_analysis_handlers
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import Database
+from laura.db.database import Database, SqliteDatabase
 from laura.ingest.handlers import register_ingest_handlers
 from laura.jobs import JobRunner, default_registry
 from laura.main import create_app
@@ -24,7 +24,7 @@ def _runner(db: Database) -> JobRunner:
 
 def _setup(tmp_path: Path) -> tuple[Settings, Database, TestClient, str]:
     settings = Settings(workspace_root=tmp_path, start_runner=False)
-    db = Database(settings.db_path)
+    db = SqliteDatabase(settings.db_path)
     db.migrate()
     app = create_app(settings)
     client = TestClient(app)

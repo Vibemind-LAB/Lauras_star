@@ -15,7 +15,7 @@ import pytest
 
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import Database
+from laura.db.database import SqliteDatabase
 from laura.ingest.ffmpeg import run_ffmpeg
 from laura.ingest.handlers import register_ingest_handlers
 from laura.jobs import JobRunner, default_registry, enqueue
@@ -49,7 +49,7 @@ def _drain(runner: JobRunner, limit: int = 50) -> int:
 
 def test_full_ingest_pipeline(tmp_path: Path, sample_media: Path) -> None:
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
-    db = Database(settings.db_path)
+    db = SqliteDatabase(settings.db_path)
     db.migrate()
 
     project_root = settings.workspace_root / "project"

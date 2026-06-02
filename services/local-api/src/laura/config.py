@@ -21,6 +21,7 @@ class Settings:
     token: str | None = None          # if set, required via X-Laura-Token header
     start_runner: bool = True         # background job runner thread
     lease_seconds: int = 60
+    database_url: str | None = None   # postgresql://… for server mode; else SQLite
 
     @property
     def db_path(self) -> Path:
@@ -39,6 +40,7 @@ class Settings:
             host=os.environ.get("LAURA_HOST", DEFAULT_HOST),
             port=int(os.environ.get("LAURA_PORT", str(DEFAULT_PORT))),
             token=os.environ.get("LAURA_TOKEN") or None,
+            database_url=os.environ.get("DATABASE_URL") or None,
         )
 
 
