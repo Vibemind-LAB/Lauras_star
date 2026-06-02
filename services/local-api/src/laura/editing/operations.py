@@ -2,7 +2,8 @@
 
 Every function returns a NEW clip list (no mutation), so a sequence of operations
 yields deterministic, testable deltas. Source ranges are kept in sync with sequence
-ranges when clips are trimmed (1:1 mapping; speed changes are out of MVP scope).
+ranges when clips are trimmed (1:1 mapping). Retiming (``set_speed``) decouples the
+two via the clip's speed ratio, with the sequence length projected by the time core.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from ..timebase import FrameRange
+from ..timebase import FrameRange, retimed_seq_length
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,8 @@ class EditClip:
     speaker_id: str | None = None
     origin_word_start_id: str | None = None
     origin_word_end_id: str | None = None
+    speed_num: int = 1
+    speed_den: int = 1
 
     @property
     def src_length(self) -> int:
@@ -41,6 +44,8 @@ class EditClip:
             speaker_id=row.get("speaker_id"),
             origin_word_start_id=row.get("origin_word_start_id"),
             origin_word_end_id=row.get("origin_word_end_id"),
+            speed_num=row.get("speed_num") or 1,
+            speed_den=row.get("speed_den") or 1,
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -54,6 +59,8 @@ class EditClip:
             "speaker_id": self.speaker_id,
             "origin_word_start_id": self.origin_word_start_id,
             "origin_word_end_id": self.origin_word_end_id,
+            "speed_num": self.speed_num,
+            "speed_den": self.speed_den,
         }
 
 
@@ -128,3 +135,41 @@ def delete_range(clips: list[EditClip], seq_in: int, seq_out: int) -> list[EditC
 
 def lift_range(clips: list[EditClip], seq_in: int, seq_out: int) -> list[EditClip]:
     return remove_range(clips, seq_in, seq_out, ripple=False)
+
+
+def set_speed(
+    clips: list[EditClip], at_seq_frame: int, speed_num: int, speed_den: int
+) -> list[EditClip]:
+    """Retime the clip starting at ``at_seq_frame`` to ``speed_num/speed_den`` and ripple
+    later clips by the duration delta. Speed > 1 shortens the clip on the timeline; the
+    source range is unchanged (same media, played faster/slower). The new sequence length
+    is projected deterministically by the time core."""
+    if speed_num <= 0 or speed_den <= 0:
+        raise ValueError("speed must be positive")
+    target = next((c for c in ordered(clips) if c.seq_in_frame == at_seq_frame), None)
+    if target is None:
+        raise ValueError(f"no clip starts at seq frame {at_seq_frame}")
+
+    new_len = retimed_seq_length(target.src_length, speed_num, speed_den)
+    old_end = target.seq_out_frame_exclusive
+    delta = (target.seq_in_frame + new_len) - old_end
+
+    result: list[EditClip] = []
+    for c in clips:
+        if c is target:
+            result.append(
+                replace(
+                    c, speed_num=speed_num, speed_den=speed_den,
+                    seq_out_frame_exclusive=c.seq_in_frame + new_len,
+                )
+            )
+        elif c.seq_in_frame >= old_end:
+            result.append(
+                replace(
+                    c, seq_in_frame=c.seq_in_frame + delta,
+                    seq_out_frame_exclusive=c.seq_out_frame_exclusive + delta,
+                )
+            )
+        else:
+            result.append(c)
+    return result

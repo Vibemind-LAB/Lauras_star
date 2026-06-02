@@ -421,17 +421,19 @@ def add_timeline_clip(
     speaker_id: str | None = None,
     origin_word_start_id: str | None = None,
     origin_word_end_id: str | None = None,
+    speed_num: int = 1,
+    speed_den: int = 1,
 ) -> dict[str, Any]:
     cid = new_id()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
             "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
-            "speaker_id, origin_word_start_id, origin_word_end_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (cid, timeline_id, asset_id, src_in_frame, src_out_frame_exclusive,
              seq_in_frame, seq_out_frame_exclusive, lane, speaker_id,
-             origin_word_start_id, origin_word_end_id),
+             origin_word_start_id, origin_word_end_id, speed_num, speed_den),
         )
         row = conn.execute("SELECT * FROM timeline_clips WHERE id=?", (cid,)).fetchone()
     return dict(row)
@@ -496,12 +498,12 @@ def replace_timeline_clips(
             conn.execute(
                 "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
                 "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
-                "speaker_id, origin_word_start_id, origin_word_end_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), timeline_id, r["asset_id"], r["src_in_frame"],
                  r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"],
                  r.get("lane", 0), r.get("speaker_id"), r.get("origin_word_start_id"),
-                 r.get("origin_word_end_id")),
+                 r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1)),
             )
 
 

@@ -21,6 +21,8 @@ class Clip:
     asset_id: str | None = None
     source_url: str | None = None
     speaker_label: str | None = None
+    speed_num: int = 1
+    speed_den: int = 1
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,8 @@ def timeline_from_rows(
                 asset_id=row["asset_id"],
                 source_url=asset.get("source_path"),
                 speaker_label=speaker.get("label") if speaker else None,
+                speed_num=row.get("speed_num") or 1,
+                speed_den=row.get("speed_den") or 1,
             )
         )
     return Timeline(

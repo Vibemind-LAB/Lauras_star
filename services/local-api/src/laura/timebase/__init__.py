@@ -20,7 +20,7 @@ from .framerate import (
     FPS_60,
     FrameRate,
 )
-from .ranges import FrameRange, MediaRange
+from .ranges import FrameRange, MediaRange, retimed_seq_length
 from .rational import RationalTime
 from .rounding import Rounding, div_round
 from .sampling import (
@@ -51,6 +51,7 @@ __all__ = [
     "div_round",
     "frame_to_sample",
     "frames_to_timecode",
+    "retimed_seq_length",
     "sample_to_frame",
     "snap_in_to_frame",
     "snap_out_to_frame",

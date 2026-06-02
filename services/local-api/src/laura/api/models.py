@@ -161,6 +161,8 @@ class ClipOut(BaseModel):
     speaker_id: str | None = None
     origin_word_start_id: str | None = None
     origin_word_end_id: str | None = None
+    speed_num: int = 1
+    speed_den: int = 1
 
 
 class TimelineOut(BaseModel):
@@ -217,7 +219,7 @@ class ValidateOut(BaseModel):
 
 
 class OperationRequest(BaseModel):
-    op: str  # append_from_words | append_clip | insert_clip | delete | lift
+    op: str  # append_from_words | append_clip | insert_clip | delete | lift | set_speed
     asset_id: str | None = None
     src_in_frame: int | None = None
     src_out_frame_exclusive: int | None = None
@@ -227,6 +229,8 @@ class OperationRequest(BaseModel):
     seq_out_frame_exclusive: int | None = None
     at_seq_frame: int | None = None
     lane: int = 0
+    speed_num: int | None = None
+    speed_den: int | None = None
 
 
 # --- enterprise ----------------------------------------------------------

@@ -18,6 +18,7 @@ from ..editing.operations import (
     insert_clip,
     lift_range,
     ordered,
+    set_speed,
 )
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
@@ -224,6 +225,15 @@ def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> lis
         seq_out = _require(body.seq_out_frame_exclusive, "seq_out_frame_exclusive required")
         fn = delete_range if op == "delete" else lift_range
         return fn(current, seq_in, seq_out)
+
+    if op == "set_speed":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        sn = _require(body.speed_num, "speed_num required")
+        sd = _require(body.speed_den, "speed_den required")
+        try:
+            return set_speed(current, at, sn, sd)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 

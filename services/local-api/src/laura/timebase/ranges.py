@@ -95,4 +95,22 @@ class MediaRange:
     def expected_seq_length(self, rounding: Rounding = Rounding.HALF_EVEN) -> int:
         """Sequence length implied by source length and speed (frames are in the
         same nominal cadence as the sequence; source already proxied to CFR)."""
-        return div_round(self.src_range.length * self.speed_den, self.speed_num, rounding)
+        return retimed_seq_length(
+            self.src_range.length, self.speed_num, self.speed_den, rounding
+        )
+
+
+def retimed_seq_length(
+    src_length: int,
+    speed_num: int,
+    speed_den: int,
+    rounding: Rounding = Rounding.HALF_EVEN,
+) -> int:
+    """Sequence frames a source span of ``src_length`` occupies at ``speed_num/speed_den``.
+
+    ``2/1`` (2x faster) halves the span; ``1/2`` (half speed) doubles it; ``1/1`` is identity.
+    Deterministic integer rounding (ADR-0005).
+    """
+    if speed_num <= 0 or speed_den <= 0:
+        raise ValueError("speed must be positive")
+    return div_round(src_length * speed_den, speed_num, rounding)

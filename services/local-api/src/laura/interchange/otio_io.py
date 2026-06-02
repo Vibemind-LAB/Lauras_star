@@ -29,18 +29,35 @@ def timeline_to_otio_string(tl: Timeline) -> str:
                     )
                 )
             )
-        duration = clip.src_out_frame_exclusive - clip.src_in_frame
+        # 1/1 clips keep their source duration (== sequence); retimed clips occupy their
+        # sequence span and carry a LinearTimeWarp plus exact rational metadata so the
+        # canonical fields survive a round-trip (OTIO retiming is otherwise lossy).
+        retimed = clip.speed_num != clip.speed_den
+        seq_len = clip.seq_out_frame_exclusive - clip.seq_in_frame
+        src_len = clip.src_out_frame_exclusive - clip.src_in_frame
         source_range = otio.opentime.TimeRange(
             otio.opentime.RationalTime(clip.src_in_frame, rate),
-            otio.opentime.RationalTime(duration, rate),
+            otio.opentime.RationalTime(seq_len if retimed else src_len, rate),
         )
         media = (
             otio.schema.ExternalReference(target_url=clip.source_url)
             if clip.source_url
             else otio.schema.MissingReference()
         )
-        track.append(otio.schema.Clip(name=clip.name, source_range=source_range,
-                                      media_reference=media))
+        otio_clip = otio.schema.Clip(
+            name=clip.name, source_range=source_range, media_reference=media
+        )
+        if retimed:
+            otio_clip.effects.append(
+                otio.schema.LinearTimeWarp(time_scalar=clip.speed_num / clip.speed_den)
+            )
+            otio_clip.metadata["laura"] = {
+                "speed_num": clip.speed_num,
+                "speed_den": clip.speed_den,
+                "src_in_frame": clip.src_in_frame,
+                "src_out_frame_exclusive": clip.src_out_frame_exclusive,
+            }
+        track.append(otio_clip)
         playhead = clip.seq_out_frame_exclusive
 
     result: str = otio.adapters.write_to_string(timeline, "otio_json")
@@ -58,16 +75,27 @@ def otio_string_to_timeline(
         src = clip.source_range
         seq_in = int(rec.start_time.value)
         seq_dur = int(rec.duration.value)
-        src_in = int(src.start_time.value)
-        src_dur = int(src.duration.value)
+        meta = dict(clip.metadata).get("laura") if clip.metadata else None
+        if meta:
+            # exact canonical fields preserved across the retime round-trip
+            src_in = int(meta["src_in_frame"])
+            src_out = int(meta["src_out_frame_exclusive"])
+            speed_num = int(meta.get("speed_num", 1))
+            speed_den = int(meta.get("speed_den", 1))
+        else:
+            src_in = int(src.start_time.value)
+            src_out = src_in + int(src.duration.value)
+            speed_num = speed_den = 1
         clips.append(
             Clip(
                 name=str(clip.name),
                 src_in_frame=src_in,
-                src_out_frame_exclusive=src_in + src_dur,
+                src_out_frame_exclusive=src_out,
                 seq_in_frame=seq_in,
                 seq_out_frame_exclusive=seq_in + seq_dur,
                 source_url=getattr(clip.media_reference, "target_url", None),
+                speed_num=speed_num,
+                speed_den=speed_den,
             )
         )
     return Timeline(

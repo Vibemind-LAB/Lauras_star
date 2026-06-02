@@ -42,7 +42,7 @@ def pg() -> PostgresDatabase:
 
 
 def test_pg_migrations_apply(pg: PostgresDatabase) -> None:
-    assert pg.schema_version() == 2
+    assert pg.schema_version() == 3
 
 
 def test_pg_project_crud(pg: PostgresDatabase) -> None:
