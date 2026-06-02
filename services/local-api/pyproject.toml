@@ -1,0 +1,62 @@
+[project]
+name = "laura-local-api"
+version = "0.1.0"
+description = "Laura local service: frame-/sample-accurate timebase, ingest, analysis, interchange."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pydantic>=2.9",
+    "opentimelineio>=0.17",      # canonical editorial interchange model (ADR-0001)
+]
+
+# Heavy ML components are OPTIONAL extras — the backend must start and do
+# ingest/probe/proxy/waveform/export without any of these installed.
+[project.optional-dependencies]
+scene = ["scenedetect>=0.6.4", "opencv-python>=4.9"]
+asr = ["faster-whisper>=1.0"]
+align = ["whisperx>=3.1"]            # version-sensitive — pin hard, isolate
+diarize = ["pyannote.audio>=3.1"]
+
+[project.scripts]
+laura-api = "laura.main:run"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/laura"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+# Optional ML components ship no type stubs and may be absent in the base env.
+[[tool.mypy.overrides]]
+module = [
+    "scenedetect.*", "faster_whisper.*", "whisperx.*", "pyannote.*", "cv2.*",
+    "opentimelineio.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

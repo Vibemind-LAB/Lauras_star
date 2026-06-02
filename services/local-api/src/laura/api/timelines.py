@@ -1,0 +1,139 @@
+"""Timeline, export, and interchange-validation endpoints (docs/04-api.md, 07-interchange.md)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from ..db import repos
+from ..db.database import Database
+from ..interchange.edl import timeline_to_edl
+from ..interchange.otio_io import timeline_to_otio_string
+from ..interchange.timeline import Timeline, timeline_from_rows
+from ..interchange.validate import validate_export
+from .models import (
+    ClipOut,
+    ExportOut,
+    ExportRequest,
+    TimelineCreate,
+    TimelineOut,
+    ValidateOut,
+    ValidateRequest,
+)
+from .security import require_token
+
+router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
+
+_EXT = {"otio": "otio", "edl": "edl"}
+
+
+def _db(request: Request) -> Database:
+    db: Database = request.app.state.db
+    return db
+
+
+def _timeline_out(db: Database, row: dict[str, Any]) -> TimelineOut:
+    clips = [ClipOut(**c) for c in repos.list_timeline_clips(db, row["id"])]
+    return TimelineOut(
+        id=row["id"], project_id=row["project_id"], name=row["name"],
+        kind=row["kind"], created_at=row["created_at"], clips=clips,
+    )
+
+
+def _build_model(db: Database, timeline_row: dict[str, Any]) -> Timeline:
+    project = repos.get_project(db, timeline_row["project_id"])
+    assert project is not None
+    clip_rows = repos.list_timeline_clips(db, timeline_row["id"])
+    assets = {
+        aid: a
+        for aid in {c["asset_id"] for c in clip_rows}
+        if (a := repos.get_asset(db, aid)) is not None
+    }
+    speakers = {
+        sid: s
+        for sid in {c["speaker_id"] for c in clip_rows if c.get("speaker_id")}
+        if (s := repos.get_speaker(db, sid)) is not None
+    }
+    return timeline_from_rows(timeline_row, clip_rows, project, assets, speakers)
+
+
+@router.post(
+    "/projects/{project_id}/timelines",
+    response_model=TimelineOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_timeline(project_id: str, body: TimelineCreate, request: Request) -> TimelineOut:
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    row = repos.create_timeline(db, project_id=project_id, name=body.name, kind=body.kind)
+    return _timeline_out(db, row)
+
+
+@router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])
+def list_timelines(project_id: str, request: Request) -> list[TimelineOut]:
+    db = _db(request)
+    return [_timeline_out(db, r) for r in repos.list_timelines(db, project_id)]
+
+
+@router.get("/timelines/{timeline_id}", response_model=TimelineOut)
+def get_timeline(timeline_id: str, request: Request) -> TimelineOut:
+    db = _db(request)
+    row = repos.get_timeline(db, timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    return _timeline_out(db, row)
+
+
+@router.post("/interop/validate", response_model=ValidateOut)
+def interop_validate(body: ValidateRequest, request: Request) -> ValidateOut:
+    db = _db(request)
+    row = repos.get_timeline(db, body.timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    result = validate_export(_build_model(db, row), body.format)
+    return ValidateOut(**result)
+
+
+@router.post(
+    "/timelines/{timeline_id}/exports",
+    response_model=ExportOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def export_timeline(timeline_id: str, body: ExportRequest, request: Request) -> ExportOut:
+    db = _db(request)
+    row = repos.get_timeline(db, timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+
+    fmt = body.format.lower()
+    if fmt in {"srt", "vtt"}:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "captions are exported per asset via /assets/{id}/captions.srt|.vtt",
+        )
+    if fmt not in _EXT:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unsupported format: {fmt}")
+
+    model = _build_model(db, row)
+    diagnostics = validate_export(model, fmt)
+    content = timeline_to_otio_string(model) if fmt == "otio" else timeline_to_edl(model)
+
+    project = repos.get_project(db, row["project_id"])
+    assert project is not None
+    out_dir = Path(project["workspace_root"]) / "exports" / timeline_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"timeline.{_EXT[fmt]}"
+    out_path.write_text(content, encoding="utf-8")
+
+    export = repos.create_export(
+        db, timeline_id=timeline_id, fmt=fmt, status="succeeded",
+        output_path=str(out_path), options=body.options, diagnostics=diagnostics,
+    )
+    return ExportOut(
+        id=export["id"], timeline_id=timeline_id, format=fmt, status="succeeded",
+        output_path=str(out_path), lossy=diagnostics["lossy"], drops=diagnostics["drops"],
+        warnings=diagnostics["warnings"], content=content,
+    )
