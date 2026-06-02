@@ -42,6 +42,8 @@ export function AssetView({
 }): ReactElement {
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
+  const [currentFrame, setCurrentFrame] = useState(0);
+  const [seekReq, setSeekReq] = useState<{ frame: number } | null>(null);
 
   const waveformReady = hasFile(asset, "waveform");
   const posterReady = hasFile(asset, "poster");
@@ -84,7 +86,7 @@ export function AssetView({
 
   return (
     <div className="space-y-4">
-      <Player client={client} asset={asset} />
+      <Player client={client} asset={asset} seekTo={seekReq} onFrame={setCurrentFrame} />
 
       <div className="flex items-center gap-4">
         {posterUrl ? (
@@ -140,6 +142,8 @@ export function AssetView({
           asset={asset}
           roughCut={roughCut}
           onTimelineChange={onTimelineChange}
+          currentFrame={currentFrame}
+          onSeek={(frame) => setSeekReq({ frame })}
         />
       </div>
     </div>

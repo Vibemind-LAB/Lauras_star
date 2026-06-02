@@ -172,7 +172,7 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 
 ## Portion 16 — Wave-B/C Frontend  `[~]`  (Plan: docs/16 §1)
 - [x] 16.1 **Shot-Thumbnail-Strip** — `shotThumbnailUrl` (Blob+Token), `ShotThumb` (Object-URL + Cleanup), scrollbarer Vorschau-Strip mit Fallback-Balken; `tsc` strict + `vite build` grün (GUI manuell)
-- [ ] 16.2 **origin_word-Highlight** — Transkript-Klick → Player-Sprung, aktiver Clip hebt Quellwörter hervor
+- [x] 16.2 **origin_word-Highlight** — Wort-Level-Transkript: Klick → Player-Sprung (`seekTo`), Playhead hebt aktives Wort/Segment hervor (`onFrame`→`currentFrame`); `tsc`+Build grün (GUI manuell)
 - [x] 16.3 **Player JKL/Shuttle** — J/K/L (L vorwärts 1/2/4×, J Rückwärts via Intervall, K Stop), ←/→ Frame, Shift+←/→ Sekunde, Home/End, Leertaste; fokussierbarer Container + Shuttle-Anzeige; `tsc`+Build grün (GUI manuell)
 - [ ] 16.4 **Undo/Redo + Trim/Split/Insert-UI** — Op-Stack im Renderer auf bestehende Backend-Ops
 - [ ] 16.5 **Desktop-Tests-Setup** — Vitest + Testing-Library + CI-Schritt

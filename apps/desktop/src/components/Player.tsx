@@ -17,7 +17,17 @@ function fps(asset: Asset): number {
   return asset.rate_num && asset.rate_den ? asset.rate_num / asset.rate_den : 25;
 }
 
-export function Player({ client, asset }: { client: LauraClient; asset: Asset }): ReactElement {
+export function Player({
+  client,
+  asset,
+  seekTo,
+  onFrame,
+}: {
+  client: LauraClient;
+  asset: Asset;
+  seekTo?: { frame: number } | null;
+  onFrame?: (frame: number) => void;
+}): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const reverseTimer = useRef<number | null>(null);
   const [url, setUrl] = useState<string | null>(null);
@@ -63,6 +73,20 @@ export function Player({ client, asset }: { client: LauraClient; asset: Asset })
     if (!v) return;
     v.currentTime = Math.max(0, target) / f;
   }
+
+  // External seek request (e.g. clicking a transcript word) — pause any shuttle first.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!seekTo || !v) return;
+    if (reverseTimer.current !== null) {
+      window.clearInterval(reverseTimer.current);
+      reverseTimer.current = null;
+    }
+    v.pause();
+    v.playbackRate = 1;
+    setShuttle(0);
+    v.currentTime = Math.max(0, seekTo.frame) / f;
+  }, [seekTo, f]);
 
   function step(delta: number): void {
     if (videoRef.current && !videoRef.current.paused) videoRef.current.pause();
@@ -192,7 +216,11 @@ export function Player({ client, asset }: { client: LauraClient; asset: Asset })
             className="aspect-video w-full"
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
-            onTimeUpdate={(e) => setFrame(Math.round(e.currentTarget.currentTime * f))}
+            onTimeUpdate={(e) => {
+              const fr = Math.round(e.currentTarget.currentTime * f);
+              setFrame(fr);
+              onFrame?.(fr);
+            }}
           />
         ) : (
           <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">

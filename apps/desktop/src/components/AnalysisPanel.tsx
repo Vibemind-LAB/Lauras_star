@@ -102,16 +102,63 @@ function asrNote(diagnostics: Record<string, unknown>): string | null {
   return null;
 }
 
+function SegmentText({
+  segment,
+  currentFrame,
+  onSeek,
+}: {
+  segment: Segment;
+  currentFrame: number;
+  onSeek?: (frame: number) => void;
+}): ReactElement {
+  if (segment.words.length === 0) {
+    const active = currentFrame >= segment.start_frame && currentFrame < segment.end_frame;
+    return (
+      <button
+        type="button"
+        onClick={() => onSeek?.(segment.start_frame)}
+        className={`text-left ${active ? "text-sky-300" : ""} ${onSeek ? "hover:underline" : ""}`}
+      >
+        {segment.text}
+      </button>
+    );
+  }
+  return (
+    <span className="leading-relaxed">
+      {segment.words.map((w) => {
+        const active = currentFrame >= w.start_frame && currentFrame < w.end_frame;
+        return (
+          <span key={w.id}>
+            <button
+              type="button"
+              onClick={() => onSeek?.(w.start_frame)}
+              className={`rounded px-0.5 ${active ? "bg-sky-600/50 text-white" : ""} ${
+                onSeek ? "hover:bg-edge" : ""
+              }`}
+            >
+              {w.text}
+            </button>{" "}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 export function AnalysisPanel({
   client,
   asset,
   roughCut,
   onTimelineChange,
+  currentFrame,
+  onSeek,
 }: {
   client: LauraClient;
   asset: Asset;
   roughCut: Timeline | null;
   onTimelineChange: () => void;
+  currentFrame?: number;
+  onSeek?: (frame: number) => void;
 }): ReactElement {
   const [status, setStatus] = useState<Status>("idle");
   const [shots, setShots] = useState<Shot[]>([]);
@@ -255,7 +302,13 @@ export function AnalysisPanel({
             {segments.map((seg) => (
               <li
                 key={seg.id}
-                className="flex items-start justify-between gap-2 rounded-md bg-panel px-3 py-2 text-sm text-slate-200"
+                className={`flex items-start justify-between gap-2 rounded-md px-3 py-2 text-sm text-slate-200 ${
+                  currentFrame != null &&
+                  currentFrame >= seg.start_frame &&
+                  currentFrame < seg.end_frame
+                    ? "bg-sky-900/40 ring-1 ring-sky-700"
+                    : "bg-panel"
+                }`}
               >
                 <span>
                   {seg.speaker_label && (
@@ -263,7 +316,7 @@ export function AnalysisPanel({
                       {seg.speaker_label}
                     </span>
                   )}
-                  {seg.text}
+                  <SegmentText segment={seg} currentFrame={currentFrame ?? -1} onSeek={onSeek} />
                 </span>
                 {roughCut && seg.words.length > 0 && (
                   <button
