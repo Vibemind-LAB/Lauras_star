@@ -9,13 +9,36 @@ import { log } from "./shared/log";
 
 const PORT = Number(process.env.LAURA_PORT ?? "8765");
 
-function serviceDir(): string {
+interface ServiceCommand {
+  cmd: string;
+  args: string[];
+  cwd: string;
+  useShell: boolean;
+}
+
+function devServiceDir(): string {
   if (process.env.LAURA_SERVICE_DIR) {
     return process.env.LAURA_SERVICE_DIR;
   }
   // Dev: app path is apps/desktop -> repo/services/local-api.
-  // Packaged distribution bundles a built service instead (Portion 10).
   return path.resolve(app.getAppPath(), "..", "..", "services", "local-api");
+}
+
+function resolveServiceCommand(): ServiceCommand {
+  if (app.isPackaged) {
+    // Packaged: a standalone service binary bundled as an extraResource
+    // (see docs/13-packaging.md). No `uv`, no shell.
+    const dir = path.join(process.resourcesPath, "service");
+    const bin = process.platform === "win32" ? "laura-api.exe" : "laura-api";
+    return { cmd: path.join(dir, bin), args: [], cwd: dir, useShell: false };
+  }
+  // Dev: run via uv. shell helps PATH-resolve `uv` on Windows.
+  return {
+    cmd: "uv",
+    args: ["run", "laura-api"],
+    cwd: devServiceDir(),
+    useShell: process.platform === "win32",
+  };
 }
 
 async function waitForHealth(baseUrl: string, token: string, timeoutMs = 30000): Promise<void> {
@@ -43,8 +66,9 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
   const baseUrl = `http://127.0.0.1:${PORT}`;
   const workspace = path.join(app.getPath("userData"), "workspace");
 
-  const child: ChildProcess = spawn("uv", ["run", "laura-api"], {
-    cwd: serviceDir(),
+  const command = resolveServiceCommand();
+  const child: ChildProcess = spawn(command.cmd, command.args, {
+    cwd: command.cwd,
     env: {
       ...process.env,
       LAURA_PORT: String(PORT),
@@ -52,7 +76,7 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
       LAURA_WORKSPACE: workspace,
     },
     stdio: "inherit",
-    shell: process.platform === "win32", // help PATH-resolve `uv` on Windows
+    shell: command.useShell,
   });
   child.on("exit", (code) => log.warn("local service exited", code));
 

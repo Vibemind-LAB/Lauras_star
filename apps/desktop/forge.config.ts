@@ -6,7 +6,13 @@ import type { ForgeConfig } from "@electron-forge/shared-types";
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    // Bundling the Python service + ffmpeg/libmpv is handled in Portion 10 (Release).
+    name: "Laura",
+    executableName: process.platform === "linux" ? "laura" : "Laura",
+    appBundleId: "ai.laura.desktop",
+    // To bundle the standalone Python service + ffmpeg/libmpv, add e.g.
+    //   extraResource: ["../../dist/service", "../../dist/ffmpeg"]
+    // once those are built. See docs/13-packaging.md. (Left unset so an
+    // unsigned `forge package` works without prebuilt binaries.)
   },
   rebuildConfig: {},
   makers: [new MakerSquirrel({}), new MakerZIP({}, ["darwin", "win32", "linux"])],

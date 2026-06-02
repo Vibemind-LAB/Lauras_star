@@ -102,17 +102,21 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **Verifiziert:** 121 Tests (golden Operation-Deltas + API-Roundtrip mit OTIO-Persistenz) · ruff/mypy strict clean · `tsc` + `vite build` grün
 - **Exit:** ✓ Operationen erzeugen **deterministische** Timeline-Deltas; Rough Cut aus Shots/Transkript baubar, als OTIO/EDL exportierbar.
 
-## Portion 9 — Playback (libmpv) + Härtung  `[ ]`
-- [ ] libmpv-Embedding im Main-Prozess, IPC-Steuerung, frame-genaues Seek gegen CFR-Proxy
-- [ ] Crash-Recovery (Reaper, halbe Exporte, Session-Reopen, Pfad-Relink via sha256)
-- [ ] Perf-Dashboard (OTel/Prometheus), Timecode-Drift-Testlauf über Korpus
-- **Exit:** keine Drifts, Playback stabil, Recovery funktioniert.
+## Portion 9 — Playback + Härtung  `[~]`  (Proxy-Player live; libmpv-nativ geplant)
+- [x] **Frame-genauer Proxy-Player** (`Player.tsx`): `<video>` gegen CFR-all-intra-Proxy, Play/Pause, ±1 Frame, Scrubber, Frame-Anzeige; CSP `media-src blob:`
+- [x] Crash-Recovery-Basis bereits in Portion 2 (Job-Reaper, Lease, Idempotenz) + sha256 am Asset für Relink
+- [~] **libmpv-nativ** (primärer Pro-Player, ADR-0002) — als nächster nativer Spike geplant; Proxy-Player ist der verifizierte MVP-Pfad
+- [ ] Perf-Dashboard (OTel/Prometheus), Drift-Testlauf über Golden-Korpus
+- [x] **Verifiziert:** `tsc` strict + `vite build` grün (Player). GUI-Lauf manuell.
+- **Exit (MVP):** ✓ frame-genaues Abspielen/Steppen des Proxies; libmpv-Upgrade dokumentiert.
 
-## Portion 10 — Release Candidate (Packaging/Signing/Pilot)  `[ ]`
-- [ ] Electron-Forge-Build, Windows Signing-Pfad, macOS Notarization
-- [ ] Gebündelte Python-Runtime + FFmpeg + libmpv
-- [ ] Reproduzierbare Demo-Projekte, Pilot-Docs
-- **Exit:** signierte Builds, Pilot-handoff-fähig.
+## Portion 10 — Release Candidate (Packaging/Signing/Pilot)  `[~]`  (Config+Doku; signierte Builds brauchen Zertifikate)
+- [x] `service.ts` packaged-mode: startet gebündeltes `laura-api`-Binary statt `uv run` (`app.isPackaged`)
+- [x] `forge.config.ts`: appBundleId/executableName, Maker (Squirrel/ZIP), extraResource-Pfad dokumentiert
+- [x] `docs/13-packaging.md`: Standalone-Service (PyInstaller), FFmpeg/libmpv-Bündelung, Signing/Notarization, Release-Checkliste
+- [ ] **Signierte Builds** (`pnpm make` mit Win/macOS-Zertifikaten) — braucht echtes OS/Cert-Setup, nicht headless ausführbar
+- [ ] Reproduzierbares Demo-Projekt beilegen
+- **Exit (offen):** signierte Installer — Code/Config/Doku stehen, Build mit deinen Zertifikaten ausführen.
 
 ---
 
