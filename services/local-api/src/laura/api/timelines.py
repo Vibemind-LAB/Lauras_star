@@ -9,6 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
+from ..editing.operations import (
+    EditClip,
+    append_clip,
+    delete_range,
+    insert_clip,
+    lift_range,
+    ordered,
+)
 from ..interchange.edl import timeline_to_edl
 from ..interchange.otio_io import timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
@@ -17,6 +25,7 @@ from .models import (
     ClipOut,
     ExportOut,
     ExportRequest,
+    OperationRequest,
     TimelineCreate,
     TimelineOut,
     ValidateOut,
@@ -85,6 +94,69 @@ def get_timeline(timeline_id: str, request: Request) -> TimelineOut:
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     return _timeline_out(db, row)
+
+
+def _require(value: Any, message: str) -> Any:
+    if value is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, message)
+    return value
+
+
+def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> list[EditClip]:
+    op = body.op
+    if op == "append_from_words":
+        w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
+        w1 = repos.get_word(db, _require(body.word_end_id, "word_end_id required"))
+        if w0 is None or w1 is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "word not found")
+        if w0["asset_id"] != w1["asset_id"]:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                "words must be from the same asset")
+        clip = EditClip(
+            asset_id=w0["asset_id"],
+            src_in_frame=min(w0["start_frame"], w1["start_frame"]),
+            src_out_frame_exclusive=max(w0["end_frame"], w1["end_frame"]),
+            seq_in_frame=0, seq_out_frame_exclusive=0, lane=body.lane,
+            origin_word_start_id=body.word_start_id, origin_word_end_id=body.word_end_id,
+        )
+        return append_clip(current, clip)
+
+    if op in {"append_clip", "insert_clip"}:
+        clip = EditClip(
+            asset_id=_require(body.asset_id, "asset_id required"),
+            src_in_frame=_require(body.src_in_frame, "src_in_frame required"),
+            src_out_frame_exclusive=_require(body.src_out_frame_exclusive,
+                                             "src_out_frame_exclusive required"),
+            seq_in_frame=0, seq_out_frame_exclusive=0, lane=body.lane,
+        )
+        if op == "append_clip":
+            return append_clip(current, clip)
+        return insert_clip(current, clip, _require(body.at_seq_frame, "at_seq_frame required"))
+
+    if op in {"delete", "lift"}:
+        seq_in = _require(body.seq_in_frame, "seq_in_frame required")
+        seq_out = _require(body.seq_out_frame_exclusive, "seq_out_frame_exclusive required")
+        fn = delete_range if op == "delete" else lift_range
+        return fn(current, seq_in, seq_out)
+
+    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
+
+
+@router.post("/timelines/{timeline_id}/operations", response_model=TimelineOut)
+def apply_operation(timeline_id: str, body: OperationRequest, request: Request) -> TimelineOut:
+    db = _db(request)
+    row = repos.get_timeline(db, timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+
+    current = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
+    new_clips = _apply(db, current, body)
+
+    repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
+    fresh = repos.get_timeline(db, timeline_id)
+    assert fresh is not None
+    repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    return _timeline_out(db, fresh)
 
 
 @router.post("/interop/validate", response_model=ValidateOut)

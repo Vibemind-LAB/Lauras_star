@@ -121,6 +121,7 @@ class ShotOut(BaseModel):
 
 
 class WordOut(BaseModel):
+    id: str
     idx: int
     start_sample: int
     end_sample: int
@@ -197,3 +198,16 @@ class ValidateOut(BaseModel):
     lossy: bool
     warnings: list[str] = Field(default_factory=list)
     drops: list[str] = Field(default_factory=list)
+
+
+class OperationRequest(BaseModel):
+    op: str  # append_from_words | append_clip | insert_clip | delete | lift
+    asset_id: str | None = None
+    src_in_frame: int | None = None
+    src_out_frame_exclusive: int | None = None
+    word_start_id: str | None = None
+    word_end_id: str | None = None
+    seq_in_frame: int | None = None
+    seq_out_frame_exclusive: int | None = None
+    at_seq_frame: int | None = None
+    lane: int = 0

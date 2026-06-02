@@ -1,7 +1,8 @@
 import { type FormEvent, type ReactElement, useCallback, useEffect, useState } from "react";
 
-import { type Asset, type Health, hasFile, LauraClient, type Project } from "./api";
+import { type Asset, type Health, hasFile, LauraClient, type Project, type Timeline } from "./api";
 import { AssetView } from "./components/AssetView";
+import { TimelineBar } from "./components/TimelineBar";
 
 interface FpsPreset {
   label: string;
@@ -48,6 +49,7 @@ export function App(): ReactElement {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [importingAsset, setImportingAsset] = useState<Asset | null>(null);
+  const [roughCut, setRoughCut] = useState<Timeline | null>(null);
 
   const [name, setName] = useState("");
   const [presetIdx, setPresetIdx] = useState(3);
@@ -86,14 +88,28 @@ export function App(): ReactElement {
     [],
   );
 
+  const loadRoughCut = useCallback(async (c: LauraClient, projectId: string) => {
+    const timelines = await c.listTimelines(projectId);
+    const existing = timelines.find((t) => t.kind === "rough_cut");
+    setRoughCut(existing ?? (await c.createTimeline(projectId, "Rough Cut")));
+  }, []);
+
+  const reloadRoughCut = useCallback(() => {
+    if (client && selectedProjectId) {
+      void loadRoughCut(client, selectedProjectId).catch((e) => setError(String(e)));
+    }
+  }, [client, selectedProjectId, loadRoughCut]);
+
   async function selectProject(id: string): Promise<void> {
     setSelectedProjectId(id);
     setSelectedAssetId(null);
     setImportingAsset(null);
     setAssets([]);
+    setRoughCut(null);
     if (client) {
       try {
         await loadAssets(client, id);
+        await loadRoughCut(client, id);
       } catch (e) {
         setError(String(e));
       }
@@ -259,7 +275,12 @@ export function App(): ReactElement {
         {/* Detail */}
         <section className="overflow-auto bg-ink p-5">
           {client && detailAsset ? (
-            <AssetView client={client} asset={detailAsset} />
+            <AssetView
+              client={client}
+              asset={detailAsset}
+              roughCut={roughCut}
+              onTimelineChange={reloadRoughCut}
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-600">
               {importing ? "Importiere & analysiere…" : "Wähle ein Medium oder importiere eines."}
@@ -267,6 +288,8 @@ export function App(): ReactElement {
           )}
         </section>
       </main>
+
+      {client && <TimelineBar client={client} timeline={roughCut} onChange={reloadRoughCut} />}
     </div>
   );
 }

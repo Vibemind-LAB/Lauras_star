@@ -83,11 +83,45 @@ export interface Shot {
 }
 
 export interface Word {
+  id: string;
   idx: number;
   start_frame: number;
   end_frame: number;
   text: string;
   is_punctuation: boolean;
+}
+
+export interface TimelineClip {
+  id: string;
+  asset_id: string;
+  src_in_frame: number;
+  src_out_frame_exclusive: number;
+  seq_in_frame: number;
+  seq_out_frame_exclusive: number;
+  lane: number;
+  speaker_id: string | null;
+}
+
+export interface Timeline {
+  id: string;
+  project_id: string;
+  name: string;
+  kind: string;
+  created_at: string;
+  clips: TimelineClip[];
+}
+
+export interface Operation {
+  op: "append_from_words" | "append_clip" | "insert_clip" | "delete" | "lift";
+  asset_id?: string;
+  src_in_frame?: number;
+  src_out_frame_exclusive?: number;
+  word_start_id?: string;
+  word_end_id?: string;
+  seq_in_frame?: number;
+  seq_out_frame_exclusive?: number;
+  at_seq_frame?: number;
+  lane?: number;
 }
 
 export interface Segment {
@@ -211,5 +245,23 @@ export class LauraClient {
     });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     return res.text();
+  }
+
+  listTimelines(projectId: string): Promise<Timeline[]> {
+    return this.request<Timeline[]>(`/projects/${projectId}/timelines`);
+  }
+
+  createTimeline(projectId: string, name: string, kind = "rough_cut"): Promise<Timeline> {
+    return this.request<Timeline>(`/projects/${projectId}/timelines`, {
+      method: "POST",
+      body: JSON.stringify({ name, kind }),
+    });
+  }
+
+  applyOperation(timelineId: string, op: Operation): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}/operations`, {
+      method: "POST",
+      body: JSON.stringify(op),
+    });
   }
 }

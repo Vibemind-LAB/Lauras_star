@@ -1,6 +1,6 @@
 import { type ReactElement, useEffect, useState } from "react";
 
-import { type Asset, hasFile, type LauraClient } from "../api";
+import { type Asset, hasFile, type LauraClient, type Timeline } from "../api";
 import { AnalysisPanel } from "./AnalysisPanel";
 import { Waveform } from "./Waveform";
 
@@ -31,9 +31,13 @@ function Row({ label, value }: { label: string; value: string }): ReactElement {
 export function AssetView({
   client,
   asset,
+  roughCut,
+  onTimelineChange,
 }: {
   client: LauraClient;
   asset: Asset;
+  roughCut: Timeline | null;
+  onTimelineChange: () => void;
 }): ReactElement {
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
@@ -128,7 +132,12 @@ export function AssetView({
       </div>
 
       <div className="border-t border-edge pt-4">
-        <AnalysisPanel client={client} asset={asset} />
+        <AnalysisPanel
+          client={client}
+          asset={asset}
+          roughCut={roughCut}
+          onTimelineChange={onTimelineChange}
+        />
       </div>
     </div>
   );

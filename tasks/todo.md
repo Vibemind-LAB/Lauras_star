@@ -94,11 +94,13 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **Verifiziert:** 106 Tests (inkl. echter PySceneDetect-Pipeline) · ruff/mypy strict clean · `tsc` + `vite build` grün
 - **Exit:** ✓ Shots real erkannt & in DB; ASR/Diarize laufen mit Extras, sonst sauber übersprungen.
 
-## Portion 8 — Rough-Cut-UX (transcript-first Operationen)  `[ ]`
-- [ ] `timeline/operations.py` (append_from_words, insert/delete/lift/ripple, frame-aware)
-- [ ] `api` Timeline-Endpoints + Materialisierung `timeline_clips` aus OTIO
-- [ ] Renderer: Transcript links / reduzierte Timeline rechts; Textop → Timeline-Delta
-- **Exit:** Textoperationen erzeugen **deterministische** Timeline-Deltas (Golden-UX-Tests).
+## Portion 8 — Rough-Cut-UX (transcript-first Operationen)  `[x]`
+- [x] `editing/operations.py` — reine, frame-genaue Ops: append_from_words/append_clip/insert/delete/lift, end-exclusive + Ripple + Src-Trim
+- [x] `POST /timelines/{id}/operations` — Ops anwenden, `timeline_clips` materialisieren, **OTIO neu schreiben** (kanonisch)
+- [x] repos: `get_word`, `replace_timeline_clips`, `update_timeline_otio`
+- [x] Renderer: `TimelineBar` (Rough-Cut-Clipstrip, Klick = löschen) · Shots klickbar → anhängen · Transkript-Satz „→" → append_from_words
+- [x] **Verifiziert:** 121 Tests (golden Operation-Deltas + API-Roundtrip mit OTIO-Persistenz) · ruff/mypy strict clean · `tsc` + `vite build` grün
+- **Exit:** ✓ Operationen erzeugen **deterministische** Timeline-Deltas; Rough Cut aus Shots/Transkript baubar, als OTIO/EDL exportierbar.
 
 ## Portion 9 — Playback (libmpv) + Härtung  `[ ]`
 - [ ] libmpv-Embedding im Main-Prozess, IPC-Steuerung, frame-genaues Seek gegen CFR-Proxy

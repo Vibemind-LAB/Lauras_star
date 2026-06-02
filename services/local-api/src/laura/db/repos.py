@@ -406,3 +406,40 @@ def get_export(db: Database, export_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM exports WHERE id=?", (export_id,)).fetchone()
         return dict(row) if row is not None else None
+
+
+def get_word(db: Database, word_id: str) -> dict[str, Any] | None:
+    """A transcript word joined with its segment's asset id."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT w.*, s.asset_id AS asset_id FROM transcript_words w "
+            "JOIN transcript_segments s ON s.id = w.segment_id WHERE w.id = ?",
+            (word_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def replace_timeline_clips(
+    db: Database, timeline_id: str, rows: list[dict[str, Any]]
+) -> None:
+    """Atomically replace all clips of a timeline (materialised edit result)."""
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM timeline_clips WHERE timeline_id=?", (timeline_id,))
+        for r in rows:
+            conn.execute(
+                "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
+                "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
+                "speaker_id, origin_word_start_id, origin_word_end_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id(), timeline_id, r["asset_id"], r["src_in_frame"],
+                 r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"],
+                 r.get("lane", 0), r.get("speaker_id"), r.get("origin_word_start_id"),
+                 r.get("origin_word_end_id")),
+            )
+
+
+def update_timeline_otio(db: Database, timeline_id: str, otio_json: str) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE timelines SET otio_json=? WHERE id=?", (otio_json, timeline_id)
+        )
