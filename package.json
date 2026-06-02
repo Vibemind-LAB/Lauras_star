@@ -1,0 +1,15 @@
+{
+  "name": "laura",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Frame-accurate multimodal AI film-editing platform (monorepo root).",
+  "scripts": {
+    "dev": "pnpm --filter @laura/desktop dev",
+    "build:renderer": "pnpm --filter @laura/desktop build:renderer",
+    "typecheck": "pnpm --filter @laura/desktop typecheck"
+  },
+  "packageManager": "pnpm@10.30.1",
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild", "electron-winstaller"]
+  }
+}

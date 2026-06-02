@@ -1,0 +1,45 @@
+# --- Node / Electron / Vite ---
+node_modules/
+dist/
+dist-electron/
+out/
+.vite/
+*.tsbuildinfo
+.eslintcache
+
+# --- Python / uv ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# uv.lock IS committed (reproducible installs) — do not ignore it
+
+# --- Runtime workspace (local media/analysis/export artifacts) ---
+workspace/
+*.log
+
+# --- Local model / weights caches (heavy, never commit) ---
+models/
+*.ckpt
+*.pt
+*.onnx
+
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+
+# --- Test/fixtures: keep small golden fixtures, ignore large generated media ---
+fixtures/_generated/
+*.mp4 filter=lfs
