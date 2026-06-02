@@ -170,13 +170,13 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] 15.7 **Queue-Routing** — `jobs/queues.py` (CPU/GPU-Gruppen + `queue_for`); Claim ordnet bereits `priority DESC`; `analysis.align/embed`-Stubs (graceful-skip, GPU-Queue); Celery-Beat-Reaper (`laura.reap_expired`); 5 Tests, **173 grün**
 - **Exit:** ✓ Backend funktional vollständig; je Position pytest + ruff + mypy strict grün. **Portion 15 komplett.**
 
-## Portion 16 — Wave-B/C Frontend  `[~]`  (Plan: docs/16 §1)
+## Portion 16 — Wave-B/C Frontend  `[x]`  (Plan: docs/16 §1)
 - [x] 16.1 **Shot-Thumbnail-Strip** — `shotThumbnailUrl` (Blob+Token), `ShotThumb` (Object-URL + Cleanup), scrollbarer Vorschau-Strip mit Fallback-Balken; `tsc` strict + `vite build` grün (GUI manuell)
 - [x] 16.2 **origin_word-Highlight** — Wort-Level-Transkript: Klick → Player-Sprung (`seekTo`), Playhead hebt aktives Wort/Segment hervor (`onFrame`→`currentFrame`); `tsc`+Build grün (GUI manuell)
 - [x] 16.3 **Player JKL/Shuttle** — J/K/L (L vorwärts 1/2/4×, J Rückwärts via Intervall, K Stop), ←/→ Frame, Shift+←/→ Sekunde, Home/End, Leertaste; fokussierbarer Container + Shuttle-Anzeige; `tsc`+Build grün (GUI manuell)
 - [x] 16.4 **Undo/Redo + Trim/Split/Insert-UI** — Backend: `split`/`trim`-Ops + `PUT /timelines/{id}/clips` (Snapshot-Restore), 7 Tests, **180 grün**. Frontend: Clip-Selektion, Undo/Redo-Stack (setClips), Split/Trim±/Duplizieren/Löschen; `tsc`+Build grün (GUI manuell)
-- [ ] 16.5 **Desktop-Tests-Setup** — Vitest + Testing-Library + CI-Schritt
-- **Exit:** UI bedienbar; `tsc`/`vite build`/Vitest grün; GUI-Sicht manuell.
+- [x] 16.5 **Desktop-Tests-Setup** — Vitest v2 (Vite-5-kompatibel) + Testing-Library + jsdom; `vitest.config.ts`, `test`-Script, 4 Tests (hasFile + TimelineBar-Render) grün; CI-Schritt `pnpm test` ergänzt
+- **Exit:** ✓ UI bedienbar; `tsc`/`vite build`/Vitest grün; GUI-Sicht manuell. **Portion 16 komplett.**
 
 ## Portion 17 — Observability & Betrieb  `[ ]`  (Plan: docs/16 §1)
 - [ ] 17.1 **OpenTelemetry-Tracing** — FastAPI/Job-Runner-Spans, Stage-Timings/Queue-Tiefe (In-Memory-Exporter-Test)

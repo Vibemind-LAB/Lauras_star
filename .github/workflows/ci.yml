@@ -64,3 +64,6 @@ jobs:
 
       - name: Build renderer
         run: pnpm build:renderer
+
+      - name: Test (vitest)
+        run: pnpm test
