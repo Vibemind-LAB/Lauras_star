@@ -10,7 +10,7 @@ from typing import Any
 
 from .timeline import Timeline
 
-SUPPORTED = {"otio", "edl", "fcp7xml", "srt", "vtt"}
+SUPPORTED = {"otio", "edl", "fcp7xml", "fcpxml", "srt", "vtt"}
 
 
 def validate_export(timeline: Timeline, fmt: str) -> dict[str, Any]:
@@ -35,6 +35,9 @@ def validate_export(timeline: Timeline, fmt: str) -> dict[str, Any]:
             for c in timeline.clips
         ):
             drops.append("speed changes are not represented in plain CMX3600")
+
+    if fmt == "fcpxml":
+        warnings.append("FCPXML adapter is community-supported; verify the result in FCP")
 
     if fmt in {"srt", "vtt"} and not timeline.clips:
         warnings.append("timeline has no clips to caption")

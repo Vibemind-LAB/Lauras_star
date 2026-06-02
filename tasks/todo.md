@@ -150,8 +150,14 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **A4 CRUD** — `DELETE` Projekte/Assets/Timelines + `PATCH` Rename (Projekte/Timelines), RBAC `project:delete`, Audit
 - [x] **A5 Multi-Tenancy durchgesetzt** — Projekt-`org_id` aus Principal; List/Get nach Org gefiltert; Cross-Tenant → 404
 - [x] **Verifiziert:** 138 Tests (+7: FCP7, Suche, PATCH, CRUD, Tenant-Isolation) · ruff/mypy strict clean (84 Dateien)
-- [ ] Frontend-Anbindung (Suchbox, Delete-Buttons, Export-Menü mit FCP7) — folgt
-- **Exit:** ✓ Top-5-Lücken im Backend geschlossen + getestet; Wave B/C in docs/15.
+- [x] Frontend-Anbindung: Suchbox (Transkript), Delete-Buttons (Projekt/Asset), Export-Menü (OTIO/EDL/FCP7-XML/FCPXML)
+- **Exit:** ✓ Top-5 Backend geschlossen + getestet; Frontend angebunden.
+
+## Portion 14 — Gap-Closure Wave B (laufend)  `[~]`
+- [x] **FCPXML-Export** (`interchange/fcpx_xml.py`, guarded + Preflight-Warnung) → `_EXT/_WRITERS += fcpxml`
+- [x] **Captions-Qualität** — Zeilenumbruch (≤42 Zeichen) in SRT/VTT
+- [x] **Verifiziert:** 140 Tests (+2) · ruff/mypy strict clean (86 Dateien) · App `tsc`/`vite build` grün
+- [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, Shot-Thumbnails, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — siehe docs/15
 
 ---
 

@@ -21,6 +21,7 @@ from ..editing.operations import (
 )
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
+from ..interchange.fcpx_xml import timeline_to_fcpx_xml
 from ..interchange.otio_io import timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
 from ..interchange.validate import validate_export
@@ -39,11 +40,12 @@ from .security import require_token
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
 
-_EXT = {"otio": "otio", "edl": "edl", "fcp7xml": "xml"}
+_EXT = {"otio": "otio", "edl": "edl", "fcp7xml": "xml", "fcpxml": "fcpxml"}
 _WRITERS = {
     "otio": timeline_to_otio_string,
     "edl": timeline_to_edl,
     "fcp7xml": timeline_to_fcp7_xml,
+    "fcpxml": timeline_to_fcpx_xml,
 }
 
 

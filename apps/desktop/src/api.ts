@@ -149,6 +149,28 @@ export interface AnalysisOptions {
   diarize?: boolean;
 }
 
+export interface SearchResult {
+  segment_id: string;
+  asset_id: string;
+  asset_name: string;
+  start_frame: number;
+  end_frame: number;
+  text: string;
+  speaker_label: string | null;
+}
+
+export type ExportFormat = "otio" | "edl" | "fcp7xml" | "fcpxml";
+
+export interface ExportResult {
+  id: string;
+  format: string;
+  output_path: string | null;
+  content: string | null;
+  lossy: boolean;
+  drops: string[];
+  warnings: string[];
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -170,8 +192,51 @@ export class LauraClient {
     return (await res.json()) as T;
   }
 
+  private async del(path: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { "X-Laura-Token": this.token },
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+  }
+
   health(): Promise<Health> {
     return this.request<Health>("/healthz");
+  }
+
+  searchTranscript(projectId: string, query: string): Promise<SearchResult[]> {
+    return this.request<SearchResult[]>("/search", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId, query }),
+    });
+  }
+
+  deleteProject(id: string): Promise<void> {
+    return this.del(`/projects/${id}`);
+  }
+
+  renameProject(id: string, name: string): Promise<Project> {
+    return this.request<Project>(`/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  deleteAsset(id: string): Promise<void> {
+    return this.del(`/assets/${id}`);
+  }
+
+  deleteTimeline(id: string): Promise<void> {
+    return this.del(`/timelines/${id}`);
+  }
+
+  exportTimeline(timelineId: string, format: ExportFormat): Promise<ExportResult> {
+    return this.request<ExportResult>(`/timelines/${timelineId}/exports`, {
+      method: "POST",
+      body: JSON.stringify({ format }),
+    });
   }
 
   listProjects(): Promise<Project[]> {

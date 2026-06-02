@@ -7,6 +7,7 @@ frame positions via exact integer math.
 
 from __future__ import annotations
 
+import textwrap
 from typing import Any
 
 from ..timebase import Rounding, div_round
@@ -24,10 +25,18 @@ def _clock(ms: int, sep: str) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
 
+MAX_LINE = 42  # characters per subtitle line (readability cap)
+
+
+def _wrap(text: str, width: int = MAX_LINE) -> str:
+    wrapped = textwrap.wrap(text, width) or [text]
+    return "\n".join(wrapped)
+
+
 def _line(seg: dict[str, Any]) -> str:
     text = str(seg["text"]).strip()
     label = seg.get("speaker_label")
-    return f"{label}: {text}" if label else text
+    return _wrap(f"{label}: {text}" if label else text)
 
 
 def segments_to_srt(segments: list[dict[str, Any]], rate_num: int, rate_den: int) -> str:
