@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn>=0.32",
     "pydantic>=2.9",
     "opentimelineio>=0.17",      # canonical editorial interchange model (ADR-0001)
+    "prometheus-client>=0.20",   # observability metrics (docs/10, docs/14)
 ]
 
 # Heavy ML components are OPTIONAL extras — the backend must start and do
@@ -17,6 +18,12 @@ scene = ["scenedetect>=0.6.4", "opencv-python>=4.9"]
 asr = ["faster-whisper>=1.0"]
 align = ["whisperx>=3.1"]            # version-sensitive — pin hard, isolate
 diarize = ["pyannote.audio>=3.1"]
+# Server / on-prem mode (docs/14-enterprise.md) — not needed for desktop.
+server = [
+    "psycopg[binary]>=3.2",
+    "celery[redis]>=5.4",
+    "qdrant-client>=1.11",
+]
 
 [project.scripts]
 laura-api = "laura.main:run"
@@ -52,7 +59,7 @@ files = ["src", "tests"]
 [[tool.mypy.overrides]]
 module = [
     "scenedetect.*", "faster_whisper.*", "whisperx.*", "pyannote.*", "cv2.*",
-    "opentimelineio.*",
+    "opentimelineio.*", "celery.*", "qdrant_client.*", "psycopg.*",
 ]
 ignore_missing_imports = true
 

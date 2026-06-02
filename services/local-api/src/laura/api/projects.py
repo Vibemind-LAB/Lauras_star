@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from .. import audit
+from ..auth import Principal, require_permission
 from ..config import Settings
 from ..db import repos
 from ..db.database import Database
@@ -26,7 +30,10 @@ def _settings(request: Request) -> Settings:
 
 
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
-def create_project(body: ProjectCreate, request: Request) -> ProjectOut:
+def create_project(
+    body: ProjectCreate, request: Request,
+    principal: Annotated[Principal, Depends(require_permission("project:write"))],
+) -> ProjectOut:
     # Validate the frame rate via the time core (rejects e.g. drop-frame on 24p).
     try:
         FrameRate(body.sequence_rate_num, body.sequence_rate_den, body.drop_frame)
@@ -34,12 +41,13 @@ def create_project(body: ProjectCreate, request: Request) -> ProjectOut:
         raise HTTPException(422, str(exc)) from exc
 
     settings = _settings(request)
+    db = _db(request)
     pid = new_id()
     project_root = settings.workspace_root / f"project-{pid}"
     project_root.mkdir(parents=True, exist_ok=True)
 
     project = repos.create_project(
-        _db(request),
+        db,
         project_id=pid,
         name=body.name,
         rate_num=body.sequence_rate_num,
@@ -47,6 +55,7 @@ def create_project(body: ProjectCreate, request: Request) -> ProjectOut:
         drop_frame=body.drop_frame,
         workspace_root=str(project_root),
     )
+    audit.record(db, principal, "project.create", entity_type="project", entity_id=pid)
     return ProjectOut(**project)
 
 

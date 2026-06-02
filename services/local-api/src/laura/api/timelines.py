@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from .. import audit
+from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
 from ..editing.operations import (
@@ -174,7 +176,10 @@ def interop_validate(body: ValidateRequest, request: Request) -> ValidateOut:
     response_model=ExportOut,
     status_code=status.HTTP_201_CREATED,
 )
-def export_timeline(timeline_id: str, body: ExportRequest, request: Request) -> ExportOut:
+def export_timeline(
+    timeline_id: str, body: ExportRequest, request: Request,
+    principal: Annotated[Principal, Depends(require_permission("export:create"))],
+) -> ExportOut:
     db = _db(request)
     row = repos.get_timeline(db, timeline_id)
     if row is None:
@@ -204,6 +209,8 @@ def export_timeline(timeline_id: str, body: ExportRequest, request: Request) -> 
         db, timeline_id=timeline_id, fmt=fmt, status="succeeded",
         output_path=str(out_path), options=body.options, diagnostics=diagnostics,
     )
+    audit.record(db, principal, "export.create", entity_type="export", entity_id=export["id"],
+                 payload={"timeline_id": timeline_id, "format": fmt})
     return ExportOut(
         id=export["id"], timeline_id=timeline_id, format=fmt, status="succeeded",
         output_path=str(out_path), lossy=diagnostics["lossy"], drops=diagnostics["drops"],

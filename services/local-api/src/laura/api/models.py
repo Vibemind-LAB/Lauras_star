@@ -211,3 +211,53 @@ class OperationRequest(BaseModel):
     seq_out_frame_exclusive: int | None = None
     at_seq_frame: int | None = None
     lane: int = 0
+
+
+# --- enterprise ----------------------------------------------------------
+class OrgCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class OrgOut(BaseModel):
+    id: str
+    name: str
+    created_at: str
+
+
+class UserCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    display_name: str | None = None
+    role: str = "editor"
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    display_name: str | None = None
+    created_at: str
+    role: str
+
+
+class KeyCreate(BaseModel):
+    name: str | None = None
+    role: str = "editor"
+    user_id: str | None = None
+
+
+class KeyCreated(BaseModel):
+    id: str
+    prefix: str
+    role: str
+    key: str  # full key — shown ONCE
+    created_at: str
+
+
+class AuditEventOut(BaseModel):
+    id: str
+    org_id: str | None = None
+    principal_kind: str
+    principal_id: str | None = None
+    action: str
+    entity_type: str | None = None
+    entity_id: str | None = None
+    created_at: str

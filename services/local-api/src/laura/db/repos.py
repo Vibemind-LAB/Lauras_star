@@ -443,3 +443,99 @@ def update_timeline_otio(db: Database, timeline_id: str, otio_json: str) -> None
         conn.execute(
             "UPDATE timelines SET otio_json=? WHERE id=?", (otio_json, timeline_id)
         )
+
+
+# --- enterprise: orgs, users, memberships, api keys, audit -----------------
+def create_org(db: Database, *, name: str) -> dict[str, Any]:
+    oid = new_id()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO organizations (id, name, created_at) VALUES (?, ?, ?)",
+            (oid, name, utcnow_iso()),
+        )
+        row = conn.execute("SELECT * FROM organizations WHERE id=?", (oid,)).fetchone()
+    return dict(row)
+
+
+def get_org(db: Database, org_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM organizations WHERE id=?", (org_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def create_user(db: Database, *, email: str, display_name: str | None = None) -> dict[str, Any]:
+    uid = new_id()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, ?, ?)",
+            (uid, email, display_name, utcnow_iso()),
+        )
+        row = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    return dict(row)
+
+
+def add_membership(db: Database, *, org_id: str, user_id: str, role: str) -> dict[str, Any]:
+    mid = new_id()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO memberships (id, org_id, user_id, role, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mid, org_id, user_id, role, utcnow_iso()),
+        )
+        row = conn.execute("SELECT * FROM memberships WHERE id=?", (mid,)).fetchone()
+    return dict(row)
+
+
+def create_api_key(
+    db: Database, *, org_id: str, user_id: str | None, name: str | None, prefix: str,
+    key_hash: str, role: str,
+) -> dict[str, Any]:
+    kid = new_id()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (id, org_id, user_id, name, prefix, key_hash, role, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (kid, org_id, user_id, name, prefix, key_hash, role, utcnow_iso()),
+        )
+        row = conn.execute("SELECT * FROM api_keys WHERE id=?", (kid,)).fetchone()
+    return dict(row)
+
+
+def get_api_key_by_hash(db: Database, key_hash: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM api_keys WHERE key_hash=?", (key_hash,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def touch_api_key(db: Database, key_id: str) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE api_keys SET last_used_at=? WHERE id=?", (utcnow_iso(), key_id)
+        )
+
+
+def revoke_api_key(db: Database, key_id: str) -> bool:
+    with db.transaction() as conn:
+        cur = conn.execute("UPDATE api_keys SET revoked=1 WHERE id=?", (key_id,))
+        return cur.rowcount > 0
+
+
+def insert_audit_event(
+    db: Database, *, org_id: str | None, principal_kind: str, principal_id: str | None,
+    action: str, entity_type: str | None, entity_id: str | None, payload: dict[str, Any],
+) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO audit_events (id, org_id, principal_kind, principal_id, action, "
+            "entity_type, entity_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_id(), org_id, principal_kind, principal_id, action, entity_type, entity_id,
+             json.dumps(payload), utcnow_iso()),
+        )
+
+
+def list_audit_events(db: Database, *, limit: int = 100) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]

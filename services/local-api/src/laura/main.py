@@ -9,16 +9,17 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from . import PIPELINE_VERSION, __version__
 from .analysis.handlers import register_analysis_handlers
-from .api import analysis, assets, jobs, projects, timelines
+from .api import admin, analysis, assets, jobs, projects, timelines
 from .api.models import HealthOut
 from .config import Settings, ensure_workspace
 from .db.database import Database
 from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
+from .metrics import metrics_middleware, metrics_response
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -44,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.runner = runner
+    app.middleware("http")(metrics_middleware)
 
     @app.get("/healthz", response_model=HealthOut, tags=["health"])
     def healthz() -> HealthOut:
@@ -54,11 +56,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             schema_version=db.schema_version(),
         )
 
+    @app.get("/metrics", tags=["observability"])
+    def metrics() -> Response:
+        return metrics_response()
+
     app.include_router(projects.router)
     app.include_router(assets.router)
     app.include_router(jobs.router)
     app.include_router(analysis.router)
     app.include_router(timelines.router)
+    app.include_router(admin.router)
     return app
 
 
