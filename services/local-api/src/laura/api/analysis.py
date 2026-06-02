@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
 
 from .. import PIPELINE_VERSION, audit
 from ..auth import Principal, require_permission
@@ -84,6 +86,17 @@ def get_shots(asset_id: str, request: Request) -> list[ShotOut]:
     if run is None:
         return []
     return [ShotOut(**s) for s in repos.list_shots(db, asset_id, run["id"])]
+
+
+@router.get("/shots/{shot_id}/thumbnail")
+def get_shot_thumbnail(shot_id: str, request: Request) -> FileResponse:
+    shot = repos.get_shot(_db(request), shot_id)
+    if shot is None or not shot.get("thumbnail_path"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no thumbnail for shot")
+    path = Path(shot["thumbnail_path"])
+    if not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "thumbnail missing on disk")
+    return FileResponse(path)
 
 
 @router.get("/assets/{asset_id}/transcript", response_model=list[SegmentOut])

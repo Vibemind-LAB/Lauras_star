@@ -156,8 +156,9 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 ## Portion 14 — Gap-Closure Wave B (laufend)  `[~]`
 - [x] **FCPXML-Export** (`interchange/fcpx_xml.py`, guarded + Preflight-Warnung) → `_EXT/_WRITERS += fcpxml`
 - [x] **Captions-Qualität** — Zeilenumbruch (≤42 Zeichen) in SRT/VTT
-- [x] **Verifiziert:** 140 Tests (+2) · ruff/mypy strict clean (86 Dateien) · App `tsc`/`vite build` grün
-- [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, Shot-Thumbnails, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — siehe docs/15
+- [x] **Shot-Thumbnails** — `thumbnail_path` befüllt (ffmpeg-Frame je Shot) + `GET /shots/{id}/thumbnail`; real verifiziert
+- [x] **Verifiziert:** 140 Tests (+ Thumbnail-Assert) · ruff/mypy strict clean (86 Dateien) · App `tsc`/`vite build` grün
+- [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — siehe docs/15
 
 ---
 

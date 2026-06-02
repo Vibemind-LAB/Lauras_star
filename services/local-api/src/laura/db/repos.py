@@ -636,3 +636,9 @@ def search_transcript(
             (project_id, pattern, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_shot(db: Database, shot_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM shots WHERE id=?", (shot_id,)).fetchone()
+        return dict(row) if row is not None else None

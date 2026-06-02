@@ -49,3 +49,12 @@ def build_poster(src: Path | str, dest: Path) -> None:
     """Grab a single representative frame as a JPEG poster."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     run_ffmpeg(["-i", str(src), "-frames:v", "1", "-q:v", "3", str(dest)])
+
+
+def build_thumbnail(src: Path | str, dest: Path, *, at_seconds: float) -> None:
+    """Grab a single JPEG frame at ``at_seconds`` (fast input seek)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(
+        ["-ss", f"{max(0.0, at_seconds):.3f}", "-i", str(src), "-frames:v", "1",
+         "-q:v", "5", str(dest)]
+    )

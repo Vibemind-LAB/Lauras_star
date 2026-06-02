@@ -86,3 +86,6 @@ def test_orchestrator_inserts_shots(tmp_path: Path, cut_clip: Path) -> None:
     assert finished is not None and finished["status"] == "succeeded"
     shots = repos.list_shots(db, asset["id"], run["id"])
     assert len(shots) >= 2
+    # every shot got a real thumbnail on disk
+    assert all(s["thumbnail_path"] for s in shots)
+    assert all(os.path.exists(s["thumbnail_path"]) for s in shots)

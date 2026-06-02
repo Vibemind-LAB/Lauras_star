@@ -13,6 +13,7 @@ from typing import Any
 from .. import PIPELINE_VERSION
 from ..db import repos
 from ..db.database import Database
+from ..ingest.proxy import build_thumbnail
 from ..jobs.runner import JobContext, JobHandler
 from ..util import utcnow_iso
 from .asr import faster_whisper_available, transcribe
@@ -35,15 +36,28 @@ def _run_scene(
         return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     if not shots and asset["duration_frames"]:
         shots = [ShotResult(0, int(asset["duration_frames"]), method="whole")]
-    rows = [
-        {
+
+    project = repos.get_project(db, asset["project_id"])
+    assert project is not None
+    thumb_dir = Path(project["workspace_root"]) / "analysis" / asset["id"] / "thumbnails"
+    rate_num = asset["rate_num"] or 25
+    rate_den = asset["rate_den"] or 1
+    rows: list[dict[str, Any]] = []
+    for i, s in enumerate(shots):
+        thumbnail: str | None = None
+        dest = thumb_dir / f"shot-{i:04d}.jpg"
+        try:
+            build_thumbnail(video, dest, at_seconds=s.src_in_frame * rate_den / rate_num)
+            thumbnail = str(dest)
+        except Exception:  # noqa: BLE001 - thumbnails are best-effort
+            thumbnail = None
+        rows.append({
             "src_in_frame": s.src_in_frame,
             "src_out_frame_exclusive": s.src_out_frame_exclusive,
             "method": s.method,
             "confidence": s.confidence,
-        }
-        for s in shots
-    ]
+            "thumbnail_path": thumbnail,
+        })
     repos.insert_shots(db, asset_id=asset["id"], run_id=run_id, shots=rows)
     return {"status": "ok", "count": len(rows), "method": "pyscenedetect"}
 
