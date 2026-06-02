@@ -140,8 +140,8 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] Job-Claim aus dem Runner ins Backend verlagert (dialekt-spezifisch); Reaper portabel (kein `json_object`)
 - [x] `jobs/celery_app.py` — Celery-Worker-Scaffold (`drain_jobs`, nutzt Runner gegen das konfigurierte Backend)
 - [x] **Verifiziert:** 131 Tests · ruff/mypy strict clean (79 Dateien) · echter uvicorn-Boot grün (Schema v2) · SQLite-Pfad unverändert
-- [~] **Live-Postgres-Test** — Code + psycopg installiert + typecheck; ein laufendes Postgres (Docker-Daemon war hier aus) verifiziert den PG-Pfad real
-- **Exit:** ✓ Backend per Env umschaltbar; Desktop = SQLite, Server-Mode = Postgres + Celery-Scale-out.
+- [x] **Live-Postgres-Test ✓** — gegen echtes Postgres (Docker `postgres:16`): Migrationen (Schema v2), CRUD über `?→%s`, `SKIP LOCKED`-Claim, Idempotenz, RBAC/Audit — **5 Tests grün, 136 gesamt**
+- **Exit:** ✓ Backend per Env umschaltbar; Desktop = SQLite, Server-Mode = Postgres + Celery — **real gegen Postgres verifiziert**.
 
 ---
 
