@@ -8,6 +8,20 @@ from typing import Any
 from ..util import new_id, utcnow_iso
 from .database import Database
 
+# SQLite rejects OFFSET without LIMIT; bigint-max is a portable "no limit" sentinel
+# (valid on SQLite and PostgreSQL) so callers can offset without a page size.
+_NO_LIMIT = 2**63 - 1
+
+
+def _paginate(
+    sql: str, params: list[Any], limit: int | None, offset: int
+) -> tuple[str, list[Any]]:
+    """Append portable ``LIMIT/OFFSET`` when paginating; pass-through otherwise."""
+    if limit is None and not offset:
+        return sql, params
+    effective = _NO_LIMIT if limit is None else limit
+    return sql + " LIMIT ? OFFSET ?", [*params, effective, offset]
+
 
 def create_project(
     db: Database,
@@ -39,15 +53,31 @@ def get_project(db: Database, project_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
-def list_projects(db: Database, *, org_id: str | None = None) -> list[dict[str, Any]]:
+def list_projects(
+    db: Database, *, org_id: str | None = None,
+    limit: int | None = None, offset: int = 0,
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM projects"
+    params: list[Any] = []
+    if org_id is not None:
+        sql += " WHERE org_id = ?"
+        params.append(org_id)
+    sql += " ORDER BY created_at DESC"
+    sql, params = _paginate(sql, params, limit, offset)
+    with db.connection() as conn:
+        rows = (conn.execute(sql, tuple(params)) if params else conn.execute(sql)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_projects(db: Database, *, org_id: str | None = None) -> int:
     with db.connection() as conn:
         if org_id is not None:
-            rows = conn.execute(
-                "SELECT * FROM projects WHERE org_id = ? ORDER BY created_at DESC", (org_id,)
-            ).fetchall()
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM projects WHERE org_id = ?", (org_id,)
+            ).fetchone()
         else:
-            rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
-        return [dict(r) for r in rows]
+            row = conn.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
+        return int(row["n"])
 
 
 def rename_project(db: Database, project_id: str, name: str) -> bool:
@@ -97,13 +127,22 @@ def get_asset(db: Database, asset_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
-def list_assets(db: Database, project_id: str) -> list[dict[str, Any]]:
+def list_assets(
+    db: Database, project_id: str, *, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM media_assets WHERE project_id = ? ORDER BY created_at DESC"
+    sql, params = _paginate(sql, [project_id], limit, offset)
     with db.connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM media_assets WHERE project_id = ? ORDER BY created_at DESC",
-            (project_id,),
-        ).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
+
+
+def count_assets(db: Database, project_id: str) -> int:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM media_assets WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        return int(row["n"])
 
 
 def update_asset_probe(
@@ -351,12 +390,22 @@ def get_timeline(db: Database, timeline_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
-def list_timelines(db: Database, project_id: str) -> list[dict[str, Any]]:
+def list_timelines(
+    db: Database, project_id: str, *, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM timelines WHERE project_id=? ORDER BY created_at DESC"
+    sql, params = _paginate(sql, [project_id], limit, offset)
     with db.connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM timelines WHERE project_id=? ORDER BY created_at DESC", (project_id,)
-        ).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
+
+
+def count_timelines(db: Database, project_id: str) -> int:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM timelines WHERE project_id=?", (project_id,)
+        ).fetchone()
+        return int(row["n"])
 
 
 def add_timeline_clip(

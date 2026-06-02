@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from .. import audit
 from ..auth import Principal, require_permission
@@ -14,6 +14,7 @@ from ..db.database import Database
 from ..timebase import FrameRate
 from ..util import new_id
 from .models import ProjectCreate, ProjectOut, RenameRequest
+from .pagination import PageParams
 from .security import require_token
 
 router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(require_token)])
@@ -77,10 +78,16 @@ def _load_project(request: Request, project_id: str, principal: Principal) -> di
 @router.get("", response_model=list[ProjectOut])
 def list_projects(
     request: Request,
+    response: Response,
     principal: Annotated[Principal, Depends(require_permission("read"))],
+    page: PageParams,
 ) -> list[ProjectOut]:
     # local owner (org_id None) -> all; org-scoped key -> only its org.
-    projects = repos.list_projects(_db(request), org_id=principal.org_id)
+    db = _db(request)
+    response.headers["X-Total-Count"] = str(repos.count_projects(db, org_id=principal.org_id))
+    projects = repos.list_projects(
+        db, org_id=principal.org_id, limit=page.limit, offset=page.offset
+    )
     return [ProjectOut(**p) for p in projects]
 
 

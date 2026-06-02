@@ -160,8 +160,8 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **Verifiziert:** 140 Tests (+ Thumbnail-Assert) · ruff/mypy strict clean (86 Dateien) · App `tsc`/`vite build` grün
 - [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — sequenziert in Portion 15, siehe [`../docs/16-execution-plan.md`](../docs/16-execution-plan.md)
 
-## Portion 15 — Wave-B Backend-Abschluss  `[ ]`  (Plan: docs/16 §1)
-- [ ] 15.1 **Pagination** — `limit/offset/total` auf list_projects/assets/timelines + GET-Endpoints
+## Portion 15 — Wave-B Backend-Abschluss  `[~]`  (Plan: docs/16 §1)
+- [x] 15.1 **Pagination** — `limit/offset` (defensiv geklemmt 1..200) + `X-Total-Count`-Header auf projects/assets/timelines; portabel (SQLite+PG); 5 Tests, **145 grün**
 - [ ] 15.2 **Rate-Limiting** — Token-Bucket-Middleware pro Key/Loopback → `429 + Retry-After`
 - [ ] 15.3 **Speed/Retiming** — Editing-Ops `speed_num/den`; OTIO `LinearTimeWarp`
 - [ ] 15.4 **Timeline-Captions** — SRT/VTT aus dem geschnittenen Rough Cut (Clip→origin_words)

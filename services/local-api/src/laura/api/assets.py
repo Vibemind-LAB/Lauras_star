@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from .. import audit
@@ -20,6 +20,7 @@ from ..db.database import Database
 from ..interchange.captions import segments_to_srt, segments_to_vtt
 from ..jobs.runner import enqueue
 from .models import AssetFileOut, AssetImport, AssetOut, ImportAccepted
+from .pagination import PageParams
 from .security import require_token
 
 router = APIRouter(tags=["assets"], dependencies=[Depends(require_token)])
@@ -59,12 +60,15 @@ def import_asset(project_id: str, body: AssetImport, request: Request) -> Import
 
 
 @router.get("/projects/{project_id}/assets", response_model=list[AssetOut])
-def list_project_assets(project_id: str, request: Request) -> list[AssetOut]:
+def list_project_assets(
+    project_id: str, request: Request, response: Response, page: PageParams
+) -> list[AssetOut]:
     db = _db(request)
     if repos.get_project(db, project_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    response.headers["X-Total-Count"] = str(repos.count_assets(db, project_id))
     out: list[AssetOut] = []
-    for asset in repos.list_assets(db, project_id):
+    for asset in repos.list_assets(db, project_id, limit=page.limit, offset=page.offset):
         files = [AssetFileOut(**f) for f in repos.list_asset_files(db, asset["id"])]
         out.append(AssetOut(**asset, files=files))
     return out

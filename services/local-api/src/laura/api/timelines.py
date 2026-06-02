@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from .. import audit
 from ..auth import Principal, require_permission
@@ -36,6 +36,7 @@ from .models import (
     ValidateOut,
     ValidateRequest,
 )
+from .pagination import PageParams
 from .security import require_token
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
@@ -93,9 +94,13 @@ def create_timeline(project_id: str, body: TimelineCreate, request: Request) -> 
 
 
 @router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])
-def list_timelines(project_id: str, request: Request) -> list[TimelineOut]:
+def list_timelines(
+    project_id: str, request: Request, response: Response, page: PageParams
+) -> list[TimelineOut]:
     db = _db(request)
-    return [_timeline_out(db, r) for r in repos.list_timelines(db, project_id)]
+    response.headers["X-Total-Count"] = str(repos.count_timelines(db, project_id))
+    rows = repos.list_timelines(db, project_id, limit=page.limit, offset=page.offset)
+    return [_timeline_out(db, r) for r in rows]
 
 
 @router.get("/timelines/{timeline_id}", response_model=TimelineOut)
