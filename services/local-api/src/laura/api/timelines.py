@@ -20,6 +20,7 @@ from ..editing.operations import (
     ordered,
 )
 from ..interchange.edl import timeline_to_edl
+from ..interchange.fcp7_xml import timeline_to_fcp7_xml
 from ..interchange.otio_io import timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
 from ..interchange.validate import validate_export
@@ -28,6 +29,7 @@ from .models import (
     ExportOut,
     ExportRequest,
     OperationRequest,
+    RenameRequest,
     TimelineCreate,
     TimelineOut,
     ValidateOut,
@@ -37,7 +39,12 @@ from .security import require_token
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
 
-_EXT = {"otio": "otio", "edl": "edl"}
+_EXT = {"otio": "otio", "edl": "edl", "fcp7xml": "xml"}
+_WRITERS = {
+    "otio": timeline_to_otio_string,
+    "edl": timeline_to_edl,
+    "fcp7xml": timeline_to_fcp7_xml,
+}
 
 
 def _db(request: Request) -> Database:
@@ -96,6 +103,36 @@ def get_timeline(timeline_id: str, request: Request) -> TimelineOut:
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     return _timeline_out(db, row)
+
+
+@router.patch("/timelines/{timeline_id}", response_model=TimelineOut)
+def rename_timeline(
+    timeline_id: str,
+    body: RenameRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> TimelineOut:
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    repos.rename_timeline(db, timeline_id, body.name)
+    audit.record(db, principal, "timeline.rename", entity_type="timeline", entity_id=timeline_id)
+    row = repos.get_timeline(db, timeline_id)
+    assert row is not None
+    return _timeline_out(db, row)
+
+
+@router.delete("/timelines/{timeline_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_timeline(
+    timeline_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> None:
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    repos.delete_timeline(db, timeline_id)
+    audit.record(db, principal, "timeline.delete", entity_type="timeline", entity_id=timeline_id)
 
 
 def _require(value: Any, message: str) -> Any:
@@ -196,7 +233,7 @@ def export_timeline(
 
     model = _build_model(db, row)
     diagnostics = validate_export(model, fmt)
-    content = timeline_to_otio_string(model) if fmt == "otio" else timeline_to_edl(model)
+    content = _WRITERS[fmt](model)
 
     project = repos.get_project(db, row["project_id"])
     assert project is not None

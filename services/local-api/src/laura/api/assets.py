@@ -8,10 +8,13 @@ no copy of large media); derived artifacts live under the project workspace.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, PlainTextResponse
 
+from .. import audit
+from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
 from ..interchange.captions import segments_to_srt, segments_to_vtt
@@ -65,6 +68,19 @@ def list_project_assets(project_id: str, request: Request) -> list[AssetOut]:
         files = [AssetFileOut(**f) for f in repos.list_asset_files(db, asset["id"])]
         out.append(AssetOut(**asset, files=files))
     return out
+
+
+@router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_asset(
+    asset_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("asset:write"))],
+) -> None:
+    db = _db(request)
+    if repos.get_asset(db, asset_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    repos.delete_asset(db, asset_id)
+    audit.record(db, principal, "asset.delete", entity_type="asset", entity_id=asset_id)
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut)

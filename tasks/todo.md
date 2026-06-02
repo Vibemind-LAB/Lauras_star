@@ -143,6 +143,16 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **Live-Postgres-Test ✓** — gegen echtes Postgres (Docker `postgres:16`): Migrationen (Schema v2), CRUD über `?→%s`, `SKIP LOCKED`-Claim, Idempotenz, RBAC/Audit — **5 Tests grün, 136 gesamt**
 - **Exit:** ✓ Backend per Env umschaltbar; Desktop = SQLite, Server-Mode = Postgres + Celery — **real gegen Postgres verifiziert**.
 
+## Portion 13 — Gap-Closure Wave A (Top 5)  `[x]`  (Plan: docs/15)
+- [x] **A1 FCP7-XML-Export** (`interchange/fcp7_xml.py`, xmeml v5) → `_EXT += fcp7xml`, Preflight; Premiere-Interop
+- [x] **A2 Suche** — `POST /search`, portable `LOWER(text) LIKE` über Transkripte, projektscoped (FTS5/Qdrant später)
+- [x] **A3 Transkript-Korrektur** — `PATCH /transcript/segments/{id}` (Text + Speaker)
+- [x] **A4 CRUD** — `DELETE` Projekte/Assets/Timelines + `PATCH` Rename (Projekte/Timelines), RBAC `project:delete`, Audit
+- [x] **A5 Multi-Tenancy durchgesetzt** — Projekt-`org_id` aus Principal; List/Get nach Org gefiltert; Cross-Tenant → 404
+- [x] **Verifiziert:** 138 Tests (+7: FCP7, Suche, PATCH, CRUD, Tenant-Isolation) · ruff/mypy strict clean (84 Dateien)
+- [ ] Frontend-Anbindung (Suchbox, Delete-Buttons, Export-Menü mit FCP7) — folgt
+- **Exit:** ✓ Top-5-Lücken im Backend geschlossen + getestet; Wave B/C in docs/15.
+
 ---
 
 ### Diese Session — Zielkorridor

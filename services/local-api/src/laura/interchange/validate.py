@@ -10,7 +10,7 @@ from typing import Any
 
 from .timeline import Timeline
 
-SUPPORTED = {"otio", "edl", "srt", "vtt"}
+SUPPORTED = {"otio", "edl", "fcp7xml", "srt", "vtt"}
 
 
 def validate_export(timeline: Timeline, fmt: str) -> dict[str, Any]:

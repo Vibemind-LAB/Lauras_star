@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from .. import PIPELINE_VERSION
+from .. import PIPELINE_VERSION, audit
+from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
 from ..jobs.runner import enqueue
@@ -16,6 +17,7 @@ from .models import (
     AnalysisRunOut,
     AnalysisStart,
     SegmentOut,
+    SegmentUpdate,
     ShotOut,
     WordOut,
 )
@@ -107,3 +109,29 @@ def get_transcript(asset_id: str, request: Request) -> list[SegmentOut]:
             )
         )
     return out
+
+
+def _segment_out(seg: dict[str, Any], words: list[dict[str, Any]]) -> SegmentOut:
+    return SegmentOut(
+        id=seg["id"], speaker_id=seg["speaker_id"], speaker_label=seg.get("speaker_label"),
+        start_sample=seg["start_sample"], end_sample=seg["end_sample"],
+        start_frame=seg["start_frame"], end_frame=seg["end_frame"], text=seg["text"],
+        confidence=seg["confidence"], words=[WordOut(**w) for w in words],
+    )
+
+
+@router.patch("/transcript/segments/{segment_id}", response_model=SegmentOut)
+def update_transcript_segment(
+    segment_id: str,
+    body: SegmentUpdate,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("asset:write"))],
+) -> SegmentOut:
+    db = _db(request)
+    if repos.get_segment(db, segment_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "segment not found")
+    repos.update_segment(db, segment_id, text=body.text, speaker_id=body.speaker_id)
+    audit.record(db, principal, "transcript.update", entity_type="segment", entity_id=segment_id)
+    seg = repos.get_segment(db, segment_id)
+    assert seg is not None
+    return _segment_out(seg, repos.get_segment_words(db, segment_id))

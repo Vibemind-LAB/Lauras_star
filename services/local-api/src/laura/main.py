@@ -13,7 +13,7 @@ from fastapi import FastAPI, Response
 
 from . import PIPELINE_VERSION, __version__
 from .analysis.handlers import register_analysis_handlers
-from .api import admin, analysis, assets, jobs, projects, timelines
+from .api import admin, analysis, assets, jobs, projects, search, timelines
 from .api.models import HealthOut
 from .config import Settings, ensure_workspace
 from .db.database import create_database
@@ -66,6 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(analysis.router)
     app.include_router(timelines.router)
     app.include_router(admin.router)
+    app.include_router(search.router)
     return app
 
 

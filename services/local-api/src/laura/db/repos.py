@@ -18,14 +18,15 @@ def create_project(
     drop_frame: bool,
     workspace_root: str,
     project_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
     pid = project_id or new_id()
     now = utcnow_iso()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO projects (id, name, sequence_rate_num, sequence_rate_den, "
-            "drop_frame, workspace_root, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (pid, name, rate_num, rate_den, int(drop_frame), workspace_root, now),
+            "drop_frame, workspace_root, created_at, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (pid, name, rate_num, rate_den, int(drop_frame), workspace_root, now, org_id),
         )
     project = get_project(db, pid)
     assert project is not None
@@ -38,10 +39,27 @@ def get_project(db: Database, project_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
-def list_projects(db: Database) -> list[dict[str, Any]]:
+def list_projects(db: Database, *, org_id: str | None = None) -> list[dict[str, Any]]:
     with db.connection() as conn:
-        rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
+        if org_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM projects WHERE org_id = ? ORDER BY created_at DESC", (org_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
+
+
+def rename_project(db: Database, project_id: str, name: str) -> bool:
+    with db.transaction() as conn:
+        cur = conn.execute("UPDATE projects SET name=? WHERE id=?", (name, project_id))
+        return cur.rowcount > 0
+
+
+def delete_project(db: Database, project_id: str) -> bool:
+    with db.transaction() as conn:
+        cur = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        return cur.rowcount > 0
 
 
 def get_job(db: Database, job_id: str) -> dict[str, Any] | None:
@@ -537,5 +555,84 @@ def list_audit_events(db: Database, *, limit: int = 100) -> list[dict[str, Any]]
     with db.connection() as conn:
         rows = conn.execute(
             "SELECT * FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- deletes / renames / transcript edits / search ------------------------
+def delete_asset(db: Database, asset_id: str) -> bool:
+    with db.transaction() as conn:
+        cur = conn.execute("DELETE FROM media_assets WHERE id=?", (asset_id,))
+        return cur.rowcount > 0
+
+
+def rename_timeline(db: Database, timeline_id: str, name: str) -> bool:
+    with db.transaction() as conn:
+        cur = conn.execute("UPDATE timelines SET name=? WHERE id=?", (name, timeline_id))
+        return cur.rowcount > 0
+
+
+def delete_timeline(db: Database, timeline_id: str) -> bool:
+    with db.transaction() as conn:
+        cur = conn.execute("DELETE FROM timelines WHERE id=?", (timeline_id,))
+        return cur.rowcount > 0
+
+
+def get_segment(db: Database, segment_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT s.*, sp.label AS speaker_label FROM transcript_segments s "
+            "LEFT JOIN speakers sp ON sp.id = s.speaker_id WHERE s.id = ?",
+            (segment_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def update_segment(
+    db: Database, segment_id: str, *, text: str | None = None, speaker_id: str | None = None
+) -> bool:
+    sets: list[str] = []
+    params: list[Any] = []
+    if text is not None:
+        sets.append("text=?")
+        params.append(text)
+    if speaker_id is not None:
+        sets.append("speaker_id=?")
+        params.append(speaker_id)
+    if not sets:
+        return False
+    params.append(segment_id)
+    with db.transaction() as conn:
+        cur = conn.execute(f"UPDATE transcript_segments SET {', '.join(sets)} WHERE id=?", params)
+        return cur.rowcount > 0
+
+
+def get_segment_words(db: Database, segment_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM transcript_words WHERE segment_id=? ORDER BY idx", (segment_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def search_transcript(
+    db: Database, *, project_id: str, query: str, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Lexical, case-insensitive transcript search scoped to a project.
+
+    Portable across SQLite/Postgres (LOWER + LIKE). FTS5/semantic search is a
+    later optimisation (docs/15)."""
+    pattern = f"%{query.lower()}%"
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT s.id AS segment_id, s.asset_id AS asset_id, a.display_name AS asset_name, "
+            "s.start_frame AS start_frame, s.end_frame AS end_frame, s.text AS text, "
+            "sp.label AS speaker_label "
+            "FROM transcript_segments s "
+            "JOIN media_assets a ON a.id = s.asset_id "
+            "LEFT JOIN speakers sp ON sp.id = s.speaker_id "
+            "WHERE a.project_id = ? AND LOWER(s.text) LIKE ? "
+            "ORDER BY s.start_sample LIMIT ?",
+            (project_id, pattern, limit),
         ).fetchall()
         return [dict(r) for r in rows]

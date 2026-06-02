@@ -48,6 +48,7 @@ Laut Report **nicht** STT/Shot-Detection, sondern:
 | [12-performance-hardware](12-performance-hardware.md) | Performance-Ziele, Hardware-Klassen |
 | [13-packaging](13-packaging.md) | Packaging, Signing, Release |
 | [14-enterprise](14-enterprise.md) | Mandanten, RBAC, Audit, Observability, Deployment |
+| [15-gap-closure-plan](15-gap-closure-plan.md) | Plan für alle offenen Lücken (Wave A/B/C) |
 | [adr/](adr/) | Architecture Decision Records |
 
 ## Arbeitsannahmen (aus dem Report)

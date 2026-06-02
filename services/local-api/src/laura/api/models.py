@@ -261,3 +261,28 @@ class AuditEventOut(BaseModel):
     entity_type: str | None = None
     entity_id: str | None = None
     created_at: str
+
+
+class SearchRequest(BaseModel):
+    project_id: str
+    query: str = Field(min_length=1)
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class SearchResult(BaseModel):
+    segment_id: str
+    asset_id: str
+    asset_name: str
+    start_frame: int
+    end_frame: int
+    text: str
+    speaker_label: str | None = None
+
+
+class SegmentUpdate(BaseModel):
+    text: str | None = None
+    speaker_id: str | None = None
+
+
+class RenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
