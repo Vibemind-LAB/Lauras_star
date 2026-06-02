@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useState } from "react";
 
 import { type Asset, hasFile, type LauraClient, type Timeline } from "../api";
 import { AnalysisPanel } from "./AnalysisPanel";
+import { Player } from "./Player";
 import { Waveform } from "./Waveform";
 
 function fmtFps(asset: Asset): string {
@@ -83,6 +84,8 @@ export function AssetView({
 
   return (
     <div className="space-y-4">
+      <Player client={client} asset={asset} />
+
       <div className="flex items-center gap-4">
         {posterUrl ? (
           <img
