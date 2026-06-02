@@ -25,7 +25,7 @@ from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
 from ..interchange.fcpx_xml import timeline_to_fcpx_xml
-from ..interchange.otio_io import timeline_to_otio_string
+from ..interchange.otio_io import otio_string_to_timeline, timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
 from ..interchange.validate import validate_export
 from .models import (
@@ -36,6 +36,8 @@ from .models import (
     OperationRequest,
     RenameRequest,
     TimelineCreate,
+    TimelineImportOut,
+    TimelineImportRequest,
     TimelineOut,
     ValidateOut,
     ValidateRequest,
@@ -95,6 +97,87 @@ def create_timeline(project_id: str, body: TimelineCreate, request: Request) -> 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     row = repos.create_timeline(db, project_id=project_id, name=body.name, kind=body.kind)
     return _timeline_out(db, row)
+
+
+@router.post(
+    "/projects/{project_id}/timelines/import",
+    response_model=TimelineImportOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def import_timeline(
+    project_id: str, body: TimelineImportRequest, request: Request
+) -> TimelineImportOut:
+    """Import an editorial timeline (OTIO) and relink its clips to project assets by
+    source path; unmatched media becomes an offline placeholder asset to resolve later.
+    EDL/FCP7 import is planned (no reader yet)."""
+    db = _db(request)
+    project = repos.get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    fmt = body.format.lower()
+    if fmt != "otio":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"import supports 'otio' only (got {fmt!r}); EDL/FCP7 import is planned",
+        )
+    try:
+        model = otio_string_to_timeline(
+            body.content,
+            rate_num=project["sequence_rate_num"],
+            rate_den=project["sequence_rate_den"],
+            drop_frame=bool(project["drop_frame"]),
+        )
+    except Exception as exc:  # noqa: BLE001 - any parser error is a client error
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"could not parse OTIO: {exc}"
+        ) from exc
+
+    resolved: dict[str, str] = {}   # source key -> asset id (dedupes repeated media)
+    matched = 0
+    offline = 0
+    rows: list[dict[str, Any]] = []
+    for clip in model.ordered():
+        key = clip.source_url or clip.name or "offline"
+        asset_id = resolved.get(key)
+        if asset_id is None:
+            existing = (
+                repos.find_asset_by_source_path(db, project_id, clip.source_url)
+                if clip.source_url
+                else None
+            )
+            if existing is not None:
+                asset_id = existing["id"]
+                matched += 1
+            else:
+                placeholder = repos.create_asset(
+                    db, project_id=project_id, type="video",
+                    display_name=Path(key).name or key, source_path=key, online=False,
+                )
+                asset_id = placeholder["id"]
+                offline += 1
+            resolved[key] = asset_id
+        rows.append({
+            "asset_id": asset_id,
+            "src_in_frame": clip.src_in_frame,
+            "src_out_frame_exclusive": clip.src_out_frame_exclusive,
+            "seq_in_frame": clip.seq_in_frame,
+            "seq_out_frame_exclusive": clip.seq_out_frame_exclusive,
+            "lane": clip.lane,
+            "speed_num": clip.speed_num,
+            "speed_den": clip.speed_den,
+        })
+
+    name = body.name or model.name or "Imported"
+    created = repos.create_timeline(db, project_id=project_id, name=name, kind="rough_cut")
+    repos.replace_timeline_clips(db, created["id"], rows)
+    fresh = repos.get_timeline(db, created["id"])
+    assert fresh is not None
+    repos.update_timeline_otio(
+        db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh))
+    )
+    return TimelineImportOut(
+        timeline=_timeline_out(db, fresh), matched_media=matched, offline_media=offline,
+    )
 
 
 @router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])

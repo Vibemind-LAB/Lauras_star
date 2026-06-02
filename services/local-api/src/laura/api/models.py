@@ -70,6 +70,7 @@ class AssetOut(BaseModel):
     codec_video: str | None = None
     codec_audio: str | None = None
     is_vfr: bool = False
+    online: bool = True
     created_at: str
     files: list[AssetFileOut] = Field(default_factory=list)
 
@@ -186,6 +187,18 @@ class ClipSourceOut(BaseModel):
     segment_id: str | None = None        # transcript segment the origin words belong to
     word_start_frame: int | None = None  # source frame of the first origin word
     word_end_frame: int | None = None    # source frame (exclusive) of the last origin word
+
+
+class TimelineImportRequest(BaseModel):
+    content: str
+    format: str = "otio"
+    name: str | None = None
+
+
+class TimelineImportOut(BaseModel):
+    timeline: TimelineOut
+    matched_media: int   # distinct source files relinked to existing project assets
+    offline_media: int   # distinct source files turned into offline placeholders
 
 
 class ExportRequest(BaseModel):

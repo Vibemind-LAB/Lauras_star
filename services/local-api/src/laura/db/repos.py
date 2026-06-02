@@ -107,18 +107,32 @@ def create_asset(
     display_name: str,
     source_path: str,
     asset_id: str | None = None,
+    online: bool = True,
 ) -> dict[str, Any]:
     aid = asset_id or new_id()
     now = utcnow_iso()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO media_assets (id, project_id, type, display_name, source_path, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (aid, project_id, type, display_name, source_path, now),
+            "online, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (aid, project_id, type, display_name, source_path, int(online), now),
         )
     asset = get_asset(db, aid)
     assert asset is not None
     return asset
+
+
+def find_asset_by_source_path(
+    db: Database, project_id: str, source_path: str
+) -> dict[str, Any] | None:
+    """First asset in a project with this source path (online preferred) — for relink."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM media_assets WHERE project_id=? AND source_path=? "
+            "ORDER BY online DESC, created_at LIMIT 1",
+            (project_id, source_path),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
 
 def get_asset(db: Database, asset_id: str) -> dict[str, Any] | None:
