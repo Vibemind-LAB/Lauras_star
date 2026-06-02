@@ -666,6 +666,27 @@ def get_segment_words(db: Database, segment_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def get_words_in_range(
+    db: Database, start_word_id: str, end_word_id: str
+) -> list[dict[str, Any]]:
+    """Words from ``start_word_id`` to ``end_word_id`` inclusive, ordered by idx.
+
+    Returns ``[]`` when either word is missing or they are in different segments
+    (cross-segment selections are not captioned as a single cue)."""
+    w0 = get_word(db, start_word_id)
+    w1 = get_word(db, end_word_id)
+    if w0 is None or w1 is None or w0["segment_id"] != w1["segment_id"]:
+        return []
+    lo, hi = sorted((int(w0["idx"]), int(w1["idx"])))
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM transcript_words WHERE segment_id=? AND idx BETWEEN ? AND ? "
+            "ORDER BY idx",
+            (w0["segment_id"], lo, hi),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def search_transcript(
     db: Database, *, project_id: str, query: str, limit: int = 50
 ) -> list[dict[str, Any]]:

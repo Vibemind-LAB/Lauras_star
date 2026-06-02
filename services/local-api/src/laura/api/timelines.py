@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import PlainTextResponse
 
 from .. import audit
 from ..auth import Principal, require_permission
@@ -20,6 +21,7 @@ from ..editing.operations import (
     ordered,
     set_speed,
 )
+from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
 from ..interchange.fcpx_xml import timeline_to_fcpx_xml
@@ -153,6 +155,58 @@ def clip_source(timeline_id: str, clip_id: str, request: Request) -> ClipSourceO
     )
 
 
+def _timeline_caption_segments(db: Database, timeline_id: str) -> list[dict[str, Any]]:
+    """Caption cues from a rough cut: one cue per transcript-derived clip, timed at the
+    clip's SEQUENCE position (not the source) so the subtitles match the edit."""
+    segments: list[dict[str, Any]] = []
+    for clip in repos.list_timeline_clips(db, timeline_id):  # ordered by seq_in, lane
+        ws, we = clip.get("origin_word_start_id"), clip.get("origin_word_end_id")
+        if not ws or not we:
+            continue
+        words = repos.get_words_in_range(db, ws, we)
+        if not words:
+            continue
+        segment = repos.get_segment(db, words[0]["segment_id"])
+        segments.append({
+            "start_frame": clip["seq_in_frame"],
+            "end_frame": clip["seq_out_frame_exclusive"],
+            "text": join_words(words),
+            "speaker_label": segment.get("speaker_label") if segment else None,
+        })
+    return segments
+
+
+def _timeline_captions(db: Database, timeline_id: str, fmt: str) -> str:
+    row = repos.get_timeline(db, timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    project = repos.get_project(db, row["project_id"])
+    assert project is not None
+    segments = _timeline_caption_segments(db, timeline_id)
+    rate_num = project["sequence_rate_num"]
+    rate_den = project["sequence_rate_den"]
+    return (
+        segments_to_srt(segments, rate_num, rate_den)
+        if fmt == "srt"
+        else segments_to_vtt(segments, rate_num, rate_den)
+    )
+
+
+@router.get("/timelines/{timeline_id}/captions.srt")
+def timeline_captions_srt(timeline_id: str, request: Request) -> PlainTextResponse:
+    return PlainTextResponse(
+        _timeline_captions(_db(request), timeline_id, "srt"),
+        media_type="application/x-subrip",
+    )
+
+
+@router.get("/timelines/{timeline_id}/captions.vtt")
+def timeline_captions_vtt(timeline_id: str, request: Request) -> PlainTextResponse:
+    return PlainTextResponse(
+        _timeline_captions(_db(request), timeline_id, "vtt"), media_type="text/vtt"
+    )
+
+
 @router.patch("/timelines/{timeline_id}", response_model=TimelineOut)
 def rename_timeline(
     timeline_id: str,
@@ -283,7 +337,8 @@ def export_timeline(
     if fmt in {"srt", "vtt"}:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "captions are exported per asset via /assets/{id}/captions.srt|.vtt",
+            "captions are exported via /timelines/{id}/captions.srt|.vtt (rough cut) "
+            "or /assets/{id}/captions.srt|.vtt (full transcript)",
         )
     if fmt not in _EXT:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unsupported format: {fmt}")

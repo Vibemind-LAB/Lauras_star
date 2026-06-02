@@ -33,6 +33,17 @@ def _wrap(text: str, width: int = MAX_LINE) -> str:
     return "\n".join(wrapped)
 
 
+def join_words(words: list[dict[str, Any]]) -> str:
+    """Join transcript words into caption text (no space before punctuation)."""
+    out = ""
+    for word in words:
+        token = str(word["text"])
+        if out and not word.get("is_punctuation"):
+            out += " "
+        out += token
+    return out
+
+
 def _line(seg: dict[str, Any]) -> str:
     text = str(seg["text"]).strip()
     label = seg.get("speaker_label")
