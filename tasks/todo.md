@@ -118,6 +118,21 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [ ] Reproduzierbares Demo-Projekt beilegen
 - **Exit (offen):** signierte Installer — Code/Config/Doku stehen, Build mit deinen Zertifikaten ausführen.
 
+## Portion 11 — Enterprise (RBAC, Audit, Observability, Deploy)  `[x]`  (additiv & nicht-brechend)
+- [x] Migration `0002_enterprise.sql`: organizations/users/memberships/api_keys/audit_events (+ projects.org_id)
+- [x] `auth/` — Principal, API-Keys (sha256), Rollen→Permissions, `require_permission`-Dependency (Annotated)
+- [x] Auth: Bearer-API-Key → gescopter Principal; kein Key → lokaler Owner (Desktop unverändert)
+- [x] RBAC durchgesetzt auf `POST /projects` (project:write) & `POST /timelines/{id}/exports` (export:create)
+- [x] `audit.py` + `audit_events` — org/user/key/project/export protokolliert; `GET /admin/audit`
+- [x] Admin-API: orgs/users/keys (Klartext einmalig) + revoke
+- [x] `metrics.py` — Prometheus `/metrics` + HTTP-Middleware + `laura_jobs_total` im Runner
+- [x] Deploy: `Dockerfile`, `deploy/docker-compose.yml` (PG/Redis/Qdrant/MinIO), `.env.example`
+- [x] CI: `.github/workflows/ci.yml` (backend ruff/mypy/pytest + desktop tsc/build)
+- [x] `docs/14-enterprise.md`
+- [~] Postgres/Celery/Qdrant **Code-Integration** — Infra+Extras+Doku da; Backend-Umschaltung als nächster Schritt
+- [x] **Verifiziert:** 126 Tests (5 neu: RBAC/Revoke/Audit/Metrics) · ruff/mypy strict clean (74 Dateien) · 121 Bestandstests grün (nicht-brechend)
+- **Exit:** ✓ Mandanten + RBAC + Audit + Metriken live; On-Prem-Stack + CI vorhanden.
+
 ---
 
 ### Diese Session — Zielkorridor

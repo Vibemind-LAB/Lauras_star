@@ -46,6 +46,8 @@ Laut Report **nicht** STT/Shot-Detection, sondern:
 | [10-testing-observability](10-testing-observability.md) | Testpyramide, Golden Tests, Metriken |
 | [11-roadmap](11-roadmap.md) | 12-Wochen-Plan, Phasen, Exit-Kriterien |
 | [12-performance-hardware](12-performance-hardware.md) | Performance-Ziele, Hardware-Klassen |
+| [13-packaging](13-packaging.md) | Packaging, Signing, Release |
+| [14-enterprise](14-enterprise.md) | Mandanten, RBAC, Audit, Observability, Deployment |
 | [adr/](adr/) | Architecture Decision Records |
 
 ## Arbeitsannahmen (aus dem Report)
