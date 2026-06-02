@@ -20,6 +20,8 @@ from ..editing.operations import (
     lift_range,
     ordered,
     set_speed,
+    split_clip,
+    trim_clip,
 )
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
@@ -35,6 +37,7 @@ from .models import (
     ExportRequest,
     OperationRequest,
     RenameRequest,
+    SetClipsRequest,
     TimelineCreate,
     TimelineImportOut,
     TimelineImportRequest,
@@ -372,6 +375,22 @@ def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> lis
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
+    if op == "split":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        try:
+            return split_clip(current, at)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    if op == "trim":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        si = _require(body.new_src_in_frame, "new_src_in_frame required")
+        so = _require(body.new_src_out_frame_exclusive, "new_src_out_frame_exclusive required")
+        try:
+            return trim_clip(current, at, si, so)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 
 
@@ -389,6 +408,29 @@ def apply_operation(timeline_id: str, body: OperationRequest, request: Request) 
     fresh = repos.get_timeline(db, timeline_id)
     assert fresh is not None
     repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    return _timeline_out(db, fresh)
+
+
+@router.put("/timelines/{timeline_id}/clips", response_model=TimelineOut)
+def set_timeline_clips(
+    timeline_id: str,
+    body: SetClipsRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> TimelineOut:
+    """Replace a timeline's clips wholesale — the primitive behind undo/redo (restore a
+    saved snapshot). Clips are re-materialised and the OTIO is regenerated."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    rows = [c.model_dump() for c in body.clips]
+    repos.replace_timeline_clips(db, timeline_id, rows)
+    fresh = repos.get_timeline(db, timeline_id)
+    assert fresh is not None
+    repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    audit.record(
+        db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
+    )
     return _timeline_out(db, fresh)
 
 

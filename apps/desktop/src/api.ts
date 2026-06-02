@@ -101,6 +101,10 @@ export interface TimelineClip {
   seq_out_frame_exclusive: number;
   lane: number;
   speaker_id: string | null;
+  origin_word_start_id: string | null;
+  origin_word_end_id: string | null;
+  speed_num: number;
+  speed_den: number;
 }
 
 export interface Timeline {
@@ -113,7 +117,15 @@ export interface Timeline {
 }
 
 export interface Operation {
-  op: "append_from_words" | "append_clip" | "insert_clip" | "delete" | "lift";
+  op:
+    | "append_from_words"
+    | "append_clip"
+    | "insert_clip"
+    | "delete"
+    | "lift"
+    | "set_speed"
+    | "split"
+    | "trim";
   asset_id?: string;
   src_in_frame?: number;
   src_out_frame_exclusive?: number;
@@ -123,6 +135,10 @@ export interface Operation {
   seq_out_frame_exclusive?: number;
   at_seq_frame?: number;
   lane?: number;
+  speed_num?: number;
+  speed_den?: number;
+  new_src_in_frame?: number;
+  new_src_out_frame_exclusive?: number;
 }
 
 export interface Segment {
@@ -339,6 +355,14 @@ export class LauraClient {
     return this.request<Timeline>(`/timelines/${timelineId}/operations`, {
       method: "POST",
       body: JSON.stringify(op),
+    });
+  }
+
+  /** Replace a timeline's clips wholesale — used by undo/redo to restore a snapshot. */
+  setClips(timelineId: string, clips: TimelineClip[]): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}/clips`, {
+      method: "PUT",
+      body: JSON.stringify({ clips }),
     });
   }
 }

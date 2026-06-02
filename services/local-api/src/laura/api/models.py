@@ -232,7 +232,7 @@ class ValidateOut(BaseModel):
 
 
 class OperationRequest(BaseModel):
-    op: str  # append_from_words | append_clip | insert_clip | delete | lift | set_speed
+    op: str  # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim
     asset_id: str | None = None
     src_in_frame: int | None = None
     src_out_frame_exclusive: int | None = None
@@ -244,6 +244,28 @@ class OperationRequest(BaseModel):
     lane: int = 0
     speed_num: int | None = None
     speed_den: int | None = None
+    new_src_in_frame: int | None = None          # trim: new source in point
+    new_src_out_frame_exclusive: int | None = None  # trim: new source out point
+
+
+class ClipIn(BaseModel):
+    """A timeline clip as accepted by the wholesale set-clips endpoint (undo/redo)."""
+
+    asset_id: str
+    src_in_frame: int
+    src_out_frame_exclusive: int
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+    lane: int = 0
+    speaker_id: str | None = None
+    origin_word_start_id: str | None = None
+    origin_word_end_id: str | None = None
+    speed_num: int = 1
+    speed_den: int = 1
+
+
+class SetClipsRequest(BaseModel):
+    clips: list[ClipIn] = Field(default_factory=list)
 
 
 # --- enterprise ----------------------------------------------------------

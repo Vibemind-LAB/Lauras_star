@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from ..timebase import FrameRange, retimed_seq_length
+from ..timebase import FrameRange, Rounding, div_round, retimed_seq_length
 
 
 @dataclass(frozen=True)
@@ -160,6 +160,66 @@ def set_speed(
             result.append(
                 replace(
                     c, speed_num=speed_num, speed_den=speed_den,
+                    seq_out_frame_exclusive=c.seq_in_frame + new_len,
+                )
+            )
+        elif c.seq_in_frame >= old_end:
+            result.append(
+                replace(
+                    c, seq_in_frame=c.seq_in_frame + delta,
+                    seq_out_frame_exclusive=c.seq_out_frame_exclusive + delta,
+                )
+            )
+        else:
+            result.append(c)
+    return result
+
+
+def split_clip(clips: list[EditClip], at_seq_frame: int) -> list[EditClip]:
+    """Split the clip that strictly contains ``at_seq_frame`` into two adjacent clips at
+    that sequence frame. The source split point honours the clip's speed (1/1 = identity).
+    Splitting on a clip edge raises so the UI can surface the no-op."""
+    target = next(
+        (
+            c
+            for c in ordered(clips)
+            if c.seq_in_frame < at_seq_frame < c.seq_out_frame_exclusive
+        ),
+        None,
+    )
+    if target is None:
+        raise ValueError(f"no clip strictly contains seq frame {at_seq_frame}")
+    seq_offset = at_seq_frame - target.seq_in_frame
+    # sequence offset -> source offset via the speed ratio (src = seq * speed_num/speed_den)
+    src_mid = target.src_in_frame + div_round(
+        seq_offset * target.speed_num, target.speed_den, Rounding.HALF_EVEN
+    )
+    left = replace(
+        target, src_out_frame_exclusive=src_mid, seq_out_frame_exclusive=at_seq_frame
+    )
+    right = replace(target, src_in_frame=src_mid, seq_in_frame=at_seq_frame)
+    return [*(left if c is target else c for c in clips), right]
+
+
+def trim_clip(
+    clips: list[EditClip], at_seq_frame: int, new_src_in: int, new_src_out: int
+) -> list[EditClip]:
+    """Set the source range of the clip starting at ``at_seq_frame`` and ripple later
+    clips by the resulting duration delta (speed preserved)."""
+    if new_src_out <= new_src_in:
+        raise ValueError("new source range must be non-empty")
+    target = next((c for c in ordered(clips) if c.seq_in_frame == at_seq_frame), None)
+    if target is None:
+        raise ValueError(f"no clip starts at seq frame {at_seq_frame}")
+    new_len = retimed_seq_length(new_src_out - new_src_in, target.speed_num, target.speed_den)
+    old_end = target.seq_out_frame_exclusive
+    delta = (target.seq_in_frame + new_len) - old_end
+    result: list[EditClip] = []
+    for c in clips:
+        if c is target:
+            result.append(
+                replace(
+                    c, src_in_frame=new_src_in, src_out_frame_exclusive=new_src_out,
                     seq_out_frame_exclusive=c.seq_in_frame + new_len,
                 )
             )

@@ -1,6 +1,12 @@
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 
-import { type ExportFormat, type LauraClient, type Timeline, type TimelineClip } from "../api";
+import {
+  type ExportFormat,
+  type LauraClient,
+  type Operation,
+  type Timeline,
+  type TimelineClip,
+} from "../api";
 
 const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
   { fmt: "otio", label: "OTIO", ext: "otio" },
@@ -8,6 +14,8 @@ const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
   { fmt: "fcp7xml", label: "FCP7-XML", ext: "xml" },
   { fmt: "fcpxml", label: "FCPXML", ext: "fcpxml" },
 ];
+
+const TRIM_STEP = 5; // frames per trim click
 
 export function TimelineBar({
   client,
@@ -19,6 +27,17 @@ export function TimelineBar({
   onChange: () => void;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [history, setHistory] = useState<TimelineClip[][]>([]);
+  const [future, setFuture] = useState<TimelineClip[][]>([]);
+
+  // Reset edit history only when switching to a different timeline.
+  const tlId = timeline?.id ?? null;
+  useEffect(() => {
+    setHistory([]);
+    setFuture([]);
+    setSelected(null);
+  }, [tlId]);
 
   if (!timeline) {
     return (
@@ -28,25 +47,95 @@ export function TimelineBar({
     );
   }
 
-  const total = timeline.clips.reduce((m, c) => Math.max(m, c.seq_out_frame_exclusive), 0);
+  const tl = timeline;
+  const total = tl.clips.reduce((m, c) => Math.max(m, c.seq_out_frame_exclusive), 0);
+  const sel = tl.clips.find((c) => c.id === selected) ?? null;
 
-  async function deleteClip(clip: TimelineClip): Promise<void> {
-    if (!timeline) return;
-    await client.applyOperation(timeline.id, {
-      op: "delete",
-      seq_in_frame: clip.seq_in_frame,
-      seq_out_frame_exclusive: clip.seq_out_frame_exclusive,
+  async function runOp(op: Operation): Promise<void> {
+    const snapshot = tl.clips;
+    setError(null);
+    try {
+      await client.applyOperation(tl.id, op);
+      setHistory((h) => [...h, snapshot]);
+      setFuture([]);
+      onChange();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function restore(clips: TimelineClip[], pushTo: "history" | "future"): Promise<void> {
+    const cur = tl.clips;
+    setError(null);
+    try {
+      await client.setClips(tl.id, clips);
+      if (pushTo === "future") setFuture((f) => [...f, cur]);
+      else setHistory((h) => [...h, cur]);
+      onChange();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function undo(): Promise<void> {
+    if (history.length === 0) return;
+    const prev = history[history.length - 1];
+    setHistory((h) => h.slice(0, -1));
+    await restore(prev, "future");
+  }
+
+  async function redo(): Promise<void> {
+    if (future.length === 0) return;
+    const next = future[future.length - 1];
+    setFuture((f) => f.slice(0, -1));
+    await restore(next, "history");
+  }
+
+  async function splitSelected(): Promise<void> {
+    if (!sel) return;
+    const mid = Math.floor((sel.seq_in_frame + sel.seq_out_frame_exclusive) / 2);
+    await runOp({ op: "split", at_seq_frame: mid });
+  }
+
+  async function trimSelected(delta: number): Promise<void> {
+    if (!sel) return;
+    const newOut = Math.max(sel.src_in_frame + 1, sel.src_out_frame_exclusive + delta);
+    await runOp({
+      op: "trim",
+      at_seq_frame: sel.seq_in_frame,
+      new_src_in_frame: sel.src_in_frame,
+      new_src_out_frame_exclusive: newOut,
     });
-    onChange();
+  }
+
+  async function duplicateSelected(): Promise<void> {
+    if (!sel) return;
+    await runOp({
+      op: "insert_clip",
+      asset_id: sel.asset_id,
+      src_in_frame: sel.src_in_frame,
+      src_out_frame_exclusive: sel.src_out_frame_exclusive,
+      at_seq_frame: sel.seq_out_frame_exclusive,
+      lane: sel.lane,
+    });
+  }
+
+  async function deleteSelected(): Promise<void> {
+    if (!sel) return;
+    await runOp({
+      op: "delete",
+      seq_in_frame: sel.seq_in_frame,
+      seq_out_frame_exclusive: sel.seq_out_frame_exclusive,
+    });
+    setSelected(null);
   }
 
   async function exportAs(fmt: ExportFormat, ext: string): Promise<void> {
-    if (!timeline) return;
     setError(null);
     try {
-      const result = await client.exportTimeline(timeline.id, fmt);
+      const result = await client.exportTimeline(tl.id, fmt);
       if (result.content) {
-        await window.laura.saveTextFile(`${timeline.name}.${ext}`, result.content);
+        await window.laura.saveTextFile(`${tl.name}.${ext}`, result.content);
       }
     } catch (e) {
       setError(String(e));
@@ -56,11 +145,31 @@ export function TimelineBar({
   return (
     <div className="border-t border-edge bg-panel px-5 py-3">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wide text-slate-500">
-          Rough Cut · {timeline.name}
+        <span className="flex items-center gap-2">
+          <span className="text-xs uppercase tracking-wide text-slate-500">
+            Rough Cut · {tl.name}
+          </span>
+          <button
+            type="button"
+            onClick={() => void undo()}
+            disabled={history.length === 0}
+            title="Rückgängig"
+            className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge disabled:opacity-30"
+          >
+            ↶ Undo
+          </button>
+          <button
+            type="button"
+            onClick={() => void redo()}
+            disabled={future.length === 0}
+            title="Wiederholen"
+            className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge disabled:opacity-30"
+          >
+            ↷ Redo
+          </button>
         </span>
         <span className="flex items-center gap-2">
-          {timeline.clips.length > 0 &&
+          {tl.clips.length > 0 &&
             EXPORT_FORMATS.map((f) => (
               <button
                 key={f.fmt}
@@ -72,34 +181,81 @@ export function TimelineBar({
               </button>
             ))}
           <span className="text-xs text-slate-500">
-            {timeline.clips.length} Clips · {total} frames
+            {tl.clips.length} Clips · {total} frames
           </span>
         </span>
       </div>
       {error && <div className="mb-1 text-xs text-red-400">{error}</div>}
-      {timeline.clips.length === 0 ? (
+      {tl.clips.length === 0 ? (
         <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-edge text-xs text-slate-600">
           Klicke einen Shot oder Transkript-Satz an, um ihn anzuhängen.
         </div>
       ) : (
         <div className="flex h-12 w-full gap-px overflow-hidden rounded-md">
-          {timeline.clips.map((c, i) => {
+          {tl.clips.map((c, i) => {
             const pct = total > 0 ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100 : 0;
+            const isSel = c.id === selected;
+            const retimed = c.speed_num !== c.speed_den;
             return (
               <button
                 key={c.id}
                 type="button"
-                onClick={() => void deleteClip(c)}
-                title={`Clip ${i + 1} · src ${c.src_in_frame}–${c.src_out_frame_exclusive} (Klick = löschen)`}
+                onClick={() => setSelected(isSel ? null : c.id)}
+                title={`Clip ${i + 1} · src ${c.src_in_frame}–${c.src_out_frame_exclusive}${
+                  retimed ? ` · ${c.speed_num}/${c.speed_den}×` : ""
+                } (Klick = auswählen)`}
                 style={{ width: `${pct}%` }}
                 className={`flex items-center justify-center text-[10px] text-slate-100 ${
                   i % 2 === 0 ? "bg-sky-700/50" : "bg-sky-500/40"
-                } hover:bg-red-600/50`}
+                } ${isSel ? "ring-2 ring-inset ring-amber-400" : "hover:brightness-125"}`}
               >
                 {i + 1}
+                {retimed ? "⏩" : ""}
               </button>
             );
           })}
+        </div>
+      )}
+      {sel && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-500">
+            Clip src {sel.src_in_frame}–{sel.src_out_frame_exclusive}:
+          </span>
+          <button
+            type="button"
+            onClick={() => void splitSelected()}
+            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+          >
+            Split (Mitte)
+          </button>
+          <button
+            type="button"
+            onClick={() => void trimSelected(-TRIM_STEP)}
+            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+          >
+            Trim −{TRIM_STEP}
+          </button>
+          <button
+            type="button"
+            onClick={() => void trimSelected(TRIM_STEP)}
+            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+          >
+            Trim +{TRIM_STEP}
+          </button>
+          <button
+            type="button"
+            onClick={() => void duplicateSelected()}
+            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+          >
+            Duplizieren
+          </button>
+          <button
+            type="button"
+            onClick={() => void deleteSelected()}
+            className="rounded bg-ink px-2 py-0.5 text-red-300 hover:bg-red-600/40"
+          >
+            Löschen
+          </button>
         </div>
       )}
     </div>
