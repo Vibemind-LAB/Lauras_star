@@ -6,39 +6,87 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 type Status = "idle" | "running" | "done" | "error";
 
-function ShotStrip({
-  shots,
-  totalFrames,
+function ShotThumb({
+  client,
+  shot,
+  index,
   onAppend,
 }: {
-  shots: Shot[];
-  totalFrames: number;
+  client: LauraClient;
+  shot: Shot;
+  index: number;
   onAppend?: (shot: Shot) => void;
 }): ReactElement {
-  if (totalFrames <= 0 || shots.length === 0) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    if (shot.thumbnail_path) {
+      client
+        .shotThumbnailUrl(shot.id)
+        .then((u) => {
+          if (!active) {
+            URL.revokeObjectURL(u);
+            return;
+          }
+          objectUrl = u;
+          setUrl(u);
+        })
+        .catch(() => {
+          /* no thumbnail on disk -> keep the colour fallback */
+        });
+    }
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, shot.id, shot.thumbnail_path]);
+
+  return (
+    <button
+      type="button"
+      disabled={!onAppend}
+      onClick={() => onAppend?.(shot)}
+      title={
+        `Shot ${index + 1}: ${shot.src_in_frame}–${shot.src_out_frame_exclusive}` +
+        (onAppend ? " (Klick = an Rough Cut anhängen)" : "")
+      }
+      className={`relative h-9 w-16 shrink-0 overflow-hidden rounded border border-edge ${
+        onAppend ? "hover:ring-2 hover:ring-emerald-500/60" : "cursor-default"
+      }`}
+    >
+      {url ? (
+        <img src={url} alt={`Shot ${index + 1}`} className="h-full w-full object-cover" />
+      ) : (
+        <span
+          className={`block h-full w-full ${index % 2 === 0 ? "bg-sky-700/40" : "bg-sky-500/30"}`}
+        />
+      )}
+      <span className="absolute bottom-0 left-0 bg-ink/70 px-1 text-[10px] leading-tight text-slate-200">
+        {index + 1}
+      </span>
+    </button>
+  );
+}
+
+function ShotStrip({
+  client,
+  shots,
+  onAppend,
+}: {
+  client: LauraClient;
+  shots: Shot[];
+  onAppend?: (shot: Shot) => void;
+}): ReactElement {
+  if (shots.length === 0) {
     return <div className="text-xs text-slate-600">keine Shots</div>;
   }
   return (
-    <div className="flex h-8 w-full overflow-hidden rounded-md border border-edge">
-      {shots.map((s, i) => {
-        const pct = ((s.src_out_frame_exclusive - s.src_in_frame) / totalFrames) * 100;
-        return (
-          <button
-            key={s.id}
-            type="button"
-            disabled={!onAppend}
-            onClick={() => onAppend?.(s)}
-            title={
-              `Shot ${i + 1}: ${s.src_in_frame}–${s.src_out_frame_exclusive}` +
-              (onAppend ? " (Klick = an Rough Cut anhängen)" : "")
-            }
-            style={{ width: `${pct}%` }}
-            className={`${i % 2 === 0 ? "bg-sky-700/40" : "bg-sky-500/30"} ${
-              onAppend ? "hover:bg-emerald-600/50" : ""
-            }`}
-          />
-        );
-      })}
+    <div className="flex w-full gap-1 overflow-x-auto pb-1">
+      {shots.map((s, i) => (
+        <ShotThumb key={s.id} client={client} shot={s} index={i} onAppend={onAppend} />
+      ))}
     </div>
   );
 }
@@ -175,11 +223,7 @@ export function AnalysisPanel({
 
       <div>
         <div className="mb-1 text-xs text-slate-500">Shots ({shots.length})</div>
-        <ShotStrip
-          shots={shots}
-          totalFrames={asset.duration_frames ?? 0}
-          onAppend={roughCut ? appendShot : undefined}
-        />
+        <ShotStrip client={client} shots={shots} onAppend={roughCut ? appendShot : undefined} />
       </div>
 
       <div>

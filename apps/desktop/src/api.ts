@@ -80,6 +80,7 @@ export interface Shot {
   src_out_frame_exclusive: number;
   confidence: number | null;
   method: string | null;
+  thumbnail_path: string | null;
 }
 
 export interface Word {
@@ -298,6 +299,17 @@ export class LauraClient {
 
   getShots(assetId: string): Promise<Shot[]> {
     return this.request<Shot[]>(`/assets/${assetId}/shots`);
+  }
+
+  /** Fetch a shot's thumbnail JPEG with the token and return an object URL. */
+  async shotThumbnailUrl(shotId: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/shots/${shotId}/thumbnail`, {
+      headers: { "X-Laura-Token": this.token },
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+    return URL.createObjectURL(await res.blob());
   }
 
   getTranscript(assetId: string): Promise<Segment[]> {

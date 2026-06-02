@@ -170,8 +170,8 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] 15.7 **Queue-Routing** — `jobs/queues.py` (CPU/GPU-Gruppen + `queue_for`); Claim ordnet bereits `priority DESC`; `analysis.align/embed`-Stubs (graceful-skip, GPU-Queue); Celery-Beat-Reaper (`laura.reap_expired`); 5 Tests, **173 grün**
 - **Exit:** ✓ Backend funktional vollständig; je Position pytest + ruff + mypy strict grün. **Portion 15 komplett.**
 
-## Portion 16 — Wave-B/C Frontend  `[ ]`  (Plan: docs/16 §1)
-- [ ] 16.1 **Shot-Thumbnail-Strip** — UI nutzt `GET /shots/{id}/thumbnail` (Blob+Token)
+## Portion 16 — Wave-B/C Frontend  `[~]`  (Plan: docs/16 §1)
+- [x] 16.1 **Shot-Thumbnail-Strip** — `shotThumbnailUrl` (Blob+Token), `ShotThumb` (Object-URL + Cleanup), scrollbarer Vorschau-Strip mit Fallback-Balken; `tsc` strict + `vite build` grün (GUI manuell)
 - [ ] 16.2 **origin_word-Highlight** — Transkript-Klick → Player-Sprung, aktiver Clip hebt Quellwörter hervor
 - [ ] 16.3 **Player JKL/Shuttle** — J/K/L, Frame/Sekunde-Steps, Home/End
 - [ ] 16.4 **Undo/Redo + Trim/Split/Insert-UI** — Op-Stack im Renderer auf bestehende Backend-Ops
