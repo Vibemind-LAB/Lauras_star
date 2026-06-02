@@ -47,5 +47,8 @@ Aufwand (S/M/L).
 
 ## Fortschritt
 
-- Wave A: siehe `tasks/todo.md` Portion 13.
-- Wave B/C: nach Bedarf priorisieren.
+- **Wave A:** komplett (`tasks/todo.md` Portion 13).
+- **Wave B:** teilweise — FCPXML, Captions-Zeilenumbruch, Shot-Thumbnails fertig (Portion 14).
+- **Sequenzierter Restplan:** [`16-execution-plan.md`](16-execution-plan.md) löst die offenen
+  B/C-Positionen in ausführbare Portionen 15–17 auf und trennt headless-baubar von
+  extern-blockiert (Hardware/Zertifikate/Accounts).

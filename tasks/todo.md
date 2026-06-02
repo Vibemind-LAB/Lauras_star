@@ -158,7 +158,38 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **Captions-Qualität** — Zeilenumbruch (≤42 Zeichen) in SRT/VTT
 - [x] **Shot-Thumbnails** — `thumbnail_path` befüllt (ffmpeg-Frame je Shot) + `GET /shots/{id}/thumbnail`; real verifiziert
 - [x] **Verifiziert:** 140 Tests (+ Thumbnail-Assert) · ruff/mypy strict clean (86 Dateien) · App `tsc`/`vite build` grün
-- [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — siehe docs/15
+- [ ] Editorial-Import, Timeline-Captions, Speed/Retiming, origin_word-Link, Pagination, Rate-Limiting, Queue-Routing — sequenziert in Portion 15, siehe [`../docs/16-execution-plan.md`](../docs/16-execution-plan.md)
+
+## Portion 15 — Wave-B Backend-Abschluss  `[ ]`  (Plan: docs/16 §1)
+- [ ] 15.1 **Pagination** — `limit/offset/total` auf list_projects/assets/timelines + GET-Endpoints
+- [ ] 15.2 **Rate-Limiting** — Token-Bucket-Middleware pro Key/Loopback → `429 + Retry-After`
+- [ ] 15.3 **Speed/Retiming** — Editing-Ops `speed_num/den`; OTIO `LinearTimeWarp`
+- [ ] 15.4 **Timeline-Captions** — SRT/VTT aus dem geschnittenen Rough Cut (Clip→origin_words)
+- [ ] 15.5 **Editorial-Import** — `POST …/timelines/import` (OTIO/EDL lesen + Media-Relink via sha256)
+- [ ] 15.6 **origin_word-Link (Backend)** — konsistente Anker für Rücksprung
+- [ ] 15.7 **Queue-Routing** — CPU/GPU-Queues + Prioritäten; `analysis.align/embed`-Stubs; Beat-Reaper
+- **Exit:** Backend funktional vollständig; je Position pytest + ruff + mypy strict grün.
+
+## Portion 16 — Wave-B/C Frontend  `[ ]`  (Plan: docs/16 §1)
+- [ ] 16.1 **Shot-Thumbnail-Strip** — UI nutzt `GET /shots/{id}/thumbnail` (Blob+Token)
+- [ ] 16.2 **origin_word-Highlight** — Transkript-Klick → Player-Sprung, aktiver Clip hebt Quellwörter hervor
+- [ ] 16.3 **Player JKL/Shuttle** — J/K/L, Frame/Sekunde-Steps, Home/End
+- [ ] 16.4 **Undo/Redo + Trim/Split/Insert-UI** — Op-Stack im Renderer auf bestehende Backend-Ops
+- [ ] 16.5 **Desktop-Tests-Setup** — Vitest + Testing-Library + CI-Schritt
+- **Exit:** UI bedienbar; `tsc`/`vite build`/Vitest grün; GUI-Sicht manuell.
+
+## Portion 17 — Observability & Betrieb  `[ ]`  (Plan: docs/16 §1)
+- [ ] 17.1 **OpenTelemetry-Tracing** — FastAPI/Job-Runner-Spans, Stage-Timings/Queue-Tiefe (In-Memory-Exporter-Test)
+- [ ] 17.2 **Postgres-RLS** — Row-Level-Security pro `org_id` (Live-PG-Test: Cross-Org = 0)
+- [ ] 17.3 **Demo-Projekt + Golden-Fixtures** — `fixtures/` reproduzierbar, Golden-Exporte byte-genau
+- **Exit:** betriebsreif; Live-PG/FFmpeg-verifiziert.
+
+## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
+- [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)
+- [!] **Signierte Builds** — Win-Code-Signing-Cert + Apple-Developer-ID/Notarization
+- [!] **Qdrant-Semantik** — Qdrant-Instanz + Embedding-Modell
+- [!] **WhisperX/pyannote/TransNetV2** — GPU + Modell-Downloads + HF-Token
+- [!] **Auto-Update** — Release-/Update-Server (+ signierte Builds)
 
 ---
 
