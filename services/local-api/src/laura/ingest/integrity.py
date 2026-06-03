@@ -43,3 +43,16 @@ def verify_decode(path: Path | str, *, full_scan: bool = True) -> IntegrityRepor
             detail=f"{errors} decode error(s)",
         )
     return IntegrityReport(ok=True, container_ok=True, decode_errors=0, detail="ok")
+
+
+def is_media_file(path: Path | str) -> bool:
+    """True if ffprobe can read the container AND it has an audio or video stream.
+
+    Used to pick real media out of a torrent's mixed contents (.nfo/.txt/samples).
+    """
+    try:
+        data = ffprobe(path)
+    except FFmpegError:
+        return False
+    streams = data.get("streams", [])
+    return any(s.get("codec_type") in ("video", "audio") for s in streams)

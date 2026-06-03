@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from laura.ingest.ffmpeg import run_ffmpeg
-from laura.ingest.integrity import verify_decode
+from laura.ingest.integrity import is_media_file, verify_decode
 
 pytestmark = pytest.mark.skipif(
     shutil.which(os.environ.get("LAURA_FFMPEG", "ffmpeg")) is None,
@@ -46,3 +46,13 @@ def test_skip_decode_scan_only_checks_container(sample: Path) -> None:
     report = verify_decode(sample, full_scan=False)
     assert report.ok is True
     assert "skipped" in report.detail
+
+
+def test_is_media_file_true_for_real_media(sample: Path) -> None:
+    assert is_media_file(sample) is True
+
+
+def test_is_media_file_false_for_text(tmp_path: Path) -> None:
+    junk = tmp_path / "notes.txt"
+    junk.write_text("just some text", encoding="utf-8")
+    assert is_media_file(junk) is False
