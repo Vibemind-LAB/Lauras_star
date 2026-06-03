@@ -184,6 +184,7 @@ export interface AnalysisOptions {
   asr?: boolean;
   diarize?: boolean;
   align?: boolean;
+  detector?: string;
 }
 
 export type SearchMode = "lexical" | "semantic";

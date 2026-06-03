@@ -123,6 +123,18 @@ export function InspectorPanel({
             />
             Align
           </label>
+          <select
+            value={analysis.detector}
+            onChange={(e) => analysis.setDetector(e.target.value)}
+            disabled={running}
+            title="Szenen-Detektor (TransNetV2 nutzt das optionale ML-Modell, sonst Fallback auf Adaptive)"
+            className="rounded border border-edge bg-ink px-1 py-0.5 text-[10px] text-slate-400 disabled:opacity-40"
+          >
+            <option value="adaptive">Adaptive</option>
+            <option value="content">Content</option>
+            <option value="histogram">Histogram</option>
+            <option value="transnet">TransNetV2</option>
+          </select>
           <button
             type="button"
             onClick={() => void analysis.runAnalysis()}

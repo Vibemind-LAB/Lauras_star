@@ -19,6 +19,41 @@ describe("hasFile", () => {
   });
 });
 
+describe("LauraClient.startAnalysis", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("forwards the detector option in the POST body", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ analysis_run_id: "r1" }),
+    } as unknown as Response);
+
+    const client = new LauraClient("http://localhost:8765", "tok");
+    await client.startAnalysis("asset-1", { detector: "histogram" });
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body["detector"]).toBe("histogram");
+  });
+
+  it("defaults to no detector key when option is omitted", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ analysis_run_id: "r2" }),
+    } as unknown as Response);
+
+    const client = new LauraClient("http://localhost:8765", "tok");
+    await client.startAnalysis("asset-2");
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body["detector"]).toBeUndefined();
+  });
+});
+
 describe("LauraClient.buildRoughCutFromShots", () => {
   afterEach(() => {
     vi.restoreAllMocks();
