@@ -185,10 +185,12 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - **Exit:** ✓ betriebsreif; Live-PG/FFmpeg/OTel-In-Memory-verifiziert. **Portion 17 komplett — alle headless-baubaren Portionen (15–17) abgeschlossen.**
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
+- [x] **ASR (faster-whisper)** — **real freigeschaltet & verifiziert**: `transcribe` mit `device`-Param + **CPU-Fallback** bei fehlendem cuBLAS; gated Test (ffmpeg-`flite`-Sprache → korrekte Wörter + Zeitkern-Mapping), **188 grün**
+- [!] **Diarisierung (pyannote)** — Code/Graceful-Skip steht; braucht **HF-Token** (gegatetes Modell). Setze `HF_TOKEN`, dann verdrahte+teste ich es real
+- [!] **WhisperX-Alignment** — braucht CUDA-Libs (cuBLAS fehlt hier) oder CPU-Pfad; Extra ist isoliert gepinnt
+- [!] **Qdrant-Semantik** — Qdrant-Instanz + Embedding-Modell
 - [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)
 - [!] **Signierte Builds** — Win-Code-Signing-Cert + Apple-Developer-ID/Notarization
-- [!] **Qdrant-Semantik** — Qdrant-Instanz + Embedding-Modell
-- [!] **WhisperX/pyannote/TransNetV2** — GPU + Modell-Downloads + HF-Token
 - [!] **Auto-Update** — Release-/Update-Server (+ signierte Builds)
 
 ---

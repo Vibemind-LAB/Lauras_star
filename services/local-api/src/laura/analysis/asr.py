@@ -7,6 +7,7 @@ WhisperX (extra ``[align]``) is a future refinement pass for tighter alignment.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .types import SegmentResult, WordResult
@@ -22,20 +23,16 @@ def faster_whisper_available() -> bool:
     return True
 
 
-def transcribe(
-    audio_path: Path | str,
-    *,
-    model_size: str = DEFAULT_MODEL,
-    language: str | None = None,
+def _run(
+    audio_path: Path | str, model_size: str, language: str | None, device: str
 ) -> list[SegmentResult]:
-    """Transcribe an audio file. Raises (via lazy import) if ``[asr]`` is absent."""
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(model_size, device="auto", compute_type="int8")
+    model = WhisperModel(model_size, device=device, compute_type="int8")
     segments, _info = model.transcribe(str(audio_path), word_timestamps=True, language=language)
 
     results: list[SegmentResult] = []
-    for seg in segments:
+    for seg in segments:  # encoding (and any GPU load) happens lazily while iterating
         words = [
             WordResult(
                 text=w.word,
@@ -55,3 +52,25 @@ def transcribe(
             )
         )
     return results
+
+
+def transcribe(
+    audio_path: Path | str,
+    *,
+    model_size: str = DEFAULT_MODEL,
+    language: str | None = None,
+    device: str | None = None,
+) -> list[SegmentResult]:
+    """Transcribe an audio file (lazy faster-whisper; raises if ``[asr]`` is absent).
+
+    ``device`` defaults to ``LAURA_ASR_DEVICE`` or ``"auto"``. A CUDA load failure
+    (e.g. missing cuBLAS on a half-configured GPU host) transparently falls back to CPU
+    so the pipeline runs everywhere.
+    """
+    chosen = device or os.environ.get("LAURA_ASR_DEVICE") or "auto"
+    try:
+        return _run(audio_path, model_size, language, chosen)
+    except Exception:  # noqa: BLE001 - GPU libraries may be missing; retry on CPU
+        if chosen == "cpu":
+            raise
+        return _run(audio_path, model_size, language, "cpu")
