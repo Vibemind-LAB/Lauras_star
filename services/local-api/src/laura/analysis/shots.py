@@ -12,7 +12,7 @@ from pathlib import Path
 from .types import ShotResult
 
 DEFAULT_THRESHOLD = 27.0
-_DETECTORS = {"adaptive", "content", "histogram"}
+_DETECTORS = {"adaptive", "content", "histogram", "transnet"}
 
 
 def scenedetect_available() -> bool:
@@ -31,12 +31,18 @@ def detect_shots(
 ) -> list[ShotResult]:
     """Detect shot boundaries (end-exclusive source-frame ranges).
 
-    ``detector`` selects PySceneDetect's algorithm: ``adaptive`` (rolling content score,
-    fewer false cuts on motion — default), ``content`` (HSV content), or ``histogram``
-    (Y-channel histogram correlation). Raises ImportError if the ``scene`` extra is absent.
+    ``detector`` selects the algorithm: ``adaptive`` (PySceneDetect rolling content score,
+    fewer false cuts on motion — default), ``content`` (HSV content), ``histogram``
+    (Y-channel histogram correlation), or ``transnet`` (the learned TransNetV2 engine, extra
+    ``scene-ml``). Raises ImportError if the required extra (``scene`` / ``scene-ml``) is
+    absent.
     """
     if detector not in _DETECTORS:
         raise ValueError(f"unknown detector {detector!r}; choose one of {sorted(_DETECTORS)}")
+    if detector == "transnet":
+        from .transnet import detect_shots_transnet  # lazy: torch + weights are heavy
+
+        return detect_shots_transnet(video_path)
     from scenedetect import AdaptiveDetector, ContentDetector, detect
 
     if detector == "adaptive":
