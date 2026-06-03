@@ -3,7 +3,6 @@ import { type FormEvent, type ReactElement, useCallback, useEffect, useState } f
 import {
   type Asset,
   type Health,
-  hasFile,
   LauraClient,
   type Project,
   type SearchResult,
@@ -11,11 +10,15 @@ import {
   type Shot,
   type Timeline,
 } from "./api";
+import { DropZone, type ResolvedImport } from "./components/DropZone";
+import { ImportBar } from "./components/ImportBar";
+import { ImportProgress } from "./components/ImportProgress";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { Player } from "./components/Player";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
 import { useAnalysis } from "./hooks/useAnalysis";
+import { useImportStatus } from "./hooks/useImportStatus";
 
 interface FpsPreset {
   label: string;
@@ -36,20 +39,9 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "60", num: 60, den: 1, drop: false },
 ];
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
   return `${fps}${p.drop_frame ? " DF" : ""}`;
-}
-
-/** Import has reached a terminal-enough state for the UI (waveform ready, or a
- *  silent video proxied, or a hard failure). */
-function importSettled(a: Asset): boolean {
-  if (hasFile(a, "waveform")) return true;
-  const probed = a.duration_frames != null;
-  const silentVideo = a.type === "video" && probed && !a.audio_sample_rate && hasFile(a, "proxy");
-  return silentVideo;
 }
 
 export function App(): ReactElement {
@@ -71,7 +63,6 @@ export function App(): ReactElement {
   const [name, setName] = useState("");
   const [presetIdx, setPresetIdx] = useState(3);
   const [busy, setBusy] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [semantic, setSemantic] = useState(false);
@@ -121,6 +112,32 @@ export function App(): ReactElement {
 
   const seekToFrame = useCallback((frame: number) => setSeek({ frame }), []);
 
+  const importPaths = useCallback(
+    async (paths: string[]): Promise<void> => {
+      if (!client || !selectedProjectId) return;
+      for (const p of paths) await client.importAsset(selectedProjectId, p);
+      await loadAssets(client, selectedProjectId);
+    },
+    [client, selectedProjectId, loadAssets],
+  );
+
+  const importUrls = useCallback(
+    async (urls: string[]): Promise<void> => {
+      if (!client || !selectedProjectId) return;
+      for (const u of urls) await client.importAssetFromUrl(selectedProjectId, u);
+      await loadAssets(client, selectedProjectId);
+    },
+    [client, selectedProjectId, loadAssets],
+  );
+
+  const onDropImport = useCallback(
+    (r: ResolvedImport): void => {
+      void importPaths(r.paths);
+      void importUrls(r.urls);
+    },
+    [importPaths, importUrls],
+  );
+
   // Show the clip's source asset and seek the player to its frame.
   const previewClip = useCallback((assetId: string, frame: number) => {
     setSelectedAssetId(assetId);
@@ -164,30 +181,6 @@ export function App(): ReactElement {
       setError(String(e));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function onImport(): Promise<void> {
-    if (!client || !selectedProjectId) return;
-    const path = await window.laura.pickMediaFile();
-    if (!path) return;
-    setImporting(true);
-    setError(null);
-    try {
-      const { asset_id } = await client.importAsset(selectedProjectId, path);
-      for (let i = 0; i < 150; i++) {
-        const a = await client.getAsset(asset_id);
-        setImportingAsset(a);
-        if (importSettled(a)) break;
-        await sleep(700);
-      }
-      await loadAssets(client, selectedProjectId);
-      setSelectedAssetId(asset_id);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setImporting(false);
-      setImportingAsset(null);
     }
   }
 
@@ -268,6 +261,7 @@ export function App(): ReactElement {
 
   return (
     <div className="flex h-full flex-col">
+      <DropZone onImport={onDropImport} />
       <header className="flex items-center justify-between border-b border-edge bg-panel px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold tracking-tight text-white">Laura</h1>
@@ -346,14 +340,24 @@ export function App(): ReactElement {
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex items-center justify-between px-4 pb-2 pt-3">
               <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Medien</h2>
-              <button
-                type="button"
-                onClick={() => void onImport()}
-                disabled={!selectedProjectId || importing}
-                className="rounded-md bg-panel px-2 py-1 text-xs text-slate-200 transition hover:bg-edge disabled:opacity-40"
-              >
-                {importing ? "Importiere…" : "+ Import"}
-              </button>
+            </div>
+            <div className="px-3 pb-2">
+              <ImportBar
+                disabled={!selectedProjectId}
+                onUrl={(u) => void importUrls([u])}
+                onPickFiles={() => {
+                  void (async () => {
+                    const files = await window.laura.pickMediaFiles();
+                    if (files.length > 0) await importPaths(files);
+                  })();
+                }}
+                onPickFolder={() => {
+                  void (async () => {
+                    const folder = await window.laura.pickFolder();
+                    if (folder) await importPaths(await window.laura.listMediaInFolder(folder));
+                  })();
+                }}
+              />
             </div>
             <form onSubmit={onSearch} className="space-y-1 px-3 pb-2">
               <input
@@ -397,30 +401,35 @@ export function App(): ReactElement {
               {!selectedProjectId && (
                 <li className="px-1 py-2 text-xs text-slate-600">Wähle ein Projekt.</li>
               )}
-              {selectedProjectId && assets.length === 0 && !importing && (
+              {selectedProjectId && assets.length === 0 && (
                 <li className="px-1 py-2 text-xs text-slate-600">Noch keine Medien importiert.</li>
               )}
               {assets.map((a) => (
-                <li key={a.id} className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedAssetId(a.id)}
-                    className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
-                      a.id === selectedAssetId
-                        ? "bg-sky-600/20 text-sky-200"
-                        : "text-slate-200 hover:bg-panel"
-                    }`}
-                  >
-                    {a.display_name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void onDeleteAsset(a.id)}
-                    title="Medium löschen"
-                    className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
-                  >
-                    ×
-                  </button>
+                <li key={a.id} className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAssetId(a.id)}
+                      className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
+                        a.id === selectedAssetId
+                          ? "bg-sky-600/20 text-sky-200"
+                          : "text-slate-200 hover:bg-panel"
+                      }`}
+                    >
+                      {a.display_name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteAsset(a.id)}
+                      title="Medium löschen"
+                      className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {client && (
+                    <AssetImportRow client={client} assetId={a.id} />
+                  )}
                 </li>
               ))}
             </ul>
@@ -433,7 +442,7 @@ export function App(): ReactElement {
             <Player client={client} asset={detailAsset} seekTo={seek} onFrame={setCurrentFrame} />
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
-              {importing ? "Importiere & analysiere…" : "Wähle ein Medium oder importiere eines."}
+              Wähle ein Medium oder importiere eines.
             </div>
           )}
         </section>
@@ -476,6 +485,22 @@ export function App(): ReactElement {
         canAppend={roughCut != null}
         onAppendSegment={(s) => void onAppendSegment(s)}
       />
+    </div>
+  );
+}
+
+function AssetImportRow({
+  client,
+  assetId,
+}: {
+  client: LauraClient;
+  assetId: string;
+}): ReactElement | null {
+  const status = useImportStatus(client, assetId);
+  if (!status) return null;
+  return (
+    <div className="px-3 pb-1">
+      <ImportProgress status={status} onRetry={() => void client.retryImport(assetId)} />
     </div>
   );
 }
