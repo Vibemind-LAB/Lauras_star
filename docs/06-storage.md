@@ -60,3 +60,20 @@ workspace/
 
 Premiere nutzt für lokale Medienanalyse ebenfalls Sidecar-/Cache-Artefakte und hält Analyse +
 Suche lokal. Genau dieser Charakter ist hier gewünscht (local-first, kein Hidden Upload).
+
+## URL-Ingest: Downloads
+
+Per URL importierte Quellen werden vor der Probe nach
+`workspace/project-{project_id}/downloads/{asset_id}/<dateiname>` geladen. Während des Downloads
+existiert eine `<dateiname>.part`-Datei; sie wird erst nach bestandener Größen-/Decode-
+Prüfung atomar zur finalen Datei. Schlägt die Prüfung endgültig fehl, bleibt das Asset
+`online=false` und ein `integrity.json` (als `asset_file` kind `integrity`) hält den
+Grund fest.
+
+**Google Drive:** Kein Confirm-Token-Handling. Für große Drive-Dateien den direkten
+`googleusercontent`-Link verwenden (umgeht die „Virenscan"-Bestätigungsseite, unterstützt
+Resume).
+
+**Manueller „kaputtes Netz"-Test:** Einen impairing Proxy (toxiproxy, cross-platform) oder
+`clumsy` (Windows) zwischen Service und Quelle schalten und Latenz/Bandbreitenlimit/
+Verbindungsabbrüche injizieren. Headless nicht automatisierbar → manuell zu prüfen.
