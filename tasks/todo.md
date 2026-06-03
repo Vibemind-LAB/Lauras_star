@@ -187,8 +187,8 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
 - [x] **ASR (faster-whisper)** — **real freigeschaltet & verifiziert**: `transcribe` mit `device`-Param + **CPU-Fallback** bei fehlendem cuBLAS; gated Test (ffmpeg-`flite`-Sprache → korrekte Wörter + Zeitkern-Mapping), **188 grün**
 - [x] **Diarisierung (pyannote)** — **real freigeschaltet & verifiziert** (HF-Token via Browser, 3 gated Repos akzeptiert): `token=`-API, vor-dekodierte Waveform (umgeht torchcodec), `DiarizeOutput.speaker_diarization` (pyannote 4.x); gated Test erkennt **2 Sprecher** + `assign_speakers`. Modell-Cache auf `E:`
-- [!] **WhisperX-Alignment** — braucht CUDA-Libs (cuBLAS fehlt hier) oder CPU-Pfad; Extra ist isoliert gepinnt (ASR liefert bereits Wort-Timestamps, daher niedrige Prio)
-- [!] **Qdrant-Semantik** — Qdrant-Instanz + Embedding-Modell
+- [x] **WhisperX-Alignment** — **real freigeschaltet & verifiziert** (whisperx 3.8.6, kein torch-Konflikt): `align_words` (wav2vec2-Forced-Alignment, CPU, stdlib-`wave`-Loader), optionale `stages.align`-Stufe; gated Test (9 Wörter, tight/monoton)
+- [x] **Qdrant-Semantik** — **real freigeschaltet & verifiziert**: `[semantic]`-Extra (qdrant-client + fastembed, In-Memory/`QDRANT_URL`), Auto-Index der Transkript-Segmente, `POST /search` `mode=semantic` (Vektor-Ranking + Score, Fallback lexikalisch); 3 Tests
 - [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)
 - [!] **Signierte Builds** — Win-Code-Signing-Cert + Apple-Developer-ID/Notarization
 - [!] **Auto-Update** — Release-/Update-Server (+ signierte Builds)
