@@ -12,6 +12,7 @@ from pathlib import Path
 from .types import ShotResult
 
 DEFAULT_THRESHOLD = 27.0
+_DETECTORS = {"adaptive", "content", "histogram"}
 
 
 def scenedetect_available() -> bool:
@@ -23,22 +24,36 @@ def scenedetect_available() -> bool:
 
 
 def detect_shots(
-    video_path: Path | str, *, threshold: float = DEFAULT_THRESHOLD
+    video_path: Path | str,
+    *,
+    detector: str = "adaptive",
+    threshold: float = DEFAULT_THRESHOLD,
 ) -> list[ShotResult]:
-    """Detect shot boundaries. Returns shots as end-exclusive source-frame ranges.
+    """Detect shot boundaries (end-exclusive source-frame ranges).
 
-    Raises ImportError (via the lazy import) if the ``scene`` extra is not installed.
+    ``detector`` selects PySceneDetect's algorithm: ``adaptive`` (rolling content score,
+    fewer false cuts on motion — default), ``content`` (HSV content), or ``histogram``
+    (Y-channel histogram correlation). Raises ImportError if the ``scene`` extra is absent.
     """
-    from scenedetect import ContentDetector, detect
+    if detector not in _DETECTORS:
+        raise ValueError(f"unknown detector {detector!r}; choose one of {sorted(_DETECTORS)}")
+    from scenedetect import AdaptiveDetector, ContentDetector, detect
 
-    scenes = detect(str(video_path), ContentDetector(threshold=threshold))
-    results: list[ShotResult] = []
-    for start, end in scenes:
-        results.append(
-            ShotResult(
-                src_in_frame=int(start.frame_num),
-                src_out_frame_exclusive=int(end.frame_num),
-                method="pyscenedetect",
-            )
+    if detector == "adaptive":
+        algo = AdaptiveDetector()
+    elif detector == "histogram":
+        from scenedetect import HistogramDetector  # lazy: not on older PySceneDetect
+
+        algo = HistogramDetector()
+    else:
+        algo = ContentDetector(threshold=threshold)
+
+    scenes = detect(str(video_path), algo)
+    return [
+        ShotResult(
+            src_in_frame=int(start.frame_num),
+            src_out_frame_exclusive=int(end.frame_num),
+            method=f"pyscenedetect:{detector}",
         )
-    return results
+        for start, end in scenes
+    ]
