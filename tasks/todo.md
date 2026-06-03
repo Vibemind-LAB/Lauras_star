@@ -186,8 +186,8 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
 - [x] **ASR (faster-whisper)** — **real freigeschaltet & verifiziert**: `transcribe` mit `device`-Param + **CPU-Fallback** bei fehlendem cuBLAS; gated Test (ffmpeg-`flite`-Sprache → korrekte Wörter + Zeitkern-Mapping), **188 grün**
-- [!] **Diarisierung (pyannote)** — Code/Graceful-Skip steht; braucht **HF-Token** (gegatetes Modell). Setze `HF_TOKEN`, dann verdrahte+teste ich es real
-- [!] **WhisperX-Alignment** — braucht CUDA-Libs (cuBLAS fehlt hier) oder CPU-Pfad; Extra ist isoliert gepinnt
+- [x] **Diarisierung (pyannote)** — **real freigeschaltet & verifiziert** (HF-Token via Browser, 3 gated Repos akzeptiert): `token=`-API, vor-dekodierte Waveform (umgeht torchcodec), `DiarizeOutput.speaker_diarization` (pyannote 4.x); gated Test erkennt **2 Sprecher** + `assign_speakers`. Modell-Cache auf `E:`
+- [!] **WhisperX-Alignment** — braucht CUDA-Libs (cuBLAS fehlt hier) oder CPU-Pfad; Extra ist isoliert gepinnt (ASR liefert bereits Wort-Timestamps, daher niedrige Prio)
 - [!] **Qdrant-Semantik** — Qdrant-Instanz + Embedding-Modell
 - [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)
 - [!] **Signierte Builds** — Win-Code-Signing-Cert + Apple-Developer-ID/Notarization
