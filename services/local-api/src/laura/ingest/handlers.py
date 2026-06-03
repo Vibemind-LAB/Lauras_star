@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -137,14 +139,27 @@ def handle_waveform(ctx: JobContext) -> dict[str, Any]:
 
 def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     asset = _require_asset(ctx)
-    url = ctx.payload["source_url"]
+    url = ctx.payload.get("source_url")
+    if not url:
+        raise ValueError("ingest.fetch payload missing required field: source_url")
     full_scan = bool(ctx.payload.get("full_scan", True))
     root = _project_root(ctx.db, asset)
-    filename = Path(asset["display_name"]).name or "download.bin"
+    raw_name = Path(asset["display_name"]).name or "download.bin"
+    # Strip characters that are invalid in filenames on Windows so the open() call
+    # in the downloader can't crash on an unsanitised display_name.
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name) or "download.bin"
     dest = root / "downloads" / asset["id"] / filename
 
+    last_hb = [0.0]
+
+    def _heartbeat(_downloaded: int, _total: int | None) -> None:
+        now = time.monotonic()
+        if now - last_hb[0] > 10.0:
+            ctx.heartbeat()
+            last_hb[0] = now
+
     # Download stage: on failure the .part file remains so a retry resumes.
-    download_resumable(url, dest, on_progress=lambda _d, _t: ctx.heartbeat())
+    download_resumable(url, dest, on_progress=_heartbeat)
 
     # Verify stage: on failure discard the file so the retry re-downloads in full.
     report = verify_decode(dest, full_scan=full_scan)

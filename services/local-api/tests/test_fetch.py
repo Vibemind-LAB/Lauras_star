@@ -74,3 +74,42 @@ def test_fetch_resumes_then_probes(tmp_path: Path) -> None:
     assert a["online"] == 1                      # fetch promoted it
     assert Path(a["source_path"]).exists()       # local file now
     assert (a["width"], a["height"]) == (320, 240)  # probe ran afterwards
+
+
+def test_fetch_corrupt_media_marks_offline(tmp_path: Path) -> None:
+    # Bytes that download fine but are NOT valid media -> the container check in
+    # verify_decode fails, so the asset must never go online and an integrity
+    # record must explain why.
+    junk = b"not a real video file" * 5000
+
+    settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
+    db = SqliteDatabase(settings.db_path)
+    db.migrate()
+    project_root = settings.workspace_root / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+    project = repos.create_project(
+        db, name="t", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root=str(project_root),
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video",
+        display_name="junk.mp4", source_path="url:pending", online=False,
+    )
+
+    registry = default_registry()
+    register_ingest_handlers(registry)
+    runner = JobRunner(db, registry)
+
+    with serve(junk) as url:
+        enqueue(
+            db, queue="ingest.io", kind="ingest.fetch",
+            payload={"asset_id": asset["id"], "source_url": url},
+            idempotency_key=f"fetch:{asset['id']}", max_attempts=2,
+        )
+        _drain(runner)
+
+    a = repos.get_asset(db, asset["id"])
+    assert a is not None
+    assert a["online"] == 0  # never promoted
+    kinds = [f["kind"] for f in repos.list_asset_files(db, asset["id"])]
+    assert "integrity" in kinds  # failure was recorded
