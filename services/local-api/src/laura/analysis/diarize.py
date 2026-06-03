@@ -7,7 +7,9 @@ Needs a Hugging Face token (env ``HF_TOKEN``) to download the pretrained pipelin
 from __future__ import annotations
 
 import os
+import wave
 from pathlib import Path
+from typing import Any
 
 from .types import SegmentResult, SpeakerTurn
 
@@ -20,13 +22,39 @@ def pyannote_available() -> bool:
     return True
 
 
+def _load_waveform(audio_path: Path | str) -> tuple[Any, int]:
+    """Decode a PCM WAV to a ``(1, samples)`` float32 tensor without torchcodec/FFmpeg.
+
+    pyannote 4.x decodes files via torchcodec, which needs matching FFmpeg shared
+    libraries (fragile on Windows). Feeding a pre-decoded waveform sidesteps that. Ingest
+    writes mono 16 kHz PCM s16le WAV, which the stdlib ``wave`` module reads directly."""
+    import numpy as np
+    import torch
+
+    with wave.open(str(audio_path), "rb") as wav:
+        sample_rate = wav.getframerate()
+        channels = wav.getnchannels()
+        raw = wav.readframes(wav.getnframes())
+    data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    if channels > 1:
+        data = data.reshape(-1, channels).mean(axis=1)
+    waveform = torch.from_numpy(data).unsqueeze(0)  # (1, num_samples)
+    return waveform, sample_rate
+
+
 def diarize(audio_path: Path | str) -> list[SpeakerTurn]:
     """Run diarization. Raises (via lazy import) if ``[diarize]`` is absent."""
     from pyannote.audio import Pipeline
 
     token = os.environ.get("HF_TOKEN")
-    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=token)
-    annotation = pipeline(str(audio_path))
+    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=token)
+    assert pipeline is not None, "pyannote pipeline failed to load (check HF_TOKEN/licenses)"
+    waveform, sample_rate = _load_waveform(audio_path)
+    output = pipeline({"waveform": waveform, "sample_rate": sample_rate})
+
+    # pyannote 4.x returns a DiarizeOutput (the Annotation is on .speaker_diarization);
+    # older versions return the Annotation directly.
+    annotation = getattr(output, "speaker_diarization", output)
 
     turns: list[SpeakerTurn] = []
     for segment, _track, label in annotation.itertracks(yield_label=True):
