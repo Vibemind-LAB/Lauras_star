@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -187,7 +188,19 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     if select_engine(url) == "aria2":
         if not aria2_available():
             raise ValueError("aria2c required for this source but is not installed")
-        files = aria2_download(url, base_dir)
+        stop_hb = threading.Event()
+
+        def _hb_loop() -> None:
+            while not stop_hb.wait(30.0):
+                ctx.heartbeat()
+
+        hb_thread = threading.Thread(target=_hb_loop, daemon=True)
+        hb_thread.start()
+        try:
+            files = aria2_download(url, base_dir)
+        finally:
+            stop_hb.set()
+            hb_thread.join(timeout=1.0)
         media = [f for f in files if is_media_file(f)]
         if not media:
             base_dir.mkdir(parents=True, exist_ok=True)
@@ -202,10 +215,12 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
             )
             raise ValueError("no media file found in downloaded source")
         _finalize_media_asset(ctx, asset, media[0], full_scan=full_scan)
-        for extra in media[1:]:
-            child = repos.create_asset(
+        for i, extra in enumerate(media[1:], start=1):
+            child_id = f"{asset['id']}-{i}"
+            child = repos.get_asset(ctx.db, child_id) or repos.create_asset(
                 ctx.db, project_id=asset["project_id"], type="video",
                 display_name=extra.name, source_path=f"url:{url}", online=False,
+                asset_id=child_id,
             )
             _finalize_media_asset(ctx, child, extra, full_scan=full_scan)
         return {"asset_id": asset["id"], "engine": "aria2", "media_files": len(media)}
