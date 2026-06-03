@@ -93,6 +93,12 @@ existieren. Alles drumherum (Schalter, Konfig, Doku, Tests-mit-Mocks) ist vorber
 
 ## 4. Fortschritt
 
-- Portionen 1–13: `[x]` · Portion 14 (Wave B): `[~]` (FCPXML/Captions/Thumbnails fertig).
-- Portionen 15–17: dieser Plan, in Reihenfolge abzuarbeiten.
-- Extern blockiert: Abschnitt 2 — wartet auf deine Ressourcen.
+- Portionen 1–14: `[x]`.
+- **Portion 15 (Backend): `[x]`** — Pagination, Rate-Limiting, origin_word-Link, Speed/Retiming,
+  Timeline-Captions, Editorial-Import, Queue-Routing. Backend-Tests 140 → 173.
+- **Portion 16 (Frontend): `[x]`** — Shot-Thumbnails, Player-JKL/Shuttle, Wort-Highlight,
+  Undo/Redo + Split/Trim (Full-Stack), Vitest-Harness. tsc/build/Vitest grün.
+- **Portion 17 (Observability): `[x]`** — Golden-Fixtures (byte-genau), Postgres-RLS
+  (live verifiziert), OpenTelemetry-Tracing (No-op-Fallback). Backend-Tests bis 187.
+- **Alle headless-baubaren Portionen (15–17) abgeschlossen.** Offen bleibt nur noch
+  Abschnitt 2 (extern blockiert) — wartet auf Hardware/Zertifikate/Accounts.
