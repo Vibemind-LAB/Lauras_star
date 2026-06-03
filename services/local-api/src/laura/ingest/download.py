@@ -9,7 +9,10 @@ link (no confirm-token handling here).
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
+import shutil
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +152,76 @@ def _download_segmented(
     timeout: float,
     on_progress: Callable[[int, int | None], None] | None,
 ) -> DownloadResult:
-    raise NotImplementedError("segmented download arrives in the next task")
+    parts_dir = dest.with_name(dest.name + ".parts")
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    seg_len = -(-total // connections)  # ceil
+    segments = [
+        (i, i * seg_len, min((i + 1) * seg_len, total) - 1)
+        for i in range(connections)
+        if i * seg_len < total
+    ]
+
+    lock = threading.Lock()
+    downloaded = [0]
+
+    def fetch(segment: tuple[int, int, int]) -> None:
+        idx, start, end = segment
+        seg_path = parts_dir / f"seg-{idx:04d}"
+        want = end - start + 1
+        have = seg_path.stat().st_size if seg_path.exists() else 0
+        if have >= want:
+            with lock:
+                downloaded[0] += want
+                if on_progress is not None:
+                    on_progress(downloaded[0], total)
+            return
+        last_exc: Exception | None = None
+        for _ in range(3):
+            try:
+                resume_at = start + have
+                headers = {"Range": f"bytes={resume_at}-{end}"}
+                with (
+                    httpx.Client(follow_redirects=True, timeout=timeout) as client,
+                    client.stream("GET", url, headers=headers) as resp,
+                ):
+                    if resp.status_code != 206:
+                        raise DownloadError(
+                            f"segment {idx}: expected 206, got {resp.status_code}"
+                        )
+                    with open(seg_path, "ab" if have else "wb") as fh:
+                        for chunk in resp.iter_raw():
+                            fh.write(chunk)
+                            with lock:
+                                downloaded[0] += len(chunk)
+                                if on_progress is not None:
+                                    on_progress(downloaded[0], total)
+                return
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                have = seg_path.stat().st_size if seg_path.exists() else 0
+        raise DownloadError(f"segment {idx} failed after retries: {last_exc}")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=connections) as pool:
+        # list() forces consumption so the first worker exception propagates here
+        list(pool.map(fetch, segments))
+
+    part = dest.with_name(dest.name + ".part")
+    with open(part, "wb") as out:
+        for idx, _, _ in segments:
+            with open(parts_dir / f"seg-{idx:04d}", "rb") as seg:
+                shutil.copyfileobj(seg, out)
+
+    size = part.stat().st_size
+    if size != total:
+        raise DownloadError(f"size mismatch after reassembly: got {size}, expected {total}")
+    sha = sha256_file(part)
+    if expected_sha256 is not None and sha.lower() != expected_sha256.lower():
+        raise DownloadError(f"sha256 mismatch: got {sha}, expected {expected_sha256}")
+
+    os.replace(part, dest)
+    shutil.rmtree(parts_dir, ignore_errors=True)
+    return DownloadResult(path=dest, size_bytes=size, sha256=sha)
 
 
 def download_resumable(

@@ -71,3 +71,37 @@ def test_size_mismatch_raises(tmp_path: Path) -> None:
         pytest.raises(DownloadError),
     ):
         download_resumable(url, dest)
+
+
+BIG = b"laura-segment-" * 80_000  # ~1.1 MiB, deterministic
+
+
+def test_segmented_download_succeeds(tmp_path: Path) -> None:
+    dest = tmp_path / "big.bin"
+    with serve(BIG) as url:
+        result = download_resumable(url, dest, connections=4, min_segment_bytes=1024)
+    assert dest.read_bytes() == BIG
+    assert result.size_bytes == len(BIG)
+    assert result.sha256 == _sha(BIG)
+    assert not dest.with_name(dest.name + ".parts").exists()  # cleaned up
+
+
+def test_segmented_resumes_incomplete_segments(tmp_path: Path) -> None:
+    dest = tmp_path / "big.bin"
+    parts = dest.with_name(dest.name + ".parts")
+    parts.mkdir(parents=True)
+    seg_len = -(-len(BIG) // 4)  # ceil(total/4)
+    (parts / "seg-0000").write_bytes(BIG[0:seg_len])             # complete
+    (parts / "seg-0001").write_bytes(BIG[seg_len:seg_len + 10])  # partial
+    with serve(BIG) as url:
+        result = download_resumable(url, dest, connections=4, min_segment_bytes=1024)
+    assert dest.read_bytes() == BIG
+    assert result.sha256 == _sha(BIG)
+
+
+def test_no_range_support_falls_back_to_single_stream(tmp_path: Path) -> None:
+    dest = tmp_path / "big.bin"
+    with serve(BIG, ignore_range=True) as url:  # server answers 200, no Range
+        result = download_resumable(url, dest, connections=4, min_segment_bytes=1024)
+    assert dest.read_bytes() == BIG
+    assert result.sha256 == _sha(BIG)
