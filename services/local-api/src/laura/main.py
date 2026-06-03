@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import PIPELINE_VERSION, __version__
 from .analysis.handlers import register_analysis_handlers
@@ -48,6 +49,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.runner = runner
+    # The desktop renderer (Electron) is a separate web origin from this loopback
+    # service, and the X-Laura-Token header makes every call a CORS-preflighted request.
+    # Allow the renderer origins so the browser doesn't block it: the Vite dev server
+    # (localhost/127.0.0.1) and the packaged file:// renderer (Origin "null").
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["null"],
+        allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.middleware("http")(metrics_middleware)
     if settings.rate_limit_rpm > 0:
         capacity = settings.rate_limit_burst or settings.rate_limit_rpm
