@@ -96,7 +96,7 @@ export function AssetView({
 
   return (
     <div className="space-y-4">
-      <Player client={client} asset={asset} seekTo={seekReq} onFrame={setCurrentFrame} />
+      <Player asset={asset} seekTo={seekReq} onFrame={setCurrentFrame} />
 
       <div className="flex items-center gap-4">
         {posterUrl ? (

@@ -298,6 +298,10 @@ export class LauraClient {
   async fileObjectUrl(assetId: string, kind: string): Promise<string> {
     const res = await fetch(`${this.baseUrl}/assets/${assetId}/files/${kind}`, {
       headers: { "X-Laura-Token": this.token },
+      // Force a fresh, full GET. A partial cache entry (e.g. a large proxy whose load
+      // was interrupted) makes Chromium revalidate with a Range request; a reset
+      // mid-stream then surfaces in the renderer as "TypeError: Failed to fetch".
+      cache: "no-store",
     });
     if (!res.ok) {
       throw new Error(`${res.status}: ${await res.text()}`);
@@ -329,6 +333,7 @@ export class LauraClient {
   async shotThumbnailUrl(shotId: string): Promise<string> {
     const res = await fetch(`${this.baseUrl}/shots/${shotId}/thumbnail`, {
       headers: { "X-Laura-Token": this.token },
+      cache: "no-store",
     });
     if (!res.ok) {
       throw new Error(`${res.status}: ${await res.text()}`);
@@ -341,6 +346,7 @@ export class LauraClient {
   async assetFrameUrl(assetId: string, frame: number): Promise<string> {
     const res = await fetch(`${this.baseUrl}/assets/${assetId}/frame/${Math.max(0, frame)}`, {
       headers: { "X-Laura-Token": this.token },
+      cache: "no-store",
     });
     if (!res.ok) {
       throw new Error(`${res.status}: ${await res.text()}`);

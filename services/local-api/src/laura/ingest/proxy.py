@@ -40,6 +40,7 @@ def build_proxy(
         "-g", "1",                 # all-intra: every frame a keyframe
         "-pix_fmt", "yuv420p",
         "-an",                     # audio handled separately
+        "-movflags", "+faststart", # moov atom up front -> progressive/range streaming
         str(dest),
     ]
     run_ffmpeg(args)

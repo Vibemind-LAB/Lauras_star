@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 
-import { type Asset, hasFile, type LauraClient } from "../api";
+import { type Asset, hasFile } from "../api";
 
 /**
  * Frame-accurate proxy player (the supplemental WebCodecs/<video> path, ADR-0002).
@@ -18,12 +18,10 @@ function fps(asset: Asset): number {
 }
 
 export function Player({
-  client,
   asset,
   seekTo,
   onFrame,
 }: {
-  client: LauraClient;
   asset: Asset;
   seekTo?: { frame: number } | null;
   onFrame?: (frame: number) => void;
@@ -36,39 +34,27 @@ export function Player({
   const [playing, setPlaying] = useState(false);
   const [frame, setFrame] = useState(0);
   const [shuttle, setShuttle] = useState(0); // signed playback rate: + forward, - reverse
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const f = fps(asset);
   const total = asset.duration_frames ?? 0;
   const proxyReady = hasFile(asset, "proxy");
 
   useEffect(() => {
-    let cancelled = false;
-    let created: string | null = null;
-    setUrl(null);
     setFrame(0);
     setPlaying(false);
-    if (proxyReady) {
-      void client
-        .fileObjectUrl(asset.id, "proxy")
-        .then((u) => {
-          if (cancelled) {
-            URL.revokeObjectURL(u);
-          } else {
-            created = u;
-            setUrl(u);
-          }
-        })
-        .catch(() => undefined);
-    }
+    setLoadError(null);
+    // Stream the proxy via the laura-media:// scheme (handled in the main process) rather
+    // than fetching it cross-origin into a blob — large bodies fail that way, and this
+    // gives native Range seeking without holding the whole file in the renderer.
+    setUrl(proxyReady ? `laura-media://media/${asset.id}/proxy` : null);
     return () => {
-      cancelled = true;
-      if (created) URL.revokeObjectURL(created);
       if (reverseTimer.current !== null) {
         window.clearInterval(reverseTimer.current);
         reverseTimer.current = null;
       }
     };
-  }, [client, asset.id, proxyReady]);
+  }, [asset.id, proxyReady]);
 
   function seekToFrame(target: number): void {
     const v = videoRef.current;
@@ -219,7 +205,11 @@ export function Player({
       className="space-y-2 rounded-md outline-none focus:ring-1 focus:ring-sky-600/50"
     >
       <div className="overflow-hidden rounded-md border border-edge bg-black">
-        {url ? (
+        {loadError ? (
+          <div className="flex aspect-video w-full items-center justify-center px-6 text-center text-xs text-red-400">
+            {loadError}
+          </div>
+        ) : url ? (
           <video
             ref={videoRef}
             src={url}
@@ -228,10 +218,19 @@ export function Player({
             onPause={() => setPlaying(false)}
             onLoadedData={() => {
               const v = videoRef.current;
+              console.info(
+                `[Player] loadeddata readyState=${v?.readyState} pending=${pendingSeek.current}`,
+              );
               if (v && pendingSeek.current != null) {
                 v.currentTime = pendingSeek.current / f;
                 pendingSeek.current = null;
               }
+            }}
+            onError={() => {
+              const err = videoRef.current?.error;
+              const msg = `Video-Fehler ${err?.code ?? "?"}: ${err?.message ?? "unbekannt"}`;
+              console.error(`[Player] ${msg}`);
+              setLoadError(msg);
             }}
             onTimeUpdate={(e) => {
               const fr = Math.round(e.currentTarget.currentTime * f);
