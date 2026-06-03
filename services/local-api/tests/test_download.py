@@ -58,3 +58,16 @@ def test_server_ignoring_range_restarts_cleanly(tmp_path: Path) -> None:
         result = download_resumable(url, dest)
     assert dest.read_bytes() == CONTENT
     assert result.sha256 == _sha(CONTENT)
+
+
+def test_size_mismatch_raises(tmp_path: Path) -> None:
+    dest = tmp_path / "out.bin"
+    # server advertises more bytes than it sends -> our size check must catch it.
+    # httpx may raise a RemoteProtocolError (incomplete read) before our own
+    # size-mismatch check is reached; either way the exception is wrapped as
+    # DownloadError so we assert on the type alone rather than the message text.
+    with (
+        serve(CONTENT, fake_content_length=len(CONTENT) + 100) as url,
+        pytest.raises(DownloadError),
+    ):
+        download_resumable(url, dest)

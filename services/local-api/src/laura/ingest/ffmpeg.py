@@ -74,4 +74,9 @@ def decode_scan(path: Path | str) -> int:
     except FileNotFoundError as exc:
         raise FFmpegError(f"ffmpeg not found: {ffmpeg_bin()}") from exc
     stderr = (proc.stderr or "").strip()
-    return len([line for line in stderr.splitlines() if line.strip()])
+    error_lines = len([line for line in stderr.splitlines() if line.strip()])
+    if proc.returncode != 0:
+        # A non-zero exit means ffmpeg aborted decoding (``-xerror``); count it as at
+        # least one error even when stderr was suppressed.
+        return max(error_lines, 1)
+    return error_lines

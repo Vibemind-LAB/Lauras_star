@@ -26,6 +26,7 @@ def serve(
     *,
     cut_after: int | None = None,
     ignore_range: bool = False,
+    fake_content_length: int | None = None,
 ) -> Iterator[str]:
     """Serve ``content`` at the yielded URL.
 
@@ -37,6 +38,13 @@ def serve(
     If ``ignore_range`` is True, any ``Range`` header in the request is ignored:
     the server always responds ``200`` with the full body and full
     ``Content-Length``, simulating a server that has no range-request support.
+
+    If ``fake_content_length`` is set, the non-cut full-body responses (both the
+    ``200`` and ``206`` branches) advertise that value as ``Content-Length``
+    instead of the true body length, while still sending the true body bytes.
+    This lets tests verify that the downloader detects a size mismatch when the
+    server claims to send more data than it actually does.  The cut-connection
+    path and the chunked-transfer branch are not affected.
     """
     state = {"cut_used": False}
 
@@ -94,7 +102,8 @@ def serve(
                 )
             else:
                 self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
+            advertised_len = fake_content_length if fake_content_length is not None else len(body)
+            self.send_header("Content-Length", str(advertised_len))
             self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
             self.wfile.write(body)

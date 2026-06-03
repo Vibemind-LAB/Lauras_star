@@ -45,6 +45,10 @@ def _require_asset(ctx: JobContext) -> dict[str, Any]:
 def handle_probe(ctx: JobContext) -> dict[str, Any]:
     asset = _require_asset(ctx)
     src = asset["source_path"]
+    if src.startswith("url:"):
+        raise ValueError(
+            f"asset {asset['id']} source is still a URL placeholder; fetch not complete"
+        )
     if not os.path.exists(src):
         raise FileNotFoundError(f"source not found: {src}")
 
