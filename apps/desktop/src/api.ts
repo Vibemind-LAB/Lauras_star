@@ -164,7 +164,10 @@ export interface AnalysisOptions {
   scene?: boolean;
   asr?: boolean;
   diarize?: boolean;
+  align?: boolean;
 }
+
+export type SearchMode = "lexical" | "semantic";
 
 export interface SearchResult {
   segment_id: string;
@@ -174,6 +177,7 @@ export interface SearchResult {
   end_frame: number;
   text: string;
   speaker_label: string | null;
+  score: number | null;
 }
 
 export type ExportFormat = "otio" | "edl" | "fcp7xml" | "fcpxml";
@@ -223,10 +227,14 @@ export class LauraClient {
     return this.request<Health>("/healthz");
   }
 
-  searchTranscript(projectId: string, query: string): Promise<SearchResult[]> {
+  searchTranscript(
+    projectId: string,
+    query: string,
+    mode: SearchMode = "lexical",
+  ): Promise<SearchResult[]> {
     return this.request<SearchResult[]>("/search", {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId, query }),
+      body: JSON.stringify({ project_id: projectId, query, mode }),
     });
   }
 

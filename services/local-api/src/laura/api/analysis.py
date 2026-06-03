@@ -57,7 +57,10 @@ def start_analysis(asset_id: str, body: AnalysisStart, request: Request) -> Anal
     if repos.get_asset(db, asset_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
     config: dict[str, Any] = {
-        "stages": {"scene": body.scene, "asr": body.asr, "diarize": body.diarize},
+        "stages": {
+            "scene": body.scene, "asr": body.asr,
+            "diarize": body.diarize, "align": body.align,
+        },
         "model": body.model,
         "language": body.language,
     }

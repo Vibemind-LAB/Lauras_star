@@ -165,6 +165,8 @@ export function AnalysisPanel({
   const [segments, setSegments] = useState<Segment[]>([]);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [diarize, setDiarize] = useState(false);
+  const [align, setAlign] = useState(false);
 
   const loadResults = useCallback(async () => {
     const [sh, tr] = await Promise.all([client.getShots(asset.id), client.getTranscript(asset.id)]);
@@ -197,7 +199,7 @@ export function AnalysisPanel({
     setStatus("running");
     setError(null);
     try {
-      await client.startAnalysis(asset.id, { scene: true, asr: true });
+      await client.startAnalysis(asset.id, { scene: true, asr: true, diarize, align });
       for (let i = 0; i < 180; i++) {
         const run = await client.getLatestAnalysis(asset.id);
         if (run && (run.status === "succeeded" || run.status === "failed")) {
@@ -256,14 +258,36 @@ export function AnalysisPanel({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-xs uppercase tracking-wide text-slate-500">Analyse</span>
-        <button
-          type="button"
-          onClick={() => void runAnalysis()}
-          disabled={status === "running"}
-          className="rounded-md bg-panel px-2 py-1 text-xs text-slate-200 transition hover:bg-edge disabled:opacity-40"
-        >
-          {status === "running" ? "Analysiere…" : "Analyse starten"}
-        </button>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1 text-[10px] text-slate-400" title="Sprecher-Diarisierung (pyannote)">
+            <input
+              type="checkbox"
+              checked={diarize}
+              onChange={(e) => setDiarize(e.target.checked)}
+              disabled={status === "running"}
+              className="accent-sky-500"
+            />
+            Diarize
+          </label>
+          <label className="flex items-center gap-1 text-[10px] text-slate-400" title="Wort-Alignment (WhisperX)">
+            <input
+              type="checkbox"
+              checked={align}
+              onChange={(e) => setAlign(e.target.checked)}
+              disabled={status === "running"}
+              className="accent-sky-500"
+            />
+            Align
+          </label>
+          <button
+            type="button"
+            onClick={() => void runAnalysis()}
+            disabled={status === "running"}
+            className="rounded-md bg-panel px-2 py-1 text-xs text-slate-200 transition hover:bg-edge disabled:opacity-40"
+          >
+            {status === "running" ? "Analysiere…" : "Analyse starten"}
+          </button>
+        </div>
       </div>
 
       {error && <div className="text-xs text-red-400">{error}</div>}

@@ -65,6 +65,7 @@ export function App(): ReactElement {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [semantic, setSemantic] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
 
   useEffect(() => {
@@ -207,7 +208,13 @@ export function App(): ReactElement {
       return;
     }
     try {
-      setSearchResults(await client.searchTranscript(selectedProjectId, searchQuery.trim()));
+      setSearchResults(
+        await client.searchTranscript(
+          selectedProjectId,
+          searchQuery.trim(),
+          semantic ? "semantic" : "lexical",
+        ),
+      );
     } catch (err) {
       setError(String(err));
     }
@@ -305,14 +312,25 @@ export function App(): ReactElement {
               {importing ? "Importiere…" : "+ Import"}
             </button>
           </div>
-          <form onSubmit={onSearch} className="px-3 pb-2">
+          <form onSubmit={onSearch} className="space-y-1 px-3 pb-2">
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Transkript durchsuchen…"
+              placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
               disabled={!selectedProjectId}
               className="w-full rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-slate-500 disabled:opacity-40"
             />
+            <button
+              type="button"
+              onClick={() => setSemantic((s) => !s)}
+              disabled={!selectedProjectId}
+              title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
+              className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
+                semantic ? "bg-sky-600/30 text-sky-200" : "bg-panel text-slate-400 hover:bg-edge"
+              }`}
+            >
+              {semantic ? "● semantisch" : "○ lexikalisch"}
+            </button>
           </form>
           {searchResults.length > 0 && (
             <ul className="max-h-40 space-y-1 overflow-auto border-b border-edge px-3 pb-2">
@@ -323,6 +341,9 @@ export function App(): ReactElement {
                     onClick={() => setSelectedAssetId(r.asset_id)}
                     className="w-full truncate rounded bg-panel px-2 py-1 text-left text-xs text-slate-300 hover:bg-edge"
                   >
+                    {r.score != null && (
+                      <span className="mr-1 text-emerald-400">{Math.round(r.score * 100)}%</span>
+                    )}
                     <span className="text-slate-500">{r.asset_name}:</span> {r.text.slice(0, 60)}
                   </button>
                 </li>

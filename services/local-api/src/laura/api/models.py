@@ -93,6 +93,7 @@ class AnalysisStart(BaseModel):
     scene: bool = True
     asr: bool = True
     diarize: bool = False
+    align: bool = False
     model: str = "base"
     language: str | None = None
 
