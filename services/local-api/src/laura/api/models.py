@@ -152,6 +152,16 @@ class TimelineCreate(BaseModel):
     kind: str = "rough_cut"
 
 
+class FromShotsRequest(BaseModel):
+    """Build a rough cut with one contiguous clip per detected shot of an asset."""
+
+    asset_id: str
+    run_id: str | None = None        # default: the asset's latest analysis run
+    timeline_id: str | None = None   # populate this timeline (must be empty); else create new
+    name: str | None = Field(default=None, max_length=200)
+    lane: int = Field(default=0, ge=0)
+
+
 class ClipOut(BaseModel):
     id: str
     asset_id: str
