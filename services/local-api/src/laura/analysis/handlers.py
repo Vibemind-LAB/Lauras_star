@@ -18,6 +18,7 @@ from ..ingest.proxy import build_thumbnail
 from ..jobs.runner import JobContext, JobHandler
 from ..semantic import get_index
 from ..util import utcnow_iso
+from .align import align_words, whisperx_available
 from .asr import faster_whisper_available, transcribe
 from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
@@ -85,6 +86,14 @@ def _run_transcript(
     except Exception as exc:  # noqa: BLE001
         return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
+    align_status = "skipped"
+    if config.get("stages", {}).get("align", False) and whisperx_available():
+        try:
+            segments = align_words(mono_path, segments, language=config.get("language") or "en")
+            align_status = f"ok ({sum(len(s.words) for s in segments)} words)"
+        except Exception as exc:  # noqa: BLE001
+            align_status = f"failed: {type(exc).__name__}: {exc}"
+
     diar_status = "skipped"
     if config.get("stages", {}).get("diarize", False) and pyannote_available():
         try:
@@ -132,7 +141,7 @@ def _run_transcript(
         except Exception as exc:  # noqa: BLE001 - semantic indexing is best-effort
             diar_status = f"{diar_status}; embed failed: {type(exc).__name__}"
     return {"status": "ok", "segments": len(segments), "diarization": diar_status,
-            "embedded": embedded}
+            "alignment": align_status, "embedded": embedded}
 
 
 def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:
