@@ -186,6 +186,20 @@ def update_asset_probe(
         )
 
 
+def set_asset_source(
+    db: Database, asset_id: str, *, source_path: str, online: bool
+) -> None:
+    """Point an asset at its (now local) source file and flip its online flag.
+
+    Used by the URL-ingest fetch stage once the download is verified complete.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE media_assets SET source_path=?, online=? WHERE id=?",
+            (source_path, int(online), asset_id),
+        )
+
+
 def add_asset_file(
     db: Database,
     *,
