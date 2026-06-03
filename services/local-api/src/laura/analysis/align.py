@@ -7,10 +7,10 @@ gracefully when the extra is absent (callers check :func:`whisperx_available`).
 
 from __future__ import annotations
 
-import os
 import wave
 from pathlib import Path
 
+from .device import torch_device
 from .types import SegmentResult, WordResult
 
 
@@ -51,7 +51,7 @@ def align_words(
 
     if not segments:
         return segments
-    dev = device or os.environ.get("LAURA_ASR_DEVICE") or "cpu"
+    dev = torch_device(device)
     audio = _load_audio(audio_path)
     model_a, metadata = whisperx.load_align_model(language_code=language, device=dev)
     asr_input = [{"text": s.text, "start": s.start_sec, "end": s.end_sec} for s in segments]

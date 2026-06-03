@@ -11,6 +11,7 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from .device import torch_device
 from .types import SegmentResult, SpeakerTurn
 
 
@@ -49,6 +50,16 @@ def diarize(audio_path: Path | str) -> list[SpeakerTurn]:
     token = os.environ.get("HF_TOKEN")
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=token)
     assert pipeline is not None, "pyannote pipeline failed to load (check HF_TOKEN/licenses)"
+
+    dev = torch_device()
+    if dev != "cpu":
+        try:
+            import torch
+
+            pipeline.to(torch.device(dev))
+        except Exception:  # noqa: BLE001 - stay on CPU if the device move fails
+            pass
+
     waveform, sample_rate = _load_waveform(audio_path)
     output = pipeline({"waveform": waveform, "sample_rate": sample_rate})
 

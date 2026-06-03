@@ -16,8 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 scene = ["scenedetect>=0.6.4", "opencv-python>=4.9"]
 asr = ["faster-whisper>=1.0"]
-align = ["whisperx>=3.1"]            # version-sensitive — pin hard, isolate
-diarize = ["pyannote.audio>=3.1"]
+align = ["whisperx>=3.1", "torch>=2.8", "torchaudio>=2.8"]   # version-sensitive — pin hard, isolate
+diarize = ["pyannote.audio>=3.1", "torch>=2.8", "torchaudio>=2.8"]
 # Server / on-prem mode (docs/14-enterprise.md) — not needed for desktop.
 server = [
     "psycopg[binary]>=3.2",
@@ -52,6 +52,18 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/laura"]
+
+# torch/torchaudio resolve from the CUDA wheel index so the GPU is used where present.
+# Only the diarize/align extras pull torch; CPU-only hosts still work (the cu128 build
+# runs on CPU). CI installs neither extra, so it is unaffected.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 
 [tool.ruff]
 line-length = 100
