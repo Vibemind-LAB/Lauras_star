@@ -10,13 +10,16 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
 from ..util import utcnow_iso
-from .base import Conn, Database, to_pyformat
+from .base import Conn, Database, split_statements, to_pyformat
+
+_RLS_FILE = Path(__file__).parent / "rls.sql"
 
 
 def _iso(dt: datetime) -> str:
@@ -94,3 +97,16 @@ class PostgresDatabase(Database):
             raise
         finally:
             raw.close()
+
+    # --- row-level security (Postgres-only, defense in depth) -------------
+    def apply_rls(self) -> None:
+        """Enable the multi-tenant RLS policies. Idempotent; call after ``migrate``."""
+        sql = _RLS_FILE.read_text(encoding="utf-8")
+        with self.transaction() as conn:
+            for statement in split_statements(sql):
+                conn.execute(statement)
+
+    def set_org(self, conn: Conn, org_id: str | None) -> None:
+        """Set the ``app.current_org`` GUC on ``conn`` so RLS scopes rows to that org
+        (empty/None = local owner / admin, which sees everything)."""
+        conn.execute("SELECT set_config('app.current_org', ?, false)", (org_id or "",))

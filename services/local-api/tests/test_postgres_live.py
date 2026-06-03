@@ -85,3 +85,53 @@ def test_pg_rbac_and_audit(pg: PostgresDatabase) -> None:
         action="project.create", entity_type="project", entity_id="p1", payload={"x": 1},
     )
     assert any(e["action"] == "project.create" for e in repos.list_audit_events(pg))
+
+
+def test_pg_rls_isolates_orgs(pg: PostgresDatabase) -> None:
+    import psycopg
+    from psycopg.rows import dict_row
+
+    assert DSN
+    pg.apply_rls()
+    repos.create_project(
+        pg, name="A", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root="/a", org_id="orgA",
+    )
+    repos.create_project(
+        pg, name="B", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root="/b", org_id="orgB",
+    )
+
+    # RLS is bypassed by superusers/owners, so verify as a dedicated non-superuser
+    # role (how the app connects in production).
+    with pg.connection() as conn:
+        conn.execute(
+            "DO $$ BEGIN "
+            "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='laura_rls_test') THEN "
+            "DROP OWNED BY laura_rls_test CASCADE; DROP ROLE laura_rls_test; END IF; "
+            "END $$;"
+        )
+        conn.execute("CREATE ROLE laura_rls_test LOGIN PASSWORD 'rls' NOSUPERUSER")
+        conn.execute("GRANT SELECT ON projects TO laura_rls_test")
+
+    # swap the userinfo for the non-superuser role (keeps host:port/db)
+    host_part = DSN.partition("://")[2].split("@", 1)[1]
+    app_dsn = f"postgresql://laura_rls_test:rls@{host_part}"
+
+    try:
+        with psycopg.connect(app_dsn, autocommit=True, row_factory=dict_row) as app:
+            app.execute("SELECT set_config('app.current_org', 'orgA', false)")
+            rows = app.execute("SELECT org_id FROM projects").fetchall()
+            assert rows and all(r["org_id"] == "orgA" for r in rows)
+
+            app.execute("SELECT set_config('app.current_org', 'orgB', false)")
+            rows = app.execute("SELECT org_id FROM projects").fetchall()
+            assert rows and all(r["org_id"] == "orgB" for r in rows)
+
+            app.execute("SELECT set_config('app.current_org', '', false)")  # admin context
+            rows = app.execute("SELECT org_id FROM projects").fetchall()
+            assert {r["org_id"] for r in rows} == {"orgA", "orgB"}
+    finally:
+        with pg.connection() as conn:
+            conn.execute("DROP OWNED BY laura_rls_test CASCADE")
+            conn.execute("DROP ROLE IF EXISTS laura_rls_test")

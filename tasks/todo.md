@@ -180,7 +180,7 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 
 ## Portion 17 — Observability & Betrieb  `[~]`  (Plan: docs/16 §1)
 - [ ] 17.1 **OpenTelemetry-Tracing** — FastAPI/Job-Runner-Spans, Stage-Timings/Queue-Tiefe (In-Memory-Exporter-Test)
-- [ ] 17.2 **Postgres-RLS** — Row-Level-Security pro `org_id` (Live-PG-Test: Cross-Org = 0)
+- [x] 17.2 **Postgres-RLS** — `db/rls.sql` (FORCE RLS auf projects, GUC `app.current_org`), `PostgresDatabase.apply_rls()`/`set_org()`; SQLite unberührt. **Live-PG verifiziert** als Nicht-Superuser-Rolle: Cross-Org-Read = 0 (6 PG-Tests grün). API-Layer-Filter bleibt primärer Guard; RLS = Defense-in-Depth
 - [x] 17.3 **Demo-Projekt + Golden-Fixtures** — `fixtures/golden/` (EDL/FCP7-XML/SRT/VTT) byte-genau vs. kanonischer Demo-Schnitt, `LAURA_REGEN_GOLDEN=1` zum Neu-Erzeugen, OTIO per Round-Trip; `.gitattributes` schützt CRLF; 5 Tests, **185 grün**
 - **Exit:** betriebsreif; Live-PG/FFmpeg-verifiziert.
 
