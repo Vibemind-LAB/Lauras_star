@@ -137,7 +137,15 @@ export function InspectorPanel({
       {analysis.error && <div className="text-xs text-red-400">{analysis.error}</div>}
 
       <div>
-        <div className="mb-1 text-xs text-slate-500">Shots ({analysis.shots.length})</div>
+        {(() => {
+          const droppedCount = analysis.shots.filter((s) => s.keep === false).length;
+          return (
+            <div className="mb-1 text-xs text-slate-500">
+              Shots ({analysis.shots.length}
+              {droppedCount > 0 ? ` · ${droppedCount} verworfen` : ""})
+            </div>
+          );
+        })()}
         <ShotStrip
           client={client}
           shots={analysis.shots}
