@@ -361,3 +361,12 @@ class SegmentUpdate(BaseModel):
 
 class RenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class ImportStatusOut(BaseModel):
+    phase: str  # queued | downloading | verifying | analyzing | ready | error
+    downloaded_bytes: int | None = None
+    total_bytes: int | None = None
+    speed_bps: float | None = None
+    eta_seconds: float | None = None
+    error: str | None = None
