@@ -23,6 +23,7 @@ from .asr import faster_whisper_available, transcribe
 from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
 from .mapping import map_segment
+from .quality import compute_shot_metrics, decide_keep, mark_duplicates
 from .shots import detect_shots, scenedetect_available
 from .types import ShotResult
 
@@ -54,13 +55,28 @@ def _run_scene(
             thumbnail = str(dest)
         except Exception:  # noqa: BLE001 - thumbnails are best-effort
             thumbnail = None
+        keep, reason, metrics = True, None, None
+        try:
+            metrics = compute_shot_metrics(
+                video, s.src_in_frame, s.src_out_frame_exclusive
+            )
+            keep, reason = decide_keep(metrics)
+        except Exception:  # noqa: BLE001 - quality metrics are best-effort
+            metrics = None
         rows.append({
             "src_in_frame": s.src_in_frame,
             "src_out_frame_exclusive": s.src_out_frame_exclusive,
             "method": s.method,
             "confidence": s.confidence,
             "thumbnail_path": thumbnail,
+            "black_ratio": metrics.black_ratio if metrics else None,
+            "static_score": metrics.static if metrics else None,
+            "phash": metrics.phash if metrics else None,
+            "blur_score": metrics.blur if metrics else None,
+            "keep": keep,
+            "drop_reason": reason,
         })
+    mark_duplicates(rows)
     repos.insert_shots(db, asset_id=asset["id"], run_id=run_id, shots=rows)
     return {"status": "ok", "count": len(rows), "method": "pyscenedetect"}
 
