@@ -16,6 +16,7 @@ from ..db import repos
 from ..db.database import Database
 from ..ingest.proxy import build_thumbnail
 from ..jobs.runner import JobContext, JobHandler
+from ..semantic import get_index
 from ..util import utcnow_iso
 from .asr import faster_whisper_available, transcribe
 from .diarize import assign_speakers, diarize, pyannote_available
@@ -98,6 +99,7 @@ def _run_transcript(
     rate_den = asset["rate_den"] or project["sequence_rate_den"]
 
     label_to_id: dict[str, str] = {}
+    index_items: list[dict[str, Any]] = []
     for seg in segments:
         speaker_id: str | None = None
         if seg.speaker_label:
@@ -107,11 +109,30 @@ def _run_transcript(
                 )
             speaker_id = label_to_id[seg.speaker_label]
         seg_row, word_rows = map_segment(seg, audio_rate, rate_num, rate_den)
-        repos.insert_segment_with_words(
+        seg_id = repos.insert_segment_with_words(
             db, asset_id=asset["id"], run_id=run_id, speaker_id=speaker_id,
             segment=seg_row, words=word_rows,
         )
-    return {"status": "ok", "segments": len(segments), "diarization": diar_status}
+        index_items.append({
+            "id": seg_id, "text": seg_row["text"],
+            "payload": {
+                "project_id": asset["project_id"], "asset_id": asset["id"],
+                "segment_id": seg_id, "asset_name": asset["display_name"],
+                "text": seg_row["text"], "start_frame": seg_row["start_frame"],
+                "end_frame": seg_row["end_frame"], "speaker_label": seg.speaker_label,
+            },
+        })
+
+    embedded = 0
+    index = get_index()
+    if index is not None and index_items:
+        try:
+            index.delete_asset(asset["id"])
+            embedded = index.index(index_items)
+        except Exception as exc:  # noqa: BLE001 - semantic indexing is best-effort
+            diar_status = f"{diar_status}; embed failed: {type(exc).__name__}"
+    return {"status": "ok", "segments": len(segments), "diarization": diar_status,
+            "embedded": embedded}
 
 
 def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:

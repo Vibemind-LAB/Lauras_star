@@ -322,6 +322,7 @@ class SearchRequest(BaseModel):
     project_id: str
     query: str = Field(min_length=1)
     limit: int = Field(default=50, ge=1, le=500)
+    mode: str = "lexical"  # "lexical" (LIKE) | "semantic" (Qdrant; falls back if absent)
 
 
 class SearchResult(BaseModel):
@@ -332,6 +333,7 @@ class SearchResult(BaseModel):
     end_frame: int
     text: str
     speaker_label: str | None = None
+    score: float | None = None  # semantic similarity (None for lexical)
 
 
 class SegmentUpdate(BaseModel):

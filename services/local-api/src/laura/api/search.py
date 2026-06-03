@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
+from ..semantic import get_index
 from .models import SearchRequest, SearchResult
 
 router = APIRouter(tags=["search"])
@@ -25,6 +26,21 @@ def search(
     request: Request,
     _principal: Annotated[Principal, Depends(require_permission("read"))],
 ) -> list[SearchResult]:
+    if body.mode == "semantic":
+        index = get_index()
+        if index is not None:  # else fall through to lexical (extra not installed)
+            hits = index.query(body.query, project_id=body.project_id, limit=body.limit)
+            return [
+                SearchResult(
+                    segment_id=str(h["segment_id"]), asset_id=str(h["asset_id"]),
+                    asset_name=str(h.get("asset_name", "")),
+                    start_frame=int(h.get("start_frame", 0)),
+                    end_frame=int(h.get("end_frame", 0)),
+                    text=str(h.get("text", "")), speaker_label=h.get("speaker_label"),
+                    score=h.get("score"),
+                )
+                for h in hits
+            ]
     results = repos.search_transcript(
         _db(request), project_id=body.project_id, query=body.query, limit=body.limit
     )
