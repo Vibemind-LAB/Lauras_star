@@ -99,3 +99,38 @@ def test_import_status_downloading_then_error(tmp_path) -> None:
     body = client.get(f"/assets/{asset['id']}/import-status").json()
     assert body["phase"] == "error"
     assert "boom" in (body["error"] or "")
+
+
+def test_import_retry_requeues_failed_fetch(tmp_path) -> None:
+    client, db = _client_db(tmp_path)
+    pid = _project(client)
+    asset = repos.create_asset(
+        db, project_id=pid, type="video", display_name="x.mp4",
+        source_path="url:http://x/y.mp4", online=False,
+    )
+    job_id = enqueue(
+        db, queue="ingest.io", kind="ingest.fetch",
+        payload={"asset_id": asset["id"], "source_url": "http://x/y.mp4"},
+        idempotency_key=f"fetch:{asset['id']}",
+    )
+    with db.connection() as conn:
+        conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (job_id,))
+
+    assert client.post(f"/assets/{asset['id']}/import-retry").status_code == 202
+    job = repos.get_fetch_job(db, asset["id"])
+    assert job["status"] == "queued"
+
+
+def test_import_retry_conflict_when_not_error(tmp_path) -> None:
+    client, db = _client_db(tmp_path)
+    pid = _project(client)
+    asset = repos.create_asset(
+        db, project_id=pid, type="video", display_name="x.mp4",
+        source_path="url:http://x/y.mp4", online=False,
+    )
+    enqueue(
+        db, queue="ingest.io", kind="ingest.fetch",
+        payload={"asset_id": asset["id"], "source_url": "http://x/y.mp4"},
+        idempotency_key=f"fetch:{asset['id']}",
+    )  # status queued, not failed
+    assert client.post(f"/assets/{asset['id']}/import-retry").status_code == 409

@@ -152,6 +152,26 @@ def _derive_import_status(db: Database, asset: dict[str, Any]) -> ImportStatusOu
     return ImportStatusOut(phase="analyzing")
 
 
+@router.post("/assets/{asset_id}/import-retry", status_code=status.HTTP_202_ACCEPTED)
+def import_retry(asset_id: str, request: Request) -> dict[str, str]:
+    db = _db(request)
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    job = repos.get_fetch_job(db, asset_id)
+    if job is None or job["status"] != "failed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "no failed import to retry")
+    source_url = json.loads(job["payload_json"]).get("source_url")
+    if not source_url:
+        raise HTTPException(status.HTTP_409_CONFLICT, "fetch job has no source_url")
+    job_id = enqueue(
+        db, queue="ingest.io", kind="ingest.fetch",
+        payload={"asset_id": asset_id, "source_url": source_url},
+        idempotency_key=f"fetch:{asset_id}", max_attempts=5,
+    )
+    return {"asset_id": asset_id, "job_id": job_id}
+
+
 @router.get("/assets/{asset_id}/import-status", response_model=ImportStatusOut)
 def import_status(asset_id: str, request: Request) -> ImportStatusOut:
     db = _db(request)
