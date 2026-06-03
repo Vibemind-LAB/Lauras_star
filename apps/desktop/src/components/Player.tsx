@@ -30,6 +30,8 @@ export function Player({
 }): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const reverseTimer = useRef<number | null>(null);
+  // A seek requested while the proxy is still (re)loading — applied on loadeddata.
+  const pendingSeek = useRef<number | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [frame, setFrame] = useState(0);
@@ -74,10 +76,15 @@ export function Player({
     v.currentTime = Math.max(0, target) / f;
   }
 
-  // External seek request (e.g. clicking a transcript word) — pause any shuttle first.
+  // External seek request (clicking a transcript word or a rough-cut clip) — pause any
+  // shuttle first. If the target asset's proxy is still loading (e.g. the click switched
+  // assets), record the frame and let onLoadedData apply it once the video is ready.
   useEffect(() => {
+    if (!seekTo) return;
+    const target = Math.max(0, seekTo.frame);
+    pendingSeek.current = target;
     const v = videoRef.current;
-    if (!seekTo || !v) return;
+    if (!v) return; // not mounted yet — deferred to loadeddata
     if (reverseTimer.current !== null) {
       window.clearInterval(reverseTimer.current);
       reverseTimer.current = null;
@@ -85,7 +92,10 @@ export function Player({
     v.pause();
     v.playbackRate = 1;
     setShuttle(0);
-    v.currentTime = Math.max(0, seekTo.frame) / f;
+    if (v.readyState >= 1) {
+      v.currentTime = target / f;
+      pendingSeek.current = null;
+    }
   }, [seekTo, f]);
 
   function step(delta: number): void {
@@ -216,6 +226,13 @@ export function Player({
             className="aspect-video w-full"
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
+            onLoadedData={() => {
+              const v = videoRef.current;
+              if (v && pendingSeek.current != null) {
+                v.currentTime = pendingSeek.current / f;
+                pendingSeek.current = null;
+              }
+            }}
             onTimeUpdate={(e) => {
               const fr = Math.round(e.currentTarget.currentTime * f);
               setFrame(fr);

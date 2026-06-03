@@ -58,6 +58,8 @@ export function App(): ReactElement {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [importingAsset, setImportingAsset] = useState<Asset | null>(null);
   const [roughCut, setRoughCut] = useState<Timeline | null>(null);
+  // Clicking a rough-cut clip jumps the player: select the clip's asset + seek its IN frame.
+  const [previewSeek, setPreviewSeek] = useState<{ assetId: string; frame: number } | null>(null);
 
   const [name, setName] = useState("");
   const [presetIdx, setPresetIdx] = useState(3);
@@ -111,12 +113,20 @@ export function App(): ReactElement {
     }
   }, [client, selectedProjectId, loadRoughCut]);
 
+  // Show the clip's source asset and seek the player to its IN frame. A new object each
+  // call so the same clip re-seeks; AssetView only honours it once its asset matches.
+  const previewClip = useCallback((assetId: string, frame: number) => {
+    setSelectedAssetId(assetId);
+    setPreviewSeek({ assetId, frame });
+  }, []);
+
   async function selectProject(id: string): Promise<void> {
     setSelectedProjectId(id);
     setSelectedAssetId(null);
     setImportingAsset(null);
     setAssets([]);
     setRoughCut(null);
+    setPreviewSeek(null);
     if (client) {
       try {
         await loadAssets(client, id);
@@ -391,6 +401,9 @@ export function App(): ReactElement {
               asset={detailAsset}
               roughCut={roughCut}
               onTimelineChange={reloadRoughCut}
+              seekRequest={
+                previewSeek && previewSeek.assetId === detailAsset.id ? previewSeek : null
+              }
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-600">
@@ -400,7 +413,14 @@ export function App(): ReactElement {
         </section>
       </main>
 
-      {client && <TimelineBar client={client} timeline={roughCut} onChange={reloadRoughCut} />}
+      {client && (
+        <TimelineBar
+          client={client}
+          timeline={roughCut}
+          onChange={reloadRoughCut}
+          onScrub={previewClip}
+        />
+      )}
     </div>
   );
 }

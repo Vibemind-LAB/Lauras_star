@@ -34,16 +34,26 @@ export function AssetView({
   asset,
   roughCut,
   onTimelineChange,
+  seekRequest,
 }: {
   client: LauraClient;
   asset: Asset;
   roughCut: Timeline | null;
   onTimelineChange: () => void;
+  /** A seek driven from outside the detail view (e.g. clicking a rough-cut clip). A
+   *  fresh object identity re-triggers the seek even to the same frame. */
+  seekRequest?: { assetId: string; frame: number } | null;
 }): ReactElement {
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [seekReq, setSeekReq] = useState<{ frame: number } | null>(null);
+
+  // Forward an external clip-click seek to the player. App only passes a request whose
+  // assetId matches this view, so by here the right asset is already shown.
+  useEffect(() => {
+    if (seekRequest) setSeekReq({ frame: seekRequest.frame });
+  }, [seekRequest]);
 
   const waveformReady = hasFile(asset, "waveform");
   const posterReady = hasFile(asset, "poster");

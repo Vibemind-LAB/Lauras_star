@@ -83,10 +83,13 @@ export function TimelineBar({
   client,
   timeline,
   onChange,
+  onScrub,
 }: {
   client: LauraClient;
   timeline: Timeline | null;
   onChange: () => void;
+  /** Jump the player to a clip's source IN frame when its thumbnail is clicked. */
+  onScrub?: (assetId: string, frame: number) => void;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -262,7 +265,10 @@ export function TimelineBar({
               index={i}
               total={total}
               selected={c.id === selected}
-              onSelect={() => setSelected(c.id === selected ? null : c.id)}
+              onSelect={() => {
+                setSelected(c.id === selected ? null : c.id);
+                onScrub?.(c.asset_id, c.src_in_frame);
+              }}
             />
           ))}
         </div>
