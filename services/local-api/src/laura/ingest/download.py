@@ -18,6 +18,11 @@ import httpx
 
 from .probe import sha256_file
 
+_DEFAULT_CONNECTIONS = int(os.environ.get("LAURA_DOWNLOAD_CONNECTIONS", "8"))
+_DEFAULT_MIN_SEGMENT_BYTES = int(
+    os.environ.get("LAURA_DOWNLOAD_MIN_SEGMENT_BYTES", str(8 * 1024 * 1024))
+)
+
 
 class DownloadError(RuntimeError):
     """Raised when the download cannot complete or fails verification."""
@@ -43,14 +48,32 @@ def _expected_total(resp: httpx.Response, resume_from: int) -> int | None:
     return None
 
 
-def download_resumable(
+def _probe_range(client: httpx.Client, url: str) -> tuple[bool, int | None]:
+    """Return (supports_range, total_size).
+
+    Sends a HEAD request to avoid consuming the body.  Servers that support
+    byte-range requests advertise ``Accept-Ranges: bytes``; ``Content-Length``
+    gives the total file size.  If HEAD is not allowed (405) we conservatively
+    return ``(False, None)`` so the caller falls back to single-stream.
+    """
+    resp = client.head(url)
+    if resp.status_code == 405:
+        return False, None
+    accept_ranges = resp.headers.get("Accept-Ranges", "none").lower()
+    length = resp.headers.get("Content-Length")
+    supports = accept_ranges == "bytes"
+    total = int(length) if length and length.isdigit() else None
+    return supports, total
+
+
+def _download_single_stream(
     url: str,
-    dest: Path | str,
+    dest: Path,
     *,
-    expected_sha256: str | None = None,
-    chunk_bytes: int = 1 << 20,
-    timeout: float = 30.0,
-    on_progress: Callable[[int, int | None], None] | None = None,
+    expected_sha256: str | None,
+    chunk_bytes: int,
+    timeout: float,
+    on_progress: Callable[[int, int | None], None] | None,
 ) -> DownloadResult:
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -114,3 +137,47 @@ def download_resumable(
 
     os.replace(part, dest)
     return DownloadResult(path=dest, size_bytes=size, sha256=sha)
+
+
+def _download_segmented(
+    url: str,
+    dest: Path,
+    *,
+    total: int,
+    connections: int,
+    expected_sha256: str | None,
+    timeout: float,
+    on_progress: Callable[[int, int | None], None] | None,
+) -> DownloadResult:
+    raise NotImplementedError("segmented download arrives in the next task")
+
+
+def download_resumable(
+    url: str,
+    dest: Path | str,
+    *,
+    expected_sha256: str | None = None,
+    chunk_bytes: int = 1 << 20,
+    timeout: float = 30.0,
+    connections: int | None = None,
+    min_segment_bytes: int | None = None,
+    on_progress: Callable[[int, int | None], None] | None = None,
+) -> DownloadResult:
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    conns = connections if connections is not None else _DEFAULT_CONNECTIONS
+    min_seg = min_segment_bytes if min_segment_bytes is not None else _DEFAULT_MIN_SEGMENT_BYTES
+
+    if conns > 1:
+        with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+            supports_range, total = _probe_range(client, url)
+        if supports_range and total is not None and total >= min_seg:
+            return _download_segmented(
+                url, dest, total=total, connections=conns,
+                expected_sha256=expected_sha256, timeout=timeout, on_progress=on_progress,
+            )
+
+    return _download_single_stream(
+        url, dest, expected_sha256=expected_sha256, chunk_bytes=chunk_bytes,
+        timeout=timeout, on_progress=on_progress,
+    )
