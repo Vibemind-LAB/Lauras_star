@@ -54,16 +54,14 @@ def serve(
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib naming
             rng = self.headers.get("Range")
-            start = 0
-            if rng and rng.startswith("bytes="):
-                start = int(rng.split("=", 1)[1].split("-", 1)[0])
+            start, end = 0, len(content) - 1
+            if rng and rng.startswith("bytes=") and not ignore_range:
+                spec = rng.split("=", 1)[1]
+                lo, _, hi = spec.partition("-")
+                start = int(lo) if lo else 0
+                end = int(hi) if hi else len(content) - 1
 
-            if ignore_range and rng:
-                # Behave as a server with no range support: ignore the offset
-                # and send the full body with status 200.
-                start = 0
-
-            body = content[start:]
+            body = content[start : end + 1]
             do_cut = cut_after is not None and start == 0 and not state["cut_used"]
 
             if do_cut:
@@ -95,15 +93,15 @@ def serve(
                 self.close_connection = True
                 return
 
-            if start > 0:
+            if rng and not ignore_range:
                 self.send_response(206)
-                self.send_header(
-                    "Content-Range", f"bytes {start}-{len(content) - 1}/{len(content)}"
-                )
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(content)}")
             else:
                 self.send_response(200)
-            advertised_len = fake_content_length if fake_content_length is not None else len(body)
-            self.send_header("Content-Length", str(advertised_len))
+            self.send_header(
+                "Content-Length",
+                str(fake_content_length if fake_content_length is not None else len(body)),
+            )
             self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
             self.wfile.write(body)
