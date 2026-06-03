@@ -185,6 +185,7 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - **Exit:** ✓ betriebsreif; Live-PG/FFmpeg/OTel-In-Memory-verifiziert. **Portion 17 komplett — alle headless-baubaren Portionen (15–17) abgeschlossen.**
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
+- [x] **GPU (CUDA)** — **aktiviert & verifiziert** auf RTX 3060: torch/torchaudio via PyTorch-`cu128`-Index (`[tool.uv.sources]`, persistent über `uv sync`), `analysis/device.py` wählt Device (`LAURA_ASR_DEVICE` überschreibt); ASR+Align+Diarisierung laufen auf CUDA, CPU-Pfad bleibt grün. cuBLAS/cuDNN kamen über torch-cu128-Deps
 - [x] **ASR (faster-whisper)** — **real freigeschaltet & verifiziert**: `transcribe` mit `device`-Param + **CPU-Fallback** bei fehlendem cuBLAS; gated Test (ffmpeg-`flite`-Sprache → korrekte Wörter + Zeitkern-Mapping), **188 grün**
 - [x] **Diarisierung (pyannote)** — **real freigeschaltet & verifiziert** (HF-Token via Browser, 3 gated Repos akzeptiert): `token=`-API, vor-dekodierte Waveform (umgeht torchcodec), `DiarizeOutput.speaker_diarization` (pyannote 4.x); gated Test erkennt **2 Sprecher** + `assign_speakers`. Modell-Cache auf `E:`
 - [x] **WhisperX-Alignment** — **real freigeschaltet & verifiziert** (whisperx 3.8.6, kein torch-Konflikt): `align_words` (wav2vec2-Forced-Alignment, CPU, stdlib-`wave`-Loader), optionale `stages.align`-Stufe; gated Test (9 Wörter, tight/monoton)
