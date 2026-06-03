@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -12,7 +13,7 @@ from laura.db.database import SqliteDatabase
 from laura.main import create_app
 
 
-def _setup(tmp_path: Path) -> tuple[TestClient, SqliteDatabase, dict, dict]:
+def _setup(tmp_path: Path) -> tuple[TestClient, SqliteDatabase, dict[str, Any], dict[str, Any]]:
     settings = Settings(workspace_root=tmp_path, start_runner=False)
     db = SqliteDatabase(settings.db_path)
     db.migrate()
@@ -41,7 +42,7 @@ def _add_run_with_shots(db: SqliteDatabase, asset_id: str) -> str:
             {"src_in_frame": 170, "src_out_frame_exclusive": 200, "method": "test"},
         ],
     )
-    return run["id"]
+    return str(run["id"])
 
 
 def test_from_shots_builds_one_contiguous_clip_per_scene(tmp_path: Path) -> None:
