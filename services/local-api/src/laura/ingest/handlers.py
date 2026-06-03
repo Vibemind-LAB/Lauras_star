@@ -9,7 +9,9 @@ keys so retries never duplicate work.
 
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,8 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.runner import JobContext, JobHandler, enqueue
 from .audio import extract_mix48k, extract_mono16k
+from .download import download_resumable
+from .integrity import verify_decode
 from .probe import probe_asset, sha256_file
 from .proxy import build_poster, build_proxy
 from .waveform import compute_waveform
@@ -131,7 +135,41 @@ def handle_waveform(ctx: JobContext) -> dict[str, Any]:
     return {"waveform": str(dest), "length": payload["length"]}
 
 
+def handle_fetch(ctx: JobContext) -> dict[str, Any]:
+    asset = _require_asset(ctx)
+    url = ctx.payload["source_url"]
+    full_scan = bool(ctx.payload.get("full_scan", True))
+    root = _project_root(ctx.db, asset)
+    filename = Path(asset["display_name"]).name or "download.bin"
+    dest = root / "downloads" / asset["id"] / filename
+
+    # Download stage: on failure the .part file remains so a retry resumes.
+    download_resumable(url, dest, on_progress=lambda _d, _t: ctx.heartbeat())
+
+    # Verify stage: on failure discard the file so the retry re-downloads in full.
+    report = verify_decode(dest, full_scan=full_scan)
+    if not report.ok:
+        report_path = dest.parent / "integrity.json"
+        report_path.write_text(json.dumps(asdict(report), indent=2), encoding="utf-8")
+        repos.add_asset_file(
+            ctx.db, asset_id=asset["id"], kind="integrity",
+            path=str(report_path), size_bytes=report_path.stat().st_size,
+        )
+        dest.unlink(missing_ok=True)
+        (dest.with_name(dest.name + ".part")).unlink(missing_ok=True)
+        raise ValueError(f"integrity check failed: {report.detail}")
+
+    repos.set_asset_source(ctx.db, asset["id"], source_path=str(dest), online=True)
+    enqueue(
+        ctx.db, queue="ingest.io", kind="ingest.probe",
+        payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",
+        caused_by_job_id=ctx.job_id,
+    )
+    return {"asset_id": asset["id"], "downloaded": str(dest), "size_bytes": os.path.getsize(dest)}
+
+
 def register_ingest_handlers(registry: dict[str, JobHandler]) -> None:
+    registry["ingest.fetch"] = handle_fetch
     registry["ingest.probe"] = handle_probe
     registry["proxy.build"] = handle_proxy
     registry["audio.extract"] = handle_audio
