@@ -201,6 +201,34 @@ def split_clip(clips: list[EditClip], at_seq_frame: int) -> list[EditClip]:
     return [*(left if c is target else c for c in clips), right]
 
 
+def move_clip(
+    clips: list[EditClip], at_seq_frame: int, to_seq_frame: int
+) -> list[EditClip]:
+    """Reorder the clip that starts at ``at_seq_frame`` to the position ``to_seq_frame``,
+    then re-pack the sequence contiguously (back-to-back, preserving each clip's sequence
+    length, source range, and speed). Raises ValueError if no clip starts at at_seq_frame.
+
+    The target index is the number of OTHER clips whose seq_in_frame < to_seq_frame, so
+    dragging a clip onto another clip's start drops it just before that clip; a to_seq_frame
+    at/after the end appends it last.
+    """
+    cs = list(ordered(clips))
+    idx = next((i for i, c in enumerate(cs) if c.seq_in_frame == at_seq_frame), None)
+    if idx is None:
+        raise ValueError(f"no clip starts at {at_seq_frame}")
+    moving = cs.pop(idx)
+    target = sum(1 for c in cs if c.seq_in_frame < to_seq_frame)
+    cs.insert(target, moving)
+    # Re-pack: walk cs, assign contiguous seq positions preserving each clip's length.
+    result: list[EditClip] = []
+    offset = 0
+    for c in cs:
+        length = c.seq_out_frame_exclusive - c.seq_in_frame
+        result.append(replace(c, seq_in_frame=offset, seq_out_frame_exclusive=offset + length))
+        offset += length
+    return result
+
+
 def trim_clip(
     clips: list[EditClip], at_seq_frame: int, new_src_in: int, new_src_out: int
 ) -> list[EditClip]:

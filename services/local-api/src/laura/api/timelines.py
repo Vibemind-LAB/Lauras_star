@@ -18,6 +18,7 @@ from ..editing.operations import (
     delete_range,
     insert_clip,
     lift_range,
+    move_clip,
     ordered,
     set_speed,
     split_clip,
@@ -500,6 +501,14 @@ def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> lis
         so = _require(body.new_src_out_frame_exclusive, "new_src_out_frame_exclusive required")
         try:
             return trim_clip(current, at, si, so)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    if op == "move":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        to = _require(body.to_seq_frame, "to_seq_frame required")
+        try:
+            return move_clip(current, at, to)
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 

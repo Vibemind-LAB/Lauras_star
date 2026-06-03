@@ -266,7 +266,7 @@ class ValidateOut(BaseModel):
 
 
 class OperationRequest(BaseModel):
-    op: str  # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim
+    op: str  # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move
     asset_id: str | None = None
     src_in_frame: int | None = None
     src_out_frame_exclusive: int | None = None
@@ -280,6 +280,7 @@ class OperationRequest(BaseModel):
     speed_den: int | None = None
     new_src_in_frame: int | None = None          # trim: new source in point
     new_src_out_frame_exclusive: int | None = None  # trim: new source out point
+    to_seq_frame: int | None = None              # move: target sequence position
 
 
 class ClipIn(BaseModel):
