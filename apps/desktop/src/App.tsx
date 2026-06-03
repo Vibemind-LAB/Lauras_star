@@ -76,6 +76,7 @@ export function App(): ReactElement {
   const [searchQuery, setSearchQuery] = useState("");
   const [semantic, setSemantic] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [buildResult, setBuildResult] = useState<{ kept: number; dropped: number } | null>(null);
 
   const detailAsset = importingAsset ?? assets.find((a) => a.id === selectedAssetId) ?? null;
   const analysis = useAnalysis(client, detailAsset);
@@ -134,6 +135,7 @@ export function App(): ReactElement {
     setAssets([]);
     setRoughCut(null);
     setSeek(null);
+    setBuildResult(null);
     if (client) {
       try {
         await loadAssets(client, id);
@@ -234,6 +236,20 @@ export function App(): ReactElement {
       );
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function onBuildFromShots(): Promise<void> {
+    if (!client || !selectedProjectId || !detailAsset) return;
+    setError(null);
+    try {
+      // Non-destructive: fill the current rough cut only if it's empty, else make a new one.
+      const fillId = roughCut && roughCut.clips.length === 0 ? roughCut.id : undefined;
+      const res = await client.buildRoughCutFromShots(selectedProjectId, detailAsset.id, fillId);
+      setRoughCut(res.timeline);
+      setBuildResult({ kept: res.timeline.clips.length, dropped: res.dropped.length });
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -447,6 +463,8 @@ export function App(): ReactElement {
               analysis={analysis}
               canAppend={roughCut != null}
               onAppendShot={(s) => void onAppendShot(s)}
+              onBuildFromShots={() => void onBuildFromShots()}
+              buildResult={buildResult}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-slate-600">

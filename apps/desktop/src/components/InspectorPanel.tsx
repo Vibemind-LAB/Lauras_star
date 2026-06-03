@@ -40,12 +40,16 @@ export function InspectorPanel({
   analysis,
   canAppend,
   onAppendShot,
+  onBuildFromShots,
+  buildResult,
 }: {
   client: LauraClient;
   asset: Asset;
   analysis: AnalysisController;
   canAppend: boolean;
   onAppendShot: (shot: Shot) => void;
+  onBuildFromShots: () => void;
+  buildResult: { kept: number; dropped: number } | null;
 }): ReactElement {
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
@@ -139,6 +143,20 @@ export function InspectorPanel({
           shots={analysis.shots}
           onAppend={canAppend ? onAppendShot : undefined}
         />
+        <button
+          type="button"
+          onClick={onBuildFromShots}
+          disabled={analysis.shots.length === 0 || !canAppend}
+          className="mt-2 w-full rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
+          title="Eine Rough-Cut-Sequenz aus den erkannten Szenen bauen (schwache automatisch verworfen)"
+        >
+          Rough Cut aus Szenen bauen
+        </button>
+        {buildResult && (
+          <div className="mt-1 text-xs text-slate-400">
+            {buildResult.kept} Szenen übernommen · {buildResult.dropped} verworfen
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-4">

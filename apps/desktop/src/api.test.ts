@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type Asset, hasFile } from "./api";
+import { type Asset, hasFile, LauraClient } from "./api";
 
 const make = (kinds: string[]): Asset =>
   ({ files: kinds.map((k) => ({ kind: k })) }) as unknown as Asset;
@@ -16,5 +16,38 @@ describe("hasFile", () => {
 
   it("returns false when there are no files", () => {
     expect(hasFile(make([]), "proxy")).toBe(false);
+  });
+});
+
+describe("LauraClient.buildRoughCutFromShots", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("POSTs to the correct URL and returns dropped list", async () => {
+    const mockResponse = {
+      timeline: {
+        id: "t",
+        project_id: "p",
+        name: "RC",
+        kind: "rough_cut",
+        created_at: "",
+        clips: [],
+      },
+      dropped: [{ src_in_frame: 0, src_out_frame_exclusive: 9, drop_reason: "black" }],
+    };
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(mockResponse),
+    } as unknown as Response);
+
+    const client = new LauraClient("http://localhost:8765", "test-token");
+    const result = await client.buildRoughCutFromShots("p", "a");
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [calledUrl] = fetchSpy.mock.calls[0] as [string, ...unknown[]];
+    expect(calledUrl).toBe("http://localhost:8765/projects/p/timelines/from-shots");
+    expect(result.dropped[0].drop_reason).toBe("black");
   });
 });

@@ -81,6 +81,23 @@ export interface Shot {
   confidence: number | null;
   method: string | null;
   thumbnail_path: string | null;
+  black_ratio: number | null;
+  static_score: number | null;
+  phash: string | null;
+  blur_score: number | null;
+  keep: boolean;
+  drop_reason: string | null;
+}
+
+export interface DroppedShot {
+  src_in_frame: number;
+  src_out_frame_exclusive: number;
+  drop_reason: string;
+}
+
+export interface BuildFromShotsResult {
+  timeline: Timeline;
+  dropped: DroppedShot[];
 }
 
 export interface Word {
@@ -389,6 +406,17 @@ export class LauraClient {
     return this.request<Timeline>(`/timelines/${timelineId}/clips`, {
       method: "PUT",
       body: JSON.stringify({ clips }),
+    });
+  }
+
+  buildRoughCutFromShots(
+    projectId: string,
+    assetId: string,
+    timelineId?: string,
+  ): Promise<BuildFromShotsResult> {
+    return this.request<BuildFromShotsResult>(`/projects/${projectId}/timelines/from-shots`, {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, timeline_id: timelineId }),
     });
   }
 }
