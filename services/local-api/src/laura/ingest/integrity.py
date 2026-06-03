@@ -46,13 +46,24 @@ def verify_decode(path: Path | str, *, full_scan: bool = True) -> IntegrityRepor
 
 
 def is_media_file(path: Path | str) -> bool:
-    """True if ffprobe can read the container AND it has an audio or video stream.
+    """True if ffprobe can read the container AND it has a real audio or video stream.
 
     Used to pick real media out of a torrent's mixed contents (.nfo/.txt/samples).
+    Raw-data codecs that ffprobe assigns to arbitrary binary/text files (e.g. "ansi",
+    "bin_data", "rawvideo" on .nfo) are excluded so non-media files are correctly
+    rejected.
     """
+    # Codecs ffprobe uses for generic/raw data that are NOT real A/V codecs.
+    _RAW_DATA_CODECS = frozenset({"ansi", "bin_data", "text", "ssa", "ass", "srt",
+                                   "subrip", "webvtt", "ttml", "dvd_subtitle",
+                                   "hdmv_pgs_subtitle", "mov_text"})
     try:
         data = ffprobe(path)
     except FFmpegError:
         return False
     streams = data.get("streams", [])
-    return any(s.get("codec_type") in ("video", "audio") for s in streams)
+    return any(
+        s.get("codec_type") in ("video", "audio")
+        and s.get("codec_name") not in _RAW_DATA_CODECS
+        for s in streams
+    )

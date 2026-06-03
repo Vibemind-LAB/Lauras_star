@@ -20,9 +20,11 @@ from typing import Any
 from ..db import repos
 from ..db.database import Database
 from ..jobs.runner import JobContext, JobHandler, enqueue
+from .aria2 import aria2_available, aria2_download
 from .audio import extract_mix48k, extract_mono16k
 from .download import download_resumable
-from .integrity import verify_decode
+from .engine import select_engine
+from .integrity import is_media_file, verify_decode
 from .probe import probe_asset, sha256_file
 from .proxy import build_poster, build_proxy
 from .waveform import compute_waveform
@@ -141,6 +143,30 @@ def handle_waveform(ctx: JobContext) -> dict[str, Any]:
     return {"waveform": str(dest), "length": payload["length"]}
 
 
+def _finalize_media_asset(
+    ctx: JobContext, asset: dict[str, Any], media: Path, *, full_scan: bool
+) -> bool:
+    """Verify one downloaded media file and attach it to ``asset``. Returns True if the
+    asset went online. On verify failure the asset stays offline with an integrity
+    record (non-fatal — used by the multi-file torrent fan-out)."""
+    report = verify_decode(media, full_scan=full_scan)
+    if not report.ok:
+        report_path = media.parent / f"{media.name}.integrity.json"
+        report_path.write_text(json.dumps(asdict(report), indent=2), encoding="utf-8")
+        repos.add_asset_file(
+            ctx.db, asset_id=asset["id"], kind="integrity",
+            path=str(report_path), size_bytes=report_path.stat().st_size,
+        )
+        return False
+    repos.set_asset_source(ctx.db, asset["id"], source_path=str(media), online=True)
+    enqueue(
+        ctx.db, queue="ingest.io", kind="ingest.probe",
+        payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",
+        caused_by_job_id=ctx.job_id,
+    )
+    return True
+
+
 def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     asset = _require_asset(ctx)
     url = ctx.payload.get("source_url")
@@ -148,11 +174,7 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
         raise ValueError("ingest.fetch payload missing required field: source_url")
     full_scan = bool(ctx.payload.get("full_scan", True))
     root = _project_root(ctx.db, asset)
-    raw_name = Path(asset["display_name"]).name or "download.bin"
-    # Strip characters that are invalid in filenames on Windows so the open() call
-    # in the downloader can't crash on an unsanitised display_name.
-    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name) or "download.bin"
-    dest = root / "downloads" / asset["id"] / filename
+    base_dir = root / "downloads" / asset["id"]
 
     last_hb = [0.0]
 
@@ -162,10 +184,37 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
             ctx.heartbeat()
             last_hb[0] = now
 
-    # Download stage: on failure the .part file remains so a retry resumes.
-    download_resumable(url, dest, on_progress=_heartbeat)
+    if select_engine(url) == "aria2":
+        if not aria2_available():
+            raise ValueError("aria2c required for this source but is not installed")
+        files = aria2_download(url, base_dir)
+        media = [f for f in files if is_media_file(f)]
+        if not media:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            report_path = base_dir / "integrity.json"
+            report_path.write_text(
+                json.dumps({"ok": False, "detail": "no media file in download"}, indent=2),
+                encoding="utf-8",
+            )
+            repos.add_asset_file(
+                ctx.db, asset_id=asset["id"], kind="integrity",
+                path=str(report_path), size_bytes=report_path.stat().st_size,
+            )
+            raise ValueError("no media file found in downloaded source")
+        _finalize_media_asset(ctx, asset, media[0], full_scan=full_scan)
+        for extra in media[1:]:
+            child = repos.create_asset(
+                ctx.db, project_id=asset["project_id"], type="video",
+                display_name=extra.name, source_path=f"url:{url}", online=False,
+            )
+            _finalize_media_asset(ctx, child, extra, full_scan=full_scan)
+        return {"asset_id": asset["id"], "engine": "aria2", "media_files": len(media)}
 
-    # Verify stage: on failure discard the file so the retry re-downloads in full.
+    # --- httpx engine (HTTP/S): keep the existing strict single-asset policy ---
+    raw_name = Path(asset["display_name"]).name or "download.bin"
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name) or "download.bin"
+    dest = base_dir / filename
+    download_resumable(url, dest, on_progress=_heartbeat)
     report = verify_decode(dest, full_scan=full_scan)
     if not report.ok:
         report_path = dest.parent / "integrity.json"
@@ -177,14 +226,14 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
         dest.unlink(missing_ok=True)
         (dest.with_name(dest.name + ".part")).unlink(missing_ok=True)
         raise ValueError(f"integrity check failed: {report.detail}")
-
     repos.set_asset_source(ctx.db, asset["id"], source_path=str(dest), online=True)
     enqueue(
         ctx.db, queue="ingest.io", kind="ingest.probe",
         payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",
         caused_by_job_id=ctx.job_id,
     )
-    return {"asset_id": asset["id"], "downloaded": str(dest), "size_bytes": os.path.getsize(dest)}
+    return {"asset_id": asset["id"], "engine": "httpx", "downloaded": str(dest),
+            "size_bytes": os.path.getsize(dest)}
 
 
 def register_ingest_handlers(registry: dict[str, JobHandler]) -> None:
