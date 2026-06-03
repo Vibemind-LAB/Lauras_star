@@ -71,30 +71,34 @@ def download_resumable(
             httpx.Client(follow_redirects=True, timeout=timeout) as client,
             client.stream("GET", url, headers=headers) as resp,
         ):
-                if resume_from and resp.status_code == 200:
-                    resume_from = 0  # server ignored Range -> restart cleanly
-                elif resp.status_code not in (200, 206):
-                    raise DownloadError(f"unexpected status {resp.status_code} for {url}")
-                total = _expected_total(resp, resume_from)
-                downloaded = resume_from
-                buf = bytearray()
-                try:
-                    for raw in resp.iter_raw():
-                        buf += raw
-                        if len(buf) >= chunk_bytes:
-                            fh.write(buf)
-                            downloaded += len(buf)
-                            if on_progress is not None:
-                                on_progress(downloaded, total)
-                            buf.clear()
-                finally:
-                    # Flush any buffered data before the exception propagates
-                    # so a partial .part file survives a mid-stream error.
-                    if buf:
+            if resume_from and resp.status_code == 200:
+                # Server ignored Range and is sending the whole file. Discard the
+                # stale partial bytes so we don't append a second copy.
+                resume_from = 0
+                fh.seek(0)
+                fh.truncate()
+            elif resp.status_code not in (200, 206):
+                raise DownloadError(f"unexpected status {resp.status_code} for {url}")
+            total = _expected_total(resp, resume_from)
+            downloaded = resume_from
+            buf = bytearray()
+            try:
+                for raw in resp.iter_raw():
+                    buf += raw
+                    if len(buf) >= chunk_bytes:
                         fh.write(buf)
                         downloaded += len(buf)
                         if on_progress is not None:
                             on_progress(downloaded, total)
+                        buf.clear()
+            finally:
+                # Flush any buffered data before the exception propagates
+                # so a partial .part file survives a mid-stream error.
+                if buf:
+                    fh.write(buf)
+                    downloaded += len(buf)
+                    if on_progress is not None:
+                        on_progress(downloaded, total)
     except httpx.HTTPError as exc:
         raise DownloadError(f"transport error for {url}: {exc}") from exc
     finally:

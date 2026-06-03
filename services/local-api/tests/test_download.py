@@ -46,6 +46,15 @@ def test_cut_connection_then_resume(tmp_path: Path) -> None:
 
 def test_sha256_mismatch_raises(tmp_path: Path) -> None:
     dest = tmp_path / "out.bin"
-    with serve(CONTENT) as url:
-        with pytest.raises(DownloadError, match="sha256"):
-            download_resumable(url, dest, expected_sha256="00" * 32)
+    with serve(CONTENT) as url, pytest.raises(DownloadError, match="sha256"):
+        download_resumable(url, dest, expected_sha256="00" * 32)
+
+
+def test_server_ignoring_range_restarts_cleanly(tmp_path: Path) -> None:
+    dest = tmp_path / "out.bin"
+    part = dest.with_name(dest.name + ".part")
+    part.write_bytes(b"STALE" * 1000)  # leftover partial from a prior attempt
+    with serve(CONTENT, ignore_range=True) as url:
+        result = download_resumable(url, dest)
+    assert dest.read_bytes() == CONTENT
+    assert result.sha256 == _sha(CONTENT)

@@ -21,13 +21,22 @@ _CUT_CHUNK = 1024
 
 
 @contextmanager
-def serve(content: bytes, *, cut_after: int | None = None) -> Iterator[str]:
+def serve(
+    content: bytes,
+    *,
+    cut_after: int | None = None,
+    ignore_range: bool = False,
+) -> Iterator[str]:
     """Serve ``content`` at the yielded URL.
 
     If ``cut_after`` is set, the first request that starts at offset 0 sends only
     ``cut_after`` bytes using chunked transfer encoding, then forces a TCP RST so
     the client receives the partial data *and* an error.  Any later request —
     including the Range request a resume sends — is served in full.
+
+    If ``ignore_range`` is True, any ``Range`` header in the request is ignored:
+    the server always responds ``200`` with the full body and full
+    ``Content-Length``, simulating a server that has no range-request support.
     """
     state = {"cut_used": False}
 
@@ -40,6 +49,12 @@ def serve(content: bytes, *, cut_after: int | None = None) -> Iterator[str]:
             start = 0
             if rng and rng.startswith("bytes="):
                 start = int(rng.split("=", 1)[1].split("-", 1)[0])
+
+            if ignore_range and rng:
+                # Behave as a server with no range support: ignore the offset
+                # and send the full body with status 200.
+                start = 0
+
             body = content[start:]
             do_cut = cut_after is not None and start == 0 and not state["cut_used"]
 
@@ -66,7 +81,7 @@ def serve(content: bytes, *, cut_after: int | None = None) -> Iterator[str]:
                 self.connection.setsockopt(
                     socket.SOL_SOCKET,
                     socket.SO_LINGER,
-                    struct.pack("ii", 1, 0),
+                    struct.pack("HH", 1, 0),  # Winsock linger: two u_short fields
                 )
                 self.connection.close()
                 self.close_connection = True
