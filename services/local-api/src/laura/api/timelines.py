@@ -35,6 +35,7 @@ from .models import (
     ClipSourceOut,
     ExportOut,
     ExportRequest,
+    FromShotsRequest,
     OperationRequest,
     RenameRequest,
     SetClipsRequest,
@@ -181,6 +182,86 @@ def import_timeline(
     return TimelineImportOut(
         timeline=_timeline_out(db, fresh), matched_media=matched, offline_media=offline,
     )
+
+
+@router.post(
+    "/projects/{project_id}/timelines/from-shots",
+    response_model=TimelineOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def timeline_from_shots(
+    project_id: str, body: FromShotsRequest, request: Request
+) -> TimelineOut:
+    """Build a rough cut from an asset's detected shots: one contiguous clip per shot, in
+    source order, packed back-to-back on the sequence (end-exclusive, speed 1/1).
+
+    Non-destructive: pass an empty ``timeline_id`` to fill it; otherwise a new ``rough_cut``
+    is created so a hand-made cut is never clobbered."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    asset = repos.get_asset(db, body.asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    if asset["project_id"] != project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "asset belongs to another project"
+        )
+
+    run_id = body.run_id
+    if run_id is None:
+        run = repos.get_latest_analysis_run(db, body.asset_id)
+        if run is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run"
+            )
+        run_id = run["id"]
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    for shot in repos.list_shots(db, body.asset_id, run_id):  # ordered by src_in_frame
+        length = shot["src_out_frame_exclusive"] - shot["src_in_frame"]
+        if length <= 0:
+            continue
+        rows.append({
+            "asset_id": body.asset_id,
+            "src_in_frame": shot["src_in_frame"],
+            "src_out_frame_exclusive": shot["src_out_frame_exclusive"],
+            "seq_in_frame": offset,
+            "seq_out_frame_exclusive": offset + length,
+            "lane": body.lane,
+            "speed_num": 1,
+            "speed_den": 1,
+        })
+        offset += length
+    if not rows:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "no shots for this asset/run"
+        )
+
+    if body.timeline_id is not None:
+        target = repos.get_timeline(db, body.timeline_id)
+        if target is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+        if target["project_id"] != project_id:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "timeline belongs to another project"
+            )
+        if repos.list_timeline_clips(db, body.timeline_id):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "timeline already has clips; omit timeline_id to create a new one",
+            )
+    else:
+        target = repos.create_timeline(
+            db, project_id=project_id, name=body.name or "Rough Cut (Szenen)", kind="rough_cut"
+        )
+
+    repos.replace_timeline_clips(db, target["id"], rows)
+    fresh = repos.get_timeline(db, target["id"])
+    assert fresh is not None
+    repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
+    return _timeline_out(db, fresh)
 
 
 @router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])
