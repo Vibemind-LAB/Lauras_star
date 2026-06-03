@@ -33,8 +33,10 @@ from ..interchange.validate import validate_export
 from .models import (
     ClipOut,
     ClipSourceOut,
+    DroppedShot,
     ExportOut,
     ExportRequest,
+    FromShotsOut,
     FromShotsRequest,
     OperationRequest,
     RenameRequest,
@@ -186,14 +188,17 @@ def import_timeline(
 
 @router.post(
     "/projects/{project_id}/timelines/from-shots",
-    response_model=TimelineOut,
+    response_model=FromShotsOut,
     status_code=status.HTTP_201_CREATED,
 )
 def timeline_from_shots(
     project_id: str, body: FromShotsRequest, request: Request
-) -> TimelineOut:
-    """Build a rough cut from an asset's detected shots: one contiguous clip per shot, in
-    source order, packed back-to-back on the sequence (end-exclusive, speed 1/1).
+) -> FromShotsOut:
+    """Build a rough cut from an asset's detected shots: one contiguous clip per kept shot,
+    in source order, packed back-to-back on the sequence (end-exclusive, speed 1/1).
+
+    Weak shots (black, static, duplicate, blurry) are filtered when ``quality=True`` (default).
+    The ``dropped`` list in the response contains the filtered shots so the UI can re-include.
 
     Non-destructive: pass an empty ``timeline_id`` to fill it; otherwise a new ``rough_cut``
     is created so a hand-made cut is never clobbered."""
@@ -217,11 +222,37 @@ def timeline_from_shots(
             )
         run_id = run["id"]
 
+    def enabled(override: bool | None) -> bool:
+        return body.quality if override is None else override
+
+    reasons_on = {
+        "black": enabled(body.drop_black),
+        "static": enabled(body.drop_static),
+        "duplicate": enabled(body.drop_duplicates),
+        "blur": enabled(body.drop_blur),
+    }
+    dropped: list[DroppedShot] = []
     rows: list[dict[str, Any]] = []
     offset = 0
     for shot in repos.list_shots(db, body.asset_id, run_id):  # ordered by src_in_frame
+        reason = shot.get("drop_reason") if not shot.get("keep", True) else None
+        if reason is not None and reasons_on.get(reason, False):
+            dropped.append(DroppedShot(
+                src_in_frame=shot["src_in_frame"],
+                src_out_frame_exclusive=shot["src_out_frame_exclusive"],
+                drop_reason=reason,
+            ))
+            continue
         length = shot["src_out_frame_exclusive"] - shot["src_in_frame"]
         if length <= 0:
+            continue
+        merged = (
+            body.merge_min_frames > 0 and length < body.merge_min_frames and bool(rows)
+        )
+        if merged:
+            rows[-1]["src_out_frame_exclusive"] = shot["src_out_frame_exclusive"]
+            rows[-1]["seq_out_frame_exclusive"] += length
+            offset += length
             continue
         rows.append({
             "asset_id": body.asset_id,
@@ -236,7 +267,7 @@ def timeline_from_shots(
         offset += length
     if not rows:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "no shots for this asset/run"
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "no shots left after filtering"
         )
 
     if body.timeline_id is not None:
@@ -261,7 +292,7 @@ def timeline_from_shots(
     fresh = repos.get_timeline(db, target["id"])
     assert fresh is not None
     repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
-    return _timeline_out(db, fresh)
+    return FromShotsOut(timeline=_timeline_out(db, fresh), dropped=dropped)
 
 
 @router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])

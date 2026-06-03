@@ -120,6 +120,12 @@ class ShotOut(BaseModel):
     confidence: float | None = None
     method: str | None = None
     thumbnail_path: str | None = None
+    black_ratio: float | None = None
+    static_score: float | None = None
+    phash: str | None = None
+    blur_score: float | None = None
+    keep: bool = True
+    drop_reason: str | None = None
 
 
 class WordOut(BaseModel):
@@ -153,13 +159,25 @@ class TimelineCreate(BaseModel):
 
 
 class FromShotsRequest(BaseModel):
-    """Build a rough cut with one contiguous clip per detected shot of an asset."""
+    """Build a rough cut with one contiguous clip per kept shot of an asset."""
 
     asset_id: str
     run_id: str | None = None        # default: the asset's latest analysis run
     timeline_id: str | None = None   # populate this timeline (must be empty); else create new
     name: str | None = Field(default=None, max_length=200)
     lane: int = Field(default=0, ge=0)
+    quality: bool = True                # drop weak shots + merge micro by default
+    drop_black: bool | None = None      # per-filter overrides (None = follow `quality`)
+    drop_static: bool | None = None
+    drop_duplicates: bool | None = None
+    drop_blur: bool | None = None
+    merge_min_frames: int = Field(default=0, ge=0)
+
+
+class DroppedShot(BaseModel):
+    src_in_frame: int
+    src_out_frame_exclusive: int
+    drop_reason: str
 
 
 class ClipOut(BaseModel):
@@ -184,6 +202,11 @@ class TimelineOut(BaseModel):
     kind: str
     created_at: str
     clips: list[ClipOut] = Field(default_factory=list)
+
+
+class FromShotsOut(BaseModel):
+    timeline: TimelineOut
+    dropped: list[DroppedShot] = Field(default_factory=list)
 
 
 class ClipSourceOut(BaseModel):
