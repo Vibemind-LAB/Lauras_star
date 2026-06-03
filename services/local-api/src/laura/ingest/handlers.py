@@ -32,6 +32,33 @@ from .proxy import build_poster, build_proxy
 from .waveform import compute_waveform
 
 
+class _ProgressWriter:
+    """Throttled persistence of download progress into the job's progress_json."""
+
+    def __init__(self, db: Any, job_id: str, *, min_interval: float = 1.0) -> None:
+        self._db = db
+        self._job_id = job_id
+        self._min_interval = min_interval
+        self._last_t = 0.0
+        self._last_bytes = 0
+        self._started = False
+
+    def __call__(self, downloaded: int, total: int | None) -> None:
+        now = time.monotonic()
+        if self._started and now - self._last_t < self._min_interval:
+            return
+        speed = 0.0
+        if self._started and now > self._last_t:
+            speed = (downloaded - self._last_bytes) / (now - self._last_t)
+        self._started = True
+        self._last_t = now
+        self._last_bytes = downloaded
+        repos.set_job_progress(
+            self._db, self._job_id,
+            json.dumps({"downloaded": downloaded, "total": total, "speed_bps": speed}),
+        )
+
+
 def _project_root(db: Database, asset: dict[str, Any]) -> Path:
     project = repos.get_project(db, asset["project_id"])
     assert project is not None
@@ -178,9 +205,11 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     root = _project_root(ctx.db, asset)
     base_dir = root / "downloads" / asset["id"]
 
+    progress = _ProgressWriter(ctx.db, ctx.job_id)
     last_hb = [0.0]
 
-    def _heartbeat(_downloaded: int, _total: int | None) -> None:
+    def _on_progress(downloaded: int, total: int | None) -> None:
+        progress(downloaded, total)
         now = time.monotonic()
         if now - last_hb[0] > 10.0:
             ctx.heartbeat()
@@ -198,7 +227,10 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
         hb_thread = threading.Thread(target=_hb_loop, daemon=True)
         hb_thread.start()
         try:
-            files = aria2_download(url, base_dir)
+            files = aria2_download(
+                url, base_dir,
+                on_progress=lambda d, t, _s: _on_progress(d, t),
+            )
         finally:
             stop_hb.set()
             hb_thread.join(timeout=1.0)
@@ -230,7 +262,7 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     raw_name = Path(asset["display_name"]).name or "download.bin"
     filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name) or "download.bin"
     dest = base_dir / filename
-    download_resumable(url, dest, on_progress=_heartbeat)
+    download_resumable(url, dest, on_progress=_on_progress)
     report = verify_decode(dest, full_scan=full_scan)
     if not report.ok:
         report_path = dest.parent / "integrity.json"
