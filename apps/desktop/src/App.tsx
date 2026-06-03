@@ -53,7 +53,6 @@ export function App(): ReactElement {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [importingAsset, setImportingAsset] = useState<Asset | null>(null);
   const [roughCut, setRoughCut] = useState<Timeline | null>(null);
 
   // A single seek request the Player consumes; a fresh object re-triggers it.
@@ -68,7 +67,7 @@ export function App(): ReactElement {
   const [semantic, setSemantic] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
 
-  const detailAsset = importingAsset ?? assets.find((a) => a.id === selectedAssetId) ?? null;
+  const detailAsset = assets.find((a) => a.id === selectedAssetId) ?? null;
   const analysis = useAnalysis(client, detailAsset);
 
   useEffect(() => {
@@ -113,29 +112,44 @@ export function App(): ReactElement {
   const seekToFrame = useCallback((frame: number) => setSeek({ frame }), []);
 
   const importPaths = useCallback(
-    async (paths: string[]): Promise<void> => {
-      if (!client || !selectedProjectId) return;
-      for (const p of paths) await client.importAsset(selectedProjectId, p);
-      await loadAssets(client, selectedProjectId);
+    async (paths: string[]): Promise<string[]> => {
+      if (!client || !selectedProjectId) return [];
+      const ids: string[] = [];
+      for (const p of paths) ids.push((await client.importAsset(selectedProjectId, p)).asset_id);
+      return ids;
     },
-    [client, selectedProjectId, loadAssets],
+    [client, selectedProjectId],
   );
 
   const importUrls = useCallback(
-    async (urls: string[]): Promise<void> => {
-      if (!client || !selectedProjectId) return;
-      for (const u of urls) await client.importAssetFromUrl(selectedProjectId, u);
-      await loadAssets(client, selectedProjectId);
+    async (urls: string[]): Promise<string[]> => {
+      if (!client || !selectedProjectId) return [];
+      const ids: string[] = [];
+      for (const u of urls) ids.push((await client.importAssetFromUrl(selectedProjectId, u)).asset_id);
+      return ids;
     },
-    [client, selectedProjectId, loadAssets],
+    [client, selectedProjectId],
+  );
+
+  const runImport = useCallback(
+    async (paths: string[], urls: string[]): Promise<void> => {
+      if (!client || !selectedProjectId) return;
+      try {
+        const ids = [...(await importPaths(paths)), ...(await importUrls(urls))];
+        await loadAssets(client, selectedProjectId);
+        if (ids[0]) setSelectedAssetId(ids[0]);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [client, selectedProjectId, importPaths, importUrls, loadAssets],
   );
 
   const onDropImport = useCallback(
     (r: ResolvedImport): void => {
-      void importPaths(r.paths);
-      void importUrls(r.urls);
+      void runImport(r.paths, r.urls);
     },
-    [importPaths, importUrls],
+    [runImport],
   );
 
   // Show the clip's source asset and seek the player to its frame.
@@ -147,7 +161,6 @@ export function App(): ReactElement {
   async function selectProject(id: string): Promise<void> {
     setSelectedProjectId(id);
     setSelectedAssetId(null);
-    setImportingAsset(null);
     setAssets([]);
     setRoughCut(null);
     setSeek(null);
@@ -344,17 +357,25 @@ export function App(): ReactElement {
             <div className="px-3 pb-2">
               <ImportBar
                 disabled={!selectedProjectId}
-                onUrl={(u) => void importUrls([u])}
+                onUrl={(u) => void runImport([], [u])}
                 onPickFiles={() => {
                   void (async () => {
-                    const files = await window.laura.pickMediaFiles();
-                    if (files.length > 0) await importPaths(files);
+                    try {
+                      const files = await window.laura.pickMediaFiles();
+                      if (files.length > 0) await runImport(files, []);
+                    } catch (e) {
+                      setError(String(e));
+                    }
                   })();
                 }}
                 onPickFolder={() => {
                   void (async () => {
-                    const folder = await window.laura.pickFolder();
-                    if (folder) await importPaths(await window.laura.listMediaInFolder(folder));
+                    try {
+                      const folder = await window.laura.pickFolder();
+                      if (folder) await runImport(await window.laura.listMediaInFolder(folder), []);
+                    } catch (e) {
+                      setError(String(e));
+                    }
                   })();
                 }}
               />
@@ -427,7 +448,7 @@ export function App(): ReactElement {
                       ×
                     </button>
                   </div>
-                  {client && (
+                  {client && !isImportSettled(a) && (
                     <AssetImportRow client={client} assetId={a.id} />
                   )}
                 </li>
@@ -487,6 +508,10 @@ export function App(): ReactElement {
       />
     </div>
   );
+}
+
+function isImportSettled(asset: Asset): boolean {
+  return asset.files?.some((f) => f.kind === "waveform" || f.kind === "proxy") ?? false;
 }
 
 function AssetImportRow({
