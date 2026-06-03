@@ -98,6 +98,24 @@ def get_job(db: Database, job_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
+def get_fetch_job(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The ingest.fetch job for an asset (keyed by its stable idempotency key)."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE idempotency_key = ?", (f"fetch:{asset_id}",)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def set_job_progress(db: Database, job_id: str, progress_json: str) -> None:
+    """Store the latest progress sample for a job (throttled by the caller)."""
+    with db.connection() as conn:
+        conn.execute(
+            "UPDATE jobs SET progress_json = ?, updated_at = ? WHERE id = ?",
+            (progress_json, utcnow_iso(), job_id),
+        )
+
+
 # --- assets ---------------------------------------------------------------
 def create_asset(
     db: Database,
