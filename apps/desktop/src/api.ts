@@ -142,7 +142,8 @@ export interface Operation {
     | "lift"
     | "set_speed"
     | "split"
-    | "trim";
+    | "trim"
+    | "move";
   asset_id?: string;
   src_in_frame?: number;
   src_out_frame_exclusive?: number;
@@ -156,6 +157,7 @@ export interface Operation {
   speed_den?: number;
   new_src_in_frame?: number;
   new_src_out_frame_exclusive?: number;
+  to_seq_frame?: number;
 }
 
 export interface Segment {
