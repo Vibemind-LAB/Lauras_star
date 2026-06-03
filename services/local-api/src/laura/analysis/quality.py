@@ -1,0 +1,138 @@
+"""Per-shot quality metrics for video-driven rough-cut filtering.
+
+Deterministic and CPU-only: sample a few small grayscale frames per shot via ffmpeg and
+score them with numpy. No OpenCV, no GPU. Used to drop black / frozen / duplicate / blurry
+shots when building a rough cut from scenes.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+SAMPLE_W, SAMPLE_H = 64, 36
+SAMPLE_K = 5
+BLACK_LUMA = 16.0
+
+
+def _sample_gray_frames(
+    video: Path | str, src_in: int, src_out: int, *, k: int = SAMPLE_K,
+    w: int = SAMPLE_W, h: int = SAMPLE_H,
+) -> list[np.ndarray]:
+    """Extract up to ``k`` evenly-spaced grayscale frames of [src_in, src_out) as HxW uint8."""
+    n = max(1, src_out - src_in)
+    count = min(k, n)
+    idxs = sorted({src_in + (i * n) // count for i in range(count)})
+    expr = "+".join(f"eq(n\\,{i})" for i in idxs)
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", str(video),
+        "-vf", f"select='{expr}',scale={w}:{h},format=gray",
+        "-vsync", "0", "-frames:v", str(len(idxs)), "-f", "rawvideo", "-",
+    ]
+    out = subprocess.run(cmd, capture_output=True, check=True).stdout
+    frame_bytes = w * h
+    frames: list[np.ndarray] = []
+    for off in range(0, len(out) - frame_bytes + 1, frame_bytes):
+        frames.append(np.frombuffer(out[off : off + frame_bytes], dtype=np.uint8).reshape(h, w))
+    return frames
+
+
+def static_score(frames: list[np.ndarray]) -> float:
+    if len(frames) < 2:
+        return 1.0
+    diffs = [float(np.mean(np.abs(frames[i].astype(np.int16) - frames[i - 1])))
+             for i in range(1, len(frames))]
+    return max(0.0, min(1.0, 1.0 - (sum(diffs) / len(diffs)) / 255.0))
+
+
+def dhash(frame: np.ndarray, *, hash_w: int = 9, hash_h: int = 8) -> str:
+    """64-bit difference hash as 16 hex chars (resize then horizontal gradient sign)."""
+    small = _resize_nearest(frame, hash_w, hash_h).astype(np.int16)
+    bits = small[:, 1:] > small[:, :-1]
+    value = 0
+    for bit in bits.flatten():
+        value = (value << 1) | int(bit)
+    return f"{value:016x}"
+
+
+def _resize_nearest(frame: np.ndarray, w: int, h: int) -> np.ndarray:
+    ys = (np.arange(h) * frame.shape[0] // h).clip(0, frame.shape[0] - 1)
+    xs = (np.arange(w) * frame.shape[1] // w).clip(0, frame.shape[1] - 1)
+    return frame[np.ix_(ys, xs)]
+
+
+def hamming(a: str, b: str) -> int:
+    return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
+def _laplacian_var(frame: np.ndarray) -> float:
+    f = frame.astype(np.float32)
+    lap = (-4 * f
+           + np.roll(f, 1, 0) + np.roll(f, -1, 0)
+           + np.roll(f, 1, 1) + np.roll(f, -1, 1))
+    return float(np.var(lap[1:-1, 1:-1]))
+
+
+@dataclass(frozen=True)
+class ShotMetrics:
+    black_ratio: float
+    static: float
+    phash: str
+    blur: float
+
+    @classmethod
+    def from_frames(cls, frames: list[np.ndarray]) -> ShotMetrics:
+        if not frames:
+            return cls(black_ratio=1.0, static=1.0, phash="0" * 16, blur=0.0)
+        black = sum(1 for f in frames if float(np.mean(f)) < BLACK_LUMA) / len(frames)
+        return cls(
+            black_ratio=black,
+            static=static_score(frames),
+            phash=dhash(frames[len(frames) // 2]),
+            blur=_laplacian_var(frames[len(frames) // 2]),
+        )
+
+
+def compute_shot_metrics(video: Path | str, src_in: int, src_out: int) -> ShotMetrics:
+    return ShotMetrics.from_frames(_sample_gray_frames(video, src_in, src_out))
+
+
+@dataclass(frozen=True)
+class KeepThresholds:
+    black_ratio: float = 0.8
+    static: float = 0.985
+    blur: float = 5.0  # below = too blurry; 0 disables
+
+
+_DEFAULT_THRESHOLDS = KeepThresholds()
+
+
+def decide_keep(
+    m: ShotMetrics,
+    *,
+    thresholds: KeepThresholds = _DEFAULT_THRESHOLDS,
+) -> tuple[bool, str | None]:
+    if m.black_ratio >= thresholds.black_ratio:
+        return False, "black"
+    if m.static >= thresholds.static:
+        return False, "static"
+    if thresholds.blur > 0 and m.blur < thresholds.blur:
+        return False, "blur"
+    return True, None
+
+
+def mark_duplicates(rows: list[dict[str, Any]], *, dup_hamming: int = 6) -> None:
+    """Set drop_reason='duplicate' on later shots whose phash is near an earlier kept shot."""
+    kept: list[str] = []
+    for row in rows:
+        if not row.get("keep") or not row.get("phash"):
+            continue
+        if any(hamming(row["phash"], h) <= dup_hamming for h in kept):
+            row["keep"] = False
+            row["drop_reason"] = "duplicate"
+        else:
+            kept.append(row["phash"])
