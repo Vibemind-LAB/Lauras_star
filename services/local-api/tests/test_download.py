@@ -34,12 +34,12 @@ def test_cut_connection_then_resume(tmp_path: Path) -> None:
     with serve(CONTENT, cut_after=10_000) as url:
         # first attempt: server drops the connection partway through
         with pytest.raises(DownloadError):
-            download_resumable(url, dest)
+            download_resumable(url, dest, connections=1)
         assert part.exists() and 0 < part.stat().st_size < len(CONTENT)
         assert not dest.exists()  # not promoted until verified-complete
 
         # second attempt: resumes from .part and completes
-        result = download_resumable(url, dest)
+        result = download_resumable(url, dest, connections=1)
     assert dest.read_bytes() == CONTENT
     assert result.sha256 == _sha(CONTENT)
 

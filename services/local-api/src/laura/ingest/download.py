@@ -49,21 +49,21 @@ def _expected_total(resp: httpx.Response, resume_from: int) -> int | None:
 
 
 def _probe_range(client: httpx.Client, url: str) -> tuple[bool, int | None]:
-    """Return (supports_range, total_size).
-
-    Sends a HEAD request to avoid consuming the body.  Servers that support
-    byte-range requests advertise ``Accept-Ranges: bytes``; ``Content-Length``
-    gives the total file size.  If HEAD is not allowed (405) we conservatively
-    return ``(False, None)`` so the caller falls back to single-stream.
-    """
-    resp = client.head(url)
-    if resp.status_code == 405:
-        return False, None
-    accept_ranges = resp.headers.get("Accept-Ranges", "none").lower()
-    length = resp.headers.get("Content-Length")
-    supports = accept_ranges == "bytes"
-    total = int(length) if length and length.isdigit() else None
-    return supports, total
+    """Return (supports_range, total_size). Sends a 1-byte ranged GET via a stream and
+    closes WITHOUT consuming the body — critical, because a server that ignores Range
+    answers 200 with the whole file, and we must not download a 30 GB body just to probe.
+    A 206 with a Content-Range total means Range is supported and the size is known."""
+    with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as resp:
+        status = resp.status_code
+        content_range = resp.headers.get("Content-Range", "")
+        length = resp.headers.get("Content-Length")
+    if status == 206:
+        if "/" in content_range:
+            tail = content_range.rsplit("/", 1)[1].strip()
+            if tail.isdigit():
+                return True, int(tail)
+        return True, None
+    return False, int(length) if length and length.isdigit() else None
 
 
 def _download_single_stream(
