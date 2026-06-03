@@ -52,3 +52,33 @@ def test_get_asset_file_serves_and_404s(
 
     # kind that has no file -> 404
     assert client.get(f"/assets/{asset['id']}/files/poster").status_code == 404
+
+
+def test_import_from_url_queues_fetch(client: TestClient, db: Database) -> None:
+    project_id = _make_project(client)
+    resp = client.post(
+        f"/projects/{project_id}/assets/import",
+        json={"source_url": "http://example.invalid/big.mp4"},
+    )
+    assert resp.status_code == 202
+    asset_id = resp.json()["asset_id"]
+
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    assert asset["online"] == 0                 # not yet downloaded
+    assert asset["display_name"] == "big.mp4"   # derived from the URL
+
+
+def test_import_rejects_both_sources(client: TestClient) -> None:
+    project_id = _make_project(client)
+    resp = client.post(
+        f"/projects/{project_id}/assets/import",
+        json={"source_path": "/tmp/x.mp4", "source_url": "http://example.invalid/x.mp4"},
+    )
+    assert resp.status_code == 422
+
+
+def test_import_rejects_no_source(client: TestClient) -> None:
+    project_id = _make_project(client)
+    resp = client.post(f"/projects/{project_id}/assets/import", json={})
+    assert resp.status_code == 422

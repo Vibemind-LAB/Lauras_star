@@ -42,6 +42,21 @@ def import_asset(project_id: str, body: AssetImport, request: Request) -> Import
     if repos.get_project(db, project_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
 
+    if body.source_url:
+        name = body.display_name or Path(body.source_url.split("?", 1)[0]).name or "download.bin"
+        asset = repos.create_asset(
+            db, project_id=project_id, type="video",
+            display_name=name, source_path=f"url:{body.source_url}", online=False,
+        )
+        job_id = enqueue(
+            db, queue="ingest.io", kind="ingest.fetch",
+            payload={"asset_id": asset["id"], "source_url": body.source_url},
+            idempotency_key=f"fetch:{asset['id']}", max_attempts=5,
+        )
+        return ImportAccepted(asset_id=asset["id"], job_id=job_id)
+
+    assert body.source_path is not None  # guaranteed by the AssetImport validator
+
     src = Path(body.source_path)
     if not src.exists() or not src.is_file():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"source not found: {src}")

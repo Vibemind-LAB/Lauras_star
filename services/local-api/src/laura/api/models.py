@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProjectCreate(BaseModel):
@@ -32,8 +32,15 @@ class HealthOut(BaseModel):
 
 
 class AssetImport(BaseModel):
-    source_path: str = Field(min_length=1)
+    source_path: str | None = Field(default=None, min_length=1)
+    source_url: str | None = Field(default=None, min_length=1)
     display_name: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> AssetImport:
+        if bool(self.source_path) == bool(self.source_url):
+            raise ValueError("provide exactly one of source_path or source_url")
+        return self
 
 
 class ImportAccepted(BaseModel):
