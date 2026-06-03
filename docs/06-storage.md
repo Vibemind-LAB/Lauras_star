@@ -77,3 +77,17 @@ Resume).
 **Manueller „kaputtes Netz"-Test:** Einen impairing Proxy (toxiproxy, cross-platform) oder
 `clumsy` (Windows) zwischen Service und Quelle schalten und Latenz/Bandbreitenlimit/
 Verbindungsabbrüche injizieren. Headless nicht automatisierbar → manuell zu prüfen.
+
+### Engines
+
+HTTP(S)-Downloads laufen über die eigene httpx-Engine mit **Multi-Connection-
+Segmentierung** (parallele Range-Requests, Resume pro Segment, Fallback auf Single-Stream
+wenn der Server kein Range unterstützt). Zahl der Verbindungen: Env
+`LAURA_DOWNLOAD_CONNECTIONS` (Default 8); ab `LAURA_DOWNLOAD_MIN_SEGMENT_BYTES`
+(Default 8 MiB) wird segmentiert.
+
+Torrent/Magnet/FTP/Metalink laufen über das optionale Binary **`aria2c`** (One-shot,
+als separater Prozess aufgerufen — GPL bleibt arm's length, wie bei ffmpeg). Fehlt
+`aria2c`, sind nur diese Protokolle nicht verfügbar; HTTP(S) funktioniert voll. Ein
+Mehrdatei-Torrent erzeugt **ein Asset pro Mediendatei**; Nicht-Mediendateien (`.nfo`
+etc.) werden ignoriert.
