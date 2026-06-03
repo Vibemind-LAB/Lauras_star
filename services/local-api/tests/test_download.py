@@ -119,3 +119,16 @@ def test_segmented_discards_parts_from_different_connection_count(tmp_path: Path
         result = download_resumable(url, dest, connections=4, min_segment_bytes=1024)
     assert dest.read_bytes() == BIG
     assert result.sha256 == _sha(BIG)
+
+
+def test_segmented_sha_mismatch_cleans_up(tmp_path: Path) -> None:
+    # A verify failure on a segmented download must not orphan .part / .parts on disk.
+    dest = tmp_path / "big.bin"
+    with serve(BIG) as url, pytest.raises(DownloadError, match="sha256"):
+        download_resumable(
+            url, dest, connections=4, min_segment_bytes=1024,
+            expected_sha256="00" * 32,
+        )
+    assert not dest.exists()
+    assert not dest.with_name(dest.name + ".part").exists()
+    assert not dest.with_name(dest.name + ".parts").exists()

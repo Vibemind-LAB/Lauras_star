@@ -222,11 +222,16 @@ def _download_segmented(
                 shutil.copyfileobj(seg, out)
 
     size = part.stat().st_size
-    if size != total:
-        raise DownloadError(f"size mismatch after reassembly: got {size}, expected {total}")
-    sha = sha256_file(part)
-    if expected_sha256 is not None and sha.lower() != expected_sha256.lower():
-        raise DownloadError(f"sha256 mismatch: got {sha}, expected {expected_sha256}")
+    try:
+        if size != total:
+            raise DownloadError(f"size mismatch after reassembly: got {size}, expected {total}")
+        sha = sha256_file(part)
+        if expected_sha256 is not None and sha.lower() != expected_sha256.lower():
+            raise DownloadError(f"sha256 mismatch: got {sha}, expected {expected_sha256}")
+    except DownloadError:
+        part.unlink(missing_ok=True)
+        shutil.rmtree(parts_dir, ignore_errors=True)
+        raise
 
     os.replace(part, dest)
     shutil.rmtree(parts_dir, ignore_errors=True)

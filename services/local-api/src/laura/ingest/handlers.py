@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import asdict
@@ -240,6 +241,7 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
         )
         dest.unlink(missing_ok=True)
         (dest.with_name(dest.name + ".part")).unlink(missing_ok=True)
+        shutil.rmtree(dest.with_name(dest.name + ".parts"), ignore_errors=True)
         raise ValueError(f"integrity check failed: {report.detail}")
     repos.set_asset_source(ctx.db, asset["id"], source_path=str(dest), online=True)
     enqueue(
