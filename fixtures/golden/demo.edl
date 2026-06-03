@@ -1,0 +1,8 @@
+TITLE: Laura Demo
+FCM: NON-DROP FRAME
+
+001  AX       V     C        00:00:00:00 00:00:02:00 00:00:00:00 00:00:02:00
+* FROM CLIP NAME: A.mov
+
+002  AX       V     C        00:00:00:10 00:00:01:10 00:00:02:00 00:00:03:00
+* FROM CLIP NAME: B.mov

@@ -1,0 +1,2 @@
+# Golden export fixtures are byte-compared in tests — never convert line endings.
+* -text

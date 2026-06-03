@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xmeml version="5">
+  <sequence>
+    <name>Laura Demo</name>
+    <duration>90</duration>
+    <rate>
+      <timebase>30</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <track>
+          <clipitem id="clipitem-1">
+            <name>A.mov</name>
+            <duration>60</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <in>0</in>
+            <out>60</out>
+            <start>0</start>
+            <end>60</end>
+            <file id="file-a1">
+              <name>A.mov</name>
+              <pathurl>file://localhost/C:/media/A.mov</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+              <duration>60</duration>
+            </file>
+          </clipitem>
+          <clipitem id="clipitem-2">
+            <name>B.mov</name>
+            <duration>30</duration>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <in>10</in>
+            <out>40</out>
+            <start>60</start>
+            <end>90</end>
+            <file id="file-a2">
+              <name>B.mov</name>
+              <pathurl>file://localhost/C:/media/B.mov</pathurl>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+              <duration>30</duration>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+    </media>
+  </sequence>
+</xmeml>

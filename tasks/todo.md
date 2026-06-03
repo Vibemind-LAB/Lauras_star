@@ -178,10 +178,10 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] 16.5 **Desktop-Tests-Setup** — Vitest v2 (Vite-5-kompatibel) + Testing-Library + jsdom; `vitest.config.ts`, `test`-Script, 4 Tests (hasFile + TimelineBar-Render) grün; CI-Schritt `pnpm test` ergänzt
 - **Exit:** ✓ UI bedienbar; `tsc`/`vite build`/Vitest grün; GUI-Sicht manuell. **Portion 16 komplett.**
 
-## Portion 17 — Observability & Betrieb  `[ ]`  (Plan: docs/16 §1)
+## Portion 17 — Observability & Betrieb  `[~]`  (Plan: docs/16 §1)
 - [ ] 17.1 **OpenTelemetry-Tracing** — FastAPI/Job-Runner-Spans, Stage-Timings/Queue-Tiefe (In-Memory-Exporter-Test)
 - [ ] 17.2 **Postgres-RLS** — Row-Level-Security pro `org_id` (Live-PG-Test: Cross-Org = 0)
-- [ ] 17.3 **Demo-Projekt + Golden-Fixtures** — `fixtures/` reproduzierbar, Golden-Exporte byte-genau
+- [x] 17.3 **Demo-Projekt + Golden-Fixtures** — `fixtures/golden/` (EDL/FCP7-XML/SRT/VTT) byte-genau vs. kanonischer Demo-Schnitt, `LAURA_REGEN_GOLDEN=1` zum Neu-Erzeugen, OTIO per Round-Trip; `.gitattributes` schützt CRLF; 5 Tests, **185 grün**
 - **Exit:** betriebsreif; Live-PG/FFmpeg-verifiziert.
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
