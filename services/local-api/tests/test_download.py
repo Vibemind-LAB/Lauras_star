@@ -105,3 +105,17 @@ def test_no_range_support_falls_back_to_single_stream(tmp_path: Path) -> None:
         result = download_resumable(url, dest, connections=4, min_segment_bytes=1024)
     assert dest.read_bytes() == BIG
     assert result.sha256 == _sha(BIG)
+
+
+def test_segmented_discards_parts_from_different_connection_count(tmp_path: Path) -> None:
+    # A prior run with a different connections count left stale, wrong-boundary segments.
+    # They must be discarded, not resumed, or the assembled file is corrupt.
+    dest = tmp_path / "big.bin"
+    parts = dest.with_name(dest.name + ".parts")
+    parts.mkdir(parents=True)
+    (parts / ".seglen").write_text(str(-(-len(BIG) // 8)))   # sentinel from connections=8
+    (parts / "seg-0000").write_bytes(BIG[:1234])             # wrong-boundary leftover
+    with serve(BIG) as url:
+        result = download_resumable(url, dest, connections=4, min_segment_bytes=1024)
+    assert dest.read_bytes() == BIG
+    assert result.sha256 == _sha(BIG)

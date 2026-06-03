@@ -153,9 +153,15 @@ def _download_segmented(
     on_progress: Callable[[int, int | None], None] | None,
 ) -> DownloadResult:
     parts_dir = dest.with_name(dest.name + ".parts")
-    parts_dir.mkdir(parents=True, exist_ok=True)
-
     seg_len = -(-total // connections)  # ceil
+    sentinel = parts_dir / ".seglen"
+    if parts_dir.exists() and (
+        not sentinel.exists() or sentinel.read_text().strip() != str(seg_len)
+    ):
+        shutil.rmtree(parts_dir, ignore_errors=True)
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text(str(seg_len))
+
     segments = [
         (i, i * seg_len, min((i + 1) * seg_len, total) - 1)
         for i in range(connections)
@@ -163,14 +169,17 @@ def _download_segmented(
     ]
 
     lock = threading.Lock()
-    downloaded = [0]
+    downloaded: list[int] = [0]
 
     def fetch(segment: tuple[int, int, int]) -> None:
         idx, start, end = segment
         seg_path = parts_dir / f"seg-{idx:04d}"
         want = end - start + 1
         have = seg_path.stat().st_size if seg_path.exists() else 0
-        if have >= want:
+        if have > want:
+            seg_path.unlink()
+            have = 0
+        if have == want:
             with lock:
                 downloaded[0] += want
                 if on_progress is not None:
