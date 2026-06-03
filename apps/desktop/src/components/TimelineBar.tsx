@@ -84,12 +84,16 @@ export function TimelineBar({
   timeline,
   onChange,
   onScrub,
+  onSelect,
 }: {
   client: LauraClient;
   timeline: Timeline | null;
   onChange: () => void;
   /** Jump the player to a clip's source IN frame when its thumbnail is clicked. */
   onScrub?: (assetId: string, frame: number) => void;
+  /** Notify the parent which clip is selected (null = none) so it can open the
+   *  SceneInspector. TimelineBar keeps its own `selected` state as the source of truth. */
+  onSelect?: (clipId: string | null) => void;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -102,7 +106,8 @@ export function TimelineBar({
     setHistory([]);
     setFuture([]);
     setSelected(null);
-  }, [tlId]);
+    onSelect?.(null);
+  }, [tlId, onSelect]);
 
   if (!timeline) {
     return (
@@ -193,6 +198,7 @@ export function TimelineBar({
       seq_out_frame_exclusive: sel.seq_out_frame_exclusive,
     });
     setSelected(null);
+    onSelect?.(null);
   }
 
   async function exportAs(fmt: ExportFormat, ext: string): Promise<void> {
@@ -266,7 +272,9 @@ export function TimelineBar({
               total={total}
               selected={c.id === selected}
               onSelect={() => {
-                setSelected(c.id === selected ? null : c.id);
+                const next = c.id === selected ? null : c.id;
+                setSelected(next);
+                onSelect?.(next);
                 onScrub?.(c.asset_id, c.src_in_frame);
               }}
             />

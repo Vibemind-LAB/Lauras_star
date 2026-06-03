@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { Player } from "./components/Player";
+import { SceneInspector } from "./components/SceneInspector";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
 import { useAnalysis } from "./hooks/useAnalysis";
@@ -63,6 +64,7 @@ export function App(): ReactElement {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [importingAsset, setImportingAsset] = useState<Asset | null>(null);
   const [roughCut, setRoughCut] = useState<Timeline | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
 
   // A single seek request the Player consumes; a fresh object re-triggers it.
   const [seek, setSeek] = useState<{ frame: number } | null>(null);
@@ -80,6 +82,11 @@ export function App(): ReactElement {
 
   const detailAsset = importingAsset ?? assets.find((a) => a.id === selectedAssetId) ?? null;
   const analysis = useAnalysis(client, detailAsset);
+
+  const selectedClip = roughCut?.clips.find((c) => c.id === selectedClipId) ?? null;
+  const selectedClipAsset = selectedClip
+    ? assets.find((a) => a.id === selectedClip.asset_id) ?? null
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +141,7 @@ export function App(): ReactElement {
     setImportingAsset(null);
     setAssets([]);
     setRoughCut(null);
+    setSelectedClipId(null);
     setSeek(null);
     setBuildResult(null);
     if (client) {
@@ -454,9 +462,19 @@ export function App(): ReactElement {
           )}
         </section>
 
-        {/* Inspector: analysis + metadata (clip-selection inspector arrives in P5) */}
+        {/* Inspector: frame-accurate scene editor when a clip is selected, else
+            analysis + metadata for the previewed asset. */}
         <section className="flex flex-col overflow-hidden bg-ink">
-          {client && detailAsset ? (
+          {client && selectedClip && selectedClipAsset ? (
+            <SceneInspector
+              client={client}
+              clip={selectedClip}
+              asset={selectedClipAsset}
+              timelineId={roughCut!.id}
+              onChange={reloadRoughCut}
+              onSeek={seekToFrame}
+            />
+          ) : client && detailAsset ? (
             <InspectorPanel
               client={client}
               asset={detailAsset}
@@ -480,6 +498,7 @@ export function App(): ReactElement {
           timeline={roughCut}
           onChange={reloadRoughCut}
           onScrub={previewClip}
+          onSelect={setSelectedClipId}
         />
       )}
 
