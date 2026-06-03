@@ -17,6 +17,68 @@ const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
 
 const TRIM_STEP = 5; // frames per trim click
 
+function ClipThumb({
+  client,
+  clip,
+  index,
+  total,
+  selected,
+  onSelect,
+}: {
+  client: LauraClient;
+  clip: TimelineClip;
+  index: number;
+  total: number;
+  selected: boolean;
+  onSelect: () => void;
+}): ReactElement {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    client
+      .assetFrameUrl(clip.asset_id, clip.src_in_frame)
+      .then((u) => {
+        if (!active) {
+          URL.revokeObjectURL(u);
+          return;
+        }
+        objectUrl = u;
+        setUrl(u);
+      })
+      .catch(() => {
+        /* fall back to the colour block */
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, clip.asset_id, clip.src_in_frame]);
+
+  const pct = total > 0 ? ((clip.seq_out_frame_exclusive - clip.seq_in_frame) / total) * 100 : 0;
+  const retimed = clip.speed_num !== clip.speed_den;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={`Clip ${index + 1} · src ${clip.src_in_frame}–${clip.src_out_frame_exclusive}${
+        retimed ? ` · ${clip.speed_num}/${clip.speed_den}×` : ""
+      } (Klick = auswählen)`}
+      style={{ width: `${pct}%` }}
+      className={`relative flex items-center justify-center overflow-hidden ${
+        url ? "" : index % 2 === 0 ? "bg-sky-700/50" : "bg-sky-500/40"
+      } ${selected ? "z-10 ring-2 ring-inset ring-amber-400" : "hover:brightness-125"}`}
+    >
+      {url && <img src={url} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+      <span className="relative rounded bg-ink/70 px-1 text-[10px] leading-tight text-slate-100">
+        {index + 1}
+        {retimed ? "⏩" : ""}
+      </span>
+    </button>
+  );
+}
+
 export function TimelineBar({
   client,
   timeline,
@@ -192,28 +254,17 @@ export function TimelineBar({
         </div>
       ) : (
         <div className="flex h-12 w-full gap-px overflow-hidden rounded-md">
-          {tl.clips.map((c, i) => {
-            const pct = total > 0 ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100 : 0;
-            const isSel = c.id === selected;
-            const retimed = c.speed_num !== c.speed_den;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => setSelected(isSel ? null : c.id)}
-                title={`Clip ${i + 1} · src ${c.src_in_frame}–${c.src_out_frame_exclusive}${
-                  retimed ? ` · ${c.speed_num}/${c.speed_den}×` : ""
-                } (Klick = auswählen)`}
-                style={{ width: `${pct}%` }}
-                className={`flex items-center justify-center text-[10px] text-slate-100 ${
-                  i % 2 === 0 ? "bg-sky-700/50" : "bg-sky-500/40"
-                } ${isSel ? "ring-2 ring-inset ring-amber-400" : "hover:brightness-125"}`}
-              >
-                {i + 1}
-                {retimed ? "⏩" : ""}
-              </button>
-            );
-          })}
+          {tl.clips.map((c, i) => (
+            <ClipThumb
+              key={c.id}
+              client={client}
+              clip={c}
+              index={i}
+              total={total}
+              selected={c.id === selected}
+              onSelect={() => setSelected(c.id === selected ? null : c.id)}
+            />
+          ))}
         </div>
       )}
       {sel && (

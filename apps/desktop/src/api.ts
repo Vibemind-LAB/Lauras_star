@@ -336,6 +336,18 @@ export class LauraClient {
     return URL.createObjectURL(await res.blob());
   }
 
+  /** A JPEG of a given source frame of an asset (token), as an object URL — for
+   *  timeline-clip thumbnails. */
+  async assetFrameUrl(assetId: string, frame: number): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/assets/${assetId}/frame/${Math.max(0, frame)}`, {
+      headers: { "X-Laura-Token": this.token },
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+    return URL.createObjectURL(await res.blob());
+  }
+
   getTranscript(assetId: string): Promise<Segment[]> {
     return this.request<Segment[]>(`/assets/${assetId}/transcript`);
   }

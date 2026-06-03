@@ -17,6 +17,7 @@ from .. import audit
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
+from ..ingest.proxy import build_thumbnail
 from ..interchange.captions import segments_to_srt, segments_to_vtt
 from ..jobs.runner import enqueue
 from .models import AssetFileOut, AssetImport, AssetOut, ImportAccepted
@@ -111,6 +112,31 @@ def get_asset_file(asset_id: str, kind: str, request: Request) -> FileResponse:
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "file missing on disk")
     return FileResponse(path)
+
+
+@router.get("/assets/{asset_id}/frame/{frame}")
+def get_asset_frame(asset_id: str, frame: int, request: Request) -> FileResponse:
+    """A JPEG of the source frame ``frame`` (the proxy when available), rendered on
+    demand and cached — used for timeline-clip thumbnails."""
+    db = _db(request)
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    project = repos.get_project(db, asset["project_id"])
+    assert project is not None
+    files = {f["kind"]: f for f in repos.list_asset_files(db, asset_id)}
+    video = files["proxy"]["path"] if "proxy" in files else asset["source_path"]
+    rate_num = asset["rate_num"] or 25
+    rate_den = asset["rate_den"] or 1
+    dest = Path(project["workspace_root"]) / "analysis" / asset_id / "frames" / f"f-{frame:06d}.jpg"
+    if not dest.exists():
+        try:
+            build_thumbnail(video, dest, at_seconds=max(0, frame) * rate_den / rate_num)
+        except Exception as exc:  # noqa: BLE001 - bad frame / missing media
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"could not render frame: {exc}"
+            ) from exc
+    return FileResponse(dest)
 
 
 def _captions(request: Request, asset_id: str, fmt: str) -> str:
