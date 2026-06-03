@@ -178,11 +178,11 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] 16.5 **Desktop-Tests-Setup** — Vitest v2 (Vite-5-kompatibel) + Testing-Library + jsdom; `vitest.config.ts`, `test`-Script, 4 Tests (hasFile + TimelineBar-Render) grün; CI-Schritt `pnpm test` ergänzt
 - **Exit:** ✓ UI bedienbar; `tsc`/`vite build`/Vitest grün; GUI-Sicht manuell. **Portion 16 komplett.**
 
-## Portion 17 — Observability & Betrieb  `[~]`  (Plan: docs/16 §1)
-- [ ] 17.1 **OpenTelemetry-Tracing** — FastAPI/Job-Runner-Spans, Stage-Timings/Queue-Tiefe (In-Memory-Exporter-Test)
+## Portion 17 — Observability & Betrieb  `[x]`  (Plan: docs/16 §1)
+- [x] 17.1 **OpenTelemetry-Tracing** — `telemetry.py` (No-op-sicheres `span()`, `configure_tracing()` für OTLP), Job-Runner `job.execute`-Span (kind/queue/status); optionales `[otel]`-Extra, Backend läuft ohne (Graceful no-op **bewiesen**); In-Memory-Exporter-Test, 2 Tests, **187 grün**; CI `--extra otel`
 - [x] 17.2 **Postgres-RLS** — `db/rls.sql` (FORCE RLS auf projects, GUC `app.current_org`), `PostgresDatabase.apply_rls()`/`set_org()`; SQLite unberührt. **Live-PG verifiziert** als Nicht-Superuser-Rolle: Cross-Org-Read = 0 (6 PG-Tests grün). API-Layer-Filter bleibt primärer Guard; RLS = Defense-in-Depth
 - [x] 17.3 **Demo-Projekt + Golden-Fixtures** — `fixtures/golden/` (EDL/FCP7-XML/SRT/VTT) byte-genau vs. kanonischer Demo-Schnitt, `LAURA_REGEN_GOLDEN=1` zum Neu-Erzeugen, OTIO per Round-Trip; `.gitattributes` schützt CRLF; 5 Tests, **185 grün**
-- **Exit:** betriebsreif; Live-PG/FFmpeg-verifiziert.
+- **Exit:** ✓ betriebsreif; Live-PG/FFmpeg/OTel-In-Memory-verifiziert. **Portion 17 komplett — alle headless-baubaren Portionen (15–17) abgeschlossen.**
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
 - [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)

@@ -24,6 +24,12 @@ server = [
     "celery[redis]>=5.4",
     "qdrant-client>=1.11",
 ]
+# Optional OpenTelemetry tracing (docs/10) — backend runs without it (no-op spans).
+otel = [
+    "opentelemetry-api>=1.42.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.42.1",
+    "opentelemetry-sdk>=1.42.1",
+]
 
 [project.scripts]
 laura-api = "laura.main:run"
@@ -59,7 +65,7 @@ files = ["src", "tests"]
 [[tool.mypy.overrides]]
 module = [
     "scenedetect.*", "faster_whisper.*", "whisperx.*", "pyannote.*", "cv2.*",
-    "opentimelineio.*", "celery.*", "qdrant_client.*", "psycopg.*",
+    "opentimelineio.*", "celery.*", "qdrant_client.*", "psycopg.*", "opentelemetry.*",
 ]
 ignore_missing_imports = true
 

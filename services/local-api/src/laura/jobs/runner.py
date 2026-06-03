@@ -17,6 +17,7 @@ from typing import Any
 
 from ..db.database import Database
 from ..metrics import JOBS
+from ..telemetry import span
 from ..util import new_id, utcnow_iso
 
 # A handler receives a JobContext and returns an optional JSON-serialisable result.
@@ -179,27 +180,31 @@ class JobRunner:
 
     def _execute(self, job: dict[str, Any]) -> None:
         kind = str(job["kind"])
-        handler = self.registry.get(kind)
-        if handler is None:
-            self._finish_fail(job, f"no handler registered for kind={kind!r}")
-            JOBS.labels(kind, "failed").inc()
-            return
-        ctx = JobContext(
-            job_id=str(job["id"]),
-            kind=kind,
-            queue=str(job["queue"]),
-            payload=json.loads(job["payload_json"] or "{}"),
-            db=self.db,
-            lease_seconds=self.lease_seconds,
-        )
-        try:
-            result = handler(ctx)
-        except Exception as exc:  # noqa: BLE001 - we record any handler failure
-            self._finish_fail(job, f"{type(exc).__name__}: {exc}")
-            JOBS.labels(kind, "failed").inc()
-            return
-        self._finish_ok(str(job["id"]), result)
-        JOBS.labels(kind, "succeeded").inc()
+        with span("job.execute", **{"job.kind": kind, "job.queue": str(job["queue"])}) as sp:
+            handler = self.registry.get(kind)
+            if handler is None:
+                sp.set_attribute("job.status", "failed")
+                self._finish_fail(job, f"no handler registered for kind={kind!r}")
+                JOBS.labels(kind, "failed").inc()
+                return
+            ctx = JobContext(
+                job_id=str(job["id"]),
+                kind=kind,
+                queue=str(job["queue"]),
+                payload=json.loads(job["payload_json"] or "{}"),
+                db=self.db,
+                lease_seconds=self.lease_seconds,
+            )
+            try:
+                result = handler(ctx)
+            except Exception as exc:  # noqa: BLE001 - we record any handler failure
+                sp.set_attribute("job.status", "failed")
+                self._finish_fail(job, f"{type(exc).__name__}: {exc}")
+                JOBS.labels(kind, "failed").inc()
+                return
+            sp.set_attribute("job.status", "succeeded")
+            self._finish_ok(str(job["id"]), result)
+            JOBS.labels(kind, "succeeded").inc()
 
     def run_once(self) -> bool:
         """Reap, then claim and run at most one job. Returns True if a job ran."""

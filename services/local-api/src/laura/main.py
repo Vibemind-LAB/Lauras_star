@@ -21,11 +21,13 @@ from .db.database import create_database
 from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
+from .telemetry import configure_tracing
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
     ensure_workspace(settings)
+    configure_tracing()  # no-op unless OTEL_EXPORTER_OTLP_ENDPOINT + otel extra are present
     db = create_database(settings)
     db.migrate()
     registry = default_registry()

@@ -1320,6 +1320,11 @@ asr = [
 diarize = [
     { name = "pyannote-audio" },
 ]
+otel = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+]
 scene = [
     { name = "opencv-python" },
     { name = "scenedetect" },
@@ -1344,6 +1349,9 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "faster-whisper", marker = "extra == 'asr'", specifier = ">=1.0" },
     { name = "opencv-python", marker = "extra == 'scene'", specifier = ">=4.9" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.42.1" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.42.1" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.42.1" },
     { name = "opentimelineio", specifier = ">=0.17" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'server'", specifier = ">=3.2" },
@@ -1354,7 +1362,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.32" },
     { name = "whisperx", marker = "extra == 'align'", specifier = ">=3.1" },
 ]
-provides-extras = ["scene", "asr", "align", "diarize", "server"]
+provides-extras = ["scene", "asr", "align", "diarize", "server", "otel"]
 
 [package.metadata.requires-dev]
 dev = [
