@@ -2,6 +2,13 @@ import { type ReactElement, useEffect, useState } from "react";
 
 import { type LauraClient, type Shot } from "../api";
 
+const DROP_REASON_GLYPH: Record<string, string> = {
+  black: "⬛",
+  static: "❄",
+  duplicate: "⧉",
+  blur: "≈",
+};
+
 function ShotThumb({
   client,
   shot,
@@ -14,6 +21,7 @@ function ShotThumb({
   onAppend?: (shot: Shot) => void;
 }): ReactElement {
   const [url, setUrl] = useState<string | null>(null);
+  const dropped = shot.keep === false;
 
   useEffect(() => {
     let active = true;
@@ -39,17 +47,24 @@ function ShotThumb({
     };
   }, [client, shot.id, shot.thumbnail_path]);
 
+  const baseTitle = `Shot ${index + 1}: ${shot.src_in_frame}–${shot.src_out_frame_exclusive}`;
+  const appendHint = onAppend
+    ? dropped
+      ? ` · verworfen: ${shot.drop_reason ?? "unbekannt"} (Klick = wieder aufnehmen)`
+      : " (Klick = an Rough Cut anhängen)"
+    : "";
+  const title = baseTitle + appendHint;
+
   return (
     <button
       type="button"
       disabled={!onAppend}
       onClick={() => onAppend?.(shot)}
-      title={
-        `Shot ${index + 1}: ${shot.src_in_frame}–${shot.src_out_frame_exclusive}` +
-        (onAppend ? " (Klick = an Rough Cut anhängen)" : "")
-      }
-      className={`relative h-9 w-16 shrink-0 overflow-hidden rounded border border-edge ${
-        onAppend ? "hover:ring-2 hover:ring-emerald-500/60" : "cursor-default"
+      title={title}
+      className={`relative h-9 w-16 shrink-0 overflow-hidden rounded border ${
+        dropped
+          ? "border-dashed border-amber-500/50 opacity-50 hover:opacity-80"
+          : `border-edge ${onAppend ? "hover:ring-2 hover:ring-emerald-500/60" : "cursor-default"}`
       }`}
     >
       {url ? (
@@ -62,6 +77,16 @@ function ShotThumb({
       <span className="absolute bottom-0 left-0 bg-ink/70 px-1 text-[10px] leading-tight text-slate-200">
         {index + 1}
       </span>
+      {dropped && (
+        <span
+          className="absolute right-0 top-0 rounded-bl bg-amber-600/80 px-0.5 text-[10px] leading-tight text-white"
+          aria-hidden="true"
+        >
+          {shot.drop_reason != null
+            ? (DROP_REASON_GLYPH[shot.drop_reason] ?? "✕")
+            : "✕"}
+        </span>
+      )}
     </button>
   );
 }

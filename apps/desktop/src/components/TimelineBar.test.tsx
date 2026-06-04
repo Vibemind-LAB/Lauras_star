@@ -1,13 +1,21 @@
-import { fireEvent, render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type LauraClient, type Timeline, type TimelineClip } from "../api";
 import { TimelineBar } from "./TimelineBar";
 
+// Auto-cleanup is not wired (no globals/setup file), so unmount between tests
+// explicitly — otherwise leftover clip nodes make title queries ambiguous.
+afterEach(cleanup);
+
 // Thumbnails load lazily in ClipThumb; a never-resolving stub keeps the effect from
 // updating state during these tests (we exercise interaction, not thumbnail loading).
-function stubClient(): LauraClient {
-  return { assetFrameUrl: () => new Promise<string>(() => undefined) } as unknown as LauraClient;
+function stubClient(over: Partial<LauraClient> = {}): LauraClient {
+  return {
+    assetFrameUrl: () => new Promise<string>(() => undefined),
+    getAsset: () => new Promise(() => undefined),
+    ...over,
+  } as unknown as LauraClient;
 }
 
 function clip(over: Partial<TimelineClip> = {}): TimelineClip {
@@ -52,5 +60,27 @@ describe("TimelineBar", () => {
     );
     fireEvent.click(getByTitle(/^Clip 1/));
     expect(onScrub).toHaveBeenCalledWith("vid-42", 1518);
+  });
+
+  it("reorders clips via drag-and-drop with op:move (drop-before semantics)", () => {
+    const a = clip({ id: "A", seq_in_frame: 0, seq_out_frame_exclusive: 31 });
+    const b = clip({ id: "B", seq_in_frame: 31, seq_out_frame_exclusive: 62 });
+    const tl = timeline([a, b]);
+    const applyOperation = vi.fn(() => Promise.resolve(tl));
+    const { getByTitle } = render(
+      <TimelineBar
+        client={stubClient({ applyOperation })}
+        timeline={tl}
+        onChange={() => undefined}
+      />,
+    );
+    // Drag clip A (seq_in 0) and drop it onto clip B (seq_in 31): move A before B.
+    fireEvent.dragStart(getByTitle(/^Clip 1/));
+    fireEvent.drop(getByTitle(/^Clip 2/));
+    expect(applyOperation).toHaveBeenCalledWith("t1", {
+      op: "move",
+      at_seq_frame: 0,
+      to_seq_frame: 31,
+    });
   });
 });

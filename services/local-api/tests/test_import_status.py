@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,31 +16,35 @@ from laura.jobs import enqueue
 from laura.main import create_app
 
 
-def _fresh_db(tmp_path) -> SqliteDatabase:
+def _fresh_db(tmp_path: Path) -> SqliteDatabase:
     db = SqliteDatabase(Settings(workspace_root=tmp_path).db_path)
     db.migrate()
     return db
 
 
-def test_set_and_get_fetch_job_progress(tmp_path) -> None:
+def test_set_and_get_fetch_job_progress(tmp_path: Path) -> None:
     db = _fresh_db(tmp_path)
     job_id = enqueue(
         db, queue="ingest.io", kind="ingest.fetch",
         payload={"asset_id": "asset-1", "source_url": "http://x/y.mp4"},
         idempotency_key="fetch:asset-1",
     )
-    assert repos.get_fetch_job(db, "asset-1")["id"] == job_id
+    job = repos.get_fetch_job(db, "asset-1")
+    assert job is not None and job["id"] == job_id
     repos.set_job_progress(db, job_id, '{"downloaded":10,"total":100,"speed_bps":5}')
     again = repos.get_fetch_job(db, "asset-1")
+    assert again is not None
     assert again["progress_json"] == '{"downloaded":10,"total":100,"speed_bps":5}'
 
 
-def test_get_fetch_job_none_when_absent(tmp_path) -> None:
+def test_get_fetch_job_none_when_absent(tmp_path: Path) -> None:
     db = _fresh_db(tmp_path)
     assert repos.get_fetch_job(db, "nope") is None
 
 
-def test_progress_writer_throttles_and_writes(tmp_path, monkeypatch) -> None:
+def test_progress_writer_throttles_and_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = _fresh_db(tmp_path)
     job_id = enqueue(
         db, queue="ingest.io", kind="ingest.fetch",
@@ -54,26 +59,30 @@ def test_progress_writer_throttles_and_writes(tmp_path, monkeypatch) -> None:
     clock["t"] = 1001.5
     w(60, 100)       # >1s later -> writes; speed = 50 bytes / 1.5 s
 
-    prog = json.loads(repos.get_fetch_job(db, "a")["progress_json"])
+    fetched = repos.get_fetch_job(db, "a")
+    assert fetched is not None
+    prog = json.loads(fetched["progress_json"])
     assert prog["downloaded"] == 60
     assert prog["total"] == 100
     assert prog["speed_bps"] == pytest.approx(50 / 1.5, rel=0.2)
 
 
-def _client_db(tmp_path):
+def _client_db(tmp_path: Path) -> tuple[TestClient, SqliteDatabase]:
     settings = Settings(workspace_root=tmp_path, token=None, start_runner=False)
     app = create_app(settings)
     client = TestClient(app)
-    return client, app.state.db
+    db: SqliteDatabase = app.state.db
+    return client, db
 
 
-def _project(client) -> str:
-    return client.post(
+def _project(client: TestClient) -> str:
+    resp = client.post(
         "/projects", json={"name": "p", "sequence_rate_num": 30, "sequence_rate_den": 1}
-    ).json()["id"]
+    )
+    return str(resp.json()["id"])
 
 
-def test_import_status_downloading_then_error(tmp_path) -> None:
+def test_import_status_downloading_then_error(tmp_path: Path) -> None:
     client, db = _client_db(tmp_path)
     pid = _project(client)
     asset = repos.create_asset(
@@ -101,7 +110,7 @@ def test_import_status_downloading_then_error(tmp_path) -> None:
     assert "boom" in (body["error"] or "")
 
 
-def test_import_retry_requeues_failed_fetch(tmp_path) -> None:
+def test_import_retry_requeues_failed_fetch(tmp_path: Path) -> None:
     client, db = _client_db(tmp_path)
     pid = _project(client)
     asset = repos.create_asset(
@@ -118,10 +127,11 @@ def test_import_retry_requeues_failed_fetch(tmp_path) -> None:
 
     assert client.post(f"/assets/{asset['id']}/import-retry").status_code == 202
     job = repos.get_fetch_job(db, asset["id"])
+    assert job is not None
     assert job["status"] == "queued"
 
 
-def test_import_retry_conflict_when_not_error(tmp_path) -> None:
+def test_import_retry_conflict_when_not_error(tmp_path: Path) -> None:
     client, db = _client_db(tmp_path)
     pid = _project(client)
     asset = repos.create_asset(

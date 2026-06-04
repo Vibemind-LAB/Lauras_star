@@ -26,8 +26,10 @@ export interface AnalysisController {
   error: string | null;
   diarize: boolean;
   align: boolean;
+  detector: string;
   setDiarize: (v: boolean) => void;
   setAlign: (v: boolean) => void;
+  setDetector: (v: string) => void;
   runAnalysis: () => Promise<void>;
   reload: () => Promise<void>;
 }
@@ -45,6 +47,7 @@ export function useAnalysis(client: LauraClient | null, asset: Asset | null): An
   const [error, setError] = useState<string | null>(null);
   const [diarize, setDiarize] = useState(false);
   const [align, setAlign] = useState(false);
+  const [detector, setDetector] = useState<string>("adaptive");
 
   const assetId = asset?.id ?? null;
 
@@ -82,7 +85,7 @@ export function useAnalysis(client: LauraClient | null, asset: Asset | null): An
     setStatus("running");
     setError(null);
     try {
-      await client.startAnalysis(assetId, { scene: true, asr: true, diarize, align });
+      await client.startAnalysis(assetId, { scene: true, asr: true, diarize, align, detector });
       for (let i = 0; i < 180; i++) {
         const run = await client.getLatestAnalysis(assetId);
         if (run && (run.status === "succeeded" || run.status === "failed")) {
@@ -97,10 +100,10 @@ export function useAnalysis(client: LauraClient | null, asset: Asset | null): An
       setError(String(e));
       setStatus("error");
     }
-  }, [client, assetId, diarize, align, reload]);
+  }, [client, assetId, diarize, align, detector, reload]);
 
   return {
     status, shots, segments, note, error,
-    diarize, align, setDiarize, setAlign, runAnalysis, reload,
+    diarize, align, detector, setDiarize, setAlign, setDetector, runAnalysis, reload,
   };
 }

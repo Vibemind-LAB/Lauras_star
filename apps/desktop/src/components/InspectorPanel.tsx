@@ -40,12 +40,16 @@ export function InspectorPanel({
   analysis,
   canAppend,
   onAppendShot,
+  onBuildFromShots,
+  buildResult,
 }: {
   client: LauraClient;
   asset: Asset;
   analysis: AnalysisController;
   canAppend: boolean;
   onAppendShot: (shot: Shot) => void;
+  onBuildFromShots: () => void;
+  buildResult: { kept: number; dropped: number } | null;
 }): ReactElement {
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
@@ -119,6 +123,18 @@ export function InspectorPanel({
             />
             Align
           </label>
+          <select
+            value={analysis.detector}
+            onChange={(e) => analysis.setDetector(e.target.value)}
+            disabled={running}
+            title="Szenen-Detektor (TransNetV2 nutzt das optionale ML-Modell, sonst Fallback auf Adaptive)"
+            className="rounded border border-edge bg-ink px-1 py-0.5 text-[10px] text-slate-400 disabled:opacity-40"
+          >
+            <option value="adaptive">Adaptive</option>
+            <option value="content">Content</option>
+            <option value="histogram">Histogram</option>
+            <option value="transnet">TransNetV2</option>
+          </select>
           <button
             type="button"
             onClick={() => void analysis.runAnalysis()}
@@ -133,12 +149,34 @@ export function InspectorPanel({
       {analysis.error && <div className="text-xs text-red-400">{analysis.error}</div>}
 
       <div>
-        <div className="mb-1 text-xs text-slate-500">Shots ({analysis.shots.length})</div>
+        {(() => {
+          const droppedCount = analysis.shots.filter((s) => s.keep === false).length;
+          return (
+            <div className="mb-1 text-xs text-slate-500">
+              Shots ({analysis.shots.length}
+              {droppedCount > 0 ? ` · ${droppedCount} verworfen` : ""})
+            </div>
+          );
+        })()}
         <ShotStrip
           client={client}
           shots={analysis.shots}
           onAppend={canAppend ? onAppendShot : undefined}
         />
+        <button
+          type="button"
+          onClick={onBuildFromShots}
+          disabled={analysis.shots.length === 0 || !canAppend}
+          className="mt-2 w-full rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
+          title="Eine Rough-Cut-Sequenz aus den erkannten Szenen bauen (schwache automatisch verworfen)"
+        >
+          Rough Cut aus Szenen bauen
+        </button>
+        {buildResult && (
+          <div className="mt-1 text-xs text-slate-400">
+            {buildResult.kept} Szenen übernommen · {buildResult.dropped} verworfen
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-4">

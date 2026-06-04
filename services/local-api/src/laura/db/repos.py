@@ -324,11 +324,15 @@ def insert_shots(
         for shot in shots:
             conn.execute(
                 "INSERT INTO shots (id, asset_id, analysis_run_id, src_in_frame, "
-                "src_out_frame_exclusive, confidence, method, thumbnail_path) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "src_out_frame_exclusive, confidence, method, thumbnail_path, "
+                "black_ratio, static_score, phash, blur_score, keep, drop_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), asset_id, run_id, shot["src_in_frame"],
                  shot["src_out_frame_exclusive"], shot.get("confidence"),
-                 shot.get("method"), shot.get("thumbnail_path")),
+                 shot.get("method"), shot.get("thumbnail_path"),
+                 shot.get("black_ratio"), shot.get("static_score"), shot.get("phash"),
+                 shot.get("blur_score"), 1 if shot.get("keep", True) else 0,
+                 shot.get("drop_reason")),
             )
     return len(shots)
 
