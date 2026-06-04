@@ -38,6 +38,18 @@ class Timeline:
         return sorted(self.clips, key=lambda c: (c.seq_in_frame, c.lane))
 
 
+def _clip_source_url(source_path: str | None) -> str | None:
+    """Map an asset's stored source_path to an export media reference.
+
+    A URL-imported asset stores ``url:<url>`` until its download completes; while
+    pending it has no local media, so exporters get no path (it's offline) rather
+    than a malformed ``file://localhost/url:...`` reference.
+    """
+    if source_path is None or source_path.startswith("url:"):
+        return None
+    return source_path
+
+
 def timeline_from_rows(
     timeline_row: dict[str, Any],
     clip_rows: list[dict[str, Any]],
@@ -59,7 +71,7 @@ def timeline_from_rows(
                 seq_out_frame_exclusive=row["seq_out_frame_exclusive"],
                 lane=row.get("lane", 0),
                 asset_id=row["asset_id"],
-                source_url=asset.get("source_path"),
+                source_url=_clip_source_url(asset.get("source_path")),
                 speaker_label=speaker.get("label") if speaker else None,
                 speed_num=row.get("speed_num") or 1,
                 speed_den=row.get("speed_den") or 1,

@@ -62,6 +62,15 @@ export interface ImportAccepted {
   job_id: string;
 }
 
+export interface ImportStatus {
+  phase: "queued" | "downloading" | "verifying" | "analyzing" | "ready" | "error";
+  downloaded_bytes: number | null;
+  total_bytes: number | null;
+  speed_bps: number | null;
+  eta_seconds: number | null;
+  error: string | null;
+}
+
 export interface Waveform {
   version: number;
   sample_rate: number;
@@ -288,6 +297,21 @@ export class LauraClient {
       method: "POST",
       body: JSON.stringify({ source_path: sourcePath }),
     });
+  }
+
+  importAssetFromUrl(projectId: string, url: string): Promise<ImportAccepted> {
+    return this.request<ImportAccepted>(`/projects/${projectId}/assets/import`, {
+      method: "POST",
+      body: JSON.stringify({ source_url: url }),
+    });
+  }
+
+  getImportStatus(assetId: string): Promise<ImportStatus> {
+    return this.request<ImportStatus>(`/assets/${assetId}/import-status`);
+  }
+
+  retryImport(assetId: string): Promise<ImportAccepted> {
+    return this.request<ImportAccepted>(`/assets/${assetId}/import-retry`, { method: "POST" });
   }
 
   getWaveform(assetId: string): Promise<Waveform> {

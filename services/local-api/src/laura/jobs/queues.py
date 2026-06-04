@@ -22,6 +22,7 @@ ALL_QUEUES: tuple[str, ...] = CPU_QUEUES + GPU_QUEUES
 
 # job kind -> queue it should be enqueued on
 _STAGE_QUEUE: dict[str, str] = {
+    "ingest.fetch": QUEUE_INGEST,
     "ingest.probe": QUEUE_INGEST,
     "proxy.build": QUEUE_PROXY,
     "audio.extract": QUEUE_PROXY,

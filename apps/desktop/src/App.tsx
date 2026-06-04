@@ -3,14 +3,22 @@ import { type FormEvent, type ReactElement, useCallback, useEffect, useState } f
 import {
   type Asset,
   type Health,
-  hasFile,
   LauraClient,
   type Project,
   type SearchResult,
+  type Segment,
+  type Shot,
   type Timeline,
 } from "./api";
-import { AssetView } from "./components/AssetView";
+import { DropZone, type ResolvedImport } from "./components/DropZone";
+import { ImportBar } from "./components/ImportBar";
+import { ImportProgress } from "./components/ImportProgress";
+import { InspectorPanel } from "./components/InspectorPanel";
+import { Player } from "./components/Player";
 import { TimelineBar } from "./components/TimelineBar";
+import { TranscriptBar } from "./components/TranscriptBar";
+import { useAnalysis } from "./hooks/useAnalysis";
+import { useImportStatus } from "./hooks/useImportStatus";
 
 interface FpsPreset {
   label: string;
@@ -31,20 +39,9 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "60", num: 60, den: 1, drop: false },
 ];
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
   return `${fps}${p.drop_frame ? " DF" : ""}`;
-}
-
-/** Import has reached a terminal-enough state for the UI (waveform ready, or a
- *  silent video proxied, or a hard failure). */
-function importSettled(a: Asset): boolean {
-  if (hasFile(a, "waveform")) return true;
-  const probed = a.duration_frames != null;
-  const silentVideo = a.type === "video" && probed && !a.audio_sample_rate && hasFile(a, "proxy");
-  return silentVideo;
 }
 
 export function App(): ReactElement {
@@ -56,19 +53,22 @@ export function App(): ReactElement {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [importingAsset, setImportingAsset] = useState<Asset | null>(null);
   const [roughCut, setRoughCut] = useState<Timeline | null>(null);
-  // Clicking a rough-cut clip jumps the player: select the clip's asset + seek its IN frame.
-  const [previewSeek, setPreviewSeek] = useState<{ assetId: string; frame: number } | null>(null);
+
+  // A single seek request the Player consumes; a fresh object re-triggers it.
+  const [seek, setSeek] = useState<{ frame: number } | null>(null);
+  const [currentFrame, setCurrentFrame] = useState(0);
 
   const [name, setName] = useState("");
   const [presetIdx, setPresetIdx] = useState(3);
   const [busy, setBusy] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [semantic, setSemantic] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+
+  const detailAsset = assets.find((a) => a.id === selectedAssetId) ?? null;
+  const analysis = useAnalysis(client, detailAsset);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,13 +93,9 @@ export function App(): ReactElement {
     };
   }, []);
 
-  const loadAssets = useCallback(
-    async (c: LauraClient, projectId: string) => {
-      const list = await c.listAssets(projectId);
-      setAssets(list);
-    },
-    [],
-  );
+  const loadAssets = useCallback(async (c: LauraClient, projectId: string) => {
+    setAssets(await c.listAssets(projectId));
+  }, []);
 
   const loadRoughCut = useCallback(async (c: LauraClient, projectId: string) => {
     const timelines = await c.listTimelines(projectId);
@@ -113,20 +109,61 @@ export function App(): ReactElement {
     }
   }, [client, selectedProjectId, loadRoughCut]);
 
-  // Show the clip's source asset and seek the player to its IN frame. A new object each
-  // call so the same clip re-seeks; AssetView only honours it once its asset matches.
+  const seekToFrame = useCallback((frame: number) => setSeek({ frame }), []);
+
+  const importPaths = useCallback(
+    async (paths: string[]): Promise<string[]> => {
+      if (!client || !selectedProjectId) return [];
+      const ids: string[] = [];
+      for (const p of paths) ids.push((await client.importAsset(selectedProjectId, p)).asset_id);
+      return ids;
+    },
+    [client, selectedProjectId],
+  );
+
+  const importUrls = useCallback(
+    async (urls: string[]): Promise<string[]> => {
+      if (!client || !selectedProjectId) return [];
+      const ids: string[] = [];
+      for (const u of urls) ids.push((await client.importAssetFromUrl(selectedProjectId, u)).asset_id);
+      return ids;
+    },
+    [client, selectedProjectId],
+  );
+
+  const runImport = useCallback(
+    async (paths: string[], urls: string[]): Promise<void> => {
+      if (!client || !selectedProjectId) return;
+      try {
+        const ids = [...(await importPaths(paths)), ...(await importUrls(urls))];
+        await loadAssets(client, selectedProjectId);
+        if (ids[0]) setSelectedAssetId(ids[0]);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [client, selectedProjectId, importPaths, importUrls, loadAssets],
+  );
+
+  const onDropImport = useCallback(
+    (r: ResolvedImport): void => {
+      void runImport(r.paths, r.urls);
+    },
+    [runImport],
+  );
+
+  // Show the clip's source asset and seek the player to its frame.
   const previewClip = useCallback((assetId: string, frame: number) => {
     setSelectedAssetId(assetId);
-    setPreviewSeek({ assetId, frame });
+    setSeek({ frame });
   }, []);
 
   async function selectProject(id: string): Promise<void> {
     setSelectedProjectId(id);
     setSelectedAssetId(null);
-    setImportingAsset(null);
     setAssets([]);
     setRoughCut(null);
-    setPreviewSeek(null);
+    setSeek(null);
     if (client) {
       try {
         await loadAssets(client, id);
@@ -157,30 +194,6 @@ export function App(): ReactElement {
       setError(String(e));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function onImport(): Promise<void> {
-    if (!client || !selectedProjectId) return;
-    const path = await window.laura.pickMediaFile();
-    if (!path) return;
-    setImporting(true);
-    setError(null);
-    try {
-      const { asset_id } = await client.importAsset(selectedProjectId, path);
-      for (let i = 0; i < 150; i++) {
-        const a = await client.getAsset(asset_id);
-        setImportingAsset(a);
-        if (importSettled(a)) break;
-        await sleep(700);
-      }
-      await loadAssets(client, selectedProjectId);
-      setSelectedAssetId(asset_id);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setImporting(false);
-      setImportingAsset(null);
     }
   }
 
@@ -230,11 +243,38 @@ export function App(): ReactElement {
     }
   }
 
-  const detailAsset =
-    importingAsset ?? assets.find((a) => a.id === selectedAssetId) ?? null;
+  async function onAppendShot(shot: Shot): Promise<void> {
+    if (!client || !roughCut || !detailAsset) return;
+    try {
+      await client.applyOperation(roughCut.id, {
+        op: "append_clip",
+        asset_id: detailAsset.id,
+        src_in_frame: shot.src_in_frame,
+        src_out_frame_exclusive: shot.src_out_frame_exclusive,
+      });
+      reloadRoughCut();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function onAppendSegment(seg: Segment): Promise<void> {
+    if (!client || !roughCut || seg.words.length === 0) return;
+    try {
+      await client.applyOperation(roughCut.id, {
+        op: "append_from_words",
+        word_start_id: seg.words[0].id,
+        word_end_id: seg.words[seg.words.length - 1].id,
+      });
+      reloadRoughCut();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
+      <DropZone onImport={onDropImport} />
       <header className="flex items-center justify-between border-b border-edge bg-panel px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold tracking-tight text-white">Laura</h1>
@@ -249,165 +289,198 @@ export function App(): ReactElement {
         </div>
       )}
 
-      <main className="grid flex-1 grid-cols-[260px_280px_1fr] gap-px overflow-hidden bg-edge">
-        {/* Projects */}
+      <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
+        {/* Library: projects + media */}
         <section className="flex flex-col overflow-hidden bg-ink">
-          <h2 className="px-4 pb-2 pt-4 text-xs font-medium uppercase tracking-wide text-slate-500">
-            Projekte
-          </h2>
-          <ul className="flex-1 space-y-1 overflow-auto px-3">
-            {projects.map((p) => (
-              <li key={p.id} className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => void selectProject(p.id)}
-                  className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm transition ${
-                    p.id === selectedProjectId
-                      ? "bg-sky-600/20 text-sky-200"
-                      : "text-slate-200 hover:bg-panel"
-                  }`}
-                >
-                  <div className="truncate font-medium">{p.name}</div>
-                  <div className="text-xs text-slate-500">{fpsLabel(p)} fps</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onDeleteProject(p.id)}
-                  title="Projekt löschen"
-                  className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
-          <form onSubmit={onCreateProject} className="space-y-2 border-t border-edge p-3">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Neues Projekt…"
-              className="w-full rounded-md border border-edge bg-panel px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-500"
-            />
-            <select
-              value={presetIdx}
-              onChange={(e) => setPresetIdx(Number(e.target.value))}
-              className="w-full rounded-md border border-edge bg-panel px-2 py-2 text-xs text-slate-100 outline-none focus:border-slate-500"
-            >
-              {FPS_PRESETS.map((p, i) => (
-                <option key={p.label} value={i}>
-                  {p.label} fps
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              disabled={busy || !client || !name.trim()}
-              className="w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
-            >
-              {busy ? "Lege an…" : "Projekt anlegen"}
-            </button>
-          </form>
-        </section>
-
-        {/* Assets */}
-        <section className="flex flex-col overflow-hidden bg-ink">
-          <div className="flex items-center justify-between px-4 pb-2 pt-4">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Medien</h2>
-            <button
-              type="button"
-              onClick={() => void onImport()}
-              disabled={!selectedProjectId || importing}
-              className="rounded-md bg-panel px-2 py-1 text-xs text-slate-200 transition hover:bg-edge disabled:opacity-40"
-            >
-              {importing ? "Importiere…" : "+ Import"}
-            </button>
-          </div>
-          <form onSubmit={onSearch} className="space-y-1 px-3 pb-2">
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
-              disabled={!selectedProjectId}
-              className="w-full rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-slate-500 disabled:opacity-40"
-            />
-            <button
-              type="button"
-              onClick={() => setSemantic((s) => !s)}
-              disabled={!selectedProjectId}
-              title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
-              className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
-                semantic ? "bg-sky-600/30 text-sky-200" : "bg-panel text-slate-400 hover:bg-edge"
-              }`}
-            >
-              {semantic ? "● semantisch" : "○ lexikalisch"}
-            </button>
-          </form>
-          {searchResults.length > 0 && (
-            <ul className="max-h-40 space-y-1 overflow-auto border-b border-edge px-3 pb-2">
-              {searchResults.map((r) => (
-                <li key={r.segment_id}>
+          <div className="flex min-h-0 flex-1 flex-col border-b border-edge">
+            <h2 className="px-4 pb-2 pt-4 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Projekte
+            </h2>
+            <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3">
+              {projects.map((p) => (
+                <li key={p.id} className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => setSelectedAssetId(r.asset_id)}
-                    className="w-full truncate rounded bg-panel px-2 py-1 text-left text-xs text-slate-300 hover:bg-edge"
+                    onClick={() => void selectProject(p.id)}
+                    className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm transition ${
+                      p.id === selectedProjectId
+                        ? "bg-sky-600/20 text-sky-200"
+                        : "text-slate-200 hover:bg-panel"
+                    }`}
                   >
-                    {r.score != null && (
-                      <span className="mr-1 text-emerald-400">{Math.round(r.score * 100)}%</span>
-                    )}
-                    <span className="text-slate-500">{r.asset_name}:</span> {r.text.slice(0, 60)}
+                    <div className="truncate font-medium">{p.name}</div>
+                    <div className="text-xs text-slate-500">{fpsLabel(p)} fps</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onDeleteProject(p.id)}
+                    title="Projekt löschen"
+                    className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                  >
+                    ×
                   </button>
                 </li>
               ))}
             </ul>
-          )}
-          <ul className="flex-1 space-y-1 overflow-auto px-3 pb-3">
-            {!selectedProjectId && (
-              <li className="px-1 py-2 text-xs text-slate-600">Wähle links ein Projekt.</li>
+            <form onSubmit={onCreateProject} className="space-y-2 p-3">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Neues Projekt…"
+                className="w-full rounded-md border border-edge bg-panel px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-500"
+              />
+              <select
+                value={presetIdx}
+                onChange={(e) => setPresetIdx(Number(e.target.value))}
+                className="w-full rounded-md border border-edge bg-panel px-2 py-2 text-xs text-slate-100 outline-none focus:border-slate-500"
+              >
+                {FPS_PRESETS.map((p, i) => (
+                  <option key={p.label} value={i}>
+                    {p.label} fps
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={busy || !client || !name.trim()}
+                className="w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
+              >
+                {busy ? "Lege an…" : "Projekt anlegen"}
+              </button>
+            </form>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex items-center justify-between px-4 pb-2 pt-3">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Medien</h2>
+            </div>
+            <div className="px-3 pb-2">
+              <ImportBar
+                disabled={!selectedProjectId}
+                onUrl={(u) => void runImport([], [u])}
+                onPickFiles={() => {
+                  void (async () => {
+                    try {
+                      const files = await window.laura.pickMediaFiles();
+                      if (files.length > 0) await runImport(files, []);
+                    } catch (e) {
+                      setError(String(e));
+                    }
+                  })();
+                }}
+                onPickFolder={() => {
+                  void (async () => {
+                    try {
+                      const folder = await window.laura.pickFolder();
+                      if (folder) await runImport(await window.laura.listMediaInFolder(folder), []);
+                    } catch (e) {
+                      setError(String(e));
+                    }
+                  })();
+                }}
+              />
+            </div>
+            <form onSubmit={onSearch} className="space-y-1 px-3 pb-2">
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
+                disabled={!selectedProjectId}
+                className="w-full rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-slate-500 disabled:opacity-40"
+              />
+              <button
+                type="button"
+                onClick={() => setSemantic((s) => !s)}
+                disabled={!selectedProjectId}
+                title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
+                className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
+                  semantic ? "bg-sky-600/30 text-sky-200" : "bg-panel text-slate-400 hover:bg-edge"
+                }`}
+              >
+                {semantic ? "● semantisch" : "○ lexikalisch"}
+              </button>
+            </form>
+            {searchResults.length > 0 && (
+              <ul className="max-h-40 space-y-1 overflow-auto border-b border-edge px-3 pb-2">
+                {searchResults.map((r) => (
+                  <li key={r.segment_id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAssetId(r.asset_id)}
+                      className="w-full truncate rounded bg-panel px-2 py-1 text-left text-xs text-slate-300 hover:bg-edge"
+                    >
+                      {r.score != null && (
+                        <span className="mr-1 text-emerald-400">{Math.round(r.score * 100)}%</span>
+                      )}
+                      <span className="text-slate-500">{r.asset_name}:</span> {r.text.slice(0, 60)}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
-            {selectedProjectId && assets.length === 0 && !importing && (
-              <li className="px-1 py-2 text-xs text-slate-600">Noch keine Medien importiert.</li>
-            )}
-            {assets.map((a) => (
-              <li key={a.id} className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setSelectedAssetId(a.id)}
-                  className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
-                    a.id === selectedAssetId
-                      ? "bg-sky-600/20 text-sky-200"
-                      : "text-slate-200 hover:bg-panel"
-                  }`}
-                >
-                  {a.display_name}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onDeleteAsset(a.id)}
-                  title="Medium löschen"
-                  className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
+            <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-3">
+              {!selectedProjectId && (
+                <li className="px-1 py-2 text-xs text-slate-600">Wähle ein Projekt.</li>
+              )}
+              {selectedProjectId && assets.length === 0 && (
+                <li className="px-1 py-2 text-xs text-slate-600">Noch keine Medien importiert.</li>
+              )}
+              {assets.map((a) => (
+                <li key={a.id} className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAssetId(a.id)}
+                      className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
+                        a.id === selectedAssetId
+                          ? "bg-sky-600/20 text-sky-200"
+                          : "text-slate-200 hover:bg-panel"
+                      }`}
+                    >
+                      {a.display_name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteAsset(a.id)}
+                      title="Medium löschen"
+                      className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {client && !isImportSettled(a) && (
+                    <AssetImportRow client={client} assetId={a.id} />
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
 
-        {/* Detail */}
-        <section className="overflow-auto bg-ink p-5">
+        {/* Preview: the source player */}
+        <section className="flex flex-col overflow-auto bg-ink p-4">
           {client && detailAsset ? (
-            <AssetView
+            <Player asset={detailAsset} seekTo={seek} onFrame={setCurrentFrame} />
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+              Wähle ein Medium oder importiere eines.
+            </div>
+          )}
+        </section>
+
+        {/* Inspector: analysis + metadata (clip-selection inspector arrives in P5) */}
+        <section className="flex flex-col overflow-hidden bg-ink">
+          {client && detailAsset ? (
+            <InspectorPanel
               client={client}
               asset={detailAsset}
-              roughCut={roughCut}
-              onTimelineChange={reloadRoughCut}
-              seekRequest={
-                previewSeek && previewSeek.assetId === detailAsset.id ? previewSeek : null
-              }
+              analysis={analysis}
+              canAppend={roughCut != null}
+              onAppendShot={(s) => void onAppendShot(s)}
             />
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-slate-600">
-              {importing ? "Importiere & analysiere…" : "Wähle ein Medium oder importiere eines."}
+            <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-slate-600">
+              Inspector — wähle ein Medium.
             </div>
           )}
         </section>
@@ -421,6 +494,38 @@ export function App(): ReactElement {
           onScrub={previewClip}
         />
       )}
+
+      <TranscriptBar
+        client={client}
+        assetId={detailAsset?.id ?? null}
+        assetName={detailAsset?.display_name ?? null}
+        segments={analysis.segments}
+        note={analysis.note}
+        currentFrame={currentFrame}
+        onSeek={seekToFrame}
+        canAppend={roughCut != null}
+        onAppendSegment={(s) => void onAppendSegment(s)}
+      />
+    </div>
+  );
+}
+
+function isImportSettled(asset: Asset): boolean {
+  return asset.files?.some((f) => f.kind === "waveform" || f.kind === "proxy") ?? false;
+}
+
+function AssetImportRow({
+  client,
+  assetId,
+}: {
+  client: LauraClient;
+  assetId: string;
+}): ReactElement | null {
+  const status = useImportStatus(client, assetId);
+  if (!status) return null;
+  return (
+    <div className="px-3 pb-1">
+      <ImportProgress status={status} onRetry={() => void client.retryImport(assetId)} />
     </div>
   );
 }

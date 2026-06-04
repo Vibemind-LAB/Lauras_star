@@ -56,3 +56,27 @@ def run_ffmpeg(args: list[str]) -> None:
     if proc.returncode != 0:
         # keep the tail of stderr — ffmpeg errors are most informative at the end
         raise FFmpegError((proc.stderr or "ffmpeg failed").strip()[-2000:])
+
+
+def decode_scan(path: Path | str) -> int:
+    """Full decode pass; returns the count of decode-error lines ffmpeg emitted.
+
+    ``ffmpeg -v error -xerror -i <path> -f null -`` decodes every frame and prints one
+    line per decode error. ``-xerror`` makes it bail on the first error, so a clean file
+    decodes fully while a corrupt one returns quickly. Zero => clean.
+    """
+    cmd = [
+        ffmpeg_bin(), "-hide_banner", "-nostdin", "-v", "error", "-xerror",
+        "-i", str(path), "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+    except FileNotFoundError as exc:
+        raise FFmpegError(f"ffmpeg not found: {ffmpeg_bin()}") from exc
+    stderr = (proc.stderr or "").strip()
+    error_lines = len([line for line in stderr.splitlines() if line.strip()])
+    if proc.returncode != 0:
+        # A non-zero exit means ffmpeg aborted decoding (``-xerror``); count it as at
+        # least one error even when stderr was suppressed.
+        return max(error_lines, 1)
+    return error_lines

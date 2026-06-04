@@ -98,6 +98,24 @@ def get_job(db: Database, job_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
+def get_fetch_job(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The ingest.fetch job for an asset (keyed by its stable idempotency key)."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE idempotency_key = ?", (f"fetch:{asset_id}",)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def set_job_progress(db: Database, job_id: str, progress_json: str) -> None:
+    """Store the latest progress sample for a job (throttled by the caller)."""
+    with db.connection() as conn:
+        conn.execute(
+            "UPDATE jobs SET progress_json = ?, updated_at = ? WHERE id = ?",
+            (progress_json, utcnow_iso(), job_id),
+        )
+
+
 # --- assets ---------------------------------------------------------------
 def create_asset(
     db: Database,
@@ -183,6 +201,20 @@ def update_asset_probe(
             "codec_audio=?, is_vfr=?, sha256=? WHERE id=?",
             (type, duration_frames, rate_num, rate_den, audio_sample_rate, start_timecode,
              width, height, codec_video, codec_audio, int(is_vfr), sha256, asset_id),
+        )
+
+
+def set_asset_source(
+    db: Database, asset_id: str, *, source_path: str, online: bool
+) -> None:
+    """Point an asset at its (now local) source file and flip its online flag.
+
+    Used by the URL-ingest fetch stage once the download is verified complete.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE media_assets SET source_path=?, online=? WHERE id=?",
+            (source_path, int(online), asset_id),
         )
 
 

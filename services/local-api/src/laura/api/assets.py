@@ -7,8 +7,9 @@ no copy of large media); derived artifacts live under the project workspace.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -20,7 +21,7 @@ from ..db.database import Database
 from ..ingest.proxy import build_thumbnail
 from ..interchange.captions import segments_to_srt, segments_to_vtt
 from ..jobs.runner import enqueue
-from .models import AssetFileOut, AssetImport, AssetOut, ImportAccepted
+from .models import AssetFileOut, AssetImport, AssetOut, ImportAccepted, ImportStatusOut
 from .pagination import PageParams
 from .security import require_token
 
@@ -41,6 +42,21 @@ def import_asset(project_id: str, body: AssetImport, request: Request) -> Import
     db = _db(request)
     if repos.get_project(db, project_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+
+    if body.source_url:
+        name = body.display_name or Path(body.source_url.split("?", 1)[0]).name or "download.bin"
+        asset = repos.create_asset(
+            db, project_id=project_id, type="video",
+            display_name=name, source_path=f"url:{body.source_url}", online=False,
+        )
+        job_id = enqueue(
+            db, queue="ingest.io", kind="ingest.fetch",
+            payload={"asset_id": asset["id"], "source_url": body.source_url},
+            idempotency_key=f"fetch:{asset['id']}", max_attempts=5,
+        )
+        return ImportAccepted(asset_id=asset["id"], job_id=job_id)
+
+    assert body.source_path is not None  # guaranteed by the AssetImport validator
 
     src = Path(body.source_path)
     if not src.exists() or not src.is_file():
@@ -96,6 +112,73 @@ def get_asset(asset_id: str, request: Request) -> AssetOut:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
     files = [AssetFileOut(**f) for f in repos.list_asset_files(db, asset_id)]
     return AssetOut(**asset, files=files)
+
+
+def _derive_import_status(db: Database, asset: dict[str, Any]) -> ImportStatusOut:
+    job = repos.get_fetch_job(db, asset["id"])
+    if job is not None and job["status"] == "failed":
+        files = {f["kind"]: f for f in repos.list_asset_files(db, asset["id"])}
+        detail = None
+        integ = files.get("integrity")
+        if integ is not None:
+            try:
+                detail = json.loads(Path(integ["path"]).read_text(encoding="utf-8")).get("detail")
+            except (OSError, ValueError):
+                detail = None
+        if detail is None and job.get("error_json"):
+            try:
+                detail = json.loads(job["error_json"]).get("error")
+            except ValueError:
+                detail = job["error_json"]
+        return ImportStatusOut(phase="error", error=detail)
+
+    if job is not None and job["status"] in ("queued", "leased", "running"):
+        prog = json.loads(job["progress_json"]) if job.get("progress_json") else None
+        if prog:
+            downloaded, total = prog.get("downloaded"), prog.get("total")
+            speed = prog.get("speed_bps")
+            eta = ((total - downloaded) / speed) if (total and speed and speed > 0) else None
+            return ImportStatusOut(
+                phase="downloading", downloaded_bytes=downloaded, total_bytes=total,
+                speed_bps=speed, eta_seconds=eta,
+            )
+        return ImportStatusOut(phase="queued")
+
+    if not asset["online"]:
+        return ImportStatusOut(phase="queued")
+    kinds = {f["kind"] for f in repos.list_asset_files(db, asset["id"])}
+    if "waveform" in kinds or "proxy" in kinds:
+        return ImportStatusOut(phase="ready")
+    return ImportStatusOut(phase="analyzing")
+
+
+@router.post("/assets/{asset_id}/import-retry", status_code=status.HTTP_202_ACCEPTED)
+def import_retry(asset_id: str, request: Request) -> dict[str, str]:
+    db = _db(request)
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    job = repos.get_fetch_job(db, asset_id)
+    if job is None or job["status"] != "failed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "no failed import to retry")
+    source_url = json.loads(job["payload_json"]).get("source_url")
+    if not source_url:
+        raise HTTPException(status.HTTP_409_CONFLICT, "fetch job has no source_url")
+    job_id = enqueue(
+        db, queue="ingest.io", kind="ingest.fetch",
+        payload={"asset_id": asset_id, "source_url": source_url},
+        idempotency_key=f"fetch:{asset_id}", max_attempts=5,
+    )
+    return {"asset_id": asset_id, "job_id": job_id}
+
+
+@router.get("/assets/{asset_id}/import-status", response_model=ImportStatusOut)
+def import_status(asset_id: str, request: Request) -> ImportStatusOut:
+    db = _db(request)
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    return _derive_import_status(db, asset)
 
 
 @router.get("/assets/{asset_id}/files/{kind}")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProjectCreate(BaseModel):
@@ -32,8 +32,15 @@ class HealthOut(BaseModel):
 
 
 class AssetImport(BaseModel):
-    source_path: str = Field(min_length=1)
+    source_path: str | None = Field(default=None, min_length=1)
+    source_url: str | None = Field(default=None, min_length=1)
     display_name: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> AssetImport:
+        if bool(self.source_path) == bool(self.source_url):
+            raise ValueError("provide exactly one of source_path or source_url")
+        return self
 
 
 class ImportAccepted(BaseModel):
@@ -150,6 +157,16 @@ class SegmentOut(BaseModel):
 class TimelineCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     kind: str = "rough_cut"
+
+
+class FromShotsRequest(BaseModel):
+    """Build a rough cut with one contiguous clip per detected shot of an asset."""
+
+    asset_id: str
+    run_id: str | None = None        # default: the asset's latest analysis run
+    timeline_id: str | None = None   # populate this timeline (must be empty); else create new
+    name: str | None = Field(default=None, max_length=200)
+    lane: int = Field(default=0, ge=0)
 
 
 class ClipOut(BaseModel):
@@ -344,3 +361,12 @@ class SegmentUpdate(BaseModel):
 
 class RenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class ImportStatusOut(BaseModel):
+    phase: str  # queued | downloading | verifying | analyzing | ready | error
+    downloaded_bytes: int | None = None
+    total_bytes: int | None = None
+    speed_bps: float | None = None
+    eta_seconds: float | None = None
+    error: str | None = None

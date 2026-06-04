@@ -7,13 +7,40 @@ from typing import Any
 from laura.interchange.captions import segments_to_srt, segments_to_vtt
 from laura.interchange.edl import timeline_to_edl
 from laura.interchange.otio_io import otio_string_to_timeline, timeline_to_otio_string
-from laura.interchange.timeline import Clip, Timeline
+from laura.interchange.timeline import Clip, Timeline, timeline_from_rows
 from laura.interchange.validate import validate_export
 
 SEGMENTS: list[dict[str, Any]] = [
     {"start_frame": 30, "end_frame": 60, "text": "Hello", "speaker_label": None},
     {"start_frame": 60, "end_frame": 90, "text": "World", "speaker_label": "SPEAKER_00"},
 ]
+
+
+def _one_clip_timeline(asset: dict[str, Any]) -> Timeline:
+    return timeline_from_rows(
+        timeline_row={"name": "t"},
+        clip_rows=[{
+            "asset_id": "a1", "src_in_frame": 0, "src_out_frame_exclusive": 10,
+            "seq_in_frame": 0, "seq_out_frame_exclusive": 10,
+        }],
+        project_row={"sequence_rate_num": 30, "sequence_rate_den": 1, "drop_frame": 0},
+        assets_by_id={"a1": asset},
+        speakers_by_id={},
+    )
+
+
+def test_url_placeholder_asset_has_no_export_path() -> None:
+    # An asset still downloading carries source_path "url:<url>". It is offline, so the
+    # exporter must get no path rather than a malformed "file://localhost/url:https://...".
+    tl = _one_clip_timeline(
+        {"display_name": "big.mp4", "source_path": "url:https://example.com/big.mp4"}
+    )
+    assert tl.clips[0].source_url is None
+
+
+def test_local_asset_keeps_export_path() -> None:
+    tl = _one_clip_timeline({"display_name": "v.mp4", "source_path": "/media/v.mp4"})
+    assert tl.clips[0].source_url == "/media/v.mp4"
 
 
 def test_srt_golden() -> None:

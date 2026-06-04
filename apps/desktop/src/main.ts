@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
+import { readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 
@@ -9,6 +9,11 @@ import started from "electron-squirrel-startup";
 import { startService } from "./service";
 import type { ServiceInfo } from "./shared/ipc";
 import { log } from "./shared/log";
+
+const MEDIA_EXTS = new Set([
+  ".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm", ".mxf", ".mpg", ".mpeg",
+  ".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac",
+]);
 
 // Quit early if launched by the Squirrel installer (Windows).
 if (started) {
@@ -177,6 +182,20 @@ app
         return result.filePath;
       },
     );
+    ipcMain.handle("laura:pick-files", async (): Promise<string[]> => {
+      const r = await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"] });
+      return r.canceled ? [] : r.filePaths;
+    });
+    ipcMain.handle("laura:pick-folder", async (): Promise<string | null> => {
+      const r = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+      return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+    });
+    ipcMain.handle("laura:list-media-in-folder", async (_e, folder: string): Promise<string[]> => {
+      const entries = await readdir(folder, { withFileTypes: true });
+      return entries
+        .filter((d) => d.isFile() && MEDIA_EXTS.has(path.extname(d.name).toLowerCase()))
+        .map((d) => path.join(folder, d.name));
+    });
 
     createWindow();
     app.on("activate", () => {
