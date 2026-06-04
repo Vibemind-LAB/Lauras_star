@@ -89,3 +89,13 @@ def test_orchestrator_inserts_shots(tmp_path: Path, cut_clip: Path) -> None:
     # every shot got a real thumbnail on disk
     assert all(s["thumbnail_path"] for s in shots)
     assert all(os.path.exists(s["thumbnail_path"]) for s in shots)
+
+
+def test_detect_shots_accepts_detector_name() -> None:
+    import inspect
+
+    from laura.analysis import shots
+
+    sig = inspect.signature(shots.detect_shots)
+    assert "detector" in sig.parameters
+    assert sig.parameters["detector"].default == "adaptive"

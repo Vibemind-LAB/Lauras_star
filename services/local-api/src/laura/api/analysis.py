@@ -63,6 +63,7 @@ def start_analysis(asset_id: str, body: AnalysisStart, request: Request) -> Anal
         },
         "model": body.model,
         "language": body.language,
+        "detector": body.detector,
     }
     run = repos.create_analysis_run(
         db, asset_id=asset_id, pipeline_version=PIPELINE_VERSION, config=config
