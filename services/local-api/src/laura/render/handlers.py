@@ -40,12 +40,20 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         repos.set_export_error(ctx.db, export_id, "timeline has no clips")
         raise ValueError("no clips")
 
+    music: tuple[Path, int] | None = None
+    scene = repos.get_scene_by_timeline(ctx.db, exp["timeline_id"])
+    if scene is not None and scene.get("music_asset_id"):
+        masset = repos.get_asset(ctx.db, scene["music_asset_id"])
+        if masset is not None:
+            music = (Path(masset["source_path"]), int(scene["music_gain_percent"]))
+
     dest = Path(project["workspace_root"]) / "exports" / f"{export_id}.mp4"
     try:
         render_clips_mp4(
             clips, dest,
             rate_num=project["sequence_rate_num"],
             rate_den=project["sequence_rate_den"],
+            music=music,
         )
         size_bytes = os.path.getsize(dest)
     except Exception as e:  # noqa: BLE001 - persist the failure, drop partial output, re-raise
