@@ -31,6 +31,7 @@ from ..interchange.fcpx_xml import timeline_to_fcpx_xml
 from ..interchange.otio_io import otio_string_to_timeline, timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
 from ..interchange.validate import validate_export
+from ..jobs.runner import enqueue
 from .models import (
     ClipOut,
     ClipSourceOut,
@@ -41,6 +42,8 @@ from .models import (
     FromShotsRequest,
     OperationRequest,
     RenameRequest,
+    RenderExportOut,
+    RenderRequest,
     SetClipsRequest,
     TimelineCreate,
     TimelineImportOut,
@@ -563,6 +566,37 @@ def interop_validate(body: ValidateRequest, request: Request) -> ValidateOut:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     result = validate_export(_build_model(db, row), body.format)
     return ValidateOut(**result)
+
+
+@router.post("/timelines/{timeline_id}/render", status_code=status.HTTP_202_ACCEPTED)
+def render_timeline(
+    timeline_id: str, body: RenderRequest, request: Request
+) -> dict[str, str]:
+    """Enqueue an MP4 render job for a timeline and return the export record id."""
+    db = _db(request)
+    tl = repos.get_timeline(db, timeline_id)
+    if tl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    exp = repos.create_export(
+        db, project_id=tl["project_id"], timeline_id=timeline_id, format=body.format
+    )
+    job_id = enqueue(
+        db,
+        queue="export",
+        kind="export.render",
+        payload={"export_id": exp["id"]},
+        idempotency_key=f"render:{exp['id']}",
+    )
+    return {"export_id": exp["id"], "job_id": job_id}
+
+
+@router.get("/projects/{project_id}/exports", response_model=list[RenderExportOut])
+def list_project_exports(
+    project_id: str, request: Request
+) -> list[RenderExportOut]:
+    """List all render-pipeline exports for a project."""
+    db = _db(request)
+    return [RenderExportOut(**e) for e in repos.list_exports(db, project_id)]
 
 
 @router.post(

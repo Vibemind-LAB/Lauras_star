@@ -403,3 +403,20 @@ class ImportStatusOut(BaseModel):
     speed_bps: float | None = None
     eta_seconds: float | None = None
     error: str | None = None
+
+
+# --- render-pipeline exports ------------------------------------------------
+class RenderRequest(BaseModel):
+    format: str = "mp4"
+
+
+class RenderExportOut(BaseModel):
+    id: str
+    project_id: str
+    timeline_id: str | None = None
+    format: str
+    status: str
+    path: str | None = None
+    size_bytes: int | None = None
+    error: str | None = None
+    created_at: str | None = None
