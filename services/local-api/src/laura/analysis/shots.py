@@ -107,4 +107,64 @@ def detect_shots_hybrid(
 
     fused = fuse_shots(adaptive, transnet)
     diagnostics["transnet_count"] = len(transnet)
+
+    # Final hybrid step: snap each fused boundary to its local peak-diff frame so cuts on
+    # gradual transitions (dissolves/crossfades) land frame-exactly. Hard cuts already sit on
+    # the peak -> no-op. Degrades gracefully: snapping never fails a boundary (per-boundary
+    # IO errors leave it put), so on any failure we fall back to the unsnapped fusion.
+    try:
+        fused = _snap_fused_shots(video_path, fused)
+    except Exception as exc:  # pragma: no cover - defensive; snap_boundaries is per-boundary safe
+        diagnostics["snap"] = f"degraded: {type(exc).__name__}: {exc}"
     return fused, diagnostics
+
+
+def _snap_fused_shots(
+    video_path: Path | str, fused: list[ShotResult]
+) -> list[ShotResult]:
+    """Rebuild contiguous shots after snapping each internal boundary to its peak-diff frame.
+
+    Keeps the per-boundary confidence from the fusion and ``method="hybrid"``. The result
+    preserves the same invariants as :func:`laura.analysis.fuse.fuse_shots`: contiguous,
+    end-exclusive, non-overlapping, no zero-length shots, covering ``[0, total)``.
+    """
+    if len(fused) < 2:
+        return fused  # no internal boundary to snap (whole-asset shot)
+
+    from .refine import snap_boundaries
+
+    total = fused[-1].src_out_frame_exclusive
+
+    # Snap each internal boundary (every shot start except the leading 0) one at a time so the
+    # snapped frame stays paired with its fusion confidence. Per-boundary snapping keeps a
+    # boundary put on any IO error, so a single failure never drops a cut.
+    starts: list[tuple[int, float | None]] = [(0, fused[0].confidence)]
+    seen: set[int] = {0}
+    for shot in fused[1:]:
+        snapped_pair = snap_boundaries(
+            video_path, [shot.src_in_frame], total_frames=total
+        )
+        new = snapped_pair[0] if snapped_pair else shot.src_in_frame
+        # Two adjacent boundaries can snap onto the same frame -> keep one (dedup), and never
+        # let a snap land on 0/total (which would create a zero-length shot).
+        if new in seen or not (0 < new < total):
+            continue
+        seen.add(new)
+        starts.append((new, shot.confidence))
+
+    starts.sort(key=lambda s: s[0])
+    edges = [start for start, _ in starts] + [total]
+    rebuilt: list[ShotResult] = []
+    for i, (start, confidence) in enumerate(starts):
+        end = edges[i + 1]
+        if end <= start:  # guard against any duplicate/degenerate boundary
+            continue
+        rebuilt.append(
+            ShotResult(
+                src_in_frame=start,
+                src_out_frame_exclusive=end,
+                method="hybrid",
+                confidence=confidence,
+            )
+        )
+    return rebuilt or fused
