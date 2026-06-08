@@ -89,7 +89,9 @@ def _run_scene(
             metrics = compute_shot_metrics(
                 video, s.src_in_frame, s.src_out_frame_exclusive
             )
-            keep, reason = decide_keep(metrics)
+            keep, reason = decide_keep(
+                metrics, length_frames=s.src_out_frame_exclusive - s.src_in_frame
+            )
         except Exception:  # noqa: BLE001 - quality metrics are best-effort
             metrics = None
         rows.append({
