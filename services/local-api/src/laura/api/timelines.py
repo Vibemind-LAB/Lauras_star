@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
 
 from .. import audit
 from ..analysis.editorial import Word
@@ -68,10 +69,49 @@ from .models import (
     ValidateOut,
     ValidateRequest,
 )
+from .otio_split import AcceptedSplit, accepted_offsets_from_otio
 from .pagination import PageParams
 from .security import require_token
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
+
+
+# Request/response models for the L/J split-cut accept endpoint live here (not in the concurrently
+# owned api/models.py) since they are tightly coupled to this one route and 3a's AcceptedSplit.
+class AcceptedSplitIn(BaseModel):
+    """One accepted L/J split offset the user confirmed (the „Übernehmen" action).
+
+    ``seq_cut`` identifies the inter-clip cut (it equals the next clip's ``src_in_frame``, exactly
+    the planner's :attr:`laura.analysis.splitedit.SplitCut.seq_cut` surfaced as ``SplitCutOut``).
+    ``offset = audio_frame - video_frame`` in frames: ``> 0`` L-cut (audio later), ``< 0`` J-cut
+    (audio earlier). A ``|offset| <= 1`` is sub-perception and cleared to a hard cut on accept.
+    """
+
+    seq_cut: int
+    offset: int = Field(
+        ge=-100_000, le=100_000, description="audio_frame - video_frame, in frames"
+    )
+
+
+class AcceptSplitCutsRequest(BaseModel):
+    """The full accepted set for a timeline — re-posting it is the source of truth (idempotent).
+
+    The list is applied wholesale: an entry omitted from a later post is taken back (its boundary
+    returns to a hard cut), so „Zurücknehmen" is just re-posting without that entry.
+    """
+
+    accepted: list[AcceptedSplitIn] = Field(default_factory=list)
+
+
+class AcceptSplitCutsOut(BaseModel):
+    """The stored accepted set, read back from the OTIO blob so the UI can confirm the state.
+
+    Hard (``|offset| <= 1``) entries are dropped, so this reflects only the meaningful L/J splits
+    that actually live in the serialised OTIO timeline metadata.
+    """
+
+    accepted: list[AcceptedSplitIn] = Field(default_factory=list)
+
 
 _EXT = {"otio": "otio", "edl": "edl", "fcp7xml": "xml", "fcpxml": "fcpxml"}
 # NLE writers that can carry the L/J split as a separate, offset audio track (3b). They take the
@@ -879,6 +919,60 @@ def set_timeline_clips(
         db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
     )
     return _timeline_out(db, fresh)
+
+
+@router.post(
+    "/projects/{project_id}/timelines/{timeline_id}/split-cuts",
+    response_model=AcceptSplitCutsOut,
+)
+def accept_split_cuts(
+    project_id: str,
+    timeline_id: str,
+    body: AcceptSplitCutsRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> AcceptSplitCutsOut:
+    """Accept (or take back) the recommended L/J split edits for a timeline — migration-free.
+
+    The planner surfaces per-cut split recommendations (``FromShotsOut.split_cuts``); the user
+    confirms one via „Übernehmen". Acceptance is stored ONLY in the OTIO blob metadata: the accepted
+    offsets are re-applied and persisted via 3a's :func:`serialize_timeline_otio` ->
+    :func:`repos.update_timeline_otio`, with NO schema change and NO clip mutation. The internal
+    timeline stays a hard cut; the L/J lives purely in the serialised OTIO source of truth and the
+    NLE exports derived from it.
+
+    The posted ``accepted`` list is the full source of truth and is applied wholesale (idempotent):
+    re-posting the same set is a no-op, and omitting an entry takes that split back to a hard cut.
+    Sub-perception offsets (``|offset| <= 1``) are cleared. The stored set is read back out of the
+    blob via :func:`accepted_offsets_from_otio` and returned so the UI can confirm the live state.
+    """
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    row = repos.get_timeline(db, timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    if row["project_id"] != project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "timeline belongs to another project"
+        )
+
+    accepted = [AcceptedSplit(seq_cut=a.seq_cut, offset=a.offset) for a in body.accepted]
+    # Re-apply onto a freshly-built model and persist into the OTIO blob metadata (3a). Hard
+    # (sub-perception) offsets are filtered by serialize_timeline_otio itself, so the stored blob
+    # only ever carries meaningful L/J splits.
+    blob = serialize_timeline_otio(db, row, accepted=accepted)
+    repos.update_timeline_otio(db, timeline_id, blob)
+    audit.record(
+        db, principal, "timeline.accept_split_cuts",
+        entity_type="timeline", entity_id=timeline_id,
+        payload={"n_accepted": len(accepted)},
+    )
+    # Read the meaningful set back out of what we actually stored so the UI confirms the live state.
+    stored = accepted_offsets_from_otio(blob)
+    return AcceptSplitCutsOut(
+        accepted=[AcceptedSplitIn(seq_cut=s.seq_cut, offset=s.offset) for s in stored]
+    )
 
 
 @router.post("/interop/validate", response_model=ValidateOut)

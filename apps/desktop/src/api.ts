@@ -162,6 +162,21 @@ export interface BuildFromShotsResult {
 }
 
 /**
+ * One accepted L/J split offset for an inter-clip cut (the „Übernehmen" action). `seqCut`
+ * identifies the cut (the next clip's source-frame IN, == SplitCut.seq_cut); `offset =
+ * audio_frame - video_frame` in frames (> 0 = L-cut, audio later; < 0 = J-cut, audio earlier).
+ */
+export interface AcceptedSplit {
+  seqCut: number;
+  offset: number;
+}
+
+/** The stored accepted set the backend confirms after an accept (hard |offset|<=1 entries dropped). */
+export interface AcceptSplitCutsResult {
+  accepted: AcceptedSplit[];
+}
+
+/**
  * Picture-vs-sound preference for the joint visual+editorial cut placement: 0 = picture-first
  * (keep the frame-exact visual cut), 1 = sound-first (favour the clean word edge). Omitting it
  * lets the backend apply its product default (0.6 visual / 0.4 editorial weights).
@@ -305,6 +320,26 @@ export interface Sequence {
   timeline_id: string;
   project_id: string;
   items: SequenceItem[];
+}
+
+/**
+ * Narrow the accept-split-cuts response (wire shape `{ accepted: [{ seq_cut, offset }] }`) into the
+ * typed camelCase `AcceptedSplit[]`. Defensive: any malformed entry is skipped rather than thrown,
+ * mirroring the backend's graceful "missing split = hard cut" stance. No `any` — narrows `unknown`.
+ */
+function parseAcceptedSplits(raw: unknown): AcceptedSplit[] {
+  if (typeof raw !== "object" || raw === null) return [];
+  const accepted = (raw as { accepted?: unknown }).accepted;
+  if (!Array.isArray(accepted)) return [];
+  const out: AcceptedSplit[] = [];
+  for (const entry of accepted) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { seq_cut, offset } = entry as { seq_cut?: unknown; offset?: unknown };
+    if (typeof seq_cut === "number" && typeof offset === "number") {
+      out.push({ seqCut: seq_cut, offset });
+    }
+  }
+  return out;
 }
 
 export class LauraClient {
@@ -562,6 +597,30 @@ export class LauraClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  /**
+   * Accept (or take back) the recommended L/J split edits for a timeline — the „Übernehmen"
+   * action. The full `accepted` set is the source of truth and is applied wholesale (idempotent):
+   * re-posting the same set is a no-op, and omitting an entry takes that split back to a hard cut.
+   *
+   * Acceptance is migration-free: the offsets persist only in the timeline's OTIO blob metadata
+   * and flow into the NLE exports — the internal (hard-cut) editing timeline is NOT changed. The
+   * backend returns the stored set (read back from the blob) so the UI can confirm the live state.
+   */
+  async acceptSplitCuts(
+    projectId: string,
+    timelineId: string,
+    accepted: AcceptedSplit[],
+  ): Promise<AcceptSplitCutsResult> {
+    const body = {
+      accepted: accepted.map((a) => ({ seq_cut: a.seqCut, offset: a.offset })),
+    };
+    const raw = await this.request<unknown>(
+      `/projects/${projectId}/timelines/${timelineId}/split-cuts`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    return { accepted: parseAcceptedSplits(raw) };
   }
 
   generateScenes(timelineId: string, assetId: string, gapFrames?: number): Promise<Scene[]> {

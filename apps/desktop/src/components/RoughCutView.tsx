@@ -13,6 +13,7 @@ import { BiasSlider, DEFAULT_CUT_BIAS } from "./BiasSlider";
 import { Player } from "./Player";
 import { QualityPanel } from "./QualityPanel";
 import { SceneStrip } from "./SceneStrip";
+import { SplitCutList } from "./SplitCutList";
 
 export function RoughCutView({
   client,
@@ -121,6 +122,14 @@ export function RoughCutView({
         </div>
         {build?.quality && (
           <QualityPanel quality={build.quality} splitCuts={build.split_cuts} />
+        )}
+        {build && build.split_cuts.some((sc) => sc.kind !== "hard") && (
+          <SplitCutList
+            client={client}
+            projectId={projectId}
+            timelineId={roughCut.id}
+            splitCuts={build.split_cuts}
+          />
         )}
       </div>
       <div className="border-t border-edge">
