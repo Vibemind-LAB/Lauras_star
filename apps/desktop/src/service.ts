@@ -67,6 +67,15 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
   const workspace = path.join(app.getPath("userData"), "workspace");
 
   const command = resolveServiceCommand();
+  // Packaged: point the backend at the bundled ffmpeg/ffprobe (extraResource
+  // "ffmpeg"; see forge.config.ts). laura/ingest/ffmpeg.py reads these env vars
+  // first, falling back to PATH. Dev is left untouched and uses PATH.
+  const ffmpegEnv: Record<string, string> = app.isPackaged
+    ? {
+        LAURA_FFMPEG: path.join(process.resourcesPath, "ffmpeg", "ffmpeg.exe"),
+        LAURA_FFPROBE: path.join(process.resourcesPath, "ffmpeg", "ffprobe.exe"),
+      }
+    : {};
   const child: ChildProcess = spawn(command.cmd, command.args, {
     cwd: command.cwd,
     env: {
@@ -74,6 +83,7 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
       LAURA_PORT: String(PORT),
       LAURA_TOKEN: token,
       LAURA_WORKSPACE: workspace,
+      ...ffmpegEnv,
     },
     stdio: "inherit",
     shell: command.useShell,
