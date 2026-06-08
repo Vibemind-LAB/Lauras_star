@@ -418,7 +418,8 @@ export function App(): ReactElement {
             />
           )}
 
-          {false && (
+          {/* TODO(zusammenfuegen): dead legacy 4-zone layout — remove once unused handlers are pruned */}
+          {(false as boolean) && (
             <>
               <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
                 {/* Library: projects + media */}
