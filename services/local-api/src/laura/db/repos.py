@@ -518,17 +518,20 @@ def add_timeline_clip(
     origin_word_end_id: str | None = None,
     speed_num: int = 1,
     speed_den: int = 1,
+    audio_offset_samples: int = 0,
 ) -> dict[str, Any]:
     cid = new_id()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
             "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
-            "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
+            "audio_offset_samples) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (cid, timeline_id, asset_id, src_in_frame, src_out_frame_exclusive,
              seq_in_frame, seq_out_frame_exclusive, lane, speaker_id,
-             origin_word_start_id, origin_word_end_id, speed_num, speed_den),
+             origin_word_start_id, origin_word_end_id, speed_num, speed_den,
+             audio_offset_samples),
         )
         row = conn.execute("SELECT * FROM timeline_clips WHERE id=?", (cid,)).fetchone()
     return dict(row)
@@ -643,12 +646,38 @@ def replace_timeline_clips(
             conn.execute(
                 "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
                 "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
-                "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
+                "audio_offset_samples) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), timeline_id, r["asset_id"], r["src_in_frame"],
                  r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"],
                  r.get("lane", 0), r.get("speaker_id"), r.get("origin_word_start_id"),
-                 r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1)),
+                 r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1),
+                 r.get("audio_offset_samples", 0)),
+            )
+
+
+def set_timeline_clip_audio_offsets(
+    db: Database, timeline_id: str, offsets_by_src_in: dict[int, int]
+) -> None:
+    """Persist accepted L/J split offsets onto the clips (2-lane editable state, samples).
+
+    ``offsets_by_src_in`` maps a clip's ``src_in_frame`` (the inter-clip cut that begins it, i.e.
+    the planner's ``seq_cut``) to that clip's signed ``audio_offset_samples`` head offset
+    (invariant #3). The whole timeline is rewritten wholesale: every clip not present in the map is
+    reset to ``0`` (a hard cut), so re-posting a reduced accepted set takes the omitted splits back
+    to hard cuts. The first clip has no leading cut and so always resolves to ``0``.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE timeline_clips SET audio_offset_samples=0 WHERE timeline_id=?",
+            (timeline_id,),
+        )
+        for src_in_frame, samples in offsets_by_src_in.items():
+            conn.execute(
+                "UPDATE timeline_clips SET audio_offset_samples=? "
+                "WHERE timeline_id=? AND src_in_frame=?",
+                (int(samples), timeline_id, int(src_in_frame)),
             )
 
 

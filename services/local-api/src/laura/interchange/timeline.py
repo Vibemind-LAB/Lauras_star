@@ -23,6 +23,9 @@ class Clip:
     speaker_label: str | None = None
     speed_num: int = 1
     speed_den: int = 1
+    # Signed per-clip audio head offset in SAMPLES (invariant #3): the leading-edge L/J split shift
+    # of the cut that begins this clip, (audio_frame - video_frame) in samples. 0 = hard cut.
+    audio_offset_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,7 @@ def timeline_from_rows(
                 speaker_label=speaker.get("label") if speaker else None,
                 speed_num=row.get("speed_num") or 1,
                 speed_den=row.get("speed_den") or 1,
+                audio_offset_samples=row.get("audio_offset_samples") or 0,
             )
         )
     return Timeline(

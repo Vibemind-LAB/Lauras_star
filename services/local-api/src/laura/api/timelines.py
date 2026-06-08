@@ -36,6 +36,7 @@ from ..editing.otio_sync import (
     build_model,
     export_audio_clips,
     serialize_timeline_otio,
+    timeline_audio_sample_rate,
 )
 from ..editing.word_cut import map_asset_range_to_seq
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
@@ -47,6 +48,7 @@ from ..interchange.timeline import Timeline
 from ..interchange.validate import validate_export
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..timebase.sampling import frame_to_sample
 from .models import (
     ClipOut,
     ClipSourceOut,
@@ -932,22 +934,24 @@ def accept_split_cuts(
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
 ) -> AcceptSplitCutsOut:
-    """Accept (or take back) the recommended L/J split edits for a timeline — migration-free.
+    """Accept (or take back) the recommended L/J split edits for a timeline.
 
     The planner surfaces per-cut split recommendations (``FromShotsOut.split_cuts``); the user
-    confirms one via „Übernehmen". Acceptance is stored ONLY in the OTIO blob metadata: the accepted
-    offsets are re-applied and persisted via 3a's :func:`serialize_timeline_otio` ->
-    :func:`repos.update_timeline_otio`, with NO schema change and NO clip mutation. The internal
-    timeline stays a hard cut; the L/J lives purely in the serialised OTIO source of truth and the
-    NLE exports derived from it.
+    confirms one via „Übernehmen". As of the 2-lane foundation (m1) acceptance is persisted as REAL,
+    editable per-clip state: each accepted offset is projected to the canonical
+    ``audio_offset_samples`` (invariant #3) and written onto the clip whose ``src_in_frame`` is the
+    cut (:func:`repos.set_timeline_clip_audio_offsets`). The clip GEOMETRY is untouched — the
+    picture stays frame-exact; only the per-clip audio head offset changes. The OTIO cache is then
+    regenerated from that column (no explicit ``accepted``), so the blob is derived, not the source.
 
     The posted ``accepted`` list is the full source of truth and is applied wholesale (idempotent):
     re-posting the same set is a no-op, and omitting an entry takes that split back to a hard cut.
     Sub-perception offsets (``|offset| <= 1``) are cleared. The stored set is read back out of the
-    blob via :func:`accepted_offsets_from_otio` and returned so the UI can confirm the live state.
+    rebuilt blob via :func:`accepted_offsets_from_otio` and returned so the UI confirms live state.
     """
     db = _db(request)
-    if repos.get_project(db, project_id) is None:
+    project = repos.get_project(db, project_id)
+    if project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     row = repos.get_timeline(db, timeline_id)
     if row is None:
@@ -958,10 +962,29 @@ def accept_split_cuts(
         )
 
     accepted = [AcceptedSplit(seq_cut=a.seq_cut, offset=a.offset) for a in body.accepted]
-    # Re-apply onto a freshly-built model and persist into the OTIO blob metadata (3a). Hard
-    # (sub-perception) offsets are filtered by serialize_timeline_otio itself, so the stored blob
-    # only ever carries meaningful L/J splits.
-    blob = serialize_timeline_otio(db, row, accepted=accepted)
+    # Project each meaningful (non-hard) accepted frame offset onto the canonical sample offset and
+    # persist it on the clip that the cut begins (its src_in_frame == seq_cut). Sub-perception
+    # offsets are dropped by AcceptedSplit.is_hard(), so a hard cut resolves to
+    # audio_offset_samples=0. With no audio sample rate the split cannot be made sample-canonical,
+    # so nothing is stored.
+    sample_rate = timeline_audio_sample_rate(db, row)
+    offsets_by_src_in: dict[int, int] = {}
+    if sample_rate is not None:
+        for split in accepted:
+            if split.is_hard():
+                continue
+            offsets_by_src_in[split.seq_cut] = frame_to_sample(
+                split.offset, sample_rate,
+                project["sequence_rate_num"], project["sequence_rate_den"],
+            )
+    repos.set_timeline_clip_audio_offsets(db, timeline_id, offsets_by_src_in)
+    # Regenerate the derived OTIO cache. The posted set is the authoritative live state, so pass it
+    # EXPLICITLY rather than letting the build re-resolve: an empty/reduced post must clear the
+    # corresponding splits from the cache, and the legacy metadata fallback must NOT resurrect a
+    # split the user just took back (the all-zero column after a clear would otherwise fall through
+    # to the stale blob). hard offsets are filtered by serialize_timeline_otio itself.
+    fresh = repos.get_timeline(db, timeline_id) or row
+    blob = serialize_timeline_otio(db, fresh, accepted=accepted)
     repos.update_timeline_otio(db, timeline_id, blob)
     audit.record(
         db, principal, "timeline.accept_split_cuts",

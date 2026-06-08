@@ -1,0 +1,21 @@
+-- 2-lane L/J split edits (editorial m1): persist the per-clip audio head offset.
+--
+-- An accepted L/J split moves a clip's SOUND boundary off its PICTURE boundary. Until now this
+-- lived only in the OTIO blob metadata (migration-free 3a); this column makes it a REAL, editable
+-- per-clip state so editing ops and the 2-lane UI can carry it (m2/m3).
+--
+-- `audio_offset_samples` is the SIGNED head offset of this clip's audio versus its video, i.e.
+-- the leading-edge shift of the inter-clip cut that BEGINS this clip:
+--     audio_offset_samples = (audio_frame - video_frame) projected to samples.
+--   * 0           = hard cut (audio coincident with picture) — the existing default for every clip.
+--   * < 0 (J-cut) = this clip's audio starts EARLIER than its picture.
+--   * > 0 (L-cut) = the previous clip's audio TRAILS into this clip (this clip's audio starts later).
+-- The trailing edge of the previous clip is derived from the NEXT clip's offset, mirroring the OTIO
+-- build (`otio_split._fill_audio_track`), so a single per-clip column fully describes both edges.
+--
+-- Canonical in SAMPLES per invariant #3 (audio/alignment is sample-canonical; the frame offset is a
+-- UI projection). The first clip of a timeline has no leading cut, so its offset is always 0.
+--
+-- Purely additive + backward-compatible: existing clips default to 0 (hard cut), unchanged geometry.
+-- Portable: SQLite and PostgreSQL both allow ADD COLUMN with a NOT NULL constant default.
+ALTER TABLE timeline_clips ADD COLUMN audio_offset_samples INTEGER NOT NULL DEFAULT 0;
