@@ -20,6 +20,7 @@ import { ImportView } from "./components/ImportView";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { NavRail } from "./components/NavRail";
 import { Player } from "./components/Player";
+import { RoughCutView } from "./components/RoughCutView";
 import { SceneInspector } from "./components/SceneInspector";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
@@ -376,7 +377,24 @@ export function App(): ReactElement {
             <div className="flex flex-1 items-center justify-center text-sm text-slate-600">Service offline — starte den lokalen Server.</div>
           ))}
 
-          {(stage === "roughcut" || stage === "finecut" || stage === "assemble") && (
+          {stage === "roughcut" && client && (
+            <RoughCutView
+              client={client}
+              projectId={selectedProjectId}
+              asset={detailAsset}
+              roughCut={roughCut}
+              segments={analysis.segments}
+              onRoughCutChange={async () => {
+                if (client && selectedProjectId) await loadRoughCut(client, selectedProjectId);
+              }}
+              seek={seek}
+              currentFrame={currentFrame}
+              onSeek={seekToFrame}
+              onFrame={(f) => setCurrentFrame(f)}
+            />
+          )}
+
+          {(stage === "finecut" || stage === "assemble") && (
             <>
               <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
                 {/* Library: projects + media */}
