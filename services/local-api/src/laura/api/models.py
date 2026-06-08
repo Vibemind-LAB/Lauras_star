@@ -422,7 +422,7 @@ class RenameRequest(BaseModel):
 
 
 class ImportStatusOut(BaseModel):
-    phase: str  # queued | downloading | verifying | analyzing | ready | error
+    phase: str  # queued | downloading | verifying | analyzing | ready | cancelled | error
     downloaded_bytes: int | None = None
     total_bytes: int | None = None
     speed_bps: float | None = None

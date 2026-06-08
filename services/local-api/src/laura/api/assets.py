@@ -176,6 +176,11 @@ def get_asset(asset_id: str, request: Request) -> AssetOut:
 
 def _derive_import_status(db: Database, asset: dict[str, Any]) -> ImportStatusOut:
     job = repos.get_fetch_job(db, asset["id"])
+    # A cancel request is terminal for the import regardless of the job's own row
+    # status (the handler returns normally after aborting, so the job ends
+    # "succeeded"); surface it as the cancelled phase.
+    if job is not None and job.get("cancel_requested"):
+        return ImportStatusOut(phase="cancelled")
     if job is not None and job["status"] == "failed":
         files = {f["kind"]: f for f in repos.list_asset_files(db, asset["id"])}
         detail = None
@@ -236,6 +241,21 @@ def import_retry(asset_id: str, request: Request) -> dict[str, str]:
         payload=payload, idempotency_key=f"fetch:{asset_id}", max_attempts=5,
     )
     return {"asset_id": asset_id, "job_id": job_id}
+
+
+@router.post("/assets/{asset_id}/import-cancel", status_code=status.HTTP_202_ACCEPTED)
+def import_cancel(asset_id: str, request: Request) -> dict[str, str]:
+    """Request cancellation of an in-flight import/download.
+
+    Sets a cooperative cancel flag the fetch handler polls; the running download
+    aborts at its next progress tick, removes any partial file, and the import
+    settles into the ``cancelled`` phase. Idempotent and a harmless no-op when the
+    import has already finished (no fetch job to flag)."""
+    db = _db(request)
+    if repos.get_asset(db, asset_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    repos.request_import_cancel(db, asset_id)
+    return {"asset_id": asset_id, "status": "cancelling"}
 
 
 @router.get("/assets/{asset_id}/import-status", response_model=ImportStatusOut)

@@ -116,6 +116,30 @@ def set_job_progress(db: Database, job_id: str, progress_json: str) -> None:
         )
 
 
+def request_import_cancel(db: Database, asset_id: str) -> bool:
+    """Flag the asset's ingest.fetch job for cooperative cancellation.
+
+    The fetch handler polls :func:`is_import_cancelled` between progress ticks and
+    aborts the in-flight download. Idempotent and a no-op when no fetch job exists
+    (e.g. the import already finished). Returns True if a fetch job was flagged."""
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE idempotency_key = ?",
+            (utcnow_iso(), f"fetch:{asset_id}"),
+        )
+        return cur.rowcount > 0
+
+
+def is_import_cancelled(db: Database, asset_id: str) -> bool:
+    """True if the asset's ingest.fetch job has a pending cancel request."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT cancel_requested FROM jobs WHERE idempotency_key = ?",
+            (f"fetch:{asset_id}",),
+        ).fetchone()
+        return bool(row["cancel_requested"]) if row is not None else False
+
+
 # --- assets ---------------------------------------------------------------
 def create_asset(
     db: Database,
