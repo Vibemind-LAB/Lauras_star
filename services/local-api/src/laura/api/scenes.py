@@ -203,3 +203,28 @@ def clear_scene_music(scene_id: str, request: Request) -> SceneOut:
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)
+
+
+@router.get(
+    "/projects/{project_id}/assets/{asset_id}/rough-cut",
+    response_model=TimelineOut,
+)
+def get_rough_cut(project_id: str, asset_id: str, request: Request) -> TimelineOut:
+    """Return (or lazily create) the rough-cut timeline for one asset in a project."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    row = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
+    return _timeline_out(db, row)
+
+
+@router.get(
+    "/projects/{project_id}/scenes",
+    response_model=list[SceneOut],
+)
+def list_project_scenes_ep(project_id: str, request: Request) -> list[SceneOut]:
+    """All scenes across every rough-cut timeline in a project."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    return [SceneOut(**s) for s in repos.list_project_scenes(db, project_id)]

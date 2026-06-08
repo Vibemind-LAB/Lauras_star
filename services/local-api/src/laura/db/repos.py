@@ -997,3 +997,36 @@ def replace_sequence_items(
                 "created_at) VALUES (?,?,?,?,?)",
                 (new_id(), sequence_timeline_id, sid, i, now),
             )
+
+
+# --- rough-cut per asset + project-wide scene list -------------------------
+
+def get_or_create_asset_rough_cut(
+    db: Database, project_id: str, asset_id: str
+) -> dict[str, Any]:
+    """Return the newest rough_cut timeline for this asset, creating one if absent.
+
+    Looks up ``timelines`` where ``project_id=?`` AND ``kind='rough_cut'`` AND
+    ``created_from=asset_id``, ordered newest first.  If none exists, creates a
+    fresh timeline via :func:`create_timeline` with ``created_from=asset_id``."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM timelines WHERE project_id=? AND kind='rough_cut' "
+            "AND created_from=? ORDER BY created_at DESC LIMIT 1",
+            (project_id, asset_id),
+        ).fetchone()
+    if row is not None:
+        return dict(row)
+    return create_timeline(
+        db, project_id=project_id, name="Rough Cut", kind="rough_cut", created_from=asset_id
+    )
+
+
+def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
+    """All scenes across every timeline in a project, ordered by timeline then position."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scenes WHERE project_id=? ORDER BY source_timeline_id, order_index",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
