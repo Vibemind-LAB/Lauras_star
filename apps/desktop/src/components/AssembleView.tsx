@@ -3,6 +3,7 @@ import { type DragEvent, type ReactElement, useRef } from "react";
 import { type LauraClient } from "../api";
 import { useScenes } from "../hooks/useScenes";
 import { useSequence } from "../hooks/useSequence";
+import { SequencePlayer } from "./SequencePlayer";
 
 export function AssembleView({
   client,
@@ -48,6 +49,14 @@ export function AssembleView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 bg-ink p-3">
+      {/* Sequence player — re-fetches flattened clips whenever the item count changes */}
+      <SequencePlayer
+        client={client}
+        projectId={projectId}
+        sequenceId={sequence?.timeline_id ?? null}
+        reloadKey={sequence?.items.length}
+      />
+
       {/* Bin */}
       <div className="text-xs font-medium text-slate-400">Szenen-Bin</div>
       <div className="flex gap-2 overflow-x-auto pb-1">

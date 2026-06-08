@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { type LauraClient, type Scene, type Sequence } from "../api";
 import { AssembleView } from "./AssembleView";
 
+vi.mock("./SequencePlayer", () => ({
+  SequencePlayer: () => <div data-testid="sequence-player" />,
+}));
+
 const scenes: Scene[] = [
   { id: "s1", project_id: "p", source_timeline_id: "rc", name: "Szene 1", order_index: 0,
     seq_in_frame: 0, seq_out_frame_exclusive: 30 },
