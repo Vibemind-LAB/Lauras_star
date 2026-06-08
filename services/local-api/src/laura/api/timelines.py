@@ -11,6 +11,7 @@ from fastapi.responses import PlainTextResponse
 from .. import audit
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
+from ..analysis.eval_quality import evaluate_rough_cut
 from ..analysis.joint import bias_to_weights, joint_place
 from ..analysis.semantic import sentence_end_frames, speaker_turn_frames
 from ..analysis.silence import detect_silence
@@ -53,6 +54,7 @@ from .models import (
     RenameRequest,
     RenderExportOut,
     RenderRequest,
+    RoughCutQualityOut,
     SetClipsRequest,
     SplitCutOut,
     TimelineCreate,
@@ -356,6 +358,55 @@ def _plan_split_cuts(
     ]
 
 
+def _eval_quality(
+    rows: list[dict[str, Any]],
+    words: list[Word],
+    split_cuts: list[SplitCutOut],
+    *,
+    window: int,
+    w_visual: float,
+    w_editorial: float,
+    video_path: Path | str | None,
+    total_frames: int | None = None,
+    frame_loader: FrameLoader = load_gray_frames_ffmpeg,
+) -> RoughCutQualityOut | None:
+    """On-the-fly headline quality of the built rough cut — visual exactness × editorial clean.
+
+    The cuts scored are the inter-clip cuts (each clip's ``src_in_frame`` after the first), exactly
+    the boundaries placement and the split-cut planner work on. :func:`evaluate_rough_cut` blends
+    :func:`laura.analysis.eval_cut.evaluate_boundaries` (frame-exactness of the picture) with
+    :func:`laura.analysis.editorial.editorial_metrics` (share of cuts not mid-word), weighted by
+    the request's ``cut_bias`` (``w_visual``/``w_editorial``) so the score reflects the trade-off.
+
+    Graceful ``None`` when there is nothing to score (no inter-clip cut) or no readable video to
+    measure visual exactness against — the visual half needs to decode frames, so without a video
+    file we report no quality rather than a misleading editorial-only number. Any decode/IO error is
+    swallowed to ``None`` too: a quality read-out must never break the build itself.
+    """
+    cuts = [row["src_in_frame"] for row in rows[1:]]
+    if not cuts or video_path is None:
+        return None
+    try:
+        q = evaluate_rough_cut(
+            video_path,
+            cuts,
+            words,
+            window=window,
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            frame_loader=frame_loader,
+        )
+    except Exception:  # noqa: BLE001 - a quality read-out must never break the build
+        return None
+    return RoughCutQualityOut(
+        overall=q.overall,
+        visual_exactness=q.visual_exactness,
+        editorial_cleanliness=q.editorial_clean,
+        n_cuts=q.n_cuts,
+        n_split_cuts=sum(1 for sc in split_cuts if sc.kind != "hard"),
+    )
+
+
 @router.post(
     "/projects/{project_id}/timelines/from-shots",
     response_model=FromShotsOut,
@@ -447,6 +498,7 @@ def timeline_from_shots(
         )
 
     split_cuts: list[SplitCutOut] = []
+    quality: RoughCutQualityOut | None = None
     if body.align_editorial:
         word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
         # Thread the stored per-word text (with any ASR punctuation) and the segment's diarization
@@ -498,6 +550,19 @@ def timeline_from_shots(
                 video_path=video_path,
                 total_frames=asset.get("duration_frames"),
             )
+        # Headline quality of the just-built rough cut, blended by the SAME cut_bias weights so the
+        # score reflects the chosen picture-vs-sound trade-off. Graceful None when there's nothing
+        # to score or no readable video (evaluate_boundaries needs >=1 window; clamp 0 -> 1).
+        quality = _eval_quality(
+            rows,
+            words,
+            split_cuts,
+            window=max(1, body.editorial_window),
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            video_path=video_path,
+            total_frames=asset.get("duration_frames"),
+        )
 
     if body.timeline_id is not None:
         target = repos.get_timeline(db, body.timeline_id)
@@ -522,7 +587,8 @@ def timeline_from_shots(
     assert fresh is not None
     repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
     return FromShotsOut(
-        timeline=_timeline_out(db, fresh), dropped=dropped, split_cuts=split_cuts
+        timeline=_timeline_out(db, fresh), dropped=dropped, split_cuts=split_cuts,
+        quality=quality,
     )
 
 

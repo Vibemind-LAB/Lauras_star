@@ -130,9 +130,44 @@ export interface DroppedShot {
   drop_reason: string;
 }
 
+/** A per-cut split-edit (L/J) recommendation. "hard" = no offset; "L"/"J" = audio after/before. */
+export interface SplitCut {
+  seq_cut: number;
+  video_frame: number;
+  audio_frame: number;
+  offset: number;
+  kind: "hard" | "L" | "J";
+}
+
+/**
+ * On-the-fly rough-cut quality, blended by the request's cut_bias. All scores are in [0, 1]:
+ * overall (the weighted blend), visual_exactness (cuts on the true luma peak) and
+ * editorial_cleanliness (cuts not bisecting a spoken word). n_cuts is the inter-clip cut count,
+ * n_split_cuts the recommended L/J edits among them.
+ */
+export interface RoughCutQuality {
+  overall: number;
+  visual_exactness: number;
+  editorial_cleanliness: number;
+  n_cuts: number;
+  n_split_cuts: number;
+}
+
 export interface BuildFromShotsResult {
   timeline: Timeline;
   dropped: DroppedShot[];
+  split_cuts: SplitCut[];
+  /** Null when it can't be computed (no editorial alignment / no readable video). */
+  quality: RoughCutQuality | null;
+}
+
+/**
+ * Picture-vs-sound preference for the joint visual+editorial cut placement: 0 = picture-first
+ * (keep the frame-exact visual cut), 1 = sound-first (favour the clean word edge). Omitting it
+ * lets the backend apply its product default (0.6 visual / 0.4 editorial weights).
+ */
+export interface BuildFromShotsOptions {
+  cutBias?: number;
 }
 
 export interface Word {
@@ -519,10 +554,13 @@ export class LauraClient {
     projectId: string,
     assetId: string,
     timelineId?: string,
+    opts: BuildFromShotsOptions = {},
   ): Promise<BuildFromShotsResult> {
+    const body: Record<string, unknown> = { asset_id: assetId, timeline_id: timelineId };
+    if (opts.cutBias !== undefined) body.cut_bias = opts.cutBias;
     return this.request<BuildFromShotsResult>(`/projects/${projectId}/timelines/from-shots`, {
       method: "POST",
-      body: JSON.stringify({ asset_id: assetId, timeline_id: timelineId }),
+      body: JSON.stringify(body),
     });
   }
 

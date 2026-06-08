@@ -218,6 +218,24 @@ class SplitCutOut(BaseModel):
     kind: str             # "hard" | "L" (audio after video) | "J" (audio before video)
 
 
+class RoughCutQualityOut(BaseModel):
+    """Headline quality of a built rough cut — one score blending picture and speech.
+
+    Computed on the fly over the built clips (no persistence): ``visual_exactness`` is the share
+    of inter-clip cuts landing within one frame of the true luma peak, ``editorial_cleanliness``
+    the share not bisecting a spoken word, and ``overall`` their ``cut_bias``-weighted blend (all
+    in ``[0, 1]``). ``n_cuts`` is the number of inter-clip cuts scored; ``n_split_cuts`` the count
+    of recommended L/J split edits among them. All fields mirror
+    :class:`laura.analysis.eval_quality.RoughCutQuality` plus the split-cut tally.
+    """
+
+    overall: float
+    visual_exactness: float
+    editorial_cleanliness: float
+    n_cuts: int
+    n_split_cuts: int
+
+
 class ClipOut(BaseModel):
     id: str
     asset_id: str
@@ -248,6 +266,10 @@ class FromShotsOut(BaseModel):
     # Per-cut L/J split-edit recommendations for the inter-clip cuts (recommendation only — the
     # stored clips remain hard cuts). Empty when there is no transcript/silence to plan against.
     split_cuts: list[SplitCutOut] = Field(default_factory=list)
+    # On-the-fly quality summary of the built rough cut (overall + visual exactness + editorial
+    # cleanliness, blended by the request's cut_bias). None when it can't be computed gracefully
+    # (no editorial alignment, or no readable video to score visual exactness against).
+    quality: RoughCutQualityOut | None = None
 
 
 class ClipSourceOut(BaseModel):
