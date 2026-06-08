@@ -12,6 +12,7 @@ from .. import audit
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.joint import bias_to_weights, joint_place
+from ..analysis.silence import detect_silence
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
@@ -204,6 +205,26 @@ def _resolve_video_path(
     return None
 
 
+def _detect_asset_silence(
+    video_path: Path | str | None, asset: dict[str, Any]
+) -> list[tuple[int, int]]:
+    """Real audio silences of the asset as source-frame ranges, or ``[]`` when unavailable.
+
+    Runs :func:`laura.analysis.silence.detect_silence` on the resolved editorial video and maps
+    the seconds-based ``silencedetect`` output into the asset's source-frame space via its frame
+    rate (``rate_num / rate_den``). Returns ``[]`` when there is no readable video or the asset
+    rate is unknown — silence is purely additive, so its absence just leaves placement to the
+    word-gap proxy.
+    """
+    if video_path is None:
+        return []
+    rate_num = asset.get("rate_num")
+    rate_den = asset.get("rate_den")
+    if not rate_num or not rate_den:
+        return []
+    return detect_silence(video_path, rate_num=rate_num, rate_den=rate_den)
+
+
 def _align_rows_editorial(
     rows: list[dict[str, Any]],
     words: list[Word],
@@ -211,6 +232,7 @@ def _align_rows_editorial(
     window: int,
     w_visual: float = 0.6,
     w_editorial: float = 0.4,
+    silence: list[tuple[int, int]] | None = None,
     video_path: Path | str | None = None,
     total_frames: int | None = None,
     frame_loader: FrameLoader = load_gray_frames_ffmpeg,
@@ -226,6 +248,12 @@ def _align_rows_editorial(
     (``video_path``/``total_frames`` supplied by the caller); with no video it gracefully reduces
     to the editorial-only choice, and with no words to the visual-only choice.
 
+    ``silence`` is an optional list of end-exclusive source-frame ranges ``[start, end)`` of real
+    audio silence (from :func:`laura.analysis.silence.detect_silence`). A candidate cut that lands
+    inside a silence scores above a mere word edge, so cuts prefer genuine pauses (breaths,
+    inter-sentence beats) over ASR word boundaries. With no silence info the placement is exactly
+    the word-gap behaviour.
+
     The match is applied to BOTH sides of the cut only when the two clips are truly contiguous in
     the source (``prev.src_out_frame_exclusive == cur.src_in_frame``) — otherwise the cut sits
     across a source gap and only the current clip's IN is moved, never inventing source frames.
@@ -237,7 +265,7 @@ def _align_rows_editorial(
     """
     if window <= 0:
         return
-    if not words and video_path is None:
+    if not words and not silence and video_path is None:
         return
     for i in range(1, len(rows)):
         cur = rows[i]
@@ -249,6 +277,7 @@ def _align_rows_editorial(
             window=window,
             w_visual=w_visual,
             w_editorial=w_editorial,
+            silence=silence,
             video_path=video_path,
             total_frames=total_frames,
             frame_loader=frame_loader,
@@ -362,13 +391,19 @@ def timeline_from_shots(
             Word(start_frame=w["start_frame"], end_frame=w["end_frame"]) for w in word_rows
         ]
         w_visual, w_editorial = bias_to_weights(body.cut_bias)
+        video_path = _resolve_video_path(db, body.asset_id, asset)
+        # Detect real audio silences once for this asset so cuts can prefer genuine pauses
+        # (breaths / inter-sentence beats) over mere ASR word edges. Converted to the asset's
+        # source-frame space via its rate; gracefully empty when no audio / rate is unknown.
+        silence = _detect_asset_silence(video_path, asset)
         _align_rows_editorial(
             rows,
             words,
             window=body.editorial_window,
             w_visual=w_visual,
             w_editorial=w_editorial,
-            video_path=_resolve_video_path(db, body.asset_id, asset),
+            silence=silence,
+            video_path=video_path,
             total_frames=asset.get("duration_frames"),
         )
 

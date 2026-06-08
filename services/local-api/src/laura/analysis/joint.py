@@ -15,9 +15,12 @@ frame ``f`` in ``[cut-window, cut+window]`` we score:
 * ``visual_score(f)`` — the per-frame luma-change signal ``d(f)`` normalised to the window's max
   (so ``1.0`` sits on the visual peak, ``0.0`` where the picture is still). This is exactly the
   signal :mod:`laura.analysis.eval_cut` scores exactness against.
-* ``editorial_score(f)`` — ``1.0`` when ``f`` is editorially clean (in a word-gap or on a word
-  edge, i.e. it does *not* bisect a spoken word) and ``0.0`` when it slices through a word. A
-  hard 0/1 term, matching ``editorial_metrics``' clean/mid-word verdict — we do not grade by
+* ``editorial_score(f)`` — a tier over how good a place ``f`` is to *cut*, best -> worst:
+  ``1.0`` inside a detected **real audio silence** (a breath / inter-sentence beat — the
+  editor's actual target), ``0.85`` on a clean word-gap / word edge that is not a detected
+  silence (editorially safe, but only an ASR proxy for a pause), and ``0.0`` when ``f`` bisects a
+  spoken word. The silence intervals are optional: with no ``silence`` supplied the term collapses
+  to the historical hard ``1.0`` (clean) / ``0.0`` (mid-word) verdict. We do not grade by
   distance-to-gap because the *whole point* is that a clean frame three frames away can be worth
   more than the visual peak, and that is captured by the blend weight, not by softening the term.
 
@@ -52,6 +55,22 @@ from .eval_cut import (
     load_gray_frames_ffmpeg,
 )
 
+# Editorial-quality tiers for a candidate cut frame, best -> worst. The blend in
+# ``joint_place`` weighs ``editorial_score(f)`` against the normalised visual score, so these are
+# the relative editorial *desirabilities* of where a cut can land:
+#
+#   1.00  SILENCE   f sits inside a detected real audio silence (a breath / inter-sentence beat).
+#                   This is the editor's actual target — the ideal place to cut.
+#   0.85  WORD_EDGE f is a clean word-gap / word edge (no word is severed) but NOT inside a
+#                   detected silence. Editorially safe, but only a transcript proxy for a pause.
+#   0.00  MID_WORD  f bisects a spoken word -> clipped, unprofessional. Never desirable.
+#
+# When no ``silence`` is supplied the SILENCE tier is unreachable and the score collapses to the
+# original 1.0 (clean) / 0.0 (mid-word) behaviour, so silence-awareness is backward-compatible.
+_SCORE_SILENCE = 1.0
+_SCORE_WORD_EDGE = 0.85
+_SCORE_MID_WORD = 0.0
+
 
 def _editorial_clean(frame: int, words: Sequence[Word]) -> bool:
     """``True`` when ``frame`` does not bisect any word (in a gap / on an edge).
@@ -62,6 +81,41 @@ def _editorial_clean(frame: int, words: Sequence[Word]) -> bool:
     if not words:
         return True
     return _covering_word(frame, list(words)) is None
+
+
+def _in_silence(frame: int, silence: Sequence[tuple[int, int]] | None) -> bool:
+    """``True`` when ``frame`` lies inside a half-open silence interval ``[start, end)``.
+
+    ``silence`` ranges are end-exclusive source-frame spans (see
+    :func:`laura.analysis.silence.detect_silence`). ``None``/empty -> no silence info -> ``False``.
+    """
+    if not silence:
+        return False
+    return any(start <= frame < end for start, end in silence)
+
+
+def _editorial_score(
+    frame: int,
+    words: Sequence[Word],
+    silence: Sequence[tuple[int, int]] | None,
+) -> float:
+    """The tiered editorial desirability of cutting at ``frame``: silence > word-edge > mid-word.
+
+    * ``1.0`` when ``frame`` is inside a detected real audio silence (the ideal cut).
+    * ``0.85`` when ``frame`` is a clean word-gap / word edge but not inside a detected silence.
+    * ``0.0`` when ``frame`` bisects a spoken word.
+
+    With ``silence`` ``None``/empty the silence tier is unreachable, so the result is exactly the
+    pre-silence behaviour: ``1.0`` for a clean frame, ``0.0`` for a mid-word frame.
+    """
+    if _in_silence(frame, silence):
+        return _SCORE_SILENCE
+    if _editorial_clean(frame, words):
+        # Without silence info this is the only "good" tier -> keep it at the historical 1.0 so
+        # the silence=None path is byte-for-byte the old scorer; with silence info it is the
+        # lesser 0.85 so a real silence outscores a mere word edge.
+        return _SCORE_WORD_EDGE if silence else _SCORE_SILENCE
+    return _SCORE_MID_WORD
 
 
 def _candidate_range(
@@ -123,6 +177,7 @@ def joint_place(
     window: int = DEFAULT_WINDOW,
     w_visual: float = 0.6,
     w_editorial: float = 0.4,
+    silence: list[tuple[int, int]] | None = None,
     video_path: Path | str | None = None,
     total_frames: int | None = None,
     frame_loader: FrameLoader = load_gray_frames_ffmpeg,
@@ -136,7 +191,19 @@ def joint_place(
                    / (w_visual + w_editorial)
 
     where ``visual_score(f)`` is ``d(f)`` normalised to the window peak (``1.0`` at the visual
-    peak) and ``editorial_score(f)`` is ``1.0`` when ``f`` does not bisect a word else ``0.0``.
+    peak) and ``editorial_score(f)`` is a tier over how good a place ``f`` is to cut:
+
+    * ``1.0`` when ``f`` lies inside a detected **real audio silence** (``silence`` intervals) —
+      the editor's actual target (a breath / inter-sentence beat) and the ideal cut.
+    * ``0.85`` when ``f`` is a clean word-gap / word edge (no word severed) but not inside a
+      detected silence — editorially safe, but only an ASR proxy for a pause.
+    * ``0.0`` when ``f`` bisects a spoken word.
+
+    ``silence`` is an optional list of end-exclusive source-frame silence ranges
+    ``[start, end)`` from :func:`laura.analysis.silence.detect_silence`. When it is ``None`` or
+    empty the silence tier is unreachable and the editorial term collapses to exactly the
+    historical ``1.0`` (clean) / ``0.0`` (mid-word) scoring — so callers that pass no silence are
+    fully backward-compatible.
 
     The per-frame visual signal comes from one of two seams (mirroring ``eval_cut``):
 
@@ -170,7 +237,9 @@ def joint_place(
     lo, hi = _candidate_range(cut_frame, window, total_frames)
     if hi < lo:
         # No valid candidate in range (e.g. cut at frame 0 with window 0) -> leave it in place.
-        return cut_frame, _blended_score(cut_frame, words, {}, w_visual, w_editorial, weight_sum)
+        return cut_frame, _blended_score(
+            cut_frame, words, silence, {}, w_visual, w_editorial, weight_sum
+        )
 
     # Resolve the per-frame visual scores, normalised so the window peak == 1.0.
     visual: dict[int, float]
@@ -191,7 +260,7 @@ def joint_place(
     best_score = -1.0
     best_dist = window + 1
     for f in range(lo, hi + 1):
-        score = _blended_score(f, words, visual, w_visual, w_editorial, weight_sum)
+        score = _blended_score(f, words, silence, visual, w_visual, w_editorial, weight_sum)
         dist = abs(f - cut_frame)
         # Strictly-better score wins; on a tie prefer the least-disruptive (nearest, then lower)
         # frame so a clean edge only displaces the visual peak when it is genuinely worth more.
@@ -203,14 +272,18 @@ def joint_place(
 def _blended_score(
     frame: int,
     words: Sequence[Word],
+    silence: Sequence[tuple[int, int]] | None,
     visual: dict[int, float],
     w_visual: float,
     w_editorial: float,
     weight_sum: float,
 ) -> float:
-    """The normalised visual+editorial blend at one ``frame`` (visual defaults to 0 when absent)."""
+    """The normalised visual+editorial blend at one ``frame`` (visual defaults to 0 when absent).
+
+    The editorial term is the silence>word-edge>mid-word tier from :func:`_editorial_score`.
+    """
     v = visual.get(frame, 0.0)
-    e = 1.0 if _editorial_clean(frame, words) else 0.0
+    e = _editorial_score(frame, words, silence)
     return (w_visual * v + w_editorial * e) / weight_sum
 
 

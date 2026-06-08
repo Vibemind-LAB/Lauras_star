@@ -148,7 +148,12 @@ def _safe_frames(words: Sequence[Word]) -> list[int]:
     return sorted(frames)
 
 
-def editorial_metrics(cuts: list[int], words: list[Word]) -> dict[str, float]:
+def editorial_metrics(
+    cuts: list[int],
+    words: list[Word],
+    *,
+    silence: list[tuple[int, int]] | None = None,
+) -> dict[str, float]:
     """Editorial-quality eval over a set of cuts (the editorial analogue of cut-exactness).
 
     Returns:
@@ -157,21 +162,39 @@ def editorial_metrics(cuts: list[int], words: list[Word]) -> dict[str, float]:
     * ``pct_clean`` — share of cuts sitting in a silence or on a word edge (higher is better).
     * ``mean_dist_to_word_gap`` — mean frame distance from each cut to the nearest editorial-safe
       frame (0.0 when every cut is already clean).
+    * ``pct_on_silence`` — share of cuts landing inside a detected **real audio silence** interval
+      (the editor's ideal cut point). Only present when ``silence`` intervals are supplied.
+
+    ``silence`` is an optional list of end-exclusive source-frame ranges ``[start, end)`` from
+    :func:`laura.analysis.silence.detect_silence`. When omitted, ``pct_on_silence`` is not
+    reported (the other figures are unchanged), so existing callers are unaffected.
 
     With no cuts the percentages are 0.0; with no words there is nothing to bisect, so every cut
-    counts as clean and the mean distance is 0.0 (the metric is vacuously satisfied).
+    counts as clean and the mean distance is 0.0 (the metric is vacuously satisfied) — but
+    ``pct_on_silence`` is still measured against any supplied ``silence`` intervals.
     """
     n = len(cuts)
     if n == 0:
-        return {"pct_mid_word": 0.0, "pct_clean": 0.0, "mean_dist_to_word_gap": 0.0}
-    if not words:
-        return {"pct_mid_word": 0.0, "pct_clean": 1.0, "mean_dist_to_word_gap": 0.0}
+        metrics = {"pct_mid_word": 0.0, "pct_clean": 0.0, "mean_dist_to_word_gap": 0.0}
+        if silence is not None:
+            metrics["pct_on_silence"] = 0.0
+        return metrics
 
-    safe = _safe_frames(words)
-    mid_word = sum(1 for c in cuts if _covering_word(c, words) is not None)
-    total_dist = sum(min(abs(s - c) for s in safe) for c in cuts)
-    return {
-        "pct_mid_word": mid_word / n,
-        "pct_clean": (n - mid_word) / n,
-        "mean_dist_to_word_gap": total_dist / n,
-    }
+    if not words:
+        metrics = {"pct_mid_word": 0.0, "pct_clean": 1.0, "mean_dist_to_word_gap": 0.0}
+    else:
+        safe = _safe_frames(words)
+        mid_word = sum(1 for c in cuts if _covering_word(c, words) is not None)
+        total_dist = sum(min(abs(s - c) for s in safe) for c in cuts)
+        metrics = {
+            "pct_mid_word": mid_word / n,
+            "pct_clean": (n - mid_word) / n,
+            "mean_dist_to_word_gap": total_dist / n,
+        }
+
+    if silence is not None:
+        on_silence = sum(
+            1 for c in cuts if any(start <= c < end for start, end in silence)
+        )
+        metrics["pct_on_silence"] = on_silence / n
+    return metrics
