@@ -31,7 +31,11 @@ from ..editing.operations import (
     split_clip,
     trim_clip,
 )
-from ..editing.otio_sync import build_model, serialize_timeline_otio
+from ..editing.otio_sync import (
+    build_model,
+    export_audio_clips,
+    serialize_timeline_otio,
+)
 from ..editing.word_cut import map_asset_range_to_seq
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
@@ -70,8 +74,10 @@ from .security import require_token
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
 
 _EXT = {"otio": "otio", "edl": "edl", "fcp7xml": "xml", "fcpxml": "fcpxml"}
-_WRITERS = {
-    "otio": timeline_to_otio_string,
+# NLE writers that can carry the L/J split as a separate, offset audio track (3b). They take the
+# picture model plus the split-shifted audio clips; OTIO is handled separately via its own
+# split-aware serialiser, and SRT/VTT are transcript exports (never reach here).
+_AV_WRITERS = {
     "edl": timeline_to_edl,
     "fcp7xml": timeline_to_fcp7_xml,
     "fcpxml": timeline_to_fcpx_xml,
@@ -881,7 +887,12 @@ def interop_validate(body: ValidateRequest, request: Request) -> ValidateOut:
     row = repos.get_timeline(db, body.timeline_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
-    result = validate_export(_build_model(db, row), body.format)
+    model = _build_model(db, row)
+    # Reflect any accepted L/J split (3b): the export builds its model fresh from the clips table,
+    # so the preflight must read the accepted offsets back from the stored OTIO blob to warn (e.g.
+    # EDL emits the split as parallel V/A events). No split -> identical to before.
+    has_split = bool(export_audio_clips(db, row, model))
+    result = validate_export(model, body.format, has_split=has_split)
     return ValidateOut(**result)
 
 
@@ -941,8 +952,13 @@ def export_timeline(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unsupported format: {fmt}")
 
     model = _build_model(db, row)
-    diagnostics = validate_export(model, fmt)
-    content = _WRITERS[fmt](model)
+    audio_clips = [ac.clip for ac in export_audio_clips(db, row, model)]
+    diagnostics = validate_export(model, fmt, has_split=bool(audio_clips))
+    content = (
+        serialize_timeline_otio(db, row)
+        if fmt == "otio"
+        else _AV_WRITERS[fmt](model, audio_clips or None)
+    )
 
     project = repos.get_project(db, row["project_id"])
     assert project is not None

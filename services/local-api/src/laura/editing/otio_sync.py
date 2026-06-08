@@ -7,8 +7,10 @@ from typing import Any
 
 from ..api.otio_split import (
     AcceptedSplit,
+    AudioClip,
     accepted_offsets_from_otio,
     apply_split_cuts,
+    split_audio_clips,
 )
 from ..db import repos
 from ..db.database import Database
@@ -83,6 +85,34 @@ def serialize_timeline_otio(
     if not meaningful:
         return timeline_to_otio_string(model)
     return apply_split_cuts(
+        model, meaningful, audio_sample_rate=_audio_sample_rate(db, timeline_row)
+    )
+
+
+def export_audio_clips(
+    db: Database,
+    timeline_row: dict[str, Any],
+    model: Timeline,
+    *,
+    accepted: list[AcceptedSplit] | None = None,
+) -> list[AudioClip]:
+    """The split-shifted audio clips for an NLE export, or ``[]`` when there is no accepted split.
+
+    This routes the EDL / FCP7-XML / FCPXML exports through 3a's split-aware build: the accepted L/J
+    offsets are recovered from the timeline's stored ``otio_json`` blob metadata (the same
+    self-describing persistence the OTIO regenerate uses) and applied to the FRESHLY-built picture
+    ``model`` via :func:`laura.api.otio_split.split_audio_clips`. The audio boundaries are
+    sample-accurate (invariant #3) when an asset declares an audio sample rate.
+
+    With no accepted (or only hard) splits this returns ``[]`` so the export stays byte-for-byte the
+    single-track hard cut Laura emits today — additive and fully backward-compatible.
+    """
+    if accepted is None:
+        accepted = accepted_offsets_from_otio(timeline_row.get("otio_json") or "")
+    meaningful = [s for s in accepted if not s.is_hard()]
+    if not meaningful:
+        return []
+    return split_audio_clips(
         model, meaningful, audio_sample_rate=_audio_sample_rate(db, timeline_row)
     )
 

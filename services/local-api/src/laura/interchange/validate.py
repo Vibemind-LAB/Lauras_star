@@ -13,7 +13,12 @@ from .timeline import Timeline
 SUPPORTED = {"otio", "edl", "fcp7xml", "fcpxml", "srt", "vtt"}
 
 
-def validate_export(timeline: Timeline, fmt: str) -> dict[str, Any]:
+def validate_export(
+    timeline: Timeline, fmt: str, *, has_split: bool = False
+) -> dict[str, Any]:
+    """Export preflight. ``has_split`` flags an accepted L/J split edit (3b) so EDL — which has no
+    single split-edit event — can warn that the split is emitted as parallel V/A events rather than
+    one event (the closest faithful CMX3600 form)."""
     fmt = fmt.lower()
     if fmt not in SUPPORTED:
         return {
@@ -35,6 +40,13 @@ def validate_export(timeline: Timeline, fmt: str) -> dict[str, Any]:
             for c in timeline.clips
         ):
             drops.append("speed changes are not represented in plain CMX3600")
+        if has_split:
+            # CMX3600 has no single split-edit event; the L/J cut is emitted as parallel V/A events
+            # on the offset sound cut — faithful, but not a one-event split.
+            warnings.append(
+                "L/J split edits are emitted as parallel V/A events (CMX3600 has no "
+                "single split-edit event)"
+            )
 
     if fmt == "fcpxml":
         warnings.append("FCPXML adapter is community-supported; verify the result in FCP")

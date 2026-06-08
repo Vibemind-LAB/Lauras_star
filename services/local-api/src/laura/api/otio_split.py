@@ -37,11 +37,12 @@ what Laura builds today (additive + optional).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import opentimelineio as otio
 
-from ..interchange.timeline import Timeline
+from ..interchange.timeline import Clip, Timeline
 from ..timebase.sampling import frame_to_sample
 
 # A split whose audio/video boundary differ by at most this many frames is treated as a hard cut —
@@ -295,6 +296,95 @@ def _audio_clip(
         meta["audio_sample_rate"] = audio_sample_rate
     otio_clip.metadata[_LAURA_NS] = meta
     return otio_clip
+
+
+@dataclass(frozen=True)
+class AudioClip:
+    """One split-shifted audio clip, the model-level analog of 3a's A1 OTIO audio clip.
+
+    Same canonical fields as a picture :class:`~laura.interchange.timeline.Clip` but with every
+    accepted inter-clip boundary shifted by its ``offset`` frames, so the NLE writers (EDL,
+    FCP7-XML, FCPXML) can emit a separate audio track whose edit points carry the L/J split. Audio
+    is canonical in SAMPLES (invariant #3): ``src_in_sample`` / ``src_out_sample`` carry the exact
+    sample IN/OUT when an audio sample rate is known, the frame fields being the UI projection.
+
+    The boundary math is identical to :func:`_fill_audio_track`, so the model-level export track and
+    3a's OTIO audio track always agree on where the sound edit lands.
+    """
+
+    clip: Clip
+    src_in_sample: int | None = None
+    src_out_sample: int | None = None
+
+
+def split_audio_clips(
+    tl: Timeline,
+    splits: list[AcceptedSplit],
+    *,
+    audio_sample_rate: int | None = None,
+) -> list[AudioClip]:
+    """Derive the split-shifted audio clips for an NLE export (model-level analog of 3a's A1 track).
+
+    Returns ``[]`` when no meaningful (non-hard) split is accepted — the export then stays a single
+    A+V hard cut, byte-for-byte what Laura emits today (purely additive). Otherwise returns one
+    :class:`AudioClip` per picture clip whose inter-clip boundaries are shifted by the accepted
+    per-cut ``offset`` frames, sharing the exact boundary math of 3a's :func:`_fill_audio_track`:
+
+    * an **L-cut** (``offset > 0``) lengthens the previous audio and starts the next later,
+    * a **J-cut** (``offset < 0``) shortens the previous audio and starts the next earlier,
+
+    while the picture clips stay frame-exact on the visual cut. With ``audio_sample_rate`` given,
+    each clip carries its exact sample IN/OUT (invariant #3); otherwise the projection is omitted.
+    """
+    offsets = _offsets_by_seq_cut(splits)
+    if not offsets:
+        return []
+
+    clips = tl.ordered()
+    n = len(clips)
+    out: list[AudioClip] = []
+    for i, clip in enumerate(clips):
+        # leading/trailing boundary shifts — identical to _fill_audio_track so the model-level
+        # audio track and 3a's OTIO A1 track land the sound edit on exactly the same frame.
+        lead_shift = 0 if i == 0 else offsets.get(clips[i].src_in_frame, 0)
+        trail_shift = 0 if i == n - 1 else offsets.get(clips[i + 1].src_in_frame, 0)
+
+        audio_seq_in = clip.seq_in_frame + lead_shift
+        audio_seq_out = clip.seq_out_frame_exclusive + trail_shift
+        audio_src_in = clip.src_in_frame + lead_shift
+        audio_len = audio_seq_out - audio_seq_in
+        audio_src_out = audio_src_in + audio_len
+
+        in_sample: int | None = None
+        out_sample: int | None = None
+        if audio_sample_rate:
+            in_sample = frame_to_sample(
+                audio_src_in, audio_sample_rate, tl.rate_num, tl.rate_den
+            )
+            out_sample = frame_to_sample(
+                audio_src_out, audio_sample_rate, tl.rate_num, tl.rate_den
+            )
+
+        out.append(
+            AudioClip(
+                clip=Clip(
+                    name=clip.name,
+                    src_in_frame=audio_src_in,
+                    src_out_frame_exclusive=audio_src_out,
+                    seq_in_frame=audio_seq_in,
+                    seq_out_frame_exclusive=audio_seq_out,
+                    lane=clip.lane,
+                    asset_id=clip.asset_id,
+                    source_url=clip.source_url,
+                    speaker_label=clip.speaker_label,
+                    speed_num=clip.speed_num,
+                    speed_den=clip.speed_den,
+                ),
+                src_in_sample=in_sample,
+                src_out_sample=out_sample,
+            )
+        )
+    return out
 
 
 def accepted_offsets_from_otio(text: str) -> list[AcceptedSplit]:
