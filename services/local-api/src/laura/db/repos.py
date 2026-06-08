@@ -884,3 +884,42 @@ def get_scene_by_timeline(db: Database, scene_timeline_id: str) -> dict[str, Any
             "SELECT * FROM scenes WHERE scene_timeline_id=? LIMIT 1", (scene_timeline_id,)
         ).fetchone()
         return dict(row) if row is not None else None
+
+
+# --- sequence items (stage 5) -----------------------------------------------
+
+def get_or_create_project_sequence(db: Database, project_id: str) -> dict[str, Any]:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM timelines WHERE project_id=? AND kind='sequence' "
+            "ORDER BY created_at LIMIT 1",
+            (project_id,),
+        ).fetchone()
+    if row is not None:
+        return dict(row)
+    return create_timeline(db, project_id=project_id, name="Sequenz", kind="sequence")
+
+
+def list_sequence_items(db: Database, sequence_timeline_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sequence_items WHERE sequence_timeline_id=? ORDER BY order_index",
+            (sequence_timeline_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def replace_sequence_items(
+    db: Database, sequence_timeline_id: str, scene_ids: list[str]
+) -> None:
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM sequence_items WHERE sequence_timeline_id=?", (sequence_timeline_id,)
+        )
+        for i, sid in enumerate(scene_ids):
+            conn.execute(
+                "INSERT INTO sequence_items (id, sequence_timeline_id, scene_id, order_index, "
+                "created_at) VALUES (?,?,?,?,?)",
+                (new_id(), sequence_timeline_id, sid, i, now),
+            )
