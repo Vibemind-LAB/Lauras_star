@@ -406,6 +406,33 @@ class ImportStatusOut(BaseModel):
 
 
 # --- render-pipeline exports ------------------------------------------------
+class SceneOut(BaseModel):
+    id: str
+    project_id: str
+    source_timeline_id: str
+    name: str
+    order_index: int
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+
+
+class GenerateScenesRequest(BaseModel):
+    asset_id: str
+    gap_frames: int | None = Field(default=None, ge=0)
+
+
+class SplitSceneRequest(BaseModel):
+    at_seq_frame: int = Field(ge=0)
+
+
+class MergeScenesRequest(BaseModel):
+    scene_id: str
+
+
+class RenameSceneRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
 class RenderRequest(BaseModel):
     format: str = "mp4"
 
