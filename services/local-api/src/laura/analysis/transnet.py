@@ -50,46 +50,58 @@ def _load_model() -> Any:
     return model
 
 
+def _scene_pairs(model: Any, video_path: str) -> list[tuple[int, int]]:
+    """Return ``[(start_frame, end_frame_inclusive), ...]`` for ``video_path``.
+
+    Prefers the package's high-level ``detect_scenes`` (it extracts frames via ffmpeg,
+    runs the net, and converts predictions to numpy internally — avoiding the
+    torch-Tensor/``.astype`` mismatch of the low-level path). Falls back to
+    ``predict_video`` + ``predictions_to_scenes`` for older builds, taking the
+    single-frame predictions (tuple index 1) and moving them to numpy first.
+    """
+    detect = getattr(model, "detect_scenes", None)
+    if callable(detect):
+        scenes = detect(video_path, threshold=0.5)  # list of {start_frame, end_frame, ...}
+        return [(int(s["start_frame"]), int(s["end_frame"])) for s in scenes]
+
+    predict = getattr(model, "predict_video", None)
+    to_scenes = getattr(model, "predictions_to_scenes", None)
+    if not callable(predict) or not callable(to_scenes):
+        raise RuntimeError(
+            "TransNetV2 inference unavailable: model has no detect_scenes / predict_video"
+        )
+    preds = predict(video_path, quiet=True)
+    # predict_video returns (frames, single_frame_pred, all_frame_pred).
+    single = preds[1] if isinstance(preds, tuple) and len(preds) >= 2 else preds
+    if hasattr(single, "detach"):  # torch.Tensor -> numpy (predictions_to_scenes uses .astype)
+        single = single.detach().cpu().numpy()
+    raw = to_scenes(single)
+    return [(int(a), int(b)) for a, b in raw]
+
+
 def detect_shots_transnet(video_path: Path | str) -> list[ShotResult]:
     """Detect shot boundaries with TransNetV2 (end-exclusive source-frame ranges).
 
-    Runs ``predict_video`` to get per-frame transition predictions, then
-    ``predictions_to_scenes`` to collapse them into ``[start, end]`` pairs whose ``end`` is
-    **inclusive**; we convert to Laura's end-exclusive ``ShotResult``.
+    TransNetV2 reports per-scene ``[start_frame, end_frame]`` where ``end_frame`` is
+    **inclusive**; Laura's ranges are end-exclusive, so we add 1.
 
     Raises ImportError (via the lazy import) when the ``scene-ml`` extra is absent, and a
-    clear RuntimeError when the package is present but the model/weights cannot be loaded or
-    the API differs from what we expect.
+    clear RuntimeError when the package is present but inference fails.
     """
     import transnetv2_pytorch  # noqa: F401  # raise ImportError early if the extra is absent
 
     model = _load_model()
-
-    predict = getattr(model, "predict_video", None)
-    to_scenes = getattr(model, "predictions_to_scenes", None) or getattr(
-        transnetv2_pytorch, "predictions_to_scenes", None
-    )
-    if not callable(predict) or not callable(to_scenes):
-        raise RuntimeError(
-            "TransNetV2 inference unavailable: model is missing predict_video / "
-            "predictions_to_scenes"
-        )
-
     try:
-        predictions = predict(str(video_path))
-        # predict_video may return (single_frame_pred, all_frame_pred); scenes derive from
-        # the single-frame predictions.
-        single_frame = predictions[0] if isinstance(predictions, tuple) else predictions
-        scenes = to_scenes(single_frame)
+        pairs = _scene_pairs(model, str(video_path))
     except Exception as exc:  # noqa: BLE001 - inference/IO failure -> clear, typed error
         msg = f"TransNetV2 inference unavailable: {type(exc).__name__}: {exc}"
         raise RuntimeError(msg) from exc
 
     return [
         ShotResult(
-            src_in_frame=int(start),
-            src_out_frame_exclusive=int(end) + 1,  # TransNetV2 end is inclusive
+            src_in_frame=start,
+            src_out_frame_exclusive=end + 1,  # TransNetV2 end_frame is inclusive
             method="transnetv2",
         )
-        for start, end in scenes
+        for start, end in pairs
     ]

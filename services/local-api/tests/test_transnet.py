@@ -20,9 +20,8 @@ from laura.analysis.transnet import transnetv2_available
 
 def test_transnetv2_available_returns_bool_without_raising() -> None:
     result = transnetv2_available()
+    # Robust across environments: False without the optional [scene-ml] extra, True with it.
     assert isinstance(result, bool)
-    # The package is not installed in the default env (heavy optional extra).
-    assert result is False
 
 
 def test_detect_shots_transnet_raises_importerror_when_absent() -> None:
