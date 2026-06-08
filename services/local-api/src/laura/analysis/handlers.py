@@ -24,7 +24,7 @@ from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
 from .mapping import map_segment
 from .quality import compute_shot_metrics, decide_keep, mark_duplicates
-from .shots import detect_shots, scenedetect_available
+from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
 from .types import ShotResult
 
 
@@ -41,23 +41,32 @@ def _run_scene(
 
     desired = config.get("detector", "adaptive")
     detector = desired
-    notes: dict[str, str] = {}
-    try:
-        shots = detect_shots(video, detector=desired)
-    except (ImportError, RuntimeError) as exc:
-        # TransNetV2 (extra ``scene-ml``) absent or its inference failed: never fail the
-        # run — fall back to the always-present PySceneDetect ``adaptive`` detector.
-        if desired != "adaptive":
-            notes[desired] = f"skipped: {type(exc).__name__}: {exc}"
-            detector = "adaptive"
-            try:
-                shots = detect_shots(video, detector="adaptive")
-            except Exception as exc2:  # noqa: BLE001
-                return {"status": "failed", "error": f"{type(exc2).__name__}: {exc2}"}
-        else:
+    notes: dict[str, Any] = {}
+    if desired == "hybrid":
+        # Hybrid orchestrates both engines itself and degrades to adaptive internally, so it
+        # never raises just because TransNetV2 is missing. Surface its richer diagnostics.
+        try:
+            shots, hybrid_diag = detect_shots_hybrid(video)
+        except Exception as exc:  # noqa: BLE001 - adaptive path failed -> whole stage fails
             return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-    except Exception as exc:  # noqa: BLE001
-        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        notes.update(hybrid_diag)
+    else:
+        try:
+            shots = detect_shots(video, detector=desired)
+        except (ImportError, RuntimeError) as exc:
+            # TransNetV2 (extra ``scene-ml``) absent or its inference failed: never fail the
+            # run — fall back to the always-present PySceneDetect ``adaptive`` detector.
+            if desired != "adaptive":
+                notes[desired] = f"skipped: {type(exc).__name__}: {exc}"
+                detector = "adaptive"
+                try:
+                    shots = detect_shots(video, detector="adaptive")
+                except Exception as exc2:  # noqa: BLE001
+                    return {"status": "failed", "error": f"{type(exc2).__name__}: {exc2}"}
+            else:
+                return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     if not shots and asset["duration_frames"]:
         shots = [ShotResult(0, int(asset["duration_frames"]), method="whole")]
 

@@ -111,7 +111,7 @@ class AnalysisStart(BaseModel):
     align: bool = False
     model: str = "base"
     language: str | None = None
-    detector: str = "adaptive"  # shot detector: adaptive|content|histogram|transnet
+    detector: str = "adaptive"  # shot detector: adaptive|content|histogram|transnet|hybrid
 
 
 class AnalysisAccepted(BaseModel):
