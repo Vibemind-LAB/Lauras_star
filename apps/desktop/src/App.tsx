@@ -121,17 +121,33 @@ export function App(): ReactElement {
     setAssets(await c.listAssets(projectId));
   }, []);
 
-  const loadRoughCut = useCallback(async (c: LauraClient, projectId: string) => {
-    const timelines = await c.listTimelines(projectId);
-    const existing = timelines.find((t) => t.kind === "rough_cut");
-    setRoughCut(existing ?? (await c.createTimeline(projectId, "Rough Cut")));
-  }, []);
+  // One rough cut per video: load the SELECTED asset's rough cut (created on demand,
+  // linked via created_from=asset_id) so switching videos shows that video's scenes.
+  const loadRoughCut = useCallback(
+    async (c: LauraClient, projectId: string, assetId: string) => {
+      setRoughCut(await c.getAssetRoughCut(projectId, assetId));
+    },
+    [],
+  );
 
   const reloadRoughCut = useCallback(() => {
-    if (client && selectedProjectId) {
-      void loadRoughCut(client, selectedProjectId).catch((e) => setError(String(e)));
+    if (client && selectedProjectId && selectedAssetId) {
+      void loadRoughCut(client, selectedProjectId, selectedAssetId).catch((e) =>
+        setError(String(e)),
+      );
     }
-  }, [client, selectedProjectId, loadRoughCut]);
+  }, [client, selectedProjectId, selectedAssetId, loadRoughCut]);
+
+  // Re-load the rough cut whenever the selected video changes (or clear it if none).
+  useEffect(() => {
+    if (client && selectedProjectId && selectedAssetId) {
+      void loadRoughCut(client, selectedProjectId, selectedAssetId).catch((e) =>
+        setError(String(e)),
+      );
+    } else {
+      setRoughCut(null);
+    }
+  }, [client, selectedProjectId, selectedAssetId, loadRoughCut]);
 
   const seekToFrame = useCallback((frame: number) => setSeek({ frame }), []);
 
@@ -197,7 +213,7 @@ export function App(): ReactElement {
     if (client) {
       try {
         await loadAssets(client, id);
-        await loadRoughCut(client, id);
+        // rough cut loads per selected video (see the effect above)
       } catch (e) {
         setError(String(e));
       }
@@ -449,7 +465,8 @@ export function App(): ReactElement {
               roughCut={roughCut}
               segments={analysis.segments}
               onRoughCutChange={async () => {
-                if (client && selectedProjectId) await loadRoughCut(client, selectedProjectId);
+                if (client && selectedProjectId && selectedAssetId)
+                  await loadRoughCut(client, selectedProjectId, selectedAssetId);
               }}
               seek={seek}
               currentFrame={currentFrame}
