@@ -31,7 +31,7 @@ from ..editing.operations import (
     split_clip,
     trim_clip,
 )
-from ..editing.otio_sync import build_model
+from ..editing.otio_sync import build_model, serialize_timeline_otio
 from ..editing.word_cut import map_asset_range_to_seq
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
@@ -843,7 +843,10 @@ def apply_operation(timeline_id: str, body: OperationRequest, request: Request) 
     repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
     fresh = repos.get_timeline(db, timeline_id)
     assert fresh is not None
-    repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    # Regenerate from clips, re-applying any accepted L/J split offsets carried in the previous
+    # blob so an edit never clobbers a split back to a hard cut (migration-free; offsets persist
+    # in the OTIO metadata itself — see editing.otio_sync.serialize_timeline_otio).
+    repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
     return _timeline_out(db, fresh)
 
 
@@ -863,7 +866,9 @@ def set_timeline_clips(
     repos.replace_timeline_clips(db, timeline_id, rows)
     fresh = repos.get_timeline(db, timeline_id)
     assert fresh is not None
-    repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    # Preserve any accepted L/J split offsets across a wholesale clip replace (undo/redo restore):
+    # they live in the previous blob's metadata and are re-applied at build time, not in a column.
+    repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
     audit.record(
         db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
     )
