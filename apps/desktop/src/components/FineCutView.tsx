@@ -4,6 +4,7 @@ import { type Asset, type LauraClient, type Segment } from "../api";
 import { useSceneTimeline } from "../hooks/useSceneTimeline";
 import { useScenes } from "../hooks/useScenes";
 import { Player } from "./Player";
+import { SceneMusicControls } from "./SceneMusicControls";
 import { TimelineBar } from "./TimelineBar";
 import { TranscriptBar } from "./TranscriptBar";
 
@@ -35,8 +36,9 @@ export function FineCutView({
   onSeek: (f: number) => void;
   onFrame: (f: number) => void;
 }): ReactElement {
-  const { scenes } = useScenes(client, roughCutId);
+  const { scenes, reload } = useScenes(client, roughCutId);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const selectedScene = scenes.find((s) => s.id === selectedSceneId);
 
   // Auto-select the first scene once the list is loaded.
   useEffect(() => {
@@ -104,6 +106,15 @@ export function FineCutView({
           onAppendSegment={() => undefined}
           onDeleteWords={(a, b) => void scene.deleteWords(a, b)}
         />
+
+        {selectedScene && (
+          <SceneMusicControls
+            client={client}
+            projectId={asset?.project_id ?? null}
+            scene={selectedScene}
+            onChange={() => void reload()}
+          />
+        )}
 
         {scene.error && (
           <div className="px-3 py-1 text-xs text-red-400">{scene.error}</div>

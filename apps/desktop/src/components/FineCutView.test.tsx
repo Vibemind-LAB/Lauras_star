@@ -6,6 +6,7 @@ import { FineCutView } from "./FineCutView";
 vi.mock("./Player", () => ({ Player: () => <div data-testid="player" /> }));
 vi.mock("./TimelineBar", () => ({ TimelineBar: () => <div data-testid="timeline" /> }));
 vi.mock("./SceneInspector", () => ({ SceneInspector: () => <div data-testid="inspector" /> }));
+vi.mock("./SceneMusicControls", () => ({ SceneMusicControls: () => null }));
 vi.mock("./TranscriptBar", () => ({
   TranscriptBar: (p: { onDeleteWords?: (a: string, b: string) => void }) => (
     <button type="button" onClick={() => p.onDeleteWords?.("w0", "w1")}>cut-word</button>

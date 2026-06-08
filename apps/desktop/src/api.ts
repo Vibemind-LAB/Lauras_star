@@ -539,6 +539,17 @@ export class LauraClient {
     return this.request<Timeline>(`/scenes/${sceneId}/open`, { method: "POST" });
   }
 
+  setSceneMusic(sceneId: string, assetId: string, gainPercent: number): Promise<Scene> {
+    return this.request<Scene>(`/scenes/${sceneId}/music`, {
+      method: "PUT",
+      body: JSON.stringify({ asset_id: assetId, gain_percent: gainPercent }),
+    });
+  }
+
+  removeSceneMusic(sceneId: string): Promise<Scene> {
+    return this.request<Scene>(`/scenes/${sceneId}/music`, { method: "DELETE" });
+  }
+
   deleteWords(timelineId: string, wordStartId: string, wordEndId: string): Promise<Timeline> {
     return this.request<Timeline>(`/timelines/${timelineId}/operations`, {
       method: "POST",
