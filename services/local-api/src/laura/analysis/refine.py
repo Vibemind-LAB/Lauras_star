@@ -10,6 +10,12 @@ compute the inter-frame luma-diff signal ``d(f) = mean(|gray[f] - gray[f-1]|)`` 
 metric the cut-exactness eval scores against), and move ``B`` to the frame of the local
 ``argmax(d)``. This is purely defensive: any IO error or unusable window leaves ``B`` exactly
 where it was. The frame IO is injected through ``frame_loader`` so tests run without ffmpeg.
+
+The default search half-window is :data:`SNAP_WINDOW` (``4``), deliberately *narrower* than the
+shared ``eval_cut.DEFAULT_WINDOW`` (``6``): the ground-truth benchmark in
+:mod:`laura.bench.cut_bench` showed a wider window lets ``argmax(d)`` wander off a true hard cut
+into compression flicker on flat scenes, and ``4`` minimised that drift with no regression. See
+``docs/eval/cut-tuning.md``.
 """
 
 from __future__ import annotations
@@ -19,11 +25,19 @@ from pathlib import Path
 import numpy as np
 
 from .eval_cut import (
-    DEFAULT_WINDOW,
     FrameLoader,
     _diff_signal,
     load_gray_frames_ffmpeg,
 )
+
+# Snap search half-window. Decoupled from ``eval_cut.DEFAULT_WINDOW`` (the eval/joint scoring
+# window, 6) on purpose: the ground-truth benchmark (``laura.bench.cut_bench``) showed that a
+# *narrower* snap window is strictly better on hard cuts. On a flat scene (solid colours), a hard
+# cut already sits on its luma peak, but a wide window lets ``argmax(d)`` wander backward into
+# libx264 compression flicker — drifting the cut 4-10 frames off the true boundary, the wander
+# growing with the window. Window 4 minimised that drift across the suite with no regression on
+# textured or low-motion scenes, so it is the snap default; eval/joint keep their own 6.
+SNAP_WINDOW = 4
 
 
 def _snap_one(
@@ -66,7 +80,7 @@ def snap_boundaries(
     video_path: Path | str,
     boundaries: list[int],
     *,
-    window: int = DEFAULT_WINDOW,
+    window: int = SNAP_WINDOW,
     total_frames: int | None = None,
     frame_loader: FrameLoader = load_gray_frames_ffmpeg,
 ) -> list[int]:
