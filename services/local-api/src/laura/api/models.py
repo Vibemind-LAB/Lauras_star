@@ -35,6 +35,11 @@ class AssetImport(BaseModel):
     source_path: str | None = Field(default=None, min_length=1)
     source_url: str | None = Field(default=None, min_length=1)
     display_name: str | None = None
+    # URL-ingest comfort options (yt-dlp only; ignored for source_path imports):
+    # quality vocabulary best|1080|720|audio, and a browser to read cookies from for
+    # private/age-restricted/login-walled sources (chrome|edge|firefox|brave).
+    format: str | None = None
+    cookies_from_browser: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> AssetImport:
@@ -46,6 +51,9 @@ class AssetImport(BaseModel):
 class ImportAccepted(BaseModel):
     asset_id: str
     job_id: str
+    # Additional asset ids when a playlist/channel URL fanned out into multiple assets
+    # (asset_id/job_id stay the first entry for backward compatibility).
+    extra_asset_ids: list[str] = Field(default_factory=list)
 
 
 class AssetFileOut(BaseModel):

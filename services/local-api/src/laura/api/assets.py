@@ -19,6 +19,7 @@ from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
 from ..ingest.proxy import build_thumbnail
+from ..ingest.ytdlp import expand_playlist, ytdlp_available
 from ..interchange.captions import segments_to_srt, segments_to_vtt
 from ..jobs.runner import enqueue
 from .models import AssetFileOut, AssetImport, AssetOut, ImportAccepted, ImportStatusOut
@@ -33,6 +34,56 @@ def _db(request: Request) -> Database:
     return db
 
 
+# Cap playlist/channel fan-out so one paste of a huge channel can't enqueue thousands
+# of fetch jobs. Matches expand_playlist's default ``limit``.
+_PLAYLIST_LIMIT = 50
+
+
+def _expand_playlist_urls(source_url: str, cookies_from_browser: str | None) -> list[str] | None:
+    """Return the entry URLs if ``source_url`` is a yt-dlp playlist/channel, else None.
+
+    Metadata-only (``extract_flat``); never downloads. Returns None when yt-dlp is
+    unavailable, the URL is a single video, or expansion fails — callers then treat the
+    URL as a single asset.
+    """
+    if not ytdlp_available():
+        return None
+    return expand_playlist(
+        source_url, limit=_PLAYLIST_LIMIT, cookies_from_browser=cookies_from_browser
+    )
+
+
+def _enqueue_url_fetch(
+    db: Database,
+    project_id: str,
+    source_url: str,
+    *,
+    display_name: str | None,
+    fmt: str | None,
+    cookies_from_browser: str | None,
+) -> tuple[str, str]:
+    """Create one offline asset for ``source_url`` and enqueue its ingest.fetch job.
+
+    The chosen format/cookies ride on the job payload so the fetch handler can pass them
+    to yt-dlp. Returns ``(asset_id, job_id)``.
+    """
+    name = display_name or Path(source_url.split("?", 1)[0]).name or "download.bin"
+    asset = repos.create_asset(
+        db, project_id=project_id, type="video",
+        display_name=name, source_path=f"url:{source_url}", online=False,
+    )
+    payload: dict[str, Any] = {"asset_id": asset["id"], "source_url": source_url}
+    if fmt:
+        payload["format"] = fmt
+    if cookies_from_browser:
+        payload["cookies_from_browser"] = cookies_from_browser
+    job_id = enqueue(
+        db, queue="ingest.io", kind="ingest.fetch",
+        payload=payload, idempotency_key=f"fetch:{asset['id']}", max_attempts=5,
+    )
+    return asset["id"], job_id
+
+
 @router.post(
     "/projects/{project_id}/assets/import",
     response_model=ImportAccepted,
@@ -44,17 +95,26 @@ def import_asset(project_id: str, body: AssetImport, request: Request) -> Import
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
 
     if body.source_url:
-        name = body.display_name or Path(body.source_url.split("?", 1)[0]).name or "download.bin"
-        asset = repos.create_asset(
-            db, project_id=project_id, type="video",
-            display_name=name, source_path=f"url:{body.source_url}", online=False,
+        # A playlist/channel URL fans out into one asset + fetch job per entry. The
+        # response still carries a single (first) asset_id/job_id for backward compat;
+        # extra_asset_ids lists the rest so the UI can track them all.
+        entry_urls = _expand_playlist_urls(body.source_url, body.cookies_from_browser)
+        urls = entry_urls if entry_urls else [body.source_url]
+        accepted: list[tuple[str, str]] = []
+        for entry_url in urls:
+            accepted.append(
+                _enqueue_url_fetch(
+                    db, project_id, entry_url,
+                    display_name=body.display_name if len(urls) == 1 else None,
+                    fmt=body.format,
+                    cookies_from_browser=body.cookies_from_browser,
+                )
+            )
+        first_asset, first_job = accepted[0]
+        return ImportAccepted(
+            asset_id=first_asset, job_id=first_job,
+            extra_asset_ids=[aid for aid, _ in accepted[1:]],
         )
-        job_id = enqueue(
-            db, queue="ingest.io", kind="ingest.fetch",
-            payload={"asset_id": asset["id"], "source_url": body.source_url},
-            idempotency_key=f"fetch:{asset['id']}", max_attempts=5,
-        )
-        return ImportAccepted(asset_id=asset["id"], job_id=job_id)
 
     assert body.source_path is not None  # guaranteed by the AssetImport validator
 
@@ -161,13 +221,19 @@ def import_retry(asset_id: str, request: Request) -> dict[str, str]:
     job = repos.get_fetch_job(db, asset_id)
     if job is None or job["status"] != "failed":
         raise HTTPException(status.HTTP_409_CONFLICT, "no failed import to retry")
-    source_url = json.loads(job["payload_json"]).get("source_url")
+    old_payload = json.loads(job["payload_json"])
+    source_url = old_payload.get("source_url")
     if not source_url:
         raise HTTPException(status.HTTP_409_CONFLICT, "fetch job has no source_url")
+    payload: dict[str, Any] = {"asset_id": asset_id, "source_url": source_url}
+    # Preserve the originally-chosen format/cookies so a retry behaves identically.
+    if old_payload.get("format"):
+        payload["format"] = old_payload["format"]
+    if old_payload.get("cookies_from_browser"):
+        payload["cookies_from_browser"] = old_payload["cookies_from_browser"]
     job_id = enqueue(
         db, queue="ingest.io", kind="ingest.fetch",
-        payload={"asset_id": asset_id, "source_url": source_url},
-        idempotency_key=f"fetch:{asset_id}", max_attempts=5,
+        payload=payload, idempotency_key=f"fetch:{asset_id}", max_attempts=5,
     )
     return {"asset_id": asset_id, "job_id": job_id}
 

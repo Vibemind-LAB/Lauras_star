@@ -203,6 +203,9 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     if not url:
         raise ValueError("ingest.fetch payload missing required field: source_url")
     full_scan = bool(ctx.payload.get("full_scan", True))
+    # yt-dlp comfort options (set by the import endpoint; absent for direct/aria2 links).
+    fmt = ctx.payload.get("format")
+    cookies_from_browser = ctx.payload.get("cookies_from_browser")
     root = _project_root(ctx.db, asset)
     base_dir = root / "downloads" / asset["id"]
 
@@ -270,9 +273,12 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
         ) else None
         try:
             media_path = download_via_ytdlp(
-                url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir
+                url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir,
+                fmt=fmt, cookies_from_browser=cookies_from_browser,
             )
         except RuntimeError as exc:
+            # Surface a clear job error (e.g. a locked/missing browser cookie store)
+            # rather than letting yt-dlp's exception crash the worker.
             raise ValueError(f"yt-dlp download failed: {exc}") from exc
         ok = _finalize_media_asset(ctx, asset, media_path, full_scan=full_scan)
         if not ok:
@@ -298,7 +304,8 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
             ) else None
             try:
                 media_path = download_via_ytdlp(
-                    url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir
+                    url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir,
+                    fmt=fmt, cookies_from_browser=cookies_from_browser,
                 )
             except RuntimeError as exc:
                 raise ValueError(f"yt-dlp fallback failed: {exc}") from exc

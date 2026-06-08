@@ -9,6 +9,7 @@ import {
   type Segment,
   type Shot,
   type Timeline,
+  type UrlImportOptions,
 } from "./api";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ImportBar } from "./components/ImportBar";
@@ -130,20 +131,24 @@ export function App(): ReactElement {
   );
 
   const importUrls = useCallback(
-    async (urls: string[]): Promise<string[]> => {
+    async (urls: string[], opts: UrlImportOptions = {}): Promise<string[]> => {
       if (!client || !selectedProjectId) return [];
       const ids: string[] = [];
-      for (const u of urls) ids.push((await client.importAssetFromUrl(selectedProjectId, u)).asset_id);
+      for (const u of urls) {
+        // A playlist/channel URL returns one primary asset plus extra_asset_ids.
+        const accepted = await client.importAssetFromUrl(selectedProjectId, u, opts);
+        ids.push(accepted.asset_id, ...accepted.extra_asset_ids);
+      }
       return ids;
     },
     [client, selectedProjectId],
   );
 
   const runImport = useCallback(
-    async (paths: string[], urls: string[]): Promise<void> => {
+    async (paths: string[], urls: string[], opts: UrlImportOptions = {}): Promise<void> => {
       if (!client || !selectedProjectId) return;
       try {
-        const ids = [...(await importPaths(paths)), ...(await importUrls(urls))];
+        const ids = [...(await importPaths(paths)), ...(await importUrls(urls, opts))];
         await loadAssets(client, selectedProjectId);
         if (ids[0]) setSelectedAssetId(ids[0]);
       } catch (e) {
@@ -381,7 +386,12 @@ export function App(): ReactElement {
             <div className="px-3 pb-2">
               <ImportBar
                 disabled={!selectedProjectId}
-                onUrl={(u) => void runImport([], [u])}
+                onUrls={(req) =>
+                  void runImport([], req.urls, {
+                    format: req.format,
+                    cookiesFromBrowser: req.cookiesFromBrowser ?? undefined,
+                  })
+                }
                 onPickFiles={() => {
                   void (async () => {
                     try {

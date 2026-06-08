@@ -34,13 +34,35 @@ function mockFetch(json: unknown) {
 
 describe("import client methods", () => {
   it("importAssetFromUrl posts source_url", async () => {
-    const fn = mockFetch({ asset_id: "a", job_id: "j" });
+    const fn = mockFetch({ asset_id: "a", job_id: "j", extra_asset_ids: [] });
     const c = new LauraClient("http://h", "tok");
     await c.importAssetFromUrl("p1", "https://x/y.mp4");
     expect(fn).toHaveBeenCalledWith(
       "http://h/projects/p1/assets/import",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ source_url: "https://x/y.mp4" }) }),
     );
+  });
+
+  it("importAssetFromUrl threads format + cookies into the body", async () => {
+    const fn = mockFetch({ asset_id: "a", job_id: "j", extra_asset_ids: [] });
+    const c = new LauraClient("http://h", "tok");
+    await c.importAssetFromUrl("p1", "https://youtu.be/x", {
+      format: "1080",
+      cookiesFromBrowser: "chrome",
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      source_url: "https://youtu.be/x",
+      format: "1080",
+      cookies_from_browser: "chrome",
+    });
+  });
+
+  it("importAssetFromUrl returns extra_asset_ids for a playlist fan-out", async () => {
+    mockFetch({ asset_id: "a", job_id: "j", extra_asset_ids: ["b", "c"] });
+    const c = new LauraClient("http://h", "tok");
+    const accepted = await c.importAssetFromUrl("p1", "https://yt/playlist");
+    expect([accepted.asset_id, ...accepted.extra_asset_ids]).toEqual(["a", "b", "c"]);
   });
 
   it("getImportStatus GETs the status", async () => {

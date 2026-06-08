@@ -60,6 +60,19 @@ export interface Asset {
 export interface ImportAccepted {
   asset_id: string;
   job_id: string;
+  /** Extra asset ids when a playlist/channel URL fanned out into several assets. */
+  extra_asset_ids: string[];
+}
+
+/** Quality vocabulary the backend maps to a yt-dlp format selector. */
+export type ImportFormat = "best" | "1080" | "720" | "audio";
+
+/** Browser whose cookie store yt-dlp reads for private/login-walled sources. */
+export type CookiesFromBrowser = "chrome" | "edge" | "firefox" | "brave";
+
+export interface UrlImportOptions {
+  format?: ImportFormat;
+  cookiesFromBrowser?: CookiesFromBrowser;
 }
 
 export interface ImportStatus {
@@ -319,10 +332,17 @@ export class LauraClient {
     });
   }
 
-  importAssetFromUrl(projectId: string, url: string): Promise<ImportAccepted> {
+  importAssetFromUrl(
+    projectId: string,
+    url: string,
+    opts: UrlImportOptions = {},
+  ): Promise<ImportAccepted> {
+    const body: Record<string, string> = { source_url: url };
+    if (opts.format) body.format = opts.format;
+    if (opts.cookiesFromBrowser) body.cookies_from_browser = opts.cookiesFromBrowser;
     return this.request<ImportAccepted>(`/projects/${projectId}/assets/import`, {
       method: "POST",
-      body: JSON.stringify({ source_url: url }),
+      body: JSON.stringify(body),
     });
   }
 
