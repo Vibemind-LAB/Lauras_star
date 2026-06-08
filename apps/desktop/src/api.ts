@@ -92,6 +92,16 @@ export interface Waveform {
   peaks: number[];
 }
 
+export interface Scene {
+  id: string;
+  project_id: string;
+  source_timeline_id: string;
+  name: string;
+  order_index: number;
+  seq_in_frame: number;
+  seq_out_frame_exclusive: number;
+}
+
 export function hasFile(asset: Asset, kind: string): boolean {
   return asset.files.some((f) => f.kind === kind);
 }
@@ -487,6 +497,38 @@ export class LauraClient {
     return this.request<BuildFromShotsResult>(`/projects/${projectId}/timelines/from-shots`, {
       method: "POST",
       body: JSON.stringify({ asset_id: assetId, timeline_id: timelineId }),
+    });
+  }
+
+  generateScenes(timelineId: string, assetId: string, gapFrames?: number): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes:generate`, {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, gap_frames: gapFrames ?? null }),
+    });
+  }
+
+  listScenes(timelineId: string): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes`);
+  }
+
+  splitScene(timelineId: string, sceneId: string, atSeqFrame: number): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes/${sceneId}/split`, {
+      method: "POST",
+      body: JSON.stringify({ at_seq_frame: atSeqFrame }),
+    });
+  }
+
+  mergeScenes(timelineId: string, sceneId: string): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes/merge`, {
+      method: "POST",
+      body: JSON.stringify({ scene_id: sceneId }),
+    });
+  }
+
+  renameScene(sceneId: string, name: string): Promise<Scene> {
+    return this.request<Scene>(`/scenes/${sceneId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
     });
   }
 }
