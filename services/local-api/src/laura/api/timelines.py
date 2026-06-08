@@ -13,6 +13,7 @@ from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.joint import bias_to_weights, joint_place
 from ..analysis.silence import detect_silence
+from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
@@ -52,6 +53,7 @@ from .models import (
     RenderExportOut,
     RenderRequest,
     SetClipsRequest,
+    SplitCutOut,
     TimelineCreate,
     TimelineImportOut,
     TimelineImportRequest,
@@ -301,6 +303,49 @@ def _align_rows_editorial(
         offset += length
 
 
+def _plan_split_cuts(
+    rows: list[dict[str, Any]],
+    words: list[Word],
+    silence: list[tuple[int, int]] | None,
+    *,
+    window: int,
+    video_path: Path | str | None = None,
+    total_frames: int | None = None,
+    frame_loader: FrameLoader = load_gray_frames_ffmpeg,
+) -> list[SplitCutOut]:
+    """L/J split-edit recommendations for the inter-clip cuts of a (hard-cut) rough cut.
+
+    The inter-clip cuts are each clip's ``src_in_frame`` after the first (the boundary between it
+    and the previous clip). For each, :func:`laura.analysis.splitedit.plan_split_cut` computes the
+    independent optimal picture frame (visual peak) and sound frame (real silence / clean
+    word-gap), classifies the result (hard / L / J) and the offset, and we surface it as a
+    :class:`SplitCutOut`. RECOMMENDATION ONLY — the stored clips are not changed; this just tells
+    the UI/editor which cuts would benefit from a split edit and by how many frames.
+    """
+    cuts = [row["src_in_frame"] for row in rows[1:]]
+    if not cuts:
+        return []
+    planned = plan_split_cuts(
+        cuts,
+        words,
+        silence,
+        window=window,
+        video_path=video_path,
+        total_frames=total_frames,
+        frame_loader=frame_loader,
+    )
+    return [
+        SplitCutOut(
+            seq_cut=sc.seq_cut,
+            video_frame=sc.video_frame,
+            audio_frame=sc.audio_frame,
+            offset=sc.offset,
+            kind=sc.kind,
+        )
+        for sc in planned
+    ]
+
+
 @router.post(
     "/projects/{project_id}/timelines/from-shots",
     response_model=FromShotsOut,
@@ -314,6 +359,12 @@ def timeline_from_shots(
 
     Weak shots (black, static, duplicate, blurry) are filtered when ``quality=True`` (default).
     The ``dropped`` list in the response contains the filtered shots so the UI can re-include.
+
+    When a transcript/silence exists the response also carries ``split_cuts``: per inter-clip cut,
+    an L/J split-edit recommendation (independent optimal picture frame = visual peak, sound frame
+    = real silence / clean word-gap, with the offset and hard/L/J classification). This is
+    RECOMMENDATION ONLY — the stored clips remain hard cuts; it just surfaces which cuts would
+    benefit from a split edit and by how many frames.
 
     Non-destructive: pass an empty ``timeline_id`` to fill it; otherwise a new ``rough_cut``
     is created so a hand-made cut is never clobbered."""
@@ -385,6 +436,7 @@ def timeline_from_shots(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "no shots left after filtering"
         )
 
+    split_cuts: list[SplitCutOut] = []
     if body.align_editorial:
         word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
         words = [
@@ -406,6 +458,20 @@ def timeline_from_shots(
             video_path=video_path,
             total_frames=asset.get("duration_frames"),
         )
+        # L/J split-edit recommendations (RECOMMENDATION ONLY — the stored clips stay hard cuts).
+        # For each inter-clip cut, plan the independent optimal picture frame (visual peak) and
+        # sound frame (real silence / clean word-gap) so the UI/editor can SEE which cuts would
+        # benefit from an L- or J-cut and by how many frames. Skipped when there is nothing to
+        # plan against (no transcript and no detected silence) so the field stays empty.
+        if (words or silence) and body.editorial_window > 0:
+            split_cuts = _plan_split_cuts(
+                rows,
+                words,
+                silence,
+                window=body.editorial_window,
+                video_path=video_path,
+                total_frames=asset.get("duration_frames"),
+            )
 
     if body.timeline_id is not None:
         target = repos.get_timeline(db, body.timeline_id)
@@ -429,7 +495,9 @@ def timeline_from_shots(
     fresh = repos.get_timeline(db, target["id"])
     assert fresh is not None
     repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
-    return FromShotsOut(timeline=_timeline_out(db, fresh), dropped=dropped)
+    return FromShotsOut(
+        timeline=_timeline_out(db, fresh), dropped=dropped, split_cuts=split_cuts
+    )
 
 
 @router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])

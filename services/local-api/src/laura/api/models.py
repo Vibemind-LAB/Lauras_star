@@ -202,6 +202,22 @@ class DroppedShot(BaseModel):
     drop_reason: str
 
 
+class SplitCutOut(BaseModel):
+    """A per-cut split-edit (L/J) recommendation for an inter-clip cut.
+
+    RECOMMENDATION ONLY: the stored clips are unchanged hard cuts. This surfaces, per cut, the
+    independent optimal picture frame (visual peak) and sound frame (real silence / clean
+    word-gap) so the UI/editor can SEE which cuts would benefit from an L- or J-cut and by how
+    many frames. All frames are source-frame indices of the asset.
+    """
+
+    seq_cut: int          # the original (visual) cut frame on the source
+    video_frame: int      # recommended picture cut = visual peak
+    audio_frame: int      # recommended sound cut = real silence / clean word-gap
+    offset: int           # audio_frame - video_frame (0 == hard cut)
+    kind: str             # "hard" | "L" (audio after video) | "J" (audio before video)
+
+
 class ClipOut(BaseModel):
     id: str
     asset_id: str
@@ -229,6 +245,9 @@ class TimelineOut(BaseModel):
 class FromShotsOut(BaseModel):
     timeline: TimelineOut
     dropped: list[DroppedShot] = Field(default_factory=list)
+    # Per-cut L/J split-edit recommendations for the inter-clip cuts (recommendation only — the
+    # stored clips remain hard cuts). Empty when there is no transcript/silence to plan against.
+    split_cuts: list[SplitCutOut] = Field(default_factory=list)
 
 
 class ClipSourceOut(BaseModel):
