@@ -860,3 +860,27 @@ def update_scene_name(db: Database, scene_id: str, name: str) -> None:
 def set_scene_timeline(db: Database, scene_id: str, timeline_id: str) -> None:
     with db.transaction() as conn:
         conn.execute("UPDATE scenes SET scene_timeline_id=? WHERE id=?", (timeline_id, scene_id))
+
+
+def set_scene_music(db: Database, scene_id: str, asset_id: str, gain_percent: int) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE scenes SET music_asset_id=?, music_gain_percent=? WHERE id=?",
+            (asset_id, gain_percent, scene_id),
+        )
+
+
+def clear_scene_music(db: Database, scene_id: str) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE scenes SET music_asset_id=NULL, music_gain_percent=100 WHERE id=?",
+            (scene_id,),
+        )
+
+
+def get_scene_by_timeline(db: Database, scene_timeline_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM scenes WHERE scene_timeline_id=? LIMIT 1", (scene_timeline_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
