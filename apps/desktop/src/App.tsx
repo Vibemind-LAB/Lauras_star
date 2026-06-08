@@ -92,7 +92,11 @@ export function App(): ReactElement {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const info = await window.laura.getServiceInfo();
+      // Guard against a missing/throwing preload bridge: fall to offline instead of
+      // hanging on the "connecting" state forever.
+      const info = window.laura
+        ? await window.laura.getServiceInfo().catch(() => null)
+        : null;
       if (cancelled) return;
       if (!info) {
         setOffline(true);
