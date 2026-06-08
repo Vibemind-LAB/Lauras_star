@@ -259,6 +259,19 @@ export interface ExportResult {
   warnings: string[];
 }
 
+export interface SequenceItem {
+  id: string;
+  scene_id: string;
+  scene_name: string;
+  order_index: number;
+}
+
+export interface Sequence {
+  timeline_id: string;
+  project_id: string;
+  items: SequenceItem[];
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -555,5 +568,20 @@ export class LauraClient {
       method: "POST",
       body: JSON.stringify({ op: "delete_words", word_start_id: wordStartId, word_end_id: wordEndId }),
     });
+  }
+
+  getProjectSequence(projectId: string): Promise<Sequence> {
+    return this.request<Sequence>(`/projects/${projectId}/sequence`);
+  }
+
+  setSequenceScenes(sequenceId: string, sceneIds: string[]): Promise<Sequence> {
+    return this.request<Sequence>(`/sequences/${sequenceId}/scenes`, {
+      method: "PUT",
+      body: JSON.stringify({ scene_ids: sceneIds }),
+    });
+  }
+
+  getSequenceFlattened(sequenceId: string): Promise<TimelineClip[]> {
+    return this.request<TimelineClip[]>(`/sequences/${sequenceId}/flattened`);
   }
 }
