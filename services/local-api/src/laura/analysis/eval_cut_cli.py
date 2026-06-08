@@ -6,7 +6,10 @@ Resolves the workspace SQLite DB, opens a *copy* (to dodge WAL/locks while the d
 may hold it), looks up the asset by id-prefix, takes its LATEST analysis run, derives the
 internal cut boundaries from that run's shots, resolves the asset's video (proxy preferred,
 else original), runs :func:`laura.analysis.eval_cut.evaluate_boundaries`, and prints a
-readable report. Read-only and side-effect free — no app restart required.
+readable report. When the run also has a transcript, it additionally folds the editorial
+half in and prints the unified :class:`laura.analysis.eval_quality.RoughCutQuality` — the
+headline "exact cut" score (visual exactness + editorial cleanliness). Read-only and
+side-effect free — no app restart required.
 """
 
 from __future__ import annotations
@@ -19,7 +22,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .editorial import Word
 from .eval_cut import DEFAULT_WINDOW, CutEvalReport, evaluate_boundaries
+from .eval_quality import RoughCutQuality, evaluate_rough_cut
 
 
 def default_db_path() -> Path | None:
@@ -94,6 +99,29 @@ def boundaries_for_run(conn: sqlite3.Connection, asset_id: str, run_id: str) -> 
     return [b for b in starts if b != 0]
 
 
+def words_for_run(conn: sqlite3.Connection, asset_id: str, run_id: str) -> list[Word]:
+    """Transcript words for this run as editorial ``Word``s in source-frame space.
+
+    Joins ``transcript_words`` to its parent segment so only this asset/run's words are
+    returned, and drops pure-punctuation tokens (they carry no spoken-audio span to bisect).
+    The DB already stores ``start_frame``/``end_frame`` in the same source-frame space the cuts
+    use, so no re-projection is needed here. Empty when the run has no transcript.
+    """
+    rows = conn.execute(
+        "SELECT w.start_frame, w.end_frame FROM transcript_words w "
+        "JOIN transcript_segments s ON w.segment_id = s.id "
+        "WHERE s.asset_id = ? AND s.analysis_run_id = ? "
+        "AND COALESCE(w.is_punctuation, 0) = 0 "
+        "ORDER BY w.start_frame",
+        (asset_id, run_id),
+    ).fetchall()
+    return [
+        Word(start_frame=int(r["start_frame"]), end_frame=int(r["end_frame"]))
+        for r in rows
+        if int(r["end_frame"]) > int(r["start_frame"])
+    ]
+
+
 def resolve_video(conn: sqlite3.Connection, asset_id: str) -> Path:
     """Prefer the proxy file, else original, else the asset's source_path."""
     rows = conn.execute(
@@ -139,6 +167,21 @@ def format_report(
     return "\n".join(lines)
 
 
+def format_quality(q: RoughCutQuality, *, n_words: int) -> str:
+    """Render the unified rough-cut quality (visual + editorial -> overall)."""
+    em = q.editorial
+    return "\n".join([
+        "",
+        "=== Rough-cut quality (visual + editorial) ===",
+        f"words           : {n_words}",
+        f"visual_exactness: {q.visual_exactness:.3f}  (share of cuts within 1 frame of luma peak)",
+        f"editorial_clean : {q.editorial_clean:.3f}  (share of cuts NOT mid-word)",
+        f"  pct_mid_word     : {em['pct_mid_word'] * 100:.1f}%",
+        f"  mean_dist_to_gap : {em['mean_dist_to_word_gap']:.3f} frames",
+        f"overall         : {q.overall:.3f}  (weighted blend, 0.6 visual / 0.4 editorial)",
+    ])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cut-exactness eval for an analysed asset.")
     parser.add_argument("asset_prefix", help="asset id prefix (e.g. 1098bc7e)")
@@ -156,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         asset_id, display_name = resolve_asset_id(conn, args.asset_prefix)
         run_id = latest_run_id(conn, asset_id)
         boundaries = boundaries_for_run(conn, asset_id, run_id)
+        words = words_for_run(conn, asset_id, run_id)
         video = resolve_video(conn, asset_id)
     except (LookupError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)
@@ -167,6 +211,12 @@ def main(argv: list[str] | None = None) -> int:
     print(format_report(
         report, asset_id=asset_id, display_name=display_name, video=video, window=args.window
     ))
+    # When the run carries a transcript, also fold the editorial half in and print the
+    # unified headline score. evaluate_rough_cut re-runs the (cheap) visual decode internally
+    # at the same window, so the headline stays consistent with the report printed above.
+    if words and boundaries:
+        quality = evaluate_rough_cut(video, boundaries, words, window=args.window)
+        print(format_quality(quality, n_words=len(words)))
     return 0
 
 

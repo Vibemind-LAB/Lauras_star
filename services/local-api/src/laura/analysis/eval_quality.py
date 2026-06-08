@@ -27,10 +27,6 @@ from pathlib import Path
 from .editorial import Word, editorial_metrics
 from .eval_cut import DEFAULT_WINDOW, CutEvalReport, FrameLoader, evaluate_boundaries
 
-# Editorial alignment window default mirrors ``editorial.DEFAULT_WINDOW`` (~0.4s @ 30fps); kept
-# as a separate symbol so the visual and editorial windows can diverge per call.
-DEFAULT_EDITORIAL_WINDOW = 12
-
 
 @dataclass(frozen=True)
 class RoughCutQuality:
@@ -55,7 +51,6 @@ def evaluate_rough_cut(
     words: list[Word],
     *,
     window: int = DEFAULT_WINDOW,
-    editorial_window: int = DEFAULT_EDITORIAL_WINDOW,
     w_visual: float = 0.6,
     w_editorial: float = 0.4,
     frame_loader: FrameLoader | None = None,
@@ -71,10 +66,12 @@ def evaluate_rough_cut(
       normalised to sum to 1, so the caller may pass any non-negative pair (defaults 0.6 / 0.4 —
       a great cut is both frame-exact and not mid-word).
 
-    ``window`` is the visual search half-window; ``editorial_window`` is accepted for symmetry with
-    the alignment stage (the metric itself is window-free, so it is currently informational only).
-    ``frame_loader`` is the visual IO seam forwarded to ``evaluate_boundaries``; when ``None`` the
-    default ffmpeg loader is used, so tests can stub the visual half end-to-end.
+    ``window`` is the visual search half-window forwarded to ``evaluate_boundaries``. There is no
+    editorial window here on purpose: ``editorial_metrics`` measures each cut's distance to the
+    *nearest* editorial-safe frame with no cap, so it is genuinely window-free — a window only
+    belongs to the alignment stage (:func:`laura.analysis.editorial.align_cut`), which is a separate
+    call. ``frame_loader`` is the visual IO seam forwarded to ``evaluate_boundaries``; when ``None``
+    the default ffmpeg loader is used, so tests can stub the visual half end-to-end.
 
     Raises ``ValueError`` if both weights are non-positive (the blend would be undefined).
     """
