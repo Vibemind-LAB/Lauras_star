@@ -455,3 +455,21 @@ class RenderExportOut(BaseModel):
     size_bytes: int | None = None
     error: str | None = None
     created_at: str | None = None
+
+
+# --- sequence (stage 5) ------------------------------------------------------
+class SequenceItemOut(BaseModel):
+    id: str
+    scene_id: str
+    scene_name: str
+    order_index: int
+
+
+class SequenceOut(BaseModel):
+    timeline_id: str
+    project_id: str
+    items: list[SequenceItemOut] = Field(default_factory=list)
+
+
+class SetSequenceScenesRequest(BaseModel):
+    scene_ids: list[str]
