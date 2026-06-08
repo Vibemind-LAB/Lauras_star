@@ -24,12 +24,13 @@ from ..editing.operations import (
     split_clip,
     trim_clip,
 )
+from ..editing.otio_sync import build_model
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
 from ..interchange.fcpx_xml import timeline_to_fcpx_xml
 from ..interchange.otio_io import otio_string_to_timeline, timeline_to_otio_string
-from ..interchange.timeline import Timeline, timeline_from_rows
+from ..interchange.timeline import Timeline
 from ..interchange.validate import validate_export
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
@@ -81,20 +82,7 @@ def _timeline_out(db: Database, row: dict[str, Any]) -> TimelineOut:
 
 
 def _build_model(db: Database, timeline_row: dict[str, Any]) -> Timeline:
-    project = repos.get_project(db, timeline_row["project_id"])
-    assert project is not None
-    clip_rows = repos.list_timeline_clips(db, timeline_row["id"])
-    assets = {
-        aid: a
-        for aid in {c["asset_id"] for c in clip_rows}
-        if (a := repos.get_asset(db, aid)) is not None
-    }
-    speakers = {
-        sid: s
-        for sid in {c["speaker_id"] for c in clip_rows if c.get("speaker_id")}
-        if (s := repos.get_speaker(db, sid)) is not None
-    }
-    return timeline_from_rows(timeline_row, clip_rows, project, assets, speakers)
+    return build_model(db, timeline_row)
 
 
 @router.post(
