@@ -13,12 +13,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from ..db import repos
 from ..db.database import Database
 from ..scenes.grouping import group_into_scenes
+from ..scenes.materialize import materialize_scene
 from .models import (
+    ClipOut,
     GenerateScenesRequest,
     MergeScenesRequest,
     RenameSceneRequest,
     SceneOut,
     SplitSceneRequest,
+    TimelineOut,
 )
 from .security import require_token
 
@@ -152,3 +155,24 @@ def rename_scene(scene_id: str, body: RenameSceneRequest, request: Request) -> S
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)
+
+
+def _timeline_out(db: Database, row: dict[str, Any]) -> TimelineOut:
+    clips = [ClipOut(**c) for c in repos.list_timeline_clips(db, row["id"])]
+    return TimelineOut(
+        id=row["id"],
+        project_id=row["project_id"],
+        name=row["name"],
+        kind=row["kind"],
+        created_at=row["created_at"],
+        clips=clips,
+    )
+
+
+@router.post("/scenes/{scene_id}/open", response_model=TimelineOut)
+def open_scene(scene_id: str, request: Request) -> TimelineOut:
+    db = _db(request)
+    scene = repos.get_scene(db, scene_id)
+    if scene is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
+    return _timeline_out(db, materialize_scene(db, scene))

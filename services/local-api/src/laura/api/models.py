@@ -414,6 +414,9 @@ class SceneOut(BaseModel):
     order_index: int
     seq_in_frame: int
     seq_out_frame_exclusive: int
+    scene_timeline_id: str | None = None
+    music_asset_id: str | None = None
+    music_gain_percent: int = 100
 
 
 class GenerateScenesRequest(BaseModel):
