@@ -14,6 +14,7 @@ import {
 import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ExportView } from "./components/ExportView";
+import { FineCutView } from "./components/FineCutView";
 import { ImportBar } from "./components/ImportBar";
 import { ImportProgress } from "./components/ImportProgress";
 import { ImportView } from "./components/ImportView";
@@ -394,7 +395,20 @@ export function App(): ReactElement {
             />
           )}
 
-          {(stage === "finecut" || stage === "assemble") && (
+          {stage === "finecut" && client && (
+            <FineCutView
+              client={client}
+              asset={detailAsset}
+              roughCutId={roughCut?.id ?? null}
+              segments={analysis.segments}
+              currentFrame={currentFrame}
+              seek={seek}
+              onSeek={seekToFrame}
+              onFrame={(f) => setCurrentFrame(f)}
+            />
+          )}
+
+          {stage === "assemble" && (
             <>
               <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
                 {/* Library: projects + media */}
