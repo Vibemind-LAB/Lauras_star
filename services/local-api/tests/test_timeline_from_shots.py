@@ -95,6 +95,94 @@ def test_from_shots_fills_empty_timeline_but_refuses_non_empty(tmp_path: Path) -
         client.__exit__(None, None, None)
 
 
+def test_from_shots_aligns_clip_in_to_word_gap(tmp_path: Path) -> None:
+    """A shot boundary that bisects a spoken word is snapped to the nearest word gap, and
+    the two clips stay source-contiguous and end-exclusive after the move."""
+    client, db, project, asset = _setup(tmp_path)
+    try:
+        run = repos.create_analysis_run(
+            db, asset_id=asset["id"], pipeline_version="ed", config={"stages": {}}
+        )
+        # Two source-contiguous shots sharing a cut at frame 50.
+        repos.insert_shots(
+            db, asset_id=asset["id"], run_id=run["id"],
+            shots=[
+                {"src_in_frame": 0, "src_out_frame_exclusive": 50, "method": "t"},
+                {"src_in_frame": 50, "src_out_frame_exclusive": 120, "method": "t"},
+            ],
+        )
+        # Transcript: a silence ends at frame 48, then a word [48,60) straddles the cut at 50.
+        repos.insert_segment_with_words(
+            db, asset_id=asset["id"], run_id=run["id"], speaker_id=None,
+            segment={"start_sample": 0, "end_sample": 1, "start_frame": 20,
+                     "end_frame": 75, "text": "alpha straddle omega"},
+            words=[
+                {"idx": 0, "start_sample": 0, "end_sample": 1,
+                 "start_frame": 20, "end_frame": 40, "text": "alpha"},
+                {"idx": 1, "start_sample": 1, "end_sample": 2,
+                 "start_frame": 48, "end_frame": 60, "text": "straddle"},  # covers frame 50
+                {"idx": 2, "start_sample": 2, "end_sample": 3,
+                 "start_frame": 60, "end_frame": 75, "text": "omega"},
+            ],
+        )
+        resp = client.post(
+            f"/projects/{project['id']}/timelines/from-shots",
+            json={"asset_id": asset["id"]},  # align_editorial defaults to True
+        )
+        assert resp.status_code == 201, resp.text
+        clips = resp.json()["timeline"]["clips"]
+        # The shared cut moved off frame 50 (mid-word) onto the gap edge 48.
+        assert [(c["src_in_frame"], c["src_out_frame_exclusive"]) for c in clips] == [
+            (0, 48), (48, 120),
+        ]
+        # Sequence repacked back-to-back, contiguous and end-exclusive.
+        assert [(c["seq_in_frame"], c["seq_out_frame_exclusive"]) for c in clips] == [
+            (0, 48), (48, 120),
+        ]
+        for a, b in zip(clips, clips[1:], strict=False):
+            assert a["seq_out_frame_exclusive"] == b["seq_in_frame"]
+        # First clip's start (frame 0) is never touched.
+        assert clips[0]["src_in_frame"] == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_from_shots_align_editorial_false_keeps_visual_cut(tmp_path: Path) -> None:
+    """With ``align_editorial=False`` the visual frame is kept even when a word straddles it."""
+    client, db, project, asset = _setup(tmp_path)
+    try:
+        run = repos.create_analysis_run(
+            db, asset_id=asset["id"], pipeline_version="ed2", config={"stages": {}}
+        )
+        repos.insert_shots(
+            db, asset_id=asset["id"], run_id=run["id"],
+            shots=[
+                {"src_in_frame": 0, "src_out_frame_exclusive": 50, "method": "t"},
+                {"src_in_frame": 50, "src_out_frame_exclusive": 120, "method": "t"},
+            ],
+        )
+        repos.insert_segment_with_words(
+            db, asset_id=asset["id"], run_id=run["id"], speaker_id=None,
+            segment={"start_sample": 0, "end_sample": 1, "start_frame": 48,
+                     "end_frame": 60, "text": "straddle"},
+            words=[
+                {"idx": 0, "start_sample": 0, "end_sample": 1,
+                 "start_frame": 48, "end_frame": 60, "text": "straddle"},
+            ],
+        )
+        resp = client.post(
+            f"/projects/{project['id']}/timelines/from-shots",
+            json={"asset_id": asset["id"], "align_editorial": False},
+        )
+        assert resp.status_code == 201, resp.text
+        clips = resp.json()["timeline"]["clips"]
+        assert [(c["src_in_frame"], c["src_out_frame_exclusive"]) for c in clips] == [
+            (0, 50), (50, 120),
+        ]
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_from_shots_422_when_no_analysis_run(tmp_path: Path) -> None:
     client, _db, project, asset = _setup(tmp_path)
     try:

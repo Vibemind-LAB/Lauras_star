@@ -411,6 +411,23 @@ def get_transcript(db: Database, asset_id: str, run_id: str) -> list[dict[str, A
         return out
 
 
+def list_words_for_run(db: Database, asset_id: str, run_id: str) -> list[dict[str, Any]]:
+    """All transcript words for an asset+run, ordered by source ``start_frame``.
+
+    Flat list across segments (the segment grouping is irrelevant for editorial cut
+    alignment, which only needs the word timings). Empty when the run has no transcript.
+    """
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT w.* FROM transcript_words w "
+            "JOIN transcript_segments s ON s.id = w.segment_id "
+            "WHERE s.asset_id=? AND s.analysis_run_id=? "
+            "ORDER BY w.start_frame, w.end_frame",
+            (asset_id, run_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_speaker(db: Database, speaker_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM speakers WHERE id=?", (speaker_id,)).fetchone()

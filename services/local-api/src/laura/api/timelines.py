@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
 from .. import audit
+from ..analysis.editorial import Word, align_cut
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
@@ -180,6 +181,49 @@ def import_timeline(
     )
 
 
+def _align_rows_editorial(
+    rows: list[dict[str, Any]], words: list[Word], *, window: int
+) -> None:
+    """Stage 2: nudge each clip's source IN onto a transcript word-gap, in place.
+
+    For every clip after the first, its ``src_in_frame`` is the cut between it and the
+    previous clip. ``align_cut`` snaps that frame to the nearest editorial-safe point (a
+    silence between words, or a word edge) within ``window``. The match is applied to BOTH
+    sides of the cut only when the two clips are truly contiguous in the source
+    (``prev.src_out_frame_exclusive == cur.src_in_frame``) — otherwise the cut sits across a
+    source gap and only the current clip's IN is moved, never inventing source frames.
+
+    The very first clip's start (typically source frame 0) is never touched. After all IN
+    frames settle, the sequence is repacked back-to-back from the new source lengths so clips
+    stay contiguous and end-exclusive on the timeline. Empty ``words`` or no reachable gap
+    leaves a cut exactly where the visual stage put it — editorial only ever refines.
+    """
+    if not words or window <= 0:
+        return
+    for i in range(1, len(rows)):
+        cur = rows[i]
+        prev = rows[i - 1]
+        cut = cur["src_in_frame"]
+        aligned, _kind = align_cut(cut, words, window=window)
+        if aligned == cut:
+            continue
+        # Keep both source ranges non-empty; skip a move that would collapse a clip.
+        if aligned <= prev["src_in_frame"] or aligned >= cur["src_out_frame_exclusive"]:
+            continue
+        contiguous = prev["src_out_frame_exclusive"] == cut
+        cur["src_in_frame"] = aligned
+        if contiguous:
+            prev["src_out_frame_exclusive"] = aligned
+
+    # Repack the sequence from the (possibly changed) source lengths: contiguous, end-exclusive.
+    offset = rows[0]["seq_in_frame"] if rows else 0
+    for row in rows:
+        length = row["src_out_frame_exclusive"] - row["src_in_frame"]
+        row["seq_in_frame"] = offset
+        row["seq_out_frame_exclusive"] = offset + length
+        offset += length
+
+
 @router.post(
     "/projects/{project_id}/timelines/from-shots",
     response_model=FromShotsOut,
@@ -263,6 +307,13 @@ def timeline_from_shots(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "no shots left after filtering"
         )
+
+    if body.align_editorial:
+        word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
+        words = [
+            Word(start_frame=w["start_frame"], end_frame=w["end_frame"]) for w in word_rows
+        ]
+        _align_rows_editorial(rows, words, window=body.editorial_window)
 
     if body.timeline_id is not None:
         target = repos.get_timeline(db, body.timeline_id)

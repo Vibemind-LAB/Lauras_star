@@ -188,6 +188,8 @@ class FromShotsRequest(BaseModel):
     drop_duplicates: bool | None = None
     drop_blur: bool | None = None
     merge_min_frames: int = Field(default=0, ge=0)
+    align_editorial: bool = True        # snap clip cuts to transcript word-gaps (Stage 2)
+    editorial_window: int = Field(default=12, ge=0)  # max frames a cut may move (~0.4s@30fps)
 
 
 class DroppedShot(BaseModel):
