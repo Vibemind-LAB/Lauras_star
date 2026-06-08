@@ -9,6 +9,7 @@ from typing import Any
 from ..db import repos
 from ..editing.otio_sync import resolve_clip_rows
 from ..jobs.runner import JobContext, JobHandler
+from ..sequences.music import sequence_music_tracks
 from .mp4 import render_clips_mp4
 
 
@@ -29,8 +30,9 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         repos.set_export_error(ctx.db, export_id, "project not found")
         raise ValueError("project not found")
 
+    clip_rows = resolve_clip_rows(ctx.db, tl)
     clips: list[tuple[Path, int, int]] = []
-    for c in resolve_clip_rows(ctx.db, tl):
+    for c in clip_rows:
         a = repos.get_asset(ctx.db, c["asset_id"])
         if a is None:
             repos.set_export_error(ctx.db, export_id, f"asset not found: {c['asset_id']}")
@@ -41,12 +43,30 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         repos.set_export_error(ctx.db, export_id, "timeline has no clips")
         raise ValueError("no clips")
 
-    music: tuple[Path, int] | None = None
-    scene = repos.get_scene_by_timeline(ctx.db, exp["timeline_id"])
-    if scene is not None and scene.get("music_asset_id"):
-        masset = repos.get_asset(ctx.db, scene["music_asset_id"])
-        if masset is not None:
-            music = (Path(masset["source_path"]), int(scene["music_gain_percent"]))
+    # Build per-track music list:
+    # - sequence timeline  → walk every scene; each with music contributes one track
+    #   at its place in the assembled sequence.
+    # - scene timeline     → at most one track covering the whole scene.
+    # - other kinds        → no music.
+    music_tracks: list[tuple[Path, int, int, int]] = []
+    if tl["kind"] == "sequence":
+        music_tracks = sequence_music_tracks(ctx.db, exp["timeline_id"])
+    else:
+        scene = repos.get_scene_by_timeline(ctx.db, exp["timeline_id"])
+        if scene is not None and scene.get("music_asset_id"):
+            masset = repos.get_asset(ctx.db, scene["music_asset_id"])
+            if masset is not None:
+                # Scene occupies [0, total_frames) — total = max seq_out across clip rows.
+                total_frames = max(
+                    (c["seq_out_frame_exclusive"] for c in clip_rows),
+                    default=0,
+                )
+                music_tracks = [(
+                    Path(masset["source_path"]),
+                    0,
+                    total_frames,
+                    int(scene["music_gain_percent"]),
+                )]
 
     dest = Path(project["workspace_root"]) / "exports" / f"{export_id}.mp4"
     try:
@@ -54,7 +74,7 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             clips, dest,
             rate_num=project["sequence_rate_num"],
             rate_den=project["sequence_rate_den"],
-            music=music,
+            music_tracks=music_tracks if music_tracks else None,
         )
         size_bytes = os.path.getsize(dest)
     except Exception as e:  # noqa: BLE001 - persist the failure, drop partial output, re-raise

@@ -12,13 +12,22 @@ def render_clips_mp4(
     *,
     rate_num: int,
     rate_den: int,
-    music: tuple[Path, int] | None = None,
+    music_tracks: list[tuple[Path, int, int, int]] | None = None,
 ) -> None:
     """Trim each clip by frame range (end-exclusive) and concat into one MP4.
 
-    With ``music`` (path, gain_percent) a single audio track is mixed at that
-    gain, trimmed to the video length. Without ``music`` the output is
-    video-only (unchanged — backward compatible)."""
+    ``music_tracks`` is an optional list of
+    ``(path, seq_in_frame, seq_out_frame_exclusive, gain_percent)`` tuples.
+    Each track is mixed into the output audio at the specified position:
+
+    * ``seq_in_frame`` / ``seq_out_frame_exclusive`` define the window inside
+      the assembled sequence where the track should be audible (integer frames,
+      end-exclusive — consistent with the frame-accuracy invariant).
+    * ``gain_percent`` is applied as a ``volume`` filter (100 = unity gain).
+
+    With no tracks (or ``music_tracks=None``) the output is video-only
+    (unchanged — backward compatible).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
     filt: list[str] = []
@@ -31,17 +40,42 @@ def render_clips_mp4(
         )
     concat_in = "".join(f"[v{i}]" for i in range(len(clips)))
     parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0[out]"
+
     audio_maps: list[str] = []
-    if music is not None:
-        music_path, gain_percent = music
-        total = sum(fout - fin for _, fin, fout in clips)
-        dur = total * rate_den / rate_num
-        inputs += ["-i", str(music_path)]  # input index == len(clips)
-        parts += (
-            f";[{len(clips)}:a]volume={gain_percent / 100},"
-            f"atrim=0:{dur},asetpts=PTS-STARTPTS[aout]"
-        )
+    tracks = music_tracks or []
+    if tracks:
+        n_vid = len(clips)
+        audio_labels: list[str] = []
+        for i, (music_path, seq_in, seq_out, gain_percent) in enumerate(tracks):
+            idx = n_vid + i
+            inputs += ["-i", str(music_path)]
+            duration = (seq_out - seq_in) * rate_den / rate_num
+            start_ms = seq_in * rate_den / rate_num * 1000
+            # Build the per-track filter chain:
+            #   volume  — scale the gain
+            #   atrim   — cut the track to at most the scene window duration
+            #   adelay  — push it to the right start position in the mix
+            #   asetpts — reset PTS after the trim so adelay gets a clean base
+            label = f"[a{i}]"
+            parts += (
+                f";[{idx}:a]"
+                f"volume={gain_percent / 100},"
+                f"atrim=0:{duration},"
+                f"asetpts=PTS-STARTPTS,"
+                f"adelay={start_ms:.6f}|{start_ms:.6f}"
+                f"{label}"
+            )
+            audio_labels.append(label)
+
+        if len(audio_labels) == 1:
+            # Single track — route directly to [aout] (no amix needed).
+            parts += f";{audio_labels[0]}anull[aout]"
+        else:
+            joined = "".join(audio_labels)
+            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0[aout]"
+
         audio_maps = ["-map", "[aout]", "-c:a", "aac"]
+
     run_ffmpeg([
         *inputs,
         "-filter_complex", parts,
