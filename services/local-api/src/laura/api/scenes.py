@@ -20,6 +20,7 @@ from .models import (
     MergeScenesRequest,
     RenameSceneRequest,
     SceneOut,
+    SetSceneMusicRequest,
     SplitSceneRequest,
     TimelineOut,
 )
@@ -176,3 +177,29 @@ def open_scene(scene_id: str, request: Request) -> TimelineOut:
     if scene is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
     return _timeline_out(db, materialize_scene(db, scene))
+
+
+@router.put("/scenes/{scene_id}/music", response_model=SceneOut)
+def set_scene_music(scene_id: str, body: SetSceneMusicRequest, request: Request) -> SceneOut:
+    db = _db(request)
+    scene = repos.get_scene(db, scene_id)
+    if scene is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
+    if repos.get_asset(db, body.asset_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    repos.set_scene_music(db, scene_id, body.asset_id, body.gain_percent)
+    updated = repos.get_scene(db, scene_id)
+    assert updated is not None
+    return SceneOut(**updated)
+
+
+@router.delete("/scenes/{scene_id}/music", response_model=SceneOut)
+def clear_scene_music(scene_id: str, request: Request) -> SceneOut:
+    db = _db(request)
+    scene = repos.get_scene(db, scene_id)
+    if scene is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
+    repos.clear_scene_music(db, scene_id)
+    updated = repos.get_scene(db, scene_id)
+    assert updated is not None
+    return SceneOut(**updated)

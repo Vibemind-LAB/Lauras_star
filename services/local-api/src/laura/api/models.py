@@ -436,6 +436,11 @@ class RenameSceneRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class SetSceneMusicRequest(BaseModel):
+    asset_id: str
+    gain_percent: int = Field(default=100, ge=0, le=400)
+
+
 class RenderRequest(BaseModel):
     format: str = "mp4"
 
