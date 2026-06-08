@@ -855,3 +855,8 @@ def replace_scenes(
 def update_scene_name(db: Database, scene_id: str, name: str) -> None:
     with db.transaction() as conn:
         conn.execute("UPDATE scenes SET name=? WHERE id=?", (name, scene_id))
+
+
+def set_scene_timeline(db: Database, scene_id: str, timeline_id: str) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE scenes SET scene_timeline_id=? WHERE id=?", (timeline_id, scene_id))
