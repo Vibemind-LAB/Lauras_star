@@ -30,6 +30,7 @@ _STAGE_QUEUE: dict[str, str] = {
     "analysis.run": QUEUE_ANALYSIS_CPU,
     "analysis.align": QUEUE_ANALYSIS_GPU,
     "analysis.embed": QUEUE_ANALYSIS_GPU,
+    "export.render": QUEUE_EXPORT,
 }
 
 
