@@ -207,6 +207,12 @@ export interface TimelineClip {
   origin_word_end_id: string | null;
   speed_num: number;
   speed_den: number;
+  /**
+   * Signed per-clip LEADING-edge audio-vs-video offset in SAMPLES (invariant #3); 0 = hard cut.
+   * `> 0` = L-cut (audio starts after the picture cut), `< 0` = J-cut (audio before). Drawn on the
+   * A1 lane as the audio block's leading-edge shift, and set by the `set_audio_offset` op.
+   */
+  audio_offset_samples: number;
 }
 
 export interface Timeline {
@@ -228,7 +234,8 @@ export interface Operation {
     | "set_speed"
     | "split"
     | "trim"
-    | "move";
+    | "move"
+    | "set_audio_offset";
   asset_id?: string;
   src_in_frame?: number;
   src_out_frame_exclusive?: number;
@@ -243,6 +250,11 @@ export interface Operation {
   new_src_in_frame?: number;
   new_src_out_frame_exclusive?: number;
   to_seq_frame?: number;
+  /**
+   * set_audio_offset: the clip-head L/J audio offset in FRAMES (the UI's native drag unit). The
+   * backend projects it onto canonical samples (invariant #3); `> 0` = L-cut, `< 0` = J-cut.
+   */
+  audio_offset_frames?: number;
 }
 
 export interface Segment {

@@ -65,7 +65,7 @@ describe("RoughCutView", () => {
     const rc: Timeline = { ...emptyRc, clips: [
       { id: "c1", asset_id: "a", src_in_frame: 0, src_out_frame_exclusive: 30, seq_in_frame: 0,
         seq_out_frame_exclusive: 30, lane: 0, speaker_id: null, origin_word_start_id: null,
-        origin_word_end_id: null, speed_num: 1, speed_den: 1 }] };
+        origin_word_end_id: null, speed_num: 1, speed_den: 1, audio_offset_samples: 0 }] };
     const { getByText } = render(
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={rc}
         segments={[]} onRoughCutChange={vi.fn().mockResolvedValue(undefined)}

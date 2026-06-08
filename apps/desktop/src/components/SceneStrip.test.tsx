@@ -9,7 +9,8 @@ const asset = { id: "a", rate_num: 30, rate_den: 1 } as unknown as Asset;
 const clip = (id: string, sin: number, sout: number): TimelineClip =>
   ({ id, asset_id: "a", src_in_frame: sin, src_out_frame_exclusive: sout,
      seq_in_frame: sin, seq_out_frame_exclusive: sout, lane: 0, speaker_id: null,
-     origin_word_start_id: null, origin_word_end_id: null, speed_num: 1, speed_den: 1 });
+     origin_word_start_id: null, origin_word_end_id: null, speed_num: 1, speed_den: 1,
+     audio_offset_samples: 0 });
 const scenes: Scene[] = [
   { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Szene 1",
     order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 60 },

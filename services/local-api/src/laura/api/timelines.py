@@ -28,6 +28,7 @@ from ..editing.operations import (
     lift_range,
     move_clip,
     ordered,
+    set_audio_offset,
     set_speed,
     split_clip,
     trim_clip,
@@ -786,7 +787,12 @@ def _require(value: Any, message: str) -> Any:
     return value
 
 
-def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> list[EditClip]:
+def _apply(
+    db: Database,
+    current: list[EditClip],
+    body: OperationRequest,
+    timeline_row: dict[str, Any],
+) -> list[EditClip]:
     op = body.op
     if op == "append_from_words":
         w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
@@ -856,6 +862,32 @@ def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> lis
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
+    if op == "set_audio_offset":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        frames = _require(body.audio_offset_frames, "audio_offset_frames required")
+        # Project the UI's frame delta onto the canonical sample offset with the SAME math the
+        # accept endpoint uses (the authoritative project sequence rate), so a drag and an accepted
+        # recommendation land identically on the audio_offset_samples column (invariant #3).
+        project = repos.get_project(db, timeline_row["project_id"])
+        if project is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+        sample_rate = timeline_audio_sample_rate(db, timeline_row)
+        if sample_rate is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "timeline has no audio sample rate; cannot set a sample-canonical offset",
+            )
+        rate_num = project["sequence_rate_num"]
+        rate_den = project["sequence_rate_den"]
+        samples = frame_to_sample(frames, sample_rate, rate_num, rate_den)
+        samples_per_frame = frame_to_sample(1, sample_rate, rate_num, rate_den)
+        try:
+            return set_audio_offset(
+                current, at, samples, samples_per_frame=samples_per_frame
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
     if op == "delete_words":
         w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
         w1 = repos.get_word(db, _require(body.word_end_id, "word_end_id required"))
@@ -886,7 +918,7 @@ def apply_operation(timeline_id: str, body: OperationRequest, request: Request) 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
 
     current = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
-    new_clips = _apply(db, current, body)
+    new_clips = _apply(db, current, body, row)
 
     repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
     fresh = repos.get_timeline(db, timeline_id)

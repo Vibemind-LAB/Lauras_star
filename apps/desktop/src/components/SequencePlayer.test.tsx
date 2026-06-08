@@ -21,6 +21,7 @@ const clip1: TimelineClip = {
   origin_word_end_id: null,
   speed_num: 1,
   speed_den: 1,
+  audio_offset_samples: 0,
 };
 
 const clip2: TimelineClip = {
@@ -36,6 +37,7 @@ const clip2: TimelineClip = {
   origin_word_end_id: null,
   speed_num: 1,
   speed_den: 1,
+  audio_offset_samples: 0,
 };
 
 const asset1: Asset = {

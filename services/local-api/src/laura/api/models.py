@@ -332,7 +332,9 @@ class ValidateOut(BaseModel):
 
 
 class OperationRequest(BaseModel):
-    op: str  # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move
+    # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move|
+    # delete_words|set_audio_offset
+    op: str
     asset_id: str | None = None
     src_in_frame: int | None = None
     src_out_frame_exclusive: int | None = None
@@ -347,6 +349,13 @@ class OperationRequest(BaseModel):
     new_src_in_frame: int | None = None          # trim: new source in point
     new_src_out_frame_exclusive: int | None = None  # trim: new source out point
     to_seq_frame: int | None = None              # move: target sequence position
+    # set_audio_offset: the LEADING-edge L/J audio offset of the clip at at_seq_frame, expressed in
+    # FRAMES (the UI's native drag unit). The backend projects it onto canonical samples via the
+    # project sequence rate (invariant #3), mirroring the accept endpoint; > 0 = L-cut (audio
+    # later), < 0 = J-cut (audio earlier), |offset| < 1 frame is clamped to a hard cut.
+    audio_offset_frames: int | None = Field(
+        default=None, ge=-100_000, le=100_000
+    )
 
 
 class ClipIn(BaseModel):

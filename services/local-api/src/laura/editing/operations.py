@@ -343,3 +343,42 @@ def trim_clip(
     # at this cut, so the leading audio offset is PRESERVED (``replace`` above keeps it). Normalise
     # only re-asserts the first-clip-0 invariant.
     return _normalize_offsets(result)
+
+
+def set_audio_offset(
+    clips: list[EditClip],
+    at_seq_frame: int,
+    audio_offset_samples: int,
+    *,
+    samples_per_frame: int,
+) -> list[EditClip]:
+    """Set the LEADING-edge L/J audio offset (samples) of the clip starting at ``at_seq_frame``.
+
+    This is the editing op behind the manual 2-lane drag (m3): it writes the clip's
+    ``audio_offset_samples`` HEAD offset directly from a UI gesture, going through the SAME
+    ``apply_operation`` snapshot path as trim / move / split, so undo/redo round-trips it. It
+    mirrors what the accept endpoint („Übernehmen") persists, but as a composable op rather than a
+    wholesale re-post — a drag and an accepted recommendation both land on one
+    ``audio_offset_samples`` column, so they reconcile (last write wins).
+
+    Geometry is untouched: only the head offset changes (the picture stays frame-exact, invariant
+    #1; the audio relationship is canonical in samples, invariant #3). Invariants enforced here:
+
+    * the clip MUST start at ``at_seq_frame`` (else :class:`ValueError`, surfaced as 422);
+    * a sub-perception offset ``|offset| < 1 frame`` (``< samples_per_frame``) is clamped to ``0``
+      (a hard cut) — mirrors the accept endpoint's ``|offset| <= 1`` hard rule at sample resolution;
+    * the sequence-first clip has no predecessor, so its leading cut is always ``0``: setting an
+      offset on it is a no-op (``_normalize_offsets`` re-asserts it).
+    """
+    target = next((c for c in ordered(clips) if c.seq_in_frame == at_seq_frame), None)
+    if target is None:
+        raise ValueError(f"no clip starts at seq frame {at_seq_frame}")
+    if samples_per_frame <= 0:
+        raise ValueError("samples_per_frame must be positive")
+    # Hard-clamp a sub-perception drag (within one frame either side) back to a hard cut.
+    offset = 0 if abs(audio_offset_samples) < samples_per_frame else int(audio_offset_samples)
+    result = [
+        replace(c, audio_offset_samples=offset) if c is target else c for c in clips
+    ]
+    # If the target is the sequence head, normalise zeroes it again (first-clip-0 is mandatory).
+    return _normalize_offsets(result)
