@@ -12,6 +12,7 @@ from .. import audit
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.joint import bias_to_weights, joint_place
+from ..analysis.semantic import sentence_end_frames, speaker_turn_frames
 from ..analysis.silence import detect_silence
 from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
@@ -235,6 +236,8 @@ def _align_rows_editorial(
     w_visual: float = 0.6,
     w_editorial: float = 0.4,
     silence: list[tuple[int, int]] | None = None,
+    sentence_frames: set[int] | None = None,
+    speaker_frames: set[int] | None = None,
     video_path: Path | str | None = None,
     total_frames: int | None = None,
     frame_loader: FrameLoader = load_gray_frames_ffmpeg,
@@ -255,6 +258,11 @@ def _align_rows_editorial(
     inside a silence scores above a mere word edge, so cuts prefer genuine pauses (breaths,
     inter-sentence beats) over ASR word boundaries. With no silence info the placement is exactly
     the word-gap behaviour.
+
+    ``sentence_frames`` / ``speaker_frames`` are optional source-frame sets of sentence boundaries
+    and diarization speaker turns (from :mod:`laura.analysis.semantic`). A candidate cut on a
+    speaker turn or sentence end outscores a bare silence / word edge, so cuts prefer natural
+    narrative seams. With neither (no punctuation, no diarization) placement is unchanged.
 
     The match is applied to BOTH sides of the cut only when the two clips are truly contiguous in
     the source (``prev.src_out_frame_exclusive == cur.src_in_frame``) — otherwise the cut sits
@@ -280,6 +288,8 @@ def _align_rows_editorial(
             w_visual=w_visual,
             w_editorial=w_editorial,
             silence=silence,
+            sentence_frames=sentence_frames,
+            speaker_frames=speaker_frames,
             video_path=video_path,
             total_frames=total_frames,
             frame_loader=frame_loader,
@@ -439,9 +449,23 @@ def timeline_from_shots(
     split_cuts: list[SplitCutOut] = []
     if body.align_editorial:
         word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
+        # Thread the stored per-word text (with any ASR punctuation) and the segment's diarization
+        # speaker label through the in-memory Word so semantic placement can find sentence ends and
+        # speaker turns — no new schema column. Both are graceful: NULL text/speaker -> no signal.
         words = [
-            Word(start_frame=w["start_frame"], end_frame=w["end_frame"]) for w in word_rows
+            Word(
+                start_frame=w["start_frame"],
+                end_frame=w["end_frame"],
+                text=w.get("text"),
+                speaker=w.get("speaker_label"),
+            )
+            for w in word_rows
         ]
+        # Compute the semantic frame sets once for this asset (like silence below): the source
+        # frames that end a sentence (".?!…" / long clause pause) and where the speaker changes.
+        # Empty when the transcript carries no punctuation / no diarization -> no behaviour change.
+        sentence_frames = sentence_end_frames(words)
+        speaker_frames = speaker_turn_frames(words)
         w_visual, w_editorial = bias_to_weights(body.cut_bias)
         video_path = _resolve_video_path(db, body.asset_id, asset)
         # Detect real audio silences once for this asset so cuts can prefer genuine pauses
@@ -455,6 +479,8 @@ def timeline_from_shots(
             w_visual=w_visual,
             w_editorial=w_editorial,
             silence=silence,
+            sentence_frames=sentence_frames,
+            speaker_frames=speaker_frames,
             video_path=video_path,
             total_frames=asset.get("duration_frames"),
         )

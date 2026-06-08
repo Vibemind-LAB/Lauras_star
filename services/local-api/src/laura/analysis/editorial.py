@@ -42,10 +42,18 @@ class Word:
 
     Spans the half-open range ``[start_frame, end_frame)``. ``end_frame`` is exclusive, so a
     cut exactly on ``start_frame`` or on ``end_frame`` sits *between* words, not inside one.
+
+    ``text`` and ``speaker`` are **optional** semantic enrichments (the spoken text — with any ASR
+    punctuation — and the diarization speaker label). They default to ``None`` so every existing
+    construction (``Word(start_frame=.., end_frame=..)``) keeps working unchanged; when present they
+    feed :mod:`laura.analysis.semantic` (sentence ends / speaker turns). ``None`` simply means "no
+    semantic signal", and placement degrades to the timing-only behaviour.
     """
 
     start_frame: int
     end_frame: int
+    text: str | None = None
+    speaker: str | None = None
 
 
 def _covering_word(cut_frame: int, words: Sequence[Word]) -> Word | None:
@@ -153,6 +161,8 @@ def editorial_metrics(
     words: list[Word],
     *,
     silence: list[tuple[int, int]] | None = None,
+    sentence_frames: set[int] | None = None,
+    speaker_frames: set[int] | None = None,
 ) -> dict[str, float]:
     """Editorial-quality eval over a set of cuts (the editorial analogue of cut-exactness).
 
@@ -164,20 +174,30 @@ def editorial_metrics(
       frame (0.0 when every cut is already clean).
     * ``pct_on_silence`` — share of cuts landing inside a detected **real audio silence** interval
       (the editor's ideal cut point). Only present when ``silence`` intervals are supplied.
+    * ``pct_on_sentence_end`` — share of cuts landing exactly on a **sentence-boundary** frame (the
+      end of a sentence). Only present when ``sentence_frames`` is supplied.
+    * ``pct_on_speaker_turn`` — share of cuts landing exactly on a **speaker-change** frame (a
+      diarization turn). Only present when ``speaker_frames`` is supplied.
 
     ``silence`` is an optional list of end-exclusive source-frame ranges ``[start, end)`` from
-    :func:`laura.analysis.silence.detect_silence`. When omitted, ``pct_on_silence`` is not
-    reported (the other figures are unchanged), so existing callers are unaffected.
+    :func:`laura.analysis.silence.detect_silence`. ``sentence_frames`` / ``speaker_frames`` are
+    optional source-frame sets from :func:`laura.analysis.semantic.sentence_end_frames` /
+    :func:`laura.analysis.semantic.speaker_turn_frames`. Each extra metric is reported only when its
+    input is supplied, so existing callers (passing none of them) are unaffected.
 
     With no cuts the percentages are 0.0; with no words there is nothing to bisect, so every cut
-    counts as clean and the mean distance is 0.0 (the metric is vacuously satisfied) — but
-    ``pct_on_silence`` is still measured against any supplied ``silence`` intervals.
+    counts as clean and the mean distance is 0.0 (the metric is vacuously satisfied) — but the
+    silence/sentence/speaker percentages are still measured against any supplied inputs.
     """
     n = len(cuts)
     if n == 0:
         metrics = {"pct_mid_word": 0.0, "pct_clean": 0.0, "mean_dist_to_word_gap": 0.0}
         if silence is not None:
             metrics["pct_on_silence"] = 0.0
+        if sentence_frames is not None:
+            metrics["pct_on_sentence_end"] = 0.0
+        if speaker_frames is not None:
+            metrics["pct_on_speaker_turn"] = 0.0
         return metrics
 
     if not words:
@@ -197,4 +217,8 @@ def editorial_metrics(
             1 for c in cuts if any(start <= c < end for start, end in silence)
         )
         metrics["pct_on_silence"] = on_silence / n
+    if sentence_frames is not None:
+        metrics["pct_on_sentence_end"] = sum(1 for c in cuts if c in sentence_frames) / n
+    if speaker_frames is not None:
+        metrics["pct_on_speaker_turn"] = sum(1 for c in cuts if c in speaker_frames) / n
     return metrics

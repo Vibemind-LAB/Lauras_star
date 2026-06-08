@@ -415,12 +415,16 @@ def list_words_for_run(db: Database, asset_id: str, run_id: str) -> list[dict[st
     """All transcript words for an asset+run, ordered by source ``start_frame``.
 
     Flat list across segments (the segment grouping is irrelevant for editorial cut
-    alignment, which only needs the word timings). Empty when the run has no transcript.
+    alignment, which only needs the word timings). Each row also carries the diarization
+    ``speaker_label`` of its segment (via the segment -> speaker join; ``NULL`` when the asset was
+    not diarized) so semantic placement can detect speaker turns without a per-word schema column.
+    Empty when the run has no transcript.
     """
     with db.connection() as conn:
         rows = conn.execute(
-            "SELECT w.* FROM transcript_words w "
+            "SELECT w.*, sp.label AS speaker_label FROM transcript_words w "
             "JOIN transcript_segments s ON s.id = w.segment_id "
+            "LEFT JOIN speakers sp ON sp.id = s.speaker_id "
             "WHERE s.asset_id=? AND s.analysis_run_id=? "
             "ORDER BY w.start_frame, w.end_frame",
             (asset_id, run_id),
