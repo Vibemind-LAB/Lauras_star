@@ -20,6 +20,7 @@ import { ImportBar } from "./components/ImportBar";
 import { ImportProgress } from "./components/ImportProgress";
 import { ImportView } from "./components/ImportView";
 import { InspectorPanel } from "./components/InspectorPanel";
+import { MediaSidebar } from "./components/MediaSidebar";
 import { NavRail } from "./components/NavRail";
 import { Player } from "./components/Player";
 import { RoughCutView } from "./components/RoughCutView";
@@ -382,6 +383,15 @@ export function App(): ReactElement {
 
       <div className="flex min-h-0 flex-1">
         <NavRail active={stage} onSelect={setStage} />
+
+        {client && (
+          <MediaSidebar
+            client={client}
+            assets={assets}
+            selectedAssetId={selectedAssetId}
+            onSelect={setSelectedAssetId}
+          />
+        )}
 
         <div className="flex min-h-0 flex-1 flex-col">
           {stage === "download" && (client ? (
