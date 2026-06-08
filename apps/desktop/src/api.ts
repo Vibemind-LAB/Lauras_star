@@ -76,7 +76,7 @@ export interface UrlImportOptions {
 }
 
 export interface ImportStatus {
-  phase: "queued" | "downloading" | "verifying" | "analyzing" | "ready" | "error";
+  phase: "queued" | "downloading" | "verifying" | "analyzing" | "ready" | "error" | "cancelled";
   downloaded_bytes: number | null;
   total_bytes: number | null;
   speed_bps: number | null;
@@ -401,6 +401,16 @@ export class LauraClient {
 
   retryImport(assetId: string): Promise<ImportAccepted> {
     return this.request<ImportAccepted>(`/assets/${assetId}/import-retry`, { method: "POST" });
+  }
+
+  async cancelImport(assetId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/assets/${assetId}/import-cancel`, {
+      method: "POST",
+      headers: { "X-Laura-Token": this.token },
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
   }
 
   getWaveform(assetId: string): Promise<Waveform> {

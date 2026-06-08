@@ -15,6 +15,7 @@ function DownloadCard({ client, asset }: { client: LauraClient; asset: Asset }):
       status={status}
       onClick={() => undefined}
       onRetry={() => void client.retryImport(asset.id)}
+      onCancel={() => void client.cancelImport(asset.id)}
     />
   );
 }

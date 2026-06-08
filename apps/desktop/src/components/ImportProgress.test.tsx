@@ -38,4 +38,55 @@ describe("ImportProgress", () => {
     const { container } = render(<ImportProgress status={st({ phase: "ready" })} onRetry={vi.fn()} />);
     expect(container.firstChild).toBeNull();
   });
+
+  it("shows Abbrechen button while downloading when onCancel provided", () => {
+    const onCancel = vi.fn();
+    render(
+      <ImportProgress
+        status={st({ phase: "downloading" })}
+        onRetry={vi.fn()}
+        onCancel={onCancel}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /abbrechen/i });
+    expect(btn).toBeTruthy();
+    fireEvent.click(btn);
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("shows Abbrechen button while queued when onCancel provided", () => {
+    const onCancel = vi.fn();
+    render(
+      <ImportProgress
+        status={st({ phase: "queued" })}
+        onRetry={vi.fn()}
+        onCancel={onCancel}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /abbrechen/i }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("does not show Abbrechen button when onCancel is not provided", () => {
+    render(
+      <ImportProgress
+        status={st({ phase: "downloading" })}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /abbrechen/i })).toBeNull();
+  });
+
+  it("shows Abgebrochen label and Retry button when cancelled", () => {
+    const onRetry = vi.fn();
+    render(
+      <ImportProgress
+        status={st({ phase: "cancelled" })}
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.getByText(/abgebrochen/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /erneut/i }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
 });

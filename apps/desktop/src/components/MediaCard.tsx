@@ -2,7 +2,7 @@ import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import type { ImportStatus } from "../api";
 import { ImportProgress } from "./ImportProgress";
 export function MediaCard({
-  title, meta, thumbnail, status, onClick, onRetry, menu,
+  title, meta, thumbnail, status, onClick, onRetry, onCancel, menu,
 }: {
   title: string;
   meta?: string;
@@ -10,6 +10,7 @@ export function MediaCard({
   status?: ImportStatus | null;
   onClick: () => void;
   onRetry: () => void;
+  onCancel?: () => void;
   menu?: ReactNode;
 }): ReactElement {
   const [src, setSrc] = useState<string | null>(typeof thumbnail === "string" ? thumbnail : null);
@@ -31,7 +32,7 @@ export function MediaCard({
         </button>
         {menu}
       </div>
-      {status && <div className="px-2 pb-2"><ImportProgress status={status} onRetry={onRetry} /></div>}
+      {status && <div className="px-2 pb-2"><ImportProgress status={status} onRetry={onRetry} onCancel={onCancel} /></div>}
     </div>
   );
 }

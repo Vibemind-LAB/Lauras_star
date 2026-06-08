@@ -10,16 +10,42 @@ const PHASE_LABEL: Record<ImportStatus["phase"], string> = {
   analyzing: "Analysiert…",
   ready: "Fertig",
   error: "Fehler",
+  cancelled: "Abgebrochen",
 };
+
+/** Phases where the import is still running and can be cancelled. */
+const ACTIVE_PHASES: ReadonlySet<ImportStatus["phase"]> = new Set([
+  "queued",
+  "downloading",
+  "verifying",
+  "analyzing",
+]);
 
 export function ImportProgress({
   status,
   onRetry,
+  onCancel,
 }: {
   status: ImportStatus;
   onRetry: () => void;
+  onCancel?: () => void;
 }): ReactElement | null {
   if (status.phase === "ready") return null;
+
+  if (status.phase === "cancelled") {
+    return (
+      <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+        <span>{PHASE_LABEL.cancelled}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="shrink-0 rounded bg-slate-700 px-2 py-0.5 text-slate-100 hover:bg-slate-600"
+        >
+          Erneut versuchen
+        </button>
+      </div>
+    );
+  }
 
   if (status.phase === "error") {
     return (
@@ -57,8 +83,20 @@ export function ImportProgress({
           style={{ width: pct != null ? `${pct}%` : "33%" }}
         />
       </div>
-      <div className="mt-0.5 text-[11px] text-slate-500">
-        {PHASE_LABEL[status.phase]} {detail && `· ${detail}`}
+      <div className="mt-0.5 flex items-center justify-between text-[11px] text-slate-500">
+        <span>
+          {PHASE_LABEL[status.phase]} {detail && `· ${detail}`}
+        </span>
+        {ACTIVE_PHASES.has(status.phase) && onCancel != null && (
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="Abbrechen"
+            className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-slate-500 hover:bg-slate-700 hover:text-slate-200"
+          >
+            ✕
+          </button>
+        )}
       </div>
     </div>
   );
