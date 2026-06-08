@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
+import { ExportView } from "./components/ExportView";
 import { ImportBar } from "./components/ImportBar";
 import { ImportProgress } from "./components/ImportProgress";
 import { ImportView } from "./components/ImportView";
@@ -615,11 +616,18 @@ export function App(): ReactElement {
             </>
           )}
 
-          {stage === "export" && (
-            <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
-              Export — kommt als nächste Stufe.
-            </div>
-          )}
+          {stage === "export" &&
+            (client ? (
+              <ExportView
+                client={client}
+                projectId={selectedProjectId}
+                timelineId={roughCut?.id ?? null}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+                Service offline — starte den lokalen Server.
+              </div>
+            ))}
         </div>
       </div>
     </div>
