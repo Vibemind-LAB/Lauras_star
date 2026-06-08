@@ -100,6 +100,9 @@ export interface Scene {
   order_index: number;
   seq_in_frame: number;
   seq_out_frame_exclusive: number;
+  scene_timeline_id?: string | null;
+  music_asset_id?: string | null;
+  music_gain_percent?: number;
 }
 
 export function hasFile(asset: Asset, kind: string): boolean {
@@ -529,6 +532,17 @@ export class LauraClient {
     return this.request<Scene>(`/scenes/${sceneId}`, {
       method: "PATCH",
       body: JSON.stringify({ name }),
+    });
+  }
+
+  openScene(sceneId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/scenes/${sceneId}/open`, { method: "POST" });
+  }
+
+  deleteWords(timelineId: string, wordStartId: string, wordEndId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}/operations`, {
+      method: "POST",
+      body: JSON.stringify({ op: "delete_words", word_start_id: wordStartId, word_end_id: wordEndId }),
     });
   }
 }
