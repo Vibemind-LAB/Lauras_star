@@ -58,6 +58,7 @@ export function TranscriptBar({
   onSeek,
   canAppend,
   onAppendSegment,
+  onDeleteWords,
 }: {
   client: LauraClient | null;
   assetId: string | null;
@@ -68,6 +69,9 @@ export function TranscriptBar({
   onSeek: (frame: number) => void;
   canAppend: boolean;
   onAppendSegment: (seg: Segment) => void;
+  /** When provided, each segment with words gets a ripple-delete affordance that passes
+   *  the segment's first and last word ids. Additive — existing callers are unaffected. */
+  onDeleteWords?: (wordStartId: string, wordEndId: string) => void;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
 
@@ -135,6 +139,18 @@ export function TranscriptBar({
                     className="ml-0.5 rounded bg-ink px-1 text-xs text-emerald-300 hover:bg-edge"
                   >
                     →
+                  </button>
+                )}
+                {onDeleteWords && seg.words.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onDeleteWords(seg.words[0].id, seg.words[seg.words.length - 1].id)
+                    }
+                    title="Segment ripple-löschen"
+                    className="ml-0.5 rounded bg-ink px-1 text-xs text-red-400 hover:bg-red-600/40"
+                  >
+                    ✂
                   </button>
                 )}{" "}
               </span>

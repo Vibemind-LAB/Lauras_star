@@ -47,9 +47,24 @@ async function waitForHealth(baseUrl: string, token: string, timeoutMs = 30000):
     try {
       const res = await fetch(`${baseUrl}/healthz`, { headers: { "X-Laura-Token": token } });
       if (res.ok) {
+        // /healthz is unauthenticated, so a *foreign* backend already holding this port
+        // answers it too — and then the renderer 401s on every real (authenticated) call.
+        // Verify this is actually our backend by making an authed request that must not 401.
+        const authed = await fetch(`${baseUrl}/projects`, {
+          headers: { "X-Laura-Token": token },
+        });
+        if (authed.status === 401) {
+          throw new Error(
+            `Port ${PORT} is already in use by another Laura backend (token mismatch). ` +
+              "Stop the other instance, then relaunch.",
+          );
+        }
         return;
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("token mismatch")) {
+        throw e; // a real conflict — don't keep polling a backend that isn't ours
+      }
       // not up yet — keep polling
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -67,6 +82,15 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
   const workspace = path.join(app.getPath("userData"), "workspace");
 
   const command = resolveServiceCommand();
+  // Packaged: point the backend at the bundled ffmpeg/ffprobe (extraResource
+  // "ffmpeg"; see forge.config.ts). laura/ingest/ffmpeg.py reads these env vars
+  // first, falling back to PATH. Dev is left untouched and uses PATH.
+  const ffmpegEnv: Record<string, string> = app.isPackaged
+    ? {
+        LAURA_FFMPEG: path.join(process.resourcesPath, "ffmpeg", "ffmpeg.exe"),
+        LAURA_FFPROBE: path.join(process.resourcesPath, "ffmpeg", "ffprobe.exe"),
+      }
+    : {};
   const child: ChildProcess = spawn(command.cmd, command.args, {
     cwd: command.cwd,
     env: {
@@ -74,6 +98,7 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
       LAURA_PORT: String(PORT),
       LAURA_TOKEN: token,
       LAURA_WORKSPACE: workspace,
+      ...ffmpegEnv,
     },
     stdio: "inherit",
     shell: command.useShell,

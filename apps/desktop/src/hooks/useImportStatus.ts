@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { ImportStatus, LauraClient } from "../api";
 
-const TERMINAL: ReadonlySet<ImportStatus["phase"]> = new Set(["ready", "error"]);
+const TERMINAL: ReadonlySet<ImportStatus["phase"]> = new Set(["ready", "error", "cancelled"]);
 
 export function useImportStatus(
   client: LauraClient,

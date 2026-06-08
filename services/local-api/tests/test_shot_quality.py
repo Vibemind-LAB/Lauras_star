@@ -26,6 +26,17 @@ def test_static_frames_score_high() -> None:
     assert static_score([f, f.copy(), f.copy()]) == 1.0
 
 
+def test_static_drop_only_for_short_shots() -> None:
+    # A textured-but-frozen shot: static==1.0, not black, not blurry (checkerboard).
+    f = ((np.indices((36, 64)).sum(0) % 2) * 255).astype(np.uint8)
+    m = ShotMetrics.from_frames([f, f.copy(), f.copy()])
+    assert m.static == 1.0
+    # Short freeze/glitch -> dropped as static.
+    assert decide_keep(m, length_frames=10)[1] == "static"
+    # Long held shot (intentional content) -> kept despite low motion.
+    assert decide_keep(m, length_frames=100)[0] is True
+
+
 def test_moving_frames_score_low() -> None:
     a = np.zeros((36, 64), dtype=np.uint8)
     b = np.full((36, 64), 255, dtype=np.uint8)

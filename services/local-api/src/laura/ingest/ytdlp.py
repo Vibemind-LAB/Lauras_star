@@ -60,6 +60,21 @@ def ytdlp_available() -> bool:
     return True
 
 
+# Small, stable vocabulary mapped to yt-dlp ``format`` selectors. Keeps the UI/API
+# surface tiny (best/1080/720/audio) while the actual selector strings stay an
+# implementation detail. "best" is the historical default (``bv*+ba/b``).
+_FORMAT_SELECTORS: dict[str, str] = {
+    "best": "bv*+ba/b",
+    "1080": "bv*[height<=1080]+ba/b[height<=1080]",
+    "720": "bv*[height<=720]+ba/b[height<=720]",
+    "audio": "ba/b",
+}
+
+# Browsers yt-dlp can read cookies from (``cookiesfrombrowser``). Restricted to a
+# safe allow-list so an arbitrary attacker-supplied string can never reach yt-dlp.
+_ALLOWED_BROWSERS: frozenset[str] = frozenset({"chrome", "edge", "firefox", "brave"})
+
+
 def _host_matches_site(host: str) -> bool:
     host = host.lower()
     if host.startswith("www."):
@@ -105,13 +120,20 @@ def download_via_ytdlp(
     *,
     on_progress: Callable[[int, int | None], None] | None = None,
     ffmpeg_dir: str | None = None,
+    fmt: str | None = None,
+    cookies_from_browser: str | None = None,
 ) -> Path:
     """Download ``url`` into ``dest_dir`` via yt-dlp, returning the final media file.
 
-    Picks the best mp4-ish video+audio (``bv*+ba/b``) and merges to a single ``.mp4``
-    when the source is adaptive. Progress is mapped from yt-dlp's byte counters to
-    ``on_progress(downloaded, total)`` (``total`` may be None when the size is unknown).
-    Raises ``RuntimeError`` with a clear message on any failure.
+    ``fmt`` picks a quality from the small vocabulary (``best``/``1080``/``720``/
+    ``audio``; default ``best`` == ``bv*+ba/b`` merged to ``.mp4``). ``audio`` grabs the
+    best audio-only stream and transcodes it to ``.mp3`` via ffmpeg. ``cookies_from_browser``
+    (one of chrome/edge/firefox/brave) makes yt-dlp read that browser's cookie store for
+    private/age-restricted/login-walled sources.
+
+    Progress is mapped from yt-dlp's byte counters to ``on_progress(downloaded, total)``
+    (``total`` may be None when the size is unknown). Raises ``RuntimeError`` with a clear
+    message on any failure (including a locked/missing browser cookie store).
     """
     import yt_dlp
 
@@ -132,9 +154,14 @@ def download_via_ytdlp(
             total = estimate if isinstance(estimate, int) else None
         on_progress(downloaded, total)
 
+    selector = _FORMAT_SELECTORS.get(fmt or "best", _FORMAT_SELECTORS["best"])
+    audio_only = (fmt == "audio")
+
     ydl_opts: dict[str, object] = {
         "outtmpl": str(dest_dir / "%(title).200B [%(id)s].%(ext)s"),
-        "format": "bv*+ba/b",
+        "format": selector,
+        # Audio-only requests transcode to mp3; video requests merge adaptive
+        # streams into a single mp4 container.
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
@@ -143,8 +170,25 @@ def download_via_ytdlp(
         "restrictfilenames": True,
         "progress_hooks": [_hook],
     }
+    if audio_only:
+        # Postprocess the audio-only stream to a real .mp3 file (drops merge_output_format,
+        # which only applies to muxed video). Keeps it simple: one predictable extension.
+        ydl_opts.pop("merge_output_format", None)
+        ydl_opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}
+        ]
     if ff_dir is not None:
         ydl_opts["ffmpeg_location"] = ff_dir
+    if cookies_from_browser:
+        browser = cookies_from_browser.strip().lower()
+        if browser not in _ALLOWED_BROWSERS:
+            raise RuntimeError(
+                f"unsupported cookies_from_browser {cookies_from_browser!r} "
+                f"(allowed: {', '.join(sorted(_ALLOWED_BROWSERS))})"
+            )
+        # yt-dlp expects a tuple: (browser, profile, keyring, container). Only the
+        # browser name is required; the rest default to None.
+        ydl_opts["cookiesfrombrowser"] = (browser,)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -176,7 +220,8 @@ def download_via_ytdlp(
             if isinstance(fp, str) and Path(fp).exists():
                 candidate = Path(fp)
     if not candidate.exists():
-        merged = candidate.with_suffix(".mp4")
+        # Audio-only postprocessing yields .mp3; muxed video follows merge_output_format.
+        merged = candidate.with_suffix(".mp3" if audio_only else ".mp4")
         if merged.exists():
             candidate = merged
         else:
@@ -190,3 +235,77 @@ def download_via_ytdlp(
             f"(expected near {candidate})"
         )
     return candidate
+
+
+def _entry_url(entry: dict[str, object]) -> str | None:
+    """Best-effort watch URL for a flat playlist entry.
+
+    With ``extract_flat='in_playlist'`` yt-dlp returns entries carrying only an ``id``
+    and often a ``url``. Prefer the explicit ``url``; otherwise reconstruct a watch URL
+    from ``webpage_url`` or the YouTube id. Returns None when nothing usable is present.
+    """
+    direct = entry.get("url")
+    if isinstance(direct, str) and direct:
+        return direct
+    webpage = entry.get("webpage_url")
+    if isinstance(webpage, str) and webpage:
+        return webpage
+    vid = entry.get("id")
+    if isinstance(vid, str) and vid:
+        # Flat YouTube playlist entries frequently omit a URL but carry the video id.
+        return f"https://www.youtube.com/watch?v={vid}"
+    return None
+
+
+def expand_playlist(
+    url: str,
+    *,
+    limit: int = 50,
+    cookies_from_browser: str | None = None,
+) -> list[str] | None:
+    """Expand a playlist/channel URL into its entry URLs — metadata only, no download.
+
+    Uses ``extract_flat='in_playlist'`` so yt-dlp lists entries without resolving each
+    one (fast). Returns up to ``limit`` entry URLs when ``url`` is a playlist/channel; or
+    ``None`` when it is a single video (no ``entries``) or extraction failed. Never
+    downloads media.
+    """
+    import yt_dlp
+
+    ydl_opts: dict[str, object] = {
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "noplaylist": False,
+        "playlistend": max(1, limit),
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        # Bound the metadata probe so a slow/huge channel never blocks the worker
+        # forever (extract_flat is metadata-only, but the network call still happens).
+        "socket_timeout": 20,
+    }
+    if cookies_from_browser:
+        browser = cookies_from_browser.strip().lower()
+        if browser in _ALLOWED_BROWSERS:
+            ydl_opts["cookiesfrombrowser"] = (browser,)
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:  # noqa: BLE001 - not a playlist / unreachable -> treat as single
+        return None
+    if not isinstance(info, dict):
+        return None
+    entries = info.get("entries")
+    if entries is None:
+        return None
+    urls: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = _entry_url(entry)
+        if entry_url is not None:
+            urls.append(entry_url)
+        if len(urls) >= limit:
+            break
+    return urls

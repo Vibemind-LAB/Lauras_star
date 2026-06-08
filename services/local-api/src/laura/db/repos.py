@@ -116,6 +116,30 @@ def set_job_progress(db: Database, job_id: str, progress_json: str) -> None:
         )
 
 
+def request_import_cancel(db: Database, asset_id: str) -> bool:
+    """Flag the asset's ingest.fetch job for cooperative cancellation.
+
+    The fetch handler polls :func:`is_import_cancelled` between progress ticks and
+    aborts the in-flight download. Idempotent and a no-op when no fetch job exists
+    (e.g. the import already finished). Returns True if a fetch job was flagged."""
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE idempotency_key = ?",
+            (utcnow_iso(), f"fetch:{asset_id}"),
+        )
+        return cur.rowcount > 0
+
+
+def is_import_cancelled(db: Database, asset_id: str) -> bool:
+    """True if the asset's ingest.fetch job has a pending cancel request."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT cancel_requested FROM jobs WHERE idempotency_key = ?",
+            (f"fetch:{asset_id}",),
+        ).fetchone()
+        return bool(row["cancel_requested"]) if row is not None else False
+
+
 # --- assets ---------------------------------------------------------------
 def create_asset(
     db: Database,
@@ -411,6 +435,27 @@ def get_transcript(db: Database, asset_id: str, run_id: str) -> list[dict[str, A
         return out
 
 
+def list_words_for_run(db: Database, asset_id: str, run_id: str) -> list[dict[str, Any]]:
+    """All transcript words for an asset+run, ordered by source ``start_frame``.
+
+    Flat list across segments (the segment grouping is irrelevant for editorial cut
+    alignment, which only needs the word timings). Each row also carries the diarization
+    ``speaker_label`` of its segment (via the segment -> speaker join; ``NULL`` when the asset was
+    not diarized) so semantic placement can detect speaker turns without a per-word schema column.
+    Empty when the run has no transcript.
+    """
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT w.*, sp.label AS speaker_label FROM transcript_words w "
+            "JOIN transcript_segments s ON s.id = w.segment_id "
+            "LEFT JOIN speakers sp ON sp.id = s.speaker_id "
+            "WHERE s.asset_id=? AND s.analysis_run_id=? "
+            "ORDER BY w.start_frame, w.end_frame",
+            (asset_id, run_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_speaker(db: Database, speaker_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM speakers WHERE id=?", (speaker_id,)).fetchone()
@@ -473,17 +518,20 @@ def add_timeline_clip(
     origin_word_end_id: str | None = None,
     speed_num: int = 1,
     speed_den: int = 1,
+    audio_offset_samples: int = 0,
 ) -> dict[str, Any]:
     cid = new_id()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
             "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
-            "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
+            "audio_offset_samples) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (cid, timeline_id, asset_id, src_in_frame, src_out_frame_exclusive,
              seq_in_frame, seq_out_frame_exclusive, lane, speaker_id,
-             origin_word_start_id, origin_word_end_id, speed_num, speed_den),
+             origin_word_start_id, origin_word_end_id, speed_num, speed_den,
+             audio_offset_samples),
         )
         row = conn.execute("SELECT * FROM timeline_clips WHERE id=?", (cid,)).fetchone()
     return dict(row)
@@ -498,7 +546,7 @@ def list_timeline_clips(db: Database, timeline_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def create_export(
+def create_interchange_export(
     db: Database,
     *,
     timeline_id: str,
@@ -512,19 +560,69 @@ def create_export(
     now = utcnow_iso()
     with db.transaction() as conn:
         conn.execute(
-            "INSERT INTO exports (id, timeline_id, format, status, output_path, options_json, "
-            "diagnostics_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO interchange_exports"
+            " (id, timeline_id, format, status, output_path, options_json,"
+            " diagnostics_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (eid, timeline_id, fmt, status, output_path, json.dumps(options),
              json.dumps(diagnostics), now),
         )
-        row = conn.execute("SELECT * FROM exports WHERE id=?", (eid,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM interchange_exports WHERE id=?", (eid,)
+        ).fetchone()
     return dict(row)
+
+
+def get_interchange_export(db: Database, export_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM interchange_exports WHERE id=?", (export_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+# --- render-pipeline exports -----------------------------------------------
+
+
+def create_export(
+    db: Database, *, project_id: str, timeline_id: str | None, format: str
+) -> dict[str, Any]:
+    eid = new_id()
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO exports (id, project_id, timeline_id, format, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'rendering', ?)",
+            (eid, project_id, timeline_id, format, now),
+        )
+    row = get_export(db, eid)
+    assert row is not None
+    return row
 
 
 def get_export(db: Database, export_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
-        row = conn.execute("SELECT * FROM exports WHERE id=?", (export_id,)).fetchone()
-        return dict(row) if row is not None else None
+        r = conn.execute("SELECT * FROM exports WHERE id=?", (export_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def list_exports(db: Database, project_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM exports WHERE project_id=? ORDER BY created_at DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_export_done(db: Database, export_id: str, *, path: str, size_bytes: int) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE exports SET status='ready', path=?, size_bytes=? WHERE id=?",
+                     (path, size_bytes, export_id))
+
+
+def set_export_error(db: Database, export_id: str, error: str) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE exports SET status='error', error=? WHERE id=?", (error, export_id))
 
 
 def get_word(db: Database, word_id: str) -> dict[str, Any] | None:
@@ -548,12 +646,38 @@ def replace_timeline_clips(
             conn.execute(
                 "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
                 "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
-                "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
+                "audio_offset_samples) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), timeline_id, r["asset_id"], r["src_in_frame"],
                  r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"],
                  r.get("lane", 0), r.get("speaker_id"), r.get("origin_word_start_id"),
-                 r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1)),
+                 r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1),
+                 r.get("audio_offset_samples", 0)),
+            )
+
+
+def set_timeline_clip_audio_offsets(
+    db: Database, timeline_id: str, offsets_by_src_in: dict[int, int]
+) -> None:
+    """Persist accepted L/J split offsets onto the clips (2-lane editable state, samples).
+
+    ``offsets_by_src_in`` maps a clip's ``src_in_frame`` (the inter-clip cut that begins it, i.e.
+    the planner's ``seq_cut``) to that clip's signed ``audio_offset_samples`` head offset
+    (invariant #3). The whole timeline is rewritten wholesale: every clip not present in the map is
+    reset to ``0`` (a hard cut), so re-posting a reduced accepted set takes the omitted splits back
+    to hard cuts. The first clip has no leading cut and so always resolves to ``0``.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE timeline_clips SET audio_offset_samples=0 WHERE timeline_id=?",
+            (timeline_id,),
+        )
+        for src_in_frame, samples in offsets_by_src_in.items():
+            conn.execute(
+                "UPDATE timeline_clips SET audio_offset_samples=? "
+                "WHERE timeline_id=? AND src_in_frame=?",
+                (int(samples), timeline_id, int(src_in_frame)),
             )
 
 
@@ -764,3 +888,112 @@ def get_shot(db: Database, shot_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM shots WHERE id=?", (shot_id,)).fetchone()
         return dict(row) if row is not None else None
+
+
+# --- scenes (rough-cut marker layer) ---------------------------------------
+
+def get_scene(db: Database, scene_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM scenes WHERE id=?", (scene_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def list_scenes(db: Database, source_timeline_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scenes WHERE source_timeline_id=? ORDER BY order_index",
+            (source_timeline_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def replace_scenes(
+    db: Database,
+    project_id: str,
+    source_timeline_id: str,
+    ranges: list[tuple[int, int]],
+) -> None:
+    """Replace all scenes of a timeline with ``ranges`` (``(seq_in, seq_out_exclusive)``),
+    ordered. Reassigns ids + ``order_index``; names are positional ("Szene N")."""
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM scenes WHERE source_timeline_id=?", (source_timeline_id,))
+        for i, (sin, sout) in enumerate(ranges):
+            conn.execute(
+                "INSERT INTO scenes (id, project_id, source_timeline_id, name, order_index, "
+                "seq_in_frame, seq_out_frame_exclusive, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (new_id(), project_id, source_timeline_id, f"Szene {i + 1}", i, sin, sout, now),
+            )
+
+
+def update_scene_name(db: Database, scene_id: str, name: str) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE scenes SET name=? WHERE id=?", (name, scene_id))
+
+
+def set_scene_timeline(db: Database, scene_id: str, timeline_id: str) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE scenes SET scene_timeline_id=? WHERE id=?", (timeline_id, scene_id))
+
+
+def set_scene_music(db: Database, scene_id: str, asset_id: str, gain_percent: int) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE scenes SET music_asset_id=?, music_gain_percent=? WHERE id=?",
+            (asset_id, gain_percent, scene_id),
+        )
+
+
+def clear_scene_music(db: Database, scene_id: str) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE scenes SET music_asset_id=NULL, music_gain_percent=100 WHERE id=?",
+            (scene_id,),
+        )
+
+
+def get_scene_by_timeline(db: Database, scene_timeline_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM scenes WHERE scene_timeline_id=? LIMIT 1", (scene_timeline_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+# --- sequence items (stage 5) -----------------------------------------------
+
+def get_or_create_project_sequence(db: Database, project_id: str) -> dict[str, Any]:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM timelines WHERE project_id=? AND kind='sequence' "
+            "ORDER BY created_at LIMIT 1",
+            (project_id,),
+        ).fetchone()
+    if row is not None:
+        return dict(row)
+    return create_timeline(db, project_id=project_id, name="Sequenz", kind="sequence")
+
+
+def list_sequence_items(db: Database, sequence_timeline_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sequence_items WHERE sequence_timeline_id=? ORDER BY order_index",
+            (sequence_timeline_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def replace_sequence_items(
+    db: Database, sequence_timeline_id: str, scene_ids: list[str]
+) -> None:
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM sequence_items WHERE sequence_timeline_id=?", (sequence_timeline_id,)
+        )
+        for i, sid in enumerate(scene_ids):
+            conn.execute(
+                "INSERT INTO sequence_items (id, sequence_timeline_id, scene_id, order_index, "
+                "created_at) VALUES (?,?,?,?,?)",
+                (new_id(), sequence_timeline_id, sid, i, now),
+            )

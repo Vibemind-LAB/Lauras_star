@@ -15,6 +15,7 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from typing import Any
 from ..db import repos
 from ..db.database import Database
 from ..jobs.runner import JobContext, JobHandler, enqueue
-from .aria2 import aria2_available, aria2_download
+from .aria2 import Aria2Cancelled, aria2_available, aria2_download
 from .audio import extract_mix48k, extract_mono16k
 from .download import download_resumable
 from .engine import select_engine
@@ -31,6 +32,23 @@ from .probe import probe_asset, sha256_file
 from .proxy import build_poster, build_proxy
 from .waveform import compute_waveform
 from .ytdlp import download_via_ytdlp, needs_ytdlp, ytdlp_available
+
+
+class ImportCancelled(RuntimeError):
+    """Raised inside ``handle_fetch`` when the import's cancel flag is set.
+
+    Caught by the handler itself: the partial download is removed and the job ends
+    normally (no retry). ``import-status`` reports the cancelled phase via the
+    persisted ``cancel_requested`` flag, not via the job's terminal status."""
+
+
+def _cleanup_partial_download(base_dir: Path) -> None:
+    """Remove any partially-downloaded files for a cancelled/aborted fetch.
+
+    Best-effort: the whole per-asset download directory holds only the in-flight
+    file plus its ``.part``/``.parts`` scratch, so dropping it leaves no orphan bytes
+    behind. Never raises — cleanup failures must not mask the cancellation."""
+    shutil.rmtree(base_dir, ignore_errors=True)
 
 
 class _ProgressWriter:
@@ -203,27 +221,74 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     if not url:
         raise ValueError("ingest.fetch payload missing required field: source_url")
     full_scan = bool(ctx.payload.get("full_scan", True))
+    # yt-dlp comfort options (set by the import endpoint; absent for direct/aria2 links).
+    fmt = ctx.payload.get("format")
+    cookies_from_browser = ctx.payload.get("cookies_from_browser")
     root = _project_root(ctx.db, asset)
     base_dir = root / "downloads" / asset["id"]
+
+    # Honour a cancel requested before this run started: a queued/retried fetch of an
+    # already-cancelled import must exit immediately without touching the network. With
+    # the start-of-handler guard, a re-enqueued attempt (up to max_attempts) is a no-op.
+    if repos.is_import_cancelled(ctx.db, asset["id"]):
+        _cleanup_partial_download(base_dir)
+        return {"asset_id": asset["id"], "cancelled": True}
 
     progress = _ProgressWriter(ctx.db, ctx.job_id)
     last_hb = [0.0]
 
     def _on_progress(downloaded: int, total: int | None) -> None:
+        # Cooperative cancellation: an abort requested mid-download is observed at the
+        # next progress tick (between chunks/segments) and unwinds the download loop.
+        if repos.is_import_cancelled(ctx.db, asset["id"]):
+            raise ImportCancelled(asset["id"])
         progress(downloaded, total)
         now = time.monotonic()
         if now - last_hb[0] > 10.0:
             ctx.heartbeat()
             last_hb[0] = now
 
+    try:
+        return _run_fetch(
+            ctx, asset, url, base_dir, full_scan=full_scan, fmt=fmt,
+            cookies_from_browser=cookies_from_browser, on_progress=_on_progress,
+        )
+    except ImportCancelled:
+        # Terminal for the import: drop the partial file and end the job normally so the
+        # runner does NOT retry. import-status surfaces "cancelled" via the persisted flag.
+        _cleanup_partial_download(base_dir)
+        return {"asset_id": asset["id"], "cancelled": True}
+
+
+def _run_fetch(
+    ctx: JobContext,
+    asset: dict[str, Any],
+    url: str,
+    base_dir: Path,
+    *,
+    full_scan: bool,
+    fmt: Any,
+    cookies_from_browser: Any,
+    on_progress: Callable[[int, int | None], None],
+) -> dict[str, Any]:
+    """Engine dispatch for :func:`handle_fetch`. Raises :class:`ImportCancelled` when the
+    import's cancel flag is observed mid-download; the caller turns that into a no-retry
+    terminal result."""
+    _on_progress = on_progress
     if select_engine(url) == "aria2":
         if not aria2_available():
             raise ValueError("aria2c required for this source but is not installed")
         stop_hb = threading.Event()
+        cancel_event = threading.Event()
 
         def _hb_loop() -> None:
-            while not stop_hb.wait(30.0):
+            # Doubles as the cancel poller for the aria2 engine (which has no per-chunk
+            # callback): when the flag flips, signal aria2_download to kill the subprocess.
+            while not stop_hb.wait(5.0):
                 ctx.heartbeat()
+                if repos.is_import_cancelled(ctx.db, asset["id"]):
+                    cancel_event.set()
+                    return
 
         hb_thread = threading.Thread(target=_hb_loop, daemon=True)
         hb_thread.start()
@@ -231,7 +296,10 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
             files = aria2_download(
                 url, base_dir,
                 on_progress=lambda d, t, _s: _on_progress(d, t),
+                cancel_event=cancel_event,
             )
+        except Aria2Cancelled as exc:
+            raise ImportCancelled(asset["id"]) from exc
         finally:
             stop_hb.set()
             hb_thread.join(timeout=1.0)
@@ -270,9 +338,16 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
         ) else None
         try:
             media_path = download_via_ytdlp(
-                url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir
+                url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir,
+                fmt=fmt, cookies_from_browser=cookies_from_browser,
             )
+        except ImportCancelled:
+            # A cancel raised from inside the progress hook must NOT be reported as a
+            # yt-dlp failure (ImportCancelled is a RuntimeError) — let it unwind.
+            raise
         except RuntimeError as exc:
+            # Surface a clear job error (e.g. a locked/missing browser cookie store)
+            # rather than letting yt-dlp's exception crash the worker.
             raise ValueError(f"yt-dlp download failed: {exc}") from exc
         ok = _finalize_media_asset(ctx, asset, media_path, full_scan=full_scan)
         if not ok:
@@ -298,8 +373,11 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
             ) else None
             try:
                 media_path = download_via_ytdlp(
-                    url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir
+                    url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir,
+                    fmt=fmt, cookies_from_browser=cookies_from_browser,
                 )
+            except ImportCancelled:
+                raise
             except RuntimeError as exc:
                 raise ValueError(f"yt-dlp fallback failed: {exc}") from exc
             ok = _finalize_media_asset(ctx, asset, media_path, full_scan=full_scan)

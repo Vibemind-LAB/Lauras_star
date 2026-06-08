@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from laura.db import repos
@@ -76,6 +77,82 @@ def test_import_from_url_queues_fetch(client: TestClient, db: Database) -> None:
         ).fetchone()
     assert row is not None
     assert row["kind"] == "ingest.fetch"
+
+
+def test_import_from_url_threads_format_and_cookies(
+    client: TestClient, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = _make_project(client)
+    # Force the single-asset path (no playlist expansion).
+    import laura.api.assets as assets_mod
+
+    monkeypatch.setattr(assets_mod, "ytdlp_available", lambda: False)
+    resp = client.post(
+        f"/projects/{project_id}/assets/import",
+        json={
+            "source_url": "https://www.youtube.com/watch?v=abc",
+            "format": "1080",
+            "cookies_from_browser": "chrome",
+        },
+    )
+    assert resp.status_code == 202
+    asset_id = resp.json()["asset_id"]
+    assert resp.json()["extra_asset_ids"] == []
+
+    # The chosen options ride on the fetch job payload.
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM jobs WHERE idempotency_key = ?",
+            (f"fetch:{asset_id}",),
+        ).fetchone()
+    assert row is not None
+    import json
+
+    payload = json.loads(row["payload_json"])
+    assert payload["format"] == "1080"
+    assert payload["cookies_from_browser"] == "chrome"
+
+
+def test_import_from_playlist_url_fans_out(
+    client: TestClient, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id = _make_project(client)
+    import laura.api.assets as assets_mod
+
+    entry_urls = [
+        "https://www.youtube.com/watch?v=a",
+        "https://www.youtube.com/watch?v=b",
+        "https://www.youtube.com/watch?v=c",
+    ]
+    monkeypatch.setattr(assets_mod, "ytdlp_available", lambda: True)
+    monkeypatch.setattr(
+        assets_mod, "expand_playlist", lambda url, **kw: list(entry_urls)
+    )
+
+    resp = client.post(
+        f"/projects/{project_id}/assets/import",
+        json={"source_url": "https://www.youtube.com/playlist?list=PL", "format": "720"},
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    # One primary asset + the rest in extra_asset_ids — three assets total.
+    all_ids = [body["asset_id"], *body["extra_asset_ids"]]
+    assert len(all_ids) == 3
+    assert len(set(all_ids)) == 3
+
+    # Each asset got its own fetch job carrying its entry URL + the chosen format.
+    import json
+
+    for asset_id, url in zip(all_ids, entry_urls, strict=True):
+        with db.connection() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM jobs WHERE idempotency_key = ?",
+                (f"fetch:{asset_id}",),
+            ).fetchone()
+        assert row is not None
+        payload = json.loads(row["payload_json"])
+        assert payload["source_url"] == url
+        assert payload["format"] == "720"
 
 
 def test_import_rejects_both_sources(client: TestClient) -> None:

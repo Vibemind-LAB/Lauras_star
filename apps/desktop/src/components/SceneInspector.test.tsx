@@ -30,6 +30,7 @@ function clip(over: Partial<TimelineClip> = {}): TimelineClip {
     origin_word_end_id: null,
     speed_num: 1,
     speed_den: 1,
+    audio_offset_samples: 0,
     ...over,
   };
 }

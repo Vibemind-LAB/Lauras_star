@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,10 @@ from pathlib import Path
 
 class Aria2Error(RuntimeError):
     """Raised when aria2c is missing or exits non-zero."""
+
+
+class Aria2Cancelled(RuntimeError):
+    """Raised when a ``cancel_event`` aborted the aria2c download."""
 
 
 @dataclass(frozen=True)
@@ -86,11 +91,14 @@ def aria2_download(
     filename: str | None = None,
     opts: Aria2Opts | None = None,
     on_progress: Callable[[int, int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> list[Path]:
     """Download ``url`` into ``dest_dir`` via one-shot aria2c, streaming progress.
 
     ``on_progress(downloaded, total, speed_bps)`` is called for each periodic summary
-    line aria2c emits (best-effort). Returns the produced file paths."""
+    line aria2c emits (best-effort). If ``cancel_event`` is provided and gets set, the
+    aria2c subprocess is terminated and ``Aria2Cancelled`` is raised (best-effort —
+    relies on terminating the child process). Returns the produced file paths."""
     opts = opts or Aria2Opts()
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -122,16 +130,40 @@ def aria2_download(
         )
     except FileNotFoundError as exc:
         raise Aria2Error(f"aria2c not found: {aria2_bin()}") from exc
+
+    # Watch the cancel flag on a side thread: when set, terminate aria2c so the
+    # blocking stdout iteration below unblocks (the pipe closes) and we can raise.
+    watcher_stop = threading.Event()
+
+    def _watch_cancel() -> None:
+        while not watcher_stop.wait(0.5):
+            if cancel_event is not None and cancel_event.is_set():
+                proc.terminate()
+                return
+
+    watcher: threading.Thread | None = None
+    if cancel_event is not None:
+        watcher = threading.Thread(target=_watch_cancel, daemon=True)
+        watcher.start()
+
     assert proc.stdout is not None
-    for line in proc.stdout:
-        tail.append(line)
-        if len(tail) > 100:
-            del tail[0]
-        if on_progress is not None:
-            parsed = _parse_aria2_progress(line)
-            if parsed is not None:
-                on_progress(*parsed)
-    returncode = proc.wait()
+    try:
+        for line in proc.stdout:
+            tail.append(line)
+            if len(tail) > 100:
+                del tail[0]
+            if on_progress is not None:
+                parsed = _parse_aria2_progress(line)
+                if parsed is not None:
+                    on_progress(*parsed)
+        returncode = proc.wait()
+    finally:
+        watcher_stop.set()
+        if watcher is not None:
+            watcher.join(timeout=1.0)
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise Aria2Cancelled("aria2c download cancelled")
     if returncode != 0:
         raise Aria2Error(("".join(tail) or "aria2c failed").strip()[-2000:])
 

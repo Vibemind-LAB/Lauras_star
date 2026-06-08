@@ -106,6 +106,10 @@ class KeepThresholds:
     black_ratio: float = 0.8
     static: float = 0.985
     blur: float = 5.0  # below = too blurry; 0 disables
+    # A near-frozen shot is only "dead footage" when it is BRIEF (a freeze/glitch). Held
+    # shots at least this long are intentional content (title cards, talking heads, slow
+    # b-roll) and are KEPT despite low motion — otherwise static footage loses ~everything.
+    static_max_drop_frames: int = 24
 
 
 _DEFAULT_THRESHOLDS = KeepThresholds()
@@ -114,11 +118,14 @@ _DEFAULT_THRESHOLDS = KeepThresholds()
 def decide_keep(
     m: ShotMetrics,
     *,
+    length_frames: int | None = None,
     thresholds: KeepThresholds = _DEFAULT_THRESHOLDS,
 ) -> tuple[bool, str | None]:
     if m.black_ratio >= thresholds.black_ratio:
         return False, "black"
-    if m.static >= thresholds.static:
+    if m.static >= thresholds.static and (
+        length_frames is None or length_frames < thresholds.static_max_drop_frames
+    ):
         return False, "static"
     if thresholds.blur > 0 and m.blur < thresholds.blur:
         return False, "blur"

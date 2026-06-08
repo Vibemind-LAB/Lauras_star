@@ -7,8 +7,16 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
 
 from .. import audit
+from ..analysis.editorial import Word
+from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
+from ..analysis.eval_quality import evaluate_rough_cut
+from ..analysis.joint import bias_to_weights, joint_place
+from ..analysis.semantic import sentence_end_frames, speaker_turn_frames
+from ..analysis.silence import detect_silence
+from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
@@ -20,17 +28,28 @@ from ..editing.operations import (
     lift_range,
     move_clip,
     ordered,
+    set_audio_offset,
     set_speed,
     split_clip,
     trim_clip,
 )
+from ..editing.otio_sync import (
+    build_model,
+    export_audio_clips,
+    serialize_timeline_otio,
+    timeline_audio_sample_rate,
+)
+from ..editing.word_cut import map_asset_range_to_seq
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
 from ..interchange.fcpx_xml import timeline_to_fcpx_xml
 from ..interchange.otio_io import otio_string_to_timeline, timeline_to_otio_string
-from ..interchange.timeline import Timeline, timeline_from_rows
+from ..interchange.timeline import Timeline
 from ..interchange.validate import validate_export
+from ..jobs.queues import queue_for
+from ..jobs.runner import enqueue
+from ..timebase.sampling import frame_to_sample
 from .models import (
     ClipOut,
     ClipSourceOut,
@@ -41,7 +60,11 @@ from .models import (
     FromShotsRequest,
     OperationRequest,
     RenameRequest,
+    RenderExportOut,
+    RenderRequest,
+    RoughCutQualityOut,
     SetClipsRequest,
+    SplitCutOut,
     TimelineCreate,
     TimelineImportOut,
     TimelineImportRequest,
@@ -49,14 +72,55 @@ from .models import (
     ValidateOut,
     ValidateRequest,
 )
+from .otio_split import AcceptedSplit, accepted_offsets_from_otio
 from .pagination import PageParams
 from .security import require_token
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
 
+
+# Request/response models for the L/J split-cut accept endpoint live here (not in the concurrently
+# owned api/models.py) since they are tightly coupled to this one route and 3a's AcceptedSplit.
+class AcceptedSplitIn(BaseModel):
+    """One accepted L/J split offset the user confirmed (the „Übernehmen" action).
+
+    ``seq_cut`` identifies the inter-clip cut (it equals the next clip's ``src_in_frame``, exactly
+    the planner's :attr:`laura.analysis.splitedit.SplitCut.seq_cut` surfaced as ``SplitCutOut``).
+    ``offset = audio_frame - video_frame`` in frames: ``> 0`` L-cut (audio later), ``< 0`` J-cut
+    (audio earlier). A ``|offset| <= 1`` is sub-perception and cleared to a hard cut on accept.
+    """
+
+    seq_cut: int
+    offset: int = Field(
+        ge=-100_000, le=100_000, description="audio_frame - video_frame, in frames"
+    )
+
+
+class AcceptSplitCutsRequest(BaseModel):
+    """The full accepted set for a timeline — re-posting it is the source of truth (idempotent).
+
+    The list is applied wholesale: an entry omitted from a later post is taken back (its boundary
+    returns to a hard cut), so „Zurücknehmen" is just re-posting without that entry.
+    """
+
+    accepted: list[AcceptedSplitIn] = Field(default_factory=list)
+
+
+class AcceptSplitCutsOut(BaseModel):
+    """The stored accepted set, read back from the OTIO blob so the UI can confirm the state.
+
+    Hard (``|offset| <= 1``) entries are dropped, so this reflects only the meaningful L/J splits
+    that actually live in the serialised OTIO timeline metadata.
+    """
+
+    accepted: list[AcceptedSplitIn] = Field(default_factory=list)
+
+
 _EXT = {"otio": "otio", "edl": "edl", "fcp7xml": "xml", "fcpxml": "fcpxml"}
-_WRITERS = {
-    "otio": timeline_to_otio_string,
+# NLE writers that can carry the L/J split as a separate, offset audio track (3b). They take the
+# picture model plus the split-shifted audio clips; OTIO is handled separately via its own
+# split-aware serialiser, and SRT/VTT are transcript exports (never reach here).
+_AV_WRITERS = {
     "edl": timeline_to_edl,
     "fcp7xml": timeline_to_fcp7_xml,
     "fcpxml": timeline_to_fcpx_xml,
@@ -77,20 +141,7 @@ def _timeline_out(db: Database, row: dict[str, Any]) -> TimelineOut:
 
 
 def _build_model(db: Database, timeline_row: dict[str, Any]) -> Timeline:
-    project = repos.get_project(db, timeline_row["project_id"])
-    assert project is not None
-    clip_rows = repos.list_timeline_clips(db, timeline_row["id"])
-    assets = {
-        aid: a
-        for aid in {c["asset_id"] for c in clip_rows}
-        if (a := repos.get_asset(db, aid)) is not None
-    }
-    speakers = {
-        sid: s
-        for sid in {c["speaker_id"] for c in clip_rows if c.get("speaker_id")}
-        if (s := repos.get_speaker(db, sid)) is not None
-    }
-    return timeline_from_rows(timeline_row, clip_rows, project, assets, speakers)
+    return build_model(db, timeline_row)
 
 
 @router.post(
@@ -187,6 +238,224 @@ def import_timeline(
     )
 
 
+def _resolve_video_path(
+    db: Database, asset_id: str, asset: dict[str, Any]
+) -> str | None:
+    """The readable video for the joint visual signal — proxy preferred, else original/source.
+
+    Mirrors ``eval_cut_cli.resolve_video``: the CFR editorial proxy is the right surface for the
+    diff signal (it is what the shot detector ran on), falling back to an ``original`` derived
+    file and finally the asset's ``source_path``. Returns ``None`` when nothing on disk is
+    readable, in which case joint placement degrades to the editorial-only choice.
+    """
+    by_kind = {f["kind"]: f["path"] for f in repos.list_asset_files(db, asset_id)}
+    for kind in ("proxy", "original"):
+        path = by_kind.get(kind)
+        if path and Path(path).is_file():
+            return str(path)
+    src = asset.get("source_path")
+    if src and Path(src).is_file():
+        return str(src)
+    return None
+
+
+def _detect_asset_silence(
+    video_path: Path | str | None, asset: dict[str, Any]
+) -> list[tuple[int, int]]:
+    """Real audio silences of the asset as source-frame ranges, or ``[]`` when unavailable.
+
+    Runs :func:`laura.analysis.silence.detect_silence` on the resolved editorial video and maps
+    the seconds-based ``silencedetect`` output into the asset's source-frame space via its frame
+    rate (``rate_num / rate_den``). Returns ``[]`` when there is no readable video or the asset
+    rate is unknown — silence is purely additive, so its absence just leaves placement to the
+    word-gap proxy.
+    """
+    if video_path is None:
+        return []
+    rate_num = asset.get("rate_num")
+    rate_den = asset.get("rate_den")
+    if not rate_num or not rate_den:
+        return []
+    return detect_silence(video_path, rate_num=rate_num, rate_den=rate_den)
+
+
+def _align_rows_editorial(
+    rows: list[dict[str, Any]],
+    words: list[Word],
+    *,
+    window: int,
+    w_visual: float = 0.6,
+    w_editorial: float = 0.4,
+    silence: list[tuple[int, int]] | None = None,
+    sentence_frames: set[int] | None = None,
+    speaker_frames: set[int] | None = None,
+    video_path: Path | str | None = None,
+    total_frames: int | None = None,
+    frame_loader: FrameLoader = load_gray_frames_ffmpeg,
+) -> None:
+    """Stage 2: place each clip's source IN by JOINT visual+editorial quality, in place.
+
+    For every clip after the first, its ``src_in_frame`` is the cut between it and the previous
+    clip. Instead of two separate snaps (visual peak, then an all-or-nothing editorial drag),
+    :func:`laura.analysis.joint.joint_place` picks the single frame in ``[cut-window, cut+window]``
+    that maximises ``w_visual*visual_score + w_editorial*editorial_score`` — so a clean word edge
+    only displaces the frame-exact visual peak when the blend says the trade is worth it. The
+    per-frame visual signal is decoded from the asset's video around the cut via ``frame_loader``
+    (``video_path``/``total_frames`` supplied by the caller); with no video it gracefully reduces
+    to the editorial-only choice, and with no words to the visual-only choice.
+
+    ``silence`` is an optional list of end-exclusive source-frame ranges ``[start, end)`` of real
+    audio silence (from :func:`laura.analysis.silence.detect_silence`). A candidate cut that lands
+    inside a silence scores above a mere word edge, so cuts prefer genuine pauses (breaths,
+    inter-sentence beats) over ASR word boundaries. With no silence info the placement is exactly
+    the word-gap behaviour.
+
+    ``sentence_frames`` / ``speaker_frames`` are optional source-frame sets of sentence boundaries
+    and diarization speaker turns (from :mod:`laura.analysis.semantic`). A candidate cut on a
+    speaker turn or sentence end outscores a bare silence / word edge, so cuts prefer natural
+    narrative seams. With neither (no punctuation, no diarization) placement is unchanged.
+
+    The match is applied to BOTH sides of the cut only when the two clips are truly contiguous in
+    the source (``prev.src_out_frame_exclusive == cur.src_in_frame``) — otherwise the cut sits
+    across a source gap and only the current clip's IN is moved, never inventing source frames.
+
+    The very first clip's start (typically source frame 0) is never touched. After all IN frames
+    settle, the sequence is repacked back-to-back from the new source lengths so clips stay
+    contiguous and end-exclusive on the timeline. Empty ``words`` (and no readable video) leaves
+    each cut exactly where the visual stage put it — placement only ever refines.
+    """
+    if window <= 0:
+        return
+    if not words and not silence and video_path is None:
+        return
+    for i in range(1, len(rows)):
+        cur = rows[i]
+        prev = rows[i - 1]
+        cut = cur["src_in_frame"]
+        aligned, _score = joint_place(
+            cut,
+            words,
+            window=window,
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            silence=silence,
+            sentence_frames=sentence_frames,
+            speaker_frames=speaker_frames,
+            video_path=video_path,
+            total_frames=total_frames,
+            frame_loader=frame_loader,
+        )
+        if aligned == cut:
+            continue
+        # Keep both source ranges non-empty; skip a move that would collapse a clip.
+        if aligned <= prev["src_in_frame"] or aligned >= cur["src_out_frame_exclusive"]:
+            continue
+        contiguous = prev["src_out_frame_exclusive"] == cut
+        cur["src_in_frame"] = aligned
+        if contiguous:
+            prev["src_out_frame_exclusive"] = aligned
+
+    # Repack the sequence from the (possibly changed) source lengths: contiguous, end-exclusive.
+    offset = rows[0]["seq_in_frame"] if rows else 0
+    for row in rows:
+        length = row["src_out_frame_exclusive"] - row["src_in_frame"]
+        row["seq_in_frame"] = offset
+        row["seq_out_frame_exclusive"] = offset + length
+        offset += length
+
+
+def _plan_split_cuts(
+    rows: list[dict[str, Any]],
+    words: list[Word],
+    silence: list[tuple[int, int]] | None,
+    *,
+    window: int,
+    video_path: Path | str | None = None,
+    total_frames: int | None = None,
+    frame_loader: FrameLoader = load_gray_frames_ffmpeg,
+) -> list[SplitCutOut]:
+    """L/J split-edit recommendations for the inter-clip cuts of a (hard-cut) rough cut.
+
+    The inter-clip cuts are each clip's ``src_in_frame`` after the first (the boundary between it
+    and the previous clip). For each, :func:`laura.analysis.splitedit.plan_split_cut` computes the
+    independent optimal picture frame (visual peak) and sound frame (real silence / clean
+    word-gap), classifies the result (hard / L / J) and the offset, and we surface it as a
+    :class:`SplitCutOut`. RECOMMENDATION ONLY — the stored clips are not changed; this just tells
+    the UI/editor which cuts would benefit from a split edit and by how many frames.
+    """
+    cuts = [row["src_in_frame"] for row in rows[1:]]
+    if not cuts:
+        return []
+    planned = plan_split_cuts(
+        cuts,
+        words,
+        silence,
+        window=window,
+        video_path=video_path,
+        total_frames=total_frames,
+        frame_loader=frame_loader,
+    )
+    return [
+        SplitCutOut(
+            seq_cut=sc.seq_cut,
+            video_frame=sc.video_frame,
+            audio_frame=sc.audio_frame,
+            offset=sc.offset,
+            kind=sc.kind,
+        )
+        for sc in planned
+    ]
+
+
+def _eval_quality(
+    rows: list[dict[str, Any]],
+    words: list[Word],
+    split_cuts: list[SplitCutOut],
+    *,
+    window: int,
+    w_visual: float,
+    w_editorial: float,
+    video_path: Path | str | None,
+    total_frames: int | None = None,
+    frame_loader: FrameLoader = load_gray_frames_ffmpeg,
+) -> RoughCutQualityOut | None:
+    """On-the-fly headline quality of the built rough cut — visual exactness × editorial clean.
+
+    The cuts scored are the inter-clip cuts (each clip's ``src_in_frame`` after the first), exactly
+    the boundaries placement and the split-cut planner work on. :func:`evaluate_rough_cut` blends
+    :func:`laura.analysis.eval_cut.evaluate_boundaries` (frame-exactness of the picture) with
+    :func:`laura.analysis.editorial.editorial_metrics` (share of cuts not mid-word), weighted by
+    the request's ``cut_bias`` (``w_visual``/``w_editorial``) so the score reflects the trade-off.
+
+    Graceful ``None`` when there is nothing to score (no inter-clip cut) or no readable video to
+    measure visual exactness against — the visual half needs to decode frames, so without a video
+    file we report no quality rather than a misleading editorial-only number. Any decode/IO error is
+    swallowed to ``None`` too: a quality read-out must never break the build itself.
+    """
+    cuts = [row["src_in_frame"] for row in rows[1:]]
+    if not cuts or video_path is None:
+        return None
+    try:
+        q = evaluate_rough_cut(
+            video_path,
+            cuts,
+            words,
+            window=window,
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            frame_loader=frame_loader,
+        )
+    except Exception:  # noqa: BLE001 - a quality read-out must never break the build
+        return None
+    return RoughCutQualityOut(
+        overall=q.overall,
+        visual_exactness=q.visual_exactness,
+        editorial_cleanliness=q.editorial_clean,
+        n_cuts=q.n_cuts,
+        n_split_cuts=sum(1 for sc in split_cuts if sc.kind != "hard"),
+    )
+
+
 @router.post(
     "/projects/{project_id}/timelines/from-shots",
     response_model=FromShotsOut,
@@ -200,6 +469,12 @@ def timeline_from_shots(
 
     Weak shots (black, static, duplicate, blurry) are filtered when ``quality=True`` (default).
     The ``dropped`` list in the response contains the filtered shots so the UI can re-include.
+
+    When a transcript/silence exists the response also carries ``split_cuts``: per inter-clip cut,
+    an L/J split-edit recommendation (independent optimal picture frame = visual peak, sound frame
+    = real silence / clean word-gap, with the offset and hard/L/J classification). This is
+    RECOMMENDATION ONLY — the stored clips remain hard cuts; it just surfaces which cuts would
+    benefit from a split edit and by how many frames.
 
     Non-destructive: pass an empty ``timeline_id`` to fill it; otherwise a new ``rough_cut``
     is created so a hand-made cut is never clobbered."""
@@ -271,6 +546,73 @@ def timeline_from_shots(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "no shots left after filtering"
         )
 
+    split_cuts: list[SplitCutOut] = []
+    quality: RoughCutQualityOut | None = None
+    if body.align_editorial:
+        word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
+        # Thread the stored per-word text (with any ASR punctuation) and the segment's diarization
+        # speaker label through the in-memory Word so semantic placement can find sentence ends and
+        # speaker turns — no new schema column. Both are graceful: NULL text/speaker -> no signal.
+        words = [
+            Word(
+                start_frame=w["start_frame"],
+                end_frame=w["end_frame"],
+                text=w.get("text"),
+                speaker=w.get("speaker_label"),
+            )
+            for w in word_rows
+        ]
+        # Compute the semantic frame sets once for this asset (like silence below): the source
+        # frames that end a sentence (".?!…" / long clause pause) and where the speaker changes.
+        # Empty when the transcript carries no punctuation / no diarization -> no behaviour change.
+        sentence_frames = sentence_end_frames(words)
+        speaker_frames = speaker_turn_frames(words)
+        w_visual, w_editorial = bias_to_weights(body.cut_bias)
+        video_path = _resolve_video_path(db, body.asset_id, asset)
+        # Detect real audio silences once for this asset so cuts can prefer genuine pauses
+        # (breaths / inter-sentence beats) over mere ASR word edges. Converted to the asset's
+        # source-frame space via its rate; gracefully empty when no audio / rate is unknown.
+        silence = _detect_asset_silence(video_path, asset)
+        _align_rows_editorial(
+            rows,
+            words,
+            window=body.editorial_window,
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            silence=silence,
+            sentence_frames=sentence_frames,
+            speaker_frames=speaker_frames,
+            video_path=video_path,
+            total_frames=asset.get("duration_frames"),
+        )
+        # L/J split-edit recommendations (RECOMMENDATION ONLY — the stored clips stay hard cuts).
+        # For each inter-clip cut, plan the independent optimal picture frame (visual peak) and
+        # sound frame (real silence / clean word-gap) so the UI/editor can SEE which cuts would
+        # benefit from an L- or J-cut and by how many frames. Skipped when there is nothing to
+        # plan against (no transcript and no detected silence) so the field stays empty.
+        if (words or silence) and body.editorial_window > 0:
+            split_cuts = _plan_split_cuts(
+                rows,
+                words,
+                silence,
+                window=body.editorial_window,
+                video_path=video_path,
+                total_frames=asset.get("duration_frames"),
+            )
+        # Headline quality of the just-built rough cut, blended by the SAME cut_bias weights so the
+        # score reflects the chosen picture-vs-sound trade-off. Graceful None when there's nothing
+        # to score or no readable video (evaluate_boundaries needs >=1 window; clamp 0 -> 1).
+        quality = _eval_quality(
+            rows,
+            words,
+            split_cuts,
+            window=max(1, body.editorial_window),
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            video_path=video_path,
+            total_frames=asset.get("duration_frames"),
+        )
+
     if body.timeline_id is not None:
         target = repos.get_timeline(db, body.timeline_id)
         if target is None:
@@ -293,7 +635,10 @@ def timeline_from_shots(
     fresh = repos.get_timeline(db, target["id"])
     assert fresh is not None
     repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
-    return FromShotsOut(timeline=_timeline_out(db, fresh), dropped=dropped)
+    return FromShotsOut(
+        timeline=_timeline_out(db, fresh), dropped=dropped, split_cuts=split_cuts,
+        quality=quality,
+    )
 
 
 @router.get("/projects/{project_id}/timelines", response_model=list[TimelineOut])
@@ -442,7 +787,12 @@ def _require(value: Any, message: str) -> Any:
     return value
 
 
-def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> list[EditClip]:
+def _apply(
+    db: Database,
+    current: list[EditClip],
+    body: OperationRequest,
+    timeline_row: dict[str, Any],
+) -> list[EditClip]:
     op = body.op
     if op == "append_from_words":
         w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
@@ -512,6 +862,51 @@ def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> lis
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
+    if op == "set_audio_offset":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        frames = _require(body.audio_offset_frames, "audio_offset_frames required")
+        # Project the UI's frame delta onto the canonical sample offset with the SAME math the
+        # accept endpoint uses (the authoritative project sequence rate), so a drag and an accepted
+        # recommendation land identically on the audio_offset_samples column (invariant #3).
+        project = repos.get_project(db, timeline_row["project_id"])
+        if project is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+        sample_rate = timeline_audio_sample_rate(db, timeline_row)
+        if sample_rate is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "timeline has no audio sample rate; cannot set a sample-canonical offset",
+            )
+        rate_num = project["sequence_rate_num"]
+        rate_den = project["sequence_rate_den"]
+        samples = frame_to_sample(frames, sample_rate, rate_num, rate_den)
+        samples_per_frame = frame_to_sample(1, sample_rate, rate_num, rate_den)
+        try:
+            return set_audio_offset(
+                current, at, samples, samples_per_frame=samples_per_frame
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    if op == "delete_words":
+        w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
+        w1 = repos.get_word(db, _require(body.word_end_id, "word_end_id required"))
+        if w0 is None or w1 is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "word not found")
+        if w0["asset_id"] != w1["asset_id"]:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "words must be from the same asset"
+            )
+        lo = min(w0["start_frame"], w1["start_frame"])
+        hi = max(w0["end_frame"], w1["end_frame"])
+        span = map_asset_range_to_seq(current, asset_id=w0["asset_id"], src_lo=lo, src_hi=hi)
+        if span is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "selected words are not present in this timeline",
+            )
+        return delete_range(current, span[0], span[1])
+
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 
 
@@ -523,12 +918,15 @@ def apply_operation(timeline_id: str, body: OperationRequest, request: Request) 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
 
     current = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
-    new_clips = _apply(db, current, body)
+    new_clips = _apply(db, current, body, row)
 
     repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
     fresh = repos.get_timeline(db, timeline_id)
     assert fresh is not None
-    repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    # Regenerate from clips, re-applying any accepted L/J split offsets carried in the previous
+    # blob so an edit never clobbers a split back to a hard cut (migration-free; offsets persist
+    # in the OTIO metadata itself — see editing.otio_sync.serialize_timeline_otio).
+    repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
     return _timeline_out(db, fresh)
 
 
@@ -548,11 +946,88 @@ def set_timeline_clips(
     repos.replace_timeline_clips(db, timeline_id, rows)
     fresh = repos.get_timeline(db, timeline_id)
     assert fresh is not None
-    repos.update_timeline_otio(db, timeline_id, timeline_to_otio_string(_build_model(db, fresh)))
+    # Preserve any accepted L/J split offsets across a wholesale clip replace (undo/redo restore):
+    # they live in the previous blob's metadata and are re-applied at build time, not in a column.
+    repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
     audit.record(
         db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
     )
     return _timeline_out(db, fresh)
+
+
+@router.post(
+    "/projects/{project_id}/timelines/{timeline_id}/split-cuts",
+    response_model=AcceptSplitCutsOut,
+)
+def accept_split_cuts(
+    project_id: str,
+    timeline_id: str,
+    body: AcceptSplitCutsRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> AcceptSplitCutsOut:
+    """Accept (or take back) the recommended L/J split edits for a timeline.
+
+    The planner surfaces per-cut split recommendations (``FromShotsOut.split_cuts``); the user
+    confirms one via „Übernehmen". As of the 2-lane foundation (m1) acceptance is persisted as REAL,
+    editable per-clip state: each accepted offset is projected to the canonical
+    ``audio_offset_samples`` (invariant #3) and written onto the clip whose ``src_in_frame`` is the
+    cut (:func:`repos.set_timeline_clip_audio_offsets`). The clip GEOMETRY is untouched — the
+    picture stays frame-exact; only the per-clip audio head offset changes. The OTIO cache is then
+    regenerated from that column (no explicit ``accepted``), so the blob is derived, not the source.
+
+    The posted ``accepted`` list is the full source of truth and is applied wholesale (idempotent):
+    re-posting the same set is a no-op, and omitting an entry takes that split back to a hard cut.
+    Sub-perception offsets (``|offset| <= 1``) are cleared. The stored set is read back out of the
+    rebuilt blob via :func:`accepted_offsets_from_otio` and returned so the UI confirms live state.
+    """
+    db = _db(request)
+    project = repos.get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    row = repos.get_timeline(db, timeline_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    if row["project_id"] != project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "timeline belongs to another project"
+        )
+
+    accepted = [AcceptedSplit(seq_cut=a.seq_cut, offset=a.offset) for a in body.accepted]
+    # Project each meaningful (non-hard) accepted frame offset onto the canonical sample offset and
+    # persist it on the clip that the cut begins (its src_in_frame == seq_cut). Sub-perception
+    # offsets are dropped by AcceptedSplit.is_hard(), so a hard cut resolves to
+    # audio_offset_samples=0. With no audio sample rate the split cannot be made sample-canonical,
+    # so nothing is stored.
+    sample_rate = timeline_audio_sample_rate(db, row)
+    offsets_by_src_in: dict[int, int] = {}
+    if sample_rate is not None:
+        for split in accepted:
+            if split.is_hard():
+                continue
+            offsets_by_src_in[split.seq_cut] = frame_to_sample(
+                split.offset, sample_rate,
+                project["sequence_rate_num"], project["sequence_rate_den"],
+            )
+    repos.set_timeline_clip_audio_offsets(db, timeline_id, offsets_by_src_in)
+    # Regenerate the derived OTIO cache. The posted set is the authoritative live state, so pass it
+    # EXPLICITLY rather than letting the build re-resolve: an empty/reduced post must clear the
+    # corresponding splits from the cache, and the legacy metadata fallback must NOT resurrect a
+    # split the user just took back (the all-zero column after a clear would otherwise fall through
+    # to the stale blob). hard offsets are filtered by serialize_timeline_otio itself.
+    fresh = repos.get_timeline(db, timeline_id) or row
+    blob = serialize_timeline_otio(db, fresh, accepted=accepted)
+    repos.update_timeline_otio(db, timeline_id, blob)
+    audit.record(
+        db, principal, "timeline.accept_split_cuts",
+        entity_type="timeline", entity_id=timeline_id,
+        payload={"n_accepted": len(accepted)},
+    )
+    # Read the meaningful set back out of what we actually stored so the UI confirms the live state.
+    stored = accepted_offsets_from_otio(blob)
+    return AcceptSplitCutsOut(
+        accepted=[AcceptedSplitIn(seq_cut=s.seq_cut, offset=s.offset) for s in stored]
+    )
 
 
 @router.post("/interop/validate", response_model=ValidateOut)
@@ -561,8 +1036,44 @@ def interop_validate(body: ValidateRequest, request: Request) -> ValidateOut:
     row = repos.get_timeline(db, body.timeline_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
-    result = validate_export(_build_model(db, row), body.format)
+    model = _build_model(db, row)
+    # Reflect any accepted L/J split (3b): the export builds its model fresh from the clips table,
+    # so the preflight must read the accepted offsets back from the stored OTIO blob to warn (e.g.
+    # EDL emits the split as parallel V/A events). No split -> identical to before.
+    has_split = bool(export_audio_clips(db, row, model))
+    result = validate_export(model, body.format, has_split=has_split)
     return ValidateOut(**result)
+
+
+@router.post("/timelines/{timeline_id}/render", status_code=status.HTTP_202_ACCEPTED)
+def render_timeline(
+    timeline_id: str, body: RenderRequest, request: Request
+) -> dict[str, str]:
+    """Enqueue an MP4 render job for a timeline and return the export record id."""
+    db = _db(request)
+    tl = repos.get_timeline(db, timeline_id)
+    if tl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    exp = repos.create_export(
+        db, project_id=tl["project_id"], timeline_id=timeline_id, format=body.format
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("export.render"),
+        kind="export.render",
+        payload={"export_id": exp["id"]},
+        idempotency_key=f"render:{exp['id']}",
+    )
+    return {"export_id": exp["id"], "job_id": job_id}
+
+
+@router.get("/projects/{project_id}/exports", response_model=list[RenderExportOut])
+def list_project_exports(
+    project_id: str, request: Request
+) -> list[RenderExportOut]:
+    """List all render-pipeline exports for a project."""
+    db = _db(request)
+    return [RenderExportOut(**e) for e in repos.list_exports(db, project_id)]
 
 
 @router.post(
@@ -590,8 +1101,13 @@ def export_timeline(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unsupported format: {fmt}")
 
     model = _build_model(db, row)
-    diagnostics = validate_export(model, fmt)
-    content = _WRITERS[fmt](model)
+    audio_clips = [ac.clip for ac in export_audio_clips(db, row, model)]
+    diagnostics = validate_export(model, fmt, has_split=bool(audio_clips))
+    content = (
+        serialize_timeline_otio(db, row)
+        if fmt == "otio"
+        else _AV_WRITERS[fmt](model, audio_clips or None)
+    )
 
     project = repos.get_project(db, row["project_id"])
     assert project is not None
@@ -600,7 +1116,7 @@ def export_timeline(
     out_path = out_dir / f"timeline.{_EXT[fmt]}"
     out_path.write_text(content, encoding="utf-8")
 
-    export = repos.create_export(
+    export = repos.create_interchange_export(
         db, timeline_id=timeline_id, fmt=fmt, status="succeeded",
         output_path=str(out_path), options=body.options, diagnostics=diagnostics,
     )

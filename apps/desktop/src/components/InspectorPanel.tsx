@@ -127,9 +127,10 @@ export function InspectorPanel({
             value={analysis.detector}
             onChange={(e) => analysis.setDetector(e.target.value)}
             disabled={running}
-            title="Szenen-Detektor (TransNetV2 nutzt das optionale ML-Modell, sonst Fallback auf Adaptive)"
+            title="Szenen-Detektor (Hybrid fusioniert Adaptive + TransNetV2 mit Confidence; TransNetV2 nutzt das optionale ML-Modell, sonst Fallback auf Adaptive)"
             className="rounded border border-edge bg-ink px-1 py-0.5 text-[10px] text-slate-400 disabled:opacity-40"
           >
+            <option value="hybrid">Hybrid (Adaptive + TransNetV2) — empfohlen</option>
             <option value="adaptive">Adaptive</option>
             <option value="content">Content</option>
             <option value="histogram">Histogram</option>

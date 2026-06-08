@@ -35,6 +35,11 @@ class AssetImport(BaseModel):
     source_path: str | None = Field(default=None, min_length=1)
     source_url: str | None = Field(default=None, min_length=1)
     display_name: str | None = None
+    # URL-ingest comfort options (yt-dlp only; ignored for source_path imports):
+    # quality vocabulary best|1080|720|audio, and a browser to read cookies from for
+    # private/age-restricted/login-walled sources (chrome|edge|firefox|brave).
+    format: str | None = None
+    cookies_from_browser: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> AssetImport:
@@ -46,6 +51,9 @@ class AssetImport(BaseModel):
 class ImportAccepted(BaseModel):
     asset_id: str
     job_id: str
+    # Additional asset ids when a playlist/channel URL fanned out into multiple assets
+    # (asset_id/job_id stay the first entry for backward compatibility).
+    extra_asset_ids: list[str] = Field(default_factory=list)
 
 
 class AssetFileOut(BaseModel):
@@ -103,7 +111,7 @@ class AnalysisStart(BaseModel):
     align: bool = False
     model: str = "base"
     language: str | None = None
-    detector: str = "adaptive"  # shot detector: adaptive|content|histogram|transnet
+    detector: str = "adaptive"  # shot detector: adaptive|content|histogram|transnet|hybrid
 
 
 class AnalysisAccepted(BaseModel):
@@ -180,12 +188,52 @@ class FromShotsRequest(BaseModel):
     drop_duplicates: bool | None = None
     drop_blur: bool | None = None
     merge_min_frames: int = Field(default=0, ge=0)
+    align_editorial: bool = True        # snap clip cuts to transcript word-gaps (Stage 2)
+    editorial_window: int = Field(default=12, ge=0)  # max frames a cut may move (~0.4s@30fps)
+    # Picture-vs-sound preference for joint visual+editorial placement: 0 = picture-first (keep
+    # the frame-exact visual cut), 1 = sound-first (favour the clean word edge). None -> the
+    # product default 0.6/0.4 visual/editorial weights. Only used when align_editorial is True.
+    cut_bias: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class DroppedShot(BaseModel):
     src_in_frame: int
     src_out_frame_exclusive: int
     drop_reason: str
+
+
+class SplitCutOut(BaseModel):
+    """A per-cut split-edit (L/J) recommendation for an inter-clip cut.
+
+    RECOMMENDATION ONLY: the stored clips are unchanged hard cuts. This surfaces, per cut, the
+    independent optimal picture frame (visual peak) and sound frame (real silence / clean
+    word-gap) so the UI/editor can SEE which cuts would benefit from an L- or J-cut and by how
+    many frames. All frames are source-frame indices of the asset.
+    """
+
+    seq_cut: int          # the original (visual) cut frame on the source
+    video_frame: int      # recommended picture cut = visual peak
+    audio_frame: int      # recommended sound cut = real silence / clean word-gap
+    offset: int           # audio_frame - video_frame (0 == hard cut)
+    kind: str             # "hard" | "L" (audio after video) | "J" (audio before video)
+
+
+class RoughCutQualityOut(BaseModel):
+    """Headline quality of a built rough cut — one score blending picture and speech.
+
+    Computed on the fly over the built clips (no persistence): ``visual_exactness`` is the share
+    of inter-clip cuts landing within one frame of the true luma peak, ``editorial_cleanliness``
+    the share not bisecting a spoken word, and ``overall`` their ``cut_bias``-weighted blend (all
+    in ``[0, 1]``). ``n_cuts`` is the number of inter-clip cuts scored; ``n_split_cuts`` the count
+    of recommended L/J split edits among them. All fields mirror
+    :class:`laura.analysis.eval_quality.RoughCutQuality` plus the split-cut tally.
+    """
+
+    overall: float
+    visual_exactness: float
+    editorial_cleanliness: float
+    n_cuts: int
+    n_split_cuts: int
 
 
 class ClipOut(BaseModel):
@@ -201,6 +249,9 @@ class ClipOut(BaseModel):
     origin_word_end_id: str | None = None
     speed_num: int = 1
     speed_den: int = 1
+    # Signed per-clip LEADING-edge audio-vs-video offset in samples (invariant #3); 0 = hard cut.
+    # Surfaced so undo/redo (GET clips -> PUT clips snapshot) round-trips the L/J split state.
+    audio_offset_samples: int = 0
 
 
 class TimelineOut(BaseModel):
@@ -215,6 +266,13 @@ class TimelineOut(BaseModel):
 class FromShotsOut(BaseModel):
     timeline: TimelineOut
     dropped: list[DroppedShot] = Field(default_factory=list)
+    # Per-cut L/J split-edit recommendations for the inter-clip cuts (recommendation only — the
+    # stored clips remain hard cuts). Empty when there is no transcript/silence to plan against.
+    split_cuts: list[SplitCutOut] = Field(default_factory=list)
+    # On-the-fly quality summary of the built rough cut (overall + visual exactness + editorial
+    # cleanliness, blended by the request's cut_bias). None when it can't be computed gracefully
+    # (no editorial alignment, or no readable video to score visual exactness against).
+    quality: RoughCutQualityOut | None = None
 
 
 class ClipSourceOut(BaseModel):
@@ -274,7 +332,9 @@ class ValidateOut(BaseModel):
 
 
 class OperationRequest(BaseModel):
-    op: str  # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move
+    # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move|
+    # delete_words|set_audio_offset
+    op: str
     asset_id: str | None = None
     src_in_frame: int | None = None
     src_out_frame_exclusive: int | None = None
@@ -289,6 +349,13 @@ class OperationRequest(BaseModel):
     new_src_in_frame: int | None = None          # trim: new source in point
     new_src_out_frame_exclusive: int | None = None  # trim: new source out point
     to_seq_frame: int | None = None              # move: target sequence position
+    # set_audio_offset: the LEADING-edge L/J audio offset of the clip at at_seq_frame, expressed in
+    # FRAMES (the UI's native drag unit). The backend projects it onto canonical samples via the
+    # project sequence rate (invariant #3), mirroring the accept endpoint; > 0 = L-cut (audio
+    # later), < 0 = J-cut (audio earlier), |offset| < 1 frame is clamped to a hard cut.
+    audio_offset_frames: int | None = Field(
+        default=None, ge=-100_000, le=100_000
+    )
 
 
 class ClipIn(BaseModel):
@@ -305,6 +372,9 @@ class ClipIn(BaseModel):
     origin_word_end_id: str | None = None
     speed_num: int = 1
     speed_den: int = 1
+    # Signed per-clip LEADING-edge audio-vs-video offset in samples (invariant #3); 0 = hard cut.
+    # Restored verbatim from a snapshot so undo/redo brings back the L/J split as the live column.
+    audio_offset_samples: int = 0
 
 
 class SetClipsRequest(BaseModel):
@@ -389,9 +459,79 @@ class RenameRequest(BaseModel):
 
 
 class ImportStatusOut(BaseModel):
-    phase: str  # queued | downloading | verifying | analyzing | ready | error
+    phase: str  # queued | downloading | verifying | analyzing | ready | cancelled | error
     downloaded_bytes: int | None = None
     total_bytes: int | None = None
     speed_bps: float | None = None
     eta_seconds: float | None = None
     error: str | None = None
+
+
+# --- render-pipeline exports ------------------------------------------------
+class SceneOut(BaseModel):
+    id: str
+    project_id: str
+    source_timeline_id: str
+    name: str
+    order_index: int
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+    scene_timeline_id: str | None = None
+    music_asset_id: str | None = None
+    music_gain_percent: int = 100
+
+
+class GenerateScenesRequest(BaseModel):
+    asset_id: str
+    gap_frames: int | None = Field(default=None, ge=0)
+
+
+class SplitSceneRequest(BaseModel):
+    at_seq_frame: int = Field(ge=0)
+
+
+class MergeScenesRequest(BaseModel):
+    scene_id: str
+
+
+class RenameSceneRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class SetSceneMusicRequest(BaseModel):
+    asset_id: str
+    gain_percent: int = Field(default=100, ge=0, le=400)
+
+
+class RenderRequest(BaseModel):
+    format: str = "mp4"
+
+
+class RenderExportOut(BaseModel):
+    id: str
+    project_id: str
+    timeline_id: str | None = None
+    format: str
+    status: str
+    path: str | None = None
+    size_bytes: int | None = None
+    error: str | None = None
+    created_at: str | None = None
+
+
+# --- sequence (stage 5) ------------------------------------------------------
+class SequenceItemOut(BaseModel):
+    id: str
+    scene_id: str
+    scene_name: str
+    order_index: int
+
+
+class SequenceOut(BaseModel):
+    timeline_id: str
+    project_id: str
+    items: list[SequenceItemOut] = Field(default_factory=list)
+
+
+class SetSequenceScenesRequest(BaseModel):
+    scene_ids: list[str]

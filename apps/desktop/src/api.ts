@@ -60,10 +60,23 @@ export interface Asset {
 export interface ImportAccepted {
   asset_id: string;
   job_id: string;
+  /** Extra asset ids when a playlist/channel URL fanned out into several assets. */
+  extra_asset_ids: string[];
+}
+
+/** Quality vocabulary the backend maps to a yt-dlp format selector. */
+export type ImportFormat = "best" | "1080" | "720" | "audio";
+
+/** Browser whose cookie store yt-dlp reads for private/login-walled sources. */
+export type CookiesFromBrowser = "chrome" | "edge" | "firefox" | "brave";
+
+export interface UrlImportOptions {
+  format?: ImportFormat;
+  cookiesFromBrowser?: CookiesFromBrowser;
 }
 
 export interface ImportStatus {
-  phase: "queued" | "downloading" | "verifying" | "analyzing" | "ready" | "error";
+  phase: "queued" | "downloading" | "verifying" | "analyzing" | "ready" | "error" | "cancelled";
   downloaded_bytes: number | null;
   total_bytes: number | null;
   speed_bps: number | null;
@@ -77,6 +90,19 @@ export interface Waveform {
   samples_per_pixel: number;
   length: number;
   peaks: number[];
+}
+
+export interface Scene {
+  id: string;
+  project_id: string;
+  source_timeline_id: string;
+  name: string;
+  order_index: number;
+  seq_in_frame: number;
+  seq_out_frame_exclusive: number;
+  scene_timeline_id?: string | null;
+  music_asset_id?: string | null;
+  music_gain_percent?: number;
 }
 
 export function hasFile(asset: Asset, kind: string): boolean {
@@ -104,9 +130,59 @@ export interface DroppedShot {
   drop_reason: string;
 }
 
+/** A per-cut split-edit (L/J) recommendation. "hard" = no offset; "L"/"J" = audio after/before. */
+export interface SplitCut {
+  seq_cut: number;
+  video_frame: number;
+  audio_frame: number;
+  offset: number;
+  kind: "hard" | "L" | "J";
+}
+
+/**
+ * On-the-fly rough-cut quality, blended by the request's cut_bias. All scores are in [0, 1]:
+ * overall (the weighted blend), visual_exactness (cuts on the true luma peak) and
+ * editorial_cleanliness (cuts not bisecting a spoken word). n_cuts is the inter-clip cut count,
+ * n_split_cuts the recommended L/J edits among them.
+ */
+export interface RoughCutQuality {
+  overall: number;
+  visual_exactness: number;
+  editorial_cleanliness: number;
+  n_cuts: number;
+  n_split_cuts: number;
+}
+
 export interface BuildFromShotsResult {
   timeline: Timeline;
   dropped: DroppedShot[];
+  split_cuts: SplitCut[];
+  /** Null when it can't be computed (no editorial alignment / no readable video). */
+  quality: RoughCutQuality | null;
+}
+
+/**
+ * One accepted L/J split offset for an inter-clip cut (the „Übernehmen" action). `seqCut`
+ * identifies the cut (the next clip's source-frame IN, == SplitCut.seq_cut); `offset =
+ * audio_frame - video_frame` in frames (> 0 = L-cut, audio later; < 0 = J-cut, audio earlier).
+ */
+export interface AcceptedSplit {
+  seqCut: number;
+  offset: number;
+}
+
+/** The stored accepted set the backend confirms after an accept (hard |offset|<=1 entries dropped). */
+export interface AcceptSplitCutsResult {
+  accepted: AcceptedSplit[];
+}
+
+/**
+ * Picture-vs-sound preference for the joint visual+editorial cut placement: 0 = picture-first
+ * (keep the frame-exact visual cut), 1 = sound-first (favour the clean word edge). Omitting it
+ * lets the backend apply its product default (0.6 visual / 0.4 editorial weights).
+ */
+export interface BuildFromShotsOptions {
+  cutBias?: number;
 }
 
 export interface Word {
@@ -131,6 +207,12 @@ export interface TimelineClip {
   origin_word_end_id: string | null;
   speed_num: number;
   speed_den: number;
+  /**
+   * Signed per-clip LEADING-edge audio-vs-video offset in SAMPLES (invariant #3); 0 = hard cut.
+   * `> 0` = L-cut (audio starts after the picture cut), `< 0` = J-cut (audio before). Drawn on the
+   * A1 lane as the audio block's leading-edge shift, and set by the `set_audio_offset` op.
+   */
+  audio_offset_samples: number;
 }
 
 export interface Timeline {
@@ -152,7 +234,8 @@ export interface Operation {
     | "set_speed"
     | "split"
     | "trim"
-    | "move";
+    | "move"
+    | "set_audio_offset";
   asset_id?: string;
   src_in_frame?: number;
   src_out_frame_exclusive?: number;
@@ -167,6 +250,11 @@ export interface Operation {
   new_src_in_frame?: number;
   new_src_out_frame_exclusive?: number;
   to_seq_frame?: number;
+  /**
+   * set_audio_offset: the clip-head L/J audio offset in FRAMES (the UI's native drag unit). The
+   * backend projects it onto canonical samples (invariant #3); `> 0` = L-cut, `< 0` = J-cut.
+   */
+  audio_offset_frames?: number;
 }
 
 export interface Segment {
@@ -209,6 +297,18 @@ export interface SearchResult {
   score: number | null;
 }
 
+export interface Export {
+  id: string;
+  project_id: string;
+  timeline_id: string | null;
+  format: string;
+  status: "rendering" | "ready" | "error";
+  path: string | null;
+  size_bytes: number | null;
+  error: string | null;
+  created_at: string;
+}
+
 export type ExportFormat = "otio" | "edl" | "fcp7xml" | "fcpxml";
 
 export interface ExportResult {
@@ -219,6 +319,39 @@ export interface ExportResult {
   lossy: boolean;
   drops: string[];
   warnings: string[];
+}
+
+export interface SequenceItem {
+  id: string;
+  scene_id: string;
+  scene_name: string;
+  order_index: number;
+}
+
+export interface Sequence {
+  timeline_id: string;
+  project_id: string;
+  items: SequenceItem[];
+}
+
+/**
+ * Narrow the accept-split-cuts response (wire shape `{ accepted: [{ seq_cut, offset }] }`) into the
+ * typed camelCase `AcceptedSplit[]`. Defensive: any malformed entry is skipped rather than thrown,
+ * mirroring the backend's graceful "missing split = hard cut" stance. No `any` — narrows `unknown`.
+ */
+function parseAcceptedSplits(raw: unknown): AcceptedSplit[] {
+  if (typeof raw !== "object" || raw === null) return [];
+  const accepted = (raw as { accepted?: unknown }).accepted;
+  if (!Array.isArray(accepted)) return [];
+  const out: AcceptedSplit[] = [];
+  for (const entry of accepted) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { seq_cut, offset } = entry as { seq_cut?: unknown; offset?: unknown };
+    if (typeof seq_cut === "number" && typeof offset === "number") {
+      out.push({ seqCut: seq_cut, offset });
+    }
+  }
+  return out;
 }
 
 export class LauraClient {
@@ -293,6 +426,17 @@ export class LauraClient {
     });
   }
 
+  renderTimeline(timelineId: string, format: string): Promise<{ export_id: string; job_id: string }> {
+    return this.request<{ export_id: string; job_id: string }>(`/timelines/${timelineId}/render`, {
+      method: "POST",
+      body: JSON.stringify({ format }),
+    });
+  }
+
+  listExports(projectId: string): Promise<Export[]> {
+    return this.request<Export[]>(`/projects/${projectId}/exports`);
+  }
+
   listProjects(): Promise<Project[]> {
     return this.request<Project[]>("/projects");
   }
@@ -319,10 +463,17 @@ export class LauraClient {
     });
   }
 
-  importAssetFromUrl(projectId: string, url: string): Promise<ImportAccepted> {
+  importAssetFromUrl(
+    projectId: string,
+    url: string,
+    opts: UrlImportOptions = {},
+  ): Promise<ImportAccepted> {
+    const body: Record<string, string> = { source_url: url };
+    if (opts.format) body.format = opts.format;
+    if (opts.cookiesFromBrowser) body.cookies_from_browser = opts.cookiesFromBrowser;
     return this.request<ImportAccepted>(`/projects/${projectId}/assets/import`, {
       method: "POST",
-      body: JSON.stringify({ source_url: url }),
+      body: JSON.stringify(body),
     });
   }
 
@@ -332,6 +483,16 @@ export class LauraClient {
 
   retryImport(assetId: string): Promise<ImportAccepted> {
     return this.request<ImportAccepted>(`/assets/${assetId}/import-retry`, { method: "POST" });
+  }
+
+  async cancelImport(assetId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/assets/${assetId}/import-cancel`, {
+      method: "POST",
+      headers: { "X-Laura-Token": this.token },
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
   }
 
   getWaveform(assetId: string): Promise<Waveform> {
@@ -440,10 +601,106 @@ export class LauraClient {
     projectId: string,
     assetId: string,
     timelineId?: string,
+    opts: BuildFromShotsOptions = {},
   ): Promise<BuildFromShotsResult> {
+    const body: Record<string, unknown> = { asset_id: assetId, timeline_id: timelineId };
+    if (opts.cutBias !== undefined) body.cut_bias = opts.cutBias;
     return this.request<BuildFromShotsResult>(`/projects/${projectId}/timelines/from-shots`, {
       method: "POST",
-      body: JSON.stringify({ asset_id: assetId, timeline_id: timelineId }),
+      body: JSON.stringify(body),
     });
+  }
+
+  /**
+   * Accept (or take back) the recommended L/J split edits for a timeline — the „Übernehmen"
+   * action. The full `accepted` set is the source of truth and is applied wholesale (idempotent):
+   * re-posting the same set is a no-op, and omitting an entry takes that split back to a hard cut.
+   *
+   * Acceptance is migration-free: the offsets persist only in the timeline's OTIO blob metadata
+   * and flow into the NLE exports — the internal (hard-cut) editing timeline is NOT changed. The
+   * backend returns the stored set (read back from the blob) so the UI can confirm the live state.
+   */
+  async acceptSplitCuts(
+    projectId: string,
+    timelineId: string,
+    accepted: AcceptedSplit[],
+  ): Promise<AcceptSplitCutsResult> {
+    const body = {
+      accepted: accepted.map((a) => ({ seq_cut: a.seqCut, offset: a.offset })),
+    };
+    const raw = await this.request<unknown>(
+      `/projects/${projectId}/timelines/${timelineId}/split-cuts`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    return { accepted: parseAcceptedSplits(raw) };
+  }
+
+  generateScenes(timelineId: string, assetId: string, gapFrames?: number): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes:generate`, {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, gap_frames: gapFrames ?? null }),
+    });
+  }
+
+  listScenes(timelineId: string): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes`);
+  }
+
+  splitScene(timelineId: string, sceneId: string, atSeqFrame: number): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes/${sceneId}/split`, {
+      method: "POST",
+      body: JSON.stringify({ at_seq_frame: atSeqFrame }),
+    });
+  }
+
+  mergeScenes(timelineId: string, sceneId: string): Promise<Scene[]> {
+    return this.request<Scene[]>(`/timelines/${timelineId}/scenes/merge`, {
+      method: "POST",
+      body: JSON.stringify({ scene_id: sceneId }),
+    });
+  }
+
+  renameScene(sceneId: string, name: string): Promise<Scene> {
+    return this.request<Scene>(`/scenes/${sceneId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  openScene(sceneId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/scenes/${sceneId}/open`, { method: "POST" });
+  }
+
+  setSceneMusic(sceneId: string, assetId: string, gainPercent: number): Promise<Scene> {
+    return this.request<Scene>(`/scenes/${sceneId}/music`, {
+      method: "PUT",
+      body: JSON.stringify({ asset_id: assetId, gain_percent: gainPercent }),
+    });
+  }
+
+  removeSceneMusic(sceneId: string): Promise<Scene> {
+    return this.request<Scene>(`/scenes/${sceneId}/music`, { method: "DELETE" });
+  }
+
+  deleteWords(timelineId: string, wordStartId: string, wordEndId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}/operations`, {
+      method: "POST",
+      body: JSON.stringify({ op: "delete_words", word_start_id: wordStartId, word_end_id: wordEndId }),
+    });
+  }
+
+  getProjectSequence(projectId: string): Promise<Sequence> {
+    return this.request<Sequence>(`/projects/${projectId}/sequence`);
+  }
+
+  setSequenceScenes(sequenceId: string, sceneIds: string[]): Promise<Sequence> {
+    return this.request<Sequence>(`/sequences/${sequenceId}/scenes`, {
+      method: "PUT",
+      body: JSON.stringify({ scene_ids: sceneIds }),
+    });
+  }
+
+  getSequenceFlattened(sequenceId: string): Promise<TimelineClip[]> {
+    return this.request<TimelineClip[]>(`/sequences/${sequenceId}/flattened`);
   }
 }
