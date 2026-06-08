@@ -25,6 +25,7 @@ from ..editing.operations import (
     trim_clip,
 )
 from ..editing.otio_sync import build_model
+from ..editing.word_cut import map_asset_range_to_seq
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
@@ -503,6 +504,25 @@ def _apply(db: Database, current: list[EditClip], body: OperationRequest) -> lis
             return move_clip(current, at, to)
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    if op == "delete_words":
+        w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
+        w1 = repos.get_word(db, _require(body.word_end_id, "word_end_id required"))
+        if w0 is None or w1 is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "word not found")
+        if w0["asset_id"] != w1["asset_id"]:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "words must be from the same asset"
+            )
+        lo = min(w0["start_frame"], w1["start_frame"])
+        hi = max(w0["end_frame"], w1["end_frame"])
+        span = map_asset_range_to_seq(current, asset_id=w0["asset_id"], src_lo=lo, src_hi=hi)
+        if span is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "selected words are not present in this timeline",
+            )
+        return delete_range(current, span[0], span[1])
 
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 
