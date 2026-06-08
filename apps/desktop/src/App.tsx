@@ -11,16 +11,20 @@ import {
   type Timeline,
   type UrlImportOptions,
 } from "./api";
+import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ImportBar } from "./components/ImportBar";
 import { ImportProgress } from "./components/ImportProgress";
+import { ImportView } from "./components/ImportView";
 import { InspectorPanel } from "./components/InspectorPanel";
+import { NavRail } from "./components/NavRail";
 import { Player } from "./components/Player";
 import { SceneInspector } from "./components/SceneInspector";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
 import { useAnalysis } from "./hooks/useAnalysis";
 import { useImportStatus } from "./hooks/useImportStatus";
+import type { Stage } from "./pipeline/stages";
 
 interface FpsPreset {
   label: string;
@@ -47,6 +51,8 @@ function fpsLabel(p: Project): string {
 }
 
 export function App(): ReactElement {
+  const [stage, setStage] = useState<Stage>("import");
+
   const [client, setClient] = useState<LauraClient | null>(null);
   const [offline, setOffline] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
@@ -318,241 +324,300 @@ export function App(): ReactElement {
         </div>
       )}
 
-      <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
-        {/* Library: projects + media */}
-        <section className="flex flex-col overflow-hidden bg-ink">
-          <div className="flex min-h-0 flex-1 flex-col border-b border-edge">
-            <h2 className="px-4 pb-2 pt-4 text-xs font-medium uppercase tracking-wide text-slate-500">
-              Projekte
-            </h2>
-            <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3">
-              {projects.map((p) => (
-                <li key={p.id} className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => void selectProject(p.id)}
-                    className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm transition ${
-                      p.id === selectedProjectId
-                        ? "bg-sky-600/20 text-sky-200"
-                        : "text-slate-200 hover:bg-panel"
-                    }`}
-                  >
-                    <div className="truncate font-medium">{p.name}</div>
-                    <div className="text-xs text-slate-500">{fpsLabel(p)} fps</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void onDeleteProject(p.id)}
-                    title="Projekt löschen"
-                    className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <form onSubmit={onCreateProject} className="space-y-2 p-3">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Neues Projekt…"
-                className="w-full rounded-md border border-edge bg-panel px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-500"
-              />
-              <select
-                value={presetIdx}
-                onChange={(e) => setPresetIdx(Number(e.target.value))}
-                className="w-full rounded-md border border-edge bg-panel px-2 py-2 text-xs text-slate-100 outline-none focus:border-slate-500"
-              >
-                {FPS_PRESETS.map((p, i) => (
-                  <option key={p.label} value={i}>
-                    {p.label} fps
-                  </option>
-                ))}
-              </select>
-              <button
-                type="submit"
-                disabled={busy || !client || !name.trim()}
-                className="w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
-              >
-                {busy ? "Lege an…" : "Projekt anlegen"}
-              </button>
-            </form>
-          </div>
+      <div className="flex min-h-0 flex-1">
+        <NavRail active={stage} onSelect={setStage} />
 
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center justify-between px-4 pb-2 pt-3">
-              <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Medien</h2>
-            </div>
-            <div className="px-3 pb-2">
-              <ImportBar
-                disabled={!selectedProjectId}
-                onUrls={(req) =>
-                  void runImport([], req.urls, {
-                    format: req.format,
-                    cookiesFromBrowser: req.cookiesFromBrowser ?? undefined,
-                  })
-                }
-                onPickFiles={() => {
-                  void (async () => {
-                    try {
-                      const files = await window.laura.pickMediaFiles();
-                      if (files.length > 0) await runImport(files, []);
-                    } catch (e) {
-                      setError(String(e));
-                    }
-                  })();
-                }}
-                onPickFolder={() => {
-                  void (async () => {
-                    try {
-                      const folder = await window.laura.pickFolder();
-                      if (folder) await runImport(await window.laura.listMediaInFolder(folder), []);
-                    } catch (e) {
-                      setError(String(e));
-                    }
-                  })();
-                }}
-              />
-            </div>
-            <form onSubmit={onSearch} className="space-y-1 px-3 pb-2">
-              <input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
-                disabled={!selectedProjectId}
-                className="w-full rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-slate-500 disabled:opacity-40"
-              />
-              <button
-                type="button"
-                onClick={() => setSemantic((s) => !s)}
-                disabled={!selectedProjectId}
-                title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
-                className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
-                  semantic ? "bg-sky-600/30 text-sky-200" : "bg-panel text-slate-400 hover:bg-edge"
-                }`}
-              >
-                {semantic ? "● semantisch" : "○ lexikalisch"}
-              </button>
-            </form>
-            {searchResults.length > 0 && (
-              <ul className="max-h-40 space-y-1 overflow-auto border-b border-edge px-3 pb-2">
-                {searchResults.map((r) => (
-                  <li key={r.segment_id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedAssetId(r.asset_id)}
-                      className="w-full truncate rounded bg-panel px-2 py-1 text-left text-xs text-slate-300 hover:bg-edge"
-                    >
-                      {r.score != null && (
-                        <span className="mr-1 text-emerald-400">{Math.round(r.score * 100)}%</span>
-                      )}
-                      <span className="text-slate-500">{r.asset_name}:</span> {r.text.slice(0, 60)}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-3">
-              {!selectedProjectId && (
-                <li className="px-1 py-2 text-xs text-slate-600">Wähle ein Projekt.</li>
-              )}
-              {selectedProjectId && assets.length === 0 && (
-                <li className="px-1 py-2 text-xs text-slate-600">Noch keine Medien importiert.</li>
-              )}
-              {assets.map((a) => (
-                <li key={a.id} className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedAssetId(a.id)}
-                      className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
-                        a.id === selectedAssetId
-                          ? "bg-sky-600/20 text-sky-200"
-                          : "text-slate-200 hover:bg-panel"
-                      }`}
-                    >
-                      {a.display_name}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void onDeleteAsset(a.id)}
-                      title="Medium löschen"
-                      className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
-                    >
-                      ×
-                    </button>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {stage === "download" && client && (
+            <DownloadView
+              client={client}
+              disabled={!selectedProjectId}
+              assets={assets}
+              onUrl={(u) => void importUrls([u])}
+            />
+          )}
+
+          {stage === "import" && client && (
+            <ImportView
+              client={client}
+              disabled={!selectedProjectId}
+              assets={assets}
+              onUrls={(req) =>
+                void importUrls(req.urls, {
+                  format: req.format,
+                  cookiesFromBrowser: req.cookiesFromBrowser ?? undefined,
+                })
+              }
+              onPickFiles={() => {
+                void (async () => {
+                  try {
+                    const f = await window.laura.pickMediaFiles();
+                    if (f.length) await importPaths(f);
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                })();
+              }}
+              onPickFolder={() => {
+                void (async () => {
+                  try {
+                    const folder = await window.laura.pickFolder();
+                    if (folder) await importPaths(await window.laura.listMediaInFolder(folder));
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                })();
+              }}
+            />
+          )}
+
+          {(stage === "roughcut" || stage === "finecut" || stage === "assemble") && (
+            <>
+              <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
+                {/* Library: projects + media */}
+                <section className="flex flex-col overflow-hidden bg-ink">
+                  <div className="flex min-h-0 flex-1 flex-col border-b border-edge">
+                    <h2 className="px-4 pb-2 pt-4 text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Projekte
+                    </h2>
+                    <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3">
+                      {projects.map((p) => (
+                        <li key={p.id} className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => void selectProject(p.id)}
+                            className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm transition ${
+                              p.id === selectedProjectId
+                                ? "bg-sky-600/20 text-sky-200"
+                                : "text-slate-200 hover:bg-panel"
+                            }`}
+                          >
+                            <div className="truncate font-medium">{p.name}</div>
+                            <div className="text-xs text-slate-500">{fpsLabel(p)} fps</div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteProject(p.id)}
+                            title="Projekt löschen"
+                            className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                          >
+                            ×
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                    <form onSubmit={onCreateProject} className="space-y-2 p-3">
+                      <input
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="Neues Projekt…"
+                        className="w-full rounded-md border border-edge bg-panel px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-500"
+                      />
+                      <select
+                        value={presetIdx}
+                        onChange={(e) => setPresetIdx(Number(e.target.value))}
+                        className="w-full rounded-md border border-edge bg-panel px-2 py-2 text-xs text-slate-100 outline-none focus:border-slate-500"
+                      >
+                        {FPS_PRESETS.map((p, i) => (
+                          <option key={p.label} value={i}>
+                            {p.label} fps
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="submit"
+                        disabled={busy || !client || !name.trim()}
+                        className="w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
+                      >
+                        {busy ? "Lege an…" : "Projekt anlegen"}
+                      </button>
+                    </form>
                   </div>
-                  {client && !isImportSettled(a) && (
-                    <AssetImportRow client={client} assetId={a.id} />
+
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="flex items-center justify-between px-4 pb-2 pt-3">
+                      <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Medien</h2>
+                    </div>
+                    <div className="px-3 pb-2">
+                      <ImportBar
+                        disabled={!selectedProjectId}
+                        onUrls={(req) =>
+                          void runImport([], req.urls, {
+                            format: req.format,
+                            cookiesFromBrowser: req.cookiesFromBrowser ?? undefined,
+                          })
+                        }
+                        onPickFiles={() => {
+                          void (async () => {
+                            try {
+                              const files = await window.laura.pickMediaFiles();
+                              if (files.length > 0) await runImport(files, []);
+                            } catch (e) {
+                              setError(String(e));
+                            }
+                          })();
+                        }}
+                        onPickFolder={() => {
+                          void (async () => {
+                            try {
+                              const folder = await window.laura.pickFolder();
+                              if (folder) await runImport(await window.laura.listMediaInFolder(folder), []);
+                            } catch (e) {
+                              setError(String(e));
+                            }
+                          })();
+                        }}
+                      />
+                    </div>
+                    <form onSubmit={onSearch} className="space-y-1 px-3 pb-2">
+                      <input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
+                        disabled={!selectedProjectId}
+                        className="w-full rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-slate-500 disabled:opacity-40"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSemantic((s) => !s)}
+                        disabled={!selectedProjectId}
+                        title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
+                        className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
+                          semantic ? "bg-sky-600/30 text-sky-200" : "bg-panel text-slate-400 hover:bg-edge"
+                        }`}
+                      >
+                        {semantic ? "● semantisch" : "○ lexikalisch"}
+                      </button>
+                    </form>
+                    {searchResults.length > 0 && (
+                      <ul className="max-h-40 space-y-1 overflow-auto border-b border-edge px-3 pb-2">
+                        {searchResults.map((r) => (
+                          <li key={r.segment_id}>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAssetId(r.asset_id)}
+                              className="w-full truncate rounded bg-panel px-2 py-1 text-left text-xs text-slate-300 hover:bg-edge"
+                            >
+                              {r.score != null && (
+                                <span className="mr-1 text-emerald-400">{Math.round(r.score * 100)}%</span>
+                              )}
+                              <span className="text-slate-500">{r.asset_name}:</span> {r.text.slice(0, 60)}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-3">
+                      {!selectedProjectId && (
+                        <li className="px-1 py-2 text-xs text-slate-600">Wähle ein Projekt.</li>
+                      )}
+                      {selectedProjectId && assets.length === 0 && (
+                        <li className="px-1 py-2 text-xs text-slate-600">Noch keine Medien importiert.</li>
+                      )}
+                      {assets.map((a) => (
+                        <li key={a.id} className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAssetId(a.id)}
+                              className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
+                                a.id === selectedAssetId
+                                  ? "bg-sky-600/20 text-sky-200"
+                                  : "text-slate-200 hover:bg-panel"
+                              }`}
+                            >
+                              {a.display_name}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void onDeleteAsset(a.id)}
+                              title="Medium löschen"
+                              className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                            >
+                              ×
+                            </button>
+                          </div>
+                          {client && !isImportSettled(a) && (
+                            <AssetImportRow client={client} assetId={a.id} />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </section>
+
+                {/* Preview: the source player */}
+                <section className="flex flex-col overflow-auto bg-ink p-4">
+                  {client && detailAsset ? (
+                    <Player asset={detailAsset} seekTo={seek} onFrame={setCurrentFrame} />
+                  ) : (
+                    <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+                      Wähle ein Medium oder importiere eines.
+                    </div>
                   )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
+                </section>
 
-        {/* Preview: the source player */}
-        <section className="flex flex-col overflow-auto bg-ink p-4">
-          {client && detailAsset ? (
-            <Player asset={detailAsset} seekTo={seek} onFrame={setCurrentFrame} />
-          ) : (
+                {/* Inspector: frame-accurate scene editor when a clip is selected, else
+                    analysis + metadata for the previewed asset. */}
+                <section className="flex flex-col overflow-hidden bg-ink">
+                  {client && selectedClip && selectedClipAsset ? (
+                    <SceneInspector
+                      client={client}
+                      clip={selectedClip}
+                      asset={selectedClipAsset}
+                      timelineId={roughCut!.id}
+                      onChange={reloadRoughCut}
+                      onSeek={seekToFrame}
+                    />
+                  ) : client && detailAsset ? (
+                    <InspectorPanel
+                      client={client}
+                      asset={detailAsset}
+                      analysis={analysis}
+                      canAppend={roughCut != null}
+                      onAppendShot={(s) => void onAppendShot(s)}
+                      onBuildFromShots={() => void onBuildFromShots()}
+                      buildResult={buildResult}
+                    />
+                  ) : (
+                    <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-slate-600">
+                      Inspector — wähle ein Medium.
+                    </div>
+                  )}
+                </section>
+              </main>
+
+              {client && (
+                <TimelineBar
+                  client={client}
+                  timeline={roughCut}
+                  onChange={reloadRoughCut}
+                  onScrub={previewClip}
+                  onSelect={setSelectedClipId}
+                />
+              )}
+
+              <TranscriptBar
+                client={client}
+                assetId={detailAsset?.id ?? null}
+                assetName={detailAsset?.display_name ?? null}
+                segments={analysis.segments}
+                note={analysis.note}
+                currentFrame={currentFrame}
+                onSeek={seekToFrame}
+                canAppend={roughCut != null}
+                onAppendSegment={(s) => void onAppendSegment(s)}
+              />
+            </>
+          )}
+
+          {stage === "export" && (
             <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
-              Wähle ein Medium oder importiere eines.
+              Export — kommt als nächste Stufe.
             </div>
           )}
-        </section>
-
-        {/* Inspector: frame-accurate scene editor when a clip is selected, else
-            analysis + metadata for the previewed asset. */}
-        <section className="flex flex-col overflow-hidden bg-ink">
-          {client && selectedClip && selectedClipAsset ? (
-            <SceneInspector
-              client={client}
-              clip={selectedClip}
-              asset={selectedClipAsset}
-              timelineId={roughCut!.id}
-              onChange={reloadRoughCut}
-              onSeek={seekToFrame}
-            />
-          ) : client && detailAsset ? (
-            <InspectorPanel
-              client={client}
-              asset={detailAsset}
-              analysis={analysis}
-              canAppend={roughCut != null}
-              onAppendShot={(s) => void onAppendShot(s)}
-              onBuildFromShots={() => void onBuildFromShots()}
-              buildResult={buildResult}
-            />
-          ) : (
-            <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-slate-600">
-              Inspector — wähle ein Medium.
-            </div>
-          )}
-        </section>
-      </main>
-
-      {client && (
-        <TimelineBar
-          client={client}
-          timeline={roughCut}
-          onChange={reloadRoughCut}
-          onScrub={previewClip}
-          onSelect={setSelectedClipId}
-        />
-      )}
-
-      <TranscriptBar
-        client={client}
-        assetId={detailAsset?.id ?? null}
-        assetName={detailAsset?.display_name ?? null}
-        segments={analysis.segments}
-        note={analysis.note}
-        currentFrame={currentFrame}
-        onSeek={seekToFrame}
-        canAppend={roughCut != null}
-        onAppendSegment={(s) => void onAppendSegment(s)}
-      />
+        </div>
+      </div>
     </div>
   );
 }
