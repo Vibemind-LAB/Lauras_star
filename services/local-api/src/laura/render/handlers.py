@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import repos
+from ..editing.otio_sync import resolve_clip_rows
 from ..jobs.runner import JobContext, JobHandler
 from .mp4 import render_clips_mp4
 
@@ -29,7 +30,7 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         raise ValueError("project not found")
 
     clips: list[tuple[Path, int, int]] = []
-    for c in repos.list_timeline_clips(ctx.db, exp["timeline_id"]):
+    for c in resolve_clip_rows(ctx.db, tl):
         a = repos.get_asset(ctx.db, c["asset_id"])
         if a is None:
             repos.set_export_error(ctx.db, export_id, f"asset not found: {c['asset_id']}")

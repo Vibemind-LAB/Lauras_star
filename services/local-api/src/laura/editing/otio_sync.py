@@ -9,12 +9,25 @@ from ..db import repos
 from ..db.database import Database
 from ..interchange.otio_io import timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
+from ..sequences.flatten import flatten_sequence
+
+
+def resolve_clip_rows(db: Database, timeline_row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the effective clip rows for a timeline.
+
+    For ``kind="sequence"`` timelines the content is flattened from ordered scene
+    references via ``flatten_sequence``; all other kinds use ``list_timeline_clips``
+    directly (non-sequence path is unchanged — regression-safe).
+    """
+    if timeline_row.get("kind") == "sequence":
+        return flatten_sequence(db, timeline_row["id"])
+    return repos.list_timeline_clips(db, timeline_row["id"])
 
 
 def build_model(db: Database, timeline_row: dict[str, Any]) -> Timeline:
     project = repos.get_project(db, timeline_row["project_id"])
     assert project is not None
-    clip_rows = repos.list_timeline_clips(db, timeline_row["id"])
+    clip_rows = resolve_clip_rows(db, timeline_row)
     assets = {
         aid: a
         for aid in {c["asset_id"] for c in clip_rows}
