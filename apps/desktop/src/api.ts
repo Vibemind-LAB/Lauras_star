@@ -646,6 +646,14 @@ export class LauraClient {
     return this.request<Scene[]>(`/timelines/${timelineId}/scenes`);
   }
 
+  getAssetRoughCut(projectId: string, assetId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/projects/${projectId}/assets/${assetId}/rough-cut`);
+  }
+
+  listProjectScenes(projectId: string): Promise<Scene[]> {
+    return this.request<Scene[]>(`/projects/${projectId}/scenes`);
+  }
+
   splitScene(timelineId: string, sceneId: string, atSeqFrame: number): Promise<Scene[]> {
     return this.request<Scene[]>(`/timelines/${timelineId}/scenes/${sceneId}/split`, {
       method: "POST",

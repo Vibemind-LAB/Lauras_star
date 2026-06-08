@@ -1,22 +1,50 @@
-import { type DragEvent, type ReactElement, useRef } from "react";
+import { type DragEvent, type ReactElement, useEffect, useRef, useState } from "react";
 
-import { type LauraClient } from "../api";
-import { useScenes } from "../hooks/useScenes";
+import { type LauraClient, type Scene } from "../api";
 import { useSequence } from "../hooks/useSequence";
 import { SequencePlayer } from "./SequencePlayer";
 
 export function AssembleView({
   client,
   projectId,
-  roughCutId,
+  // roughCutId is accepted for API compatibility but the Bin now sources scenes
+  // project-wide via listProjectScenes — this param is intentionally unused here.
+  roughCutId: _roughCutId,
   onSeekScene,
 }: {
   client: LauraClient;
   projectId: string | null;
-  roughCutId: string | null;
+  roughCutId?: string | null;
   onSeekScene: (sceneId: string) => void;
 }): ReactElement {
-  const { scenes } = useScenes(client, roughCutId);
+  const [scenes, setLocalScenes] = useState<Scene[]>([]);
+  const [binError, setBinError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (projectId === null) {
+      setLocalScenes([]);
+      setBinError(null);
+      return;
+    }
+    let cancelled = false;
+    client
+      .listProjectScenes(projectId)
+      .then((s) => {
+        if (!cancelled) {
+          setLocalScenes(s);
+          setBinError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setBinError(err instanceof Error ? err.message : "Fehler beim Laden der Szenen");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, projectId]);
+
   const { sequence, setScenes } = useSequence(client, projectId);
   const ids = (sequence?.items ?? []).map((i) => i.scene_id);
 
@@ -59,6 +87,9 @@ export function AssembleView({
 
       {/* Bin */}
       <div className="text-xs font-medium text-slate-400">Szenen-Bin</div>
+      {binError !== null && (
+        <div className="text-xs text-red-400">{binError}</div>
+      )}
       <div className="flex gap-2 overflow-x-auto pb-1">
         {scenes.length === 0 ? (
           <div className="text-xs text-slate-600">

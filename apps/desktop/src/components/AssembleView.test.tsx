@@ -16,7 +16,7 @@ const seq: Sequence = { timeline_id: "seq", project_id: "p",
   items: [{ id: "i1", scene_id: "s1", scene_name: "Szene 1", order_index: 0 }] };
 
 function client(over: Partial<LauraClient>): LauraClient {
-  return { listScenes: vi.fn().mockResolvedValue(scenes),
+  return { listProjectScenes: vi.fn().mockResolvedValue(scenes),
     getProjectSequence: vi.fn().mockResolvedValue(seq),
     setSequenceScenes: vi.fn().mockResolvedValue(seq), ...over } as unknown as LauraClient;
 }
@@ -27,7 +27,7 @@ describe("AssembleView", () => {
     const { getByTitle } = render(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.getProjectSequence).toHaveBeenCalledWith("p"));
-    await waitFor(() => expect(c.listScenes).toHaveBeenCalledWith("rc"));
+    await waitFor(() => expect(c.listProjectScenes).toHaveBeenCalledWith("p"));
     fireEvent.click(getByTitle("Szene 2 zur Sequenz hinzufügen"));
     await waitFor(() => expect(c.setSequenceScenes).toHaveBeenCalledWith("seq", ["s1", "s2"]));
   });
