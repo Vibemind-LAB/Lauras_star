@@ -814,3 +814,44 @@ def get_shot(db: Database, shot_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM shots WHERE id=?", (shot_id,)).fetchone()
         return dict(row) if row is not None else None
+
+
+# --- scenes (rough-cut marker layer) ---------------------------------------
+
+def get_scene(db: Database, scene_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM scenes WHERE id=?", (scene_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def list_scenes(db: Database, source_timeline_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scenes WHERE source_timeline_id=? ORDER BY order_index",
+            (source_timeline_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def replace_scenes(
+    db: Database,
+    project_id: str,
+    source_timeline_id: str,
+    ranges: list[tuple[int, int]],
+) -> None:
+    """Replace all scenes of a timeline with ``ranges`` (``(seq_in, seq_out_exclusive)``),
+    ordered. Reassigns ids + ``order_index``; names are positional ("Szene N")."""
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM scenes WHERE source_timeline_id=?", (source_timeline_id,))
+        for i, (sin, sout) in enumerate(ranges):
+            conn.execute(
+                "INSERT INTO scenes (id, project_id, source_timeline_id, name, order_index, "
+                "seq_in_frame, seq_out_frame_exclusive, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (new_id(), project_id, source_timeline_id, f"Szene {i + 1}", i, sin, sout, now),
+            )
+
+
+def update_scene_name(db: Database, scene_id: str, name: str) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE scenes SET name=? WHERE id=?", (name, scene_id))
