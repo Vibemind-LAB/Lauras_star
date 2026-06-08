@@ -323,6 +323,54 @@ export function App(): ReactElement {
           <h1 className="text-lg font-semibold tracking-tight text-white">Laura</h1>
           <span className="text-xs text-slate-400">frame-genauer KI-Filmschnitt · local-first</span>
         </div>
+        {client && (
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedProjectId ?? ""}
+              onChange={(e) => {
+                if (e.target.value) void selectProject(e.target.value);
+              }}
+              disabled={projects.length === 0}
+              aria-label="Projekt wählen"
+              className="max-w-[12rem] rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            >
+              <option value="">{projects.length ? "— Projekt wählen —" : "Kein Projekt"}</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <form onSubmit={(e) => void onCreateProject(e)} className="flex items-center gap-1">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Neues Projekt…"
+                aria-label="Neuer Projektname"
+                className="w-36 rounded bg-slate-800 px-2 py-1 text-xs text-slate-100"
+              />
+              <select
+                value={presetIdx}
+                onChange={(e) => setPresetIdx(Number(e.target.value))}
+                aria-label="Framerate"
+                className="rounded bg-slate-800 px-1 py-1 text-xs text-slate-100"
+              >
+                {FPS_PRESETS.map((p) => (
+                  <option key={`${p.num}-${p.den}-${String(p.drop)}`} value={FPS_PRESETS.indexOf(p)}>
+                    {`${Math.round((p.num / p.den) * 100) / 100}${p.drop ? " DF" : ""}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={!name.trim() || busy}
+                className="rounded bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-40"
+              >
+                + Anlegen
+              </button>
+            </form>
+          </div>
+        )}
         <HealthBadge health={health} offline={offline} />
       </header>
 
