@@ -190,6 +190,10 @@ class FromShotsRequest(BaseModel):
     merge_min_frames: int = Field(default=0, ge=0)
     align_editorial: bool = True        # snap clip cuts to transcript word-gaps (Stage 2)
     editorial_window: int = Field(default=12, ge=0)  # max frames a cut may move (~0.4s@30fps)
+    # Picture-vs-sound preference for joint visual+editorial placement: 0 = picture-first (keep
+    # the frame-exact visual cut), 1 = sound-first (favour the clean word edge). None -> the
+    # product default 0.6/0.4 visual/editorial weights. Only used when align_editorial is True.
+    cut_bias: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class DroppedShot(BaseModel):

@@ -9,7 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
 from .. import audit
-from ..analysis.editorial import Word, align_cut
+from ..analysis.editorial import Word
+from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
+from ..analysis.joint import bias_to_weights, joint_place
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
@@ -181,30 +183,76 @@ def import_timeline(
     )
 
 
-def _align_rows_editorial(
-    rows: list[dict[str, Any]], words: list[Word], *, window: int
-) -> None:
-    """Stage 2: nudge each clip's source IN onto a transcript word-gap, in place.
+def _resolve_video_path(
+    db: Database, asset_id: str, asset: dict[str, Any]
+) -> str | None:
+    """The readable video for the joint visual signal — proxy preferred, else original/source.
 
-    For every clip after the first, its ``src_in_frame`` is the cut between it and the
-    previous clip. ``align_cut`` snaps that frame to the nearest editorial-safe point (a
-    silence between words, or a word edge) within ``window``. The match is applied to BOTH
-    sides of the cut only when the two clips are truly contiguous in the source
-    (``prev.src_out_frame_exclusive == cur.src_in_frame``) — otherwise the cut sits across a
-    source gap and only the current clip's IN is moved, never inventing source frames.
-
-    The very first clip's start (typically source frame 0) is never touched. After all IN
-    frames settle, the sequence is repacked back-to-back from the new source lengths so clips
-    stay contiguous and end-exclusive on the timeline. Empty ``words`` or no reachable gap
-    leaves a cut exactly where the visual stage put it — editorial only ever refines.
+    Mirrors ``eval_cut_cli.resolve_video``: the CFR editorial proxy is the right surface for the
+    diff signal (it is what the shot detector ran on), falling back to an ``original`` derived
+    file and finally the asset's ``source_path``. Returns ``None`` when nothing on disk is
+    readable, in which case joint placement degrades to the editorial-only choice.
     """
-    if not words or window <= 0:
+    by_kind = {f["kind"]: f["path"] for f in repos.list_asset_files(db, asset_id)}
+    for kind in ("proxy", "original"):
+        path = by_kind.get(kind)
+        if path and Path(path).is_file():
+            return str(path)
+    src = asset.get("source_path")
+    if src and Path(src).is_file():
+        return str(src)
+    return None
+
+
+def _align_rows_editorial(
+    rows: list[dict[str, Any]],
+    words: list[Word],
+    *,
+    window: int,
+    w_visual: float = 0.6,
+    w_editorial: float = 0.4,
+    video_path: Path | str | None = None,
+    total_frames: int | None = None,
+    frame_loader: FrameLoader = load_gray_frames_ffmpeg,
+) -> None:
+    """Stage 2: place each clip's source IN by JOINT visual+editorial quality, in place.
+
+    For every clip after the first, its ``src_in_frame`` is the cut between it and the previous
+    clip. Instead of two separate snaps (visual peak, then an all-or-nothing editorial drag),
+    :func:`laura.analysis.joint.joint_place` picks the single frame in ``[cut-window, cut+window]``
+    that maximises ``w_visual*visual_score + w_editorial*editorial_score`` — so a clean word edge
+    only displaces the frame-exact visual peak when the blend says the trade is worth it. The
+    per-frame visual signal is decoded from the asset's video around the cut via ``frame_loader``
+    (``video_path``/``total_frames`` supplied by the caller); with no video it gracefully reduces
+    to the editorial-only choice, and with no words to the visual-only choice.
+
+    The match is applied to BOTH sides of the cut only when the two clips are truly contiguous in
+    the source (``prev.src_out_frame_exclusive == cur.src_in_frame``) — otherwise the cut sits
+    across a source gap and only the current clip's IN is moved, never inventing source frames.
+
+    The very first clip's start (typically source frame 0) is never touched. After all IN frames
+    settle, the sequence is repacked back-to-back from the new source lengths so clips stay
+    contiguous and end-exclusive on the timeline. Empty ``words`` (and no readable video) leaves
+    each cut exactly where the visual stage put it — placement only ever refines.
+    """
+    if window <= 0:
+        return
+    if not words and video_path is None:
         return
     for i in range(1, len(rows)):
         cur = rows[i]
         prev = rows[i - 1]
         cut = cur["src_in_frame"]
-        aligned, _kind = align_cut(cut, words, window=window)
+        aligned, _score = joint_place(
+            cut,
+            words,
+            window=window,
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            video_path=video_path,
+            total_frames=total_frames,
+            frame_loader=frame_loader,
+        )
         if aligned == cut:
             continue
         # Keep both source ranges non-empty; skip a move that would collapse a clip.
@@ -313,7 +361,16 @@ def timeline_from_shots(
         words = [
             Word(start_frame=w["start_frame"], end_frame=w["end_frame"]) for w in word_rows
         ]
-        _align_rows_editorial(rows, words, window=body.editorial_window)
+        w_visual, w_editorial = bias_to_weights(body.cut_bias)
+        _align_rows_editorial(
+            rows,
+            words,
+            window=body.editorial_window,
+            w_visual=w_visual,
+            w_editorial=w_editorial,
+            video_path=_resolve_video_path(db, body.asset_id, asset),
+            total_frames=asset.get("duration_frames"),
+        )
 
     if body.timeline_id is not None:
         target = repos.get_timeline(db, body.timeline_id)
