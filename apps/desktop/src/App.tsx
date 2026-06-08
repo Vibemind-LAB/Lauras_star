@@ -11,6 +11,7 @@ import {
   type Timeline,
   type UrlImportOptions,
 } from "./api";
+import { AssembleView } from "./components/AssembleView";
 import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ExportView } from "./components/ExportView";
@@ -408,7 +409,16 @@ export function App(): ReactElement {
             />
           )}
 
-          {stage === "assemble" && (
+          {stage === "assemble" && client && (
+            <AssembleView
+              client={client}
+              projectId={selectedProjectId}
+              roughCutId={roughCut?.id ?? null}
+              onSeekScene={() => undefined}
+            />
+          )}
+
+          {false && (
             <>
               <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
                 {/* Library: projects + media */}
