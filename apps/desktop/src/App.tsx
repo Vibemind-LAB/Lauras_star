@@ -328,22 +328,24 @@ export function App(): ReactElement {
         <NavRail active={stage} onSelect={setStage} />
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {stage === "download" && client && (
+          {stage === "download" && (client ? (
             <DownloadView
               client={client}
               disabled={!selectedProjectId}
               assets={assets}
-              onUrl={(u) => void importUrls([u])}
+              onUrl={(u) => void runImport([], [u])}
             />
-          )}
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-slate-600">Service offline — starte den lokalen Server.</div>
+          ))}
 
-          {stage === "import" && client && (
+          {stage === "import" && (client ? (
             <ImportView
               client={client}
               disabled={!selectedProjectId}
               assets={assets}
               onUrls={(req) =>
-                void importUrls(req.urls, {
+                void runImport([], req.urls, {
                   format: req.format,
                   cookiesFromBrowser: req.cookiesFromBrowser ?? undefined,
                 })
@@ -352,7 +354,7 @@ export function App(): ReactElement {
                 void (async () => {
                   try {
                     const f = await window.laura.pickMediaFiles();
-                    if (f.length) await importPaths(f);
+                    if (f.length) await runImport(f, []);
                   } catch (e) {
                     setError(String(e));
                   }
@@ -362,14 +364,16 @@ export function App(): ReactElement {
                 void (async () => {
                   try {
                     const folder = await window.laura.pickFolder();
-                    if (folder) await importPaths(await window.laura.listMediaInFolder(folder));
+                    if (folder) await runImport(await window.laura.listMediaInFolder(folder), []);
                   } catch (e) {
                     setError(String(e));
                   }
                 })();
               }}
             />
-          )}
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-slate-600">Service offline — starte den lokalen Server.</div>
+          ))}
 
           {(stage === "roughcut" || stage === "finecut" || stage === "assemble") && (
             <>
