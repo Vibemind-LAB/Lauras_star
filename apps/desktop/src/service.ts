@@ -47,9 +47,24 @@ async function waitForHealth(baseUrl: string, token: string, timeoutMs = 30000):
     try {
       const res = await fetch(`${baseUrl}/healthz`, { headers: { "X-Laura-Token": token } });
       if (res.ok) {
+        // /healthz is unauthenticated, so a *foreign* backend already holding this port
+        // answers it too — and then the renderer 401s on every real (authenticated) call.
+        // Verify this is actually our backend by making an authed request that must not 401.
+        const authed = await fetch(`${baseUrl}/projects`, {
+          headers: { "X-Laura-Token": token },
+        });
+        if (authed.status === 401) {
+          throw new Error(
+            `Port ${PORT} is already in use by another Laura backend (token mismatch). ` +
+              "Stop the other instance, then relaunch.",
+          );
+        }
         return;
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("token mismatch")) {
+        throw e; // a real conflict — don't keep polling a backend that isn't ours
+      }
       // not up yet — keep polling
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
