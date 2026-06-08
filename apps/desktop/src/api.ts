@@ -222,6 +222,18 @@ export interface SearchResult {
   score: number | null;
 }
 
+export interface Export {
+  id: string;
+  project_id: string;
+  timeline_id: string | null;
+  format: string;
+  status: "rendering" | "ready" | "error";
+  path: string | null;
+  size_bytes: number | null;
+  error: string | null;
+  created_at: string;
+}
+
 export type ExportFormat = "otio" | "edl" | "fcp7xml" | "fcpxml";
 
 export interface ExportResult {
@@ -304,6 +316,17 @@ export class LauraClient {
       method: "POST",
       body: JSON.stringify({ format }),
     });
+  }
+
+  renderTimeline(timelineId: string, format: string): Promise<{ export_id: string; job_id: string }> {
+    return this.request<{ export_id: string; job_id: string }>(`/timelines/${timelineId}/render`, {
+      method: "POST",
+      body: JSON.stringify({ format }),
+    });
+  }
+
+  listExports(projectId: string): Promise<Export[]> {
+    return this.request<Export[]>(`/projects/${projectId}/exports`);
   }
 
   listProjects(): Promise<Project[]> {
