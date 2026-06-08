@@ -28,6 +28,7 @@ export function ExportView({
   const load = useCallback(async (): Promise<void> => {
     if (!projectId) return;
     try {
+      setError(null);
       setExports(await client.listExports(projectId));
     } catch (e) {
       setError(String(e));

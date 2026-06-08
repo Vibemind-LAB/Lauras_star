@@ -31,6 +31,7 @@ from ..interchange.fcpx_xml import timeline_to_fcpx_xml
 from ..interchange.otio_io import otio_string_to_timeline, timeline_to_otio_string
 from ..interchange.timeline import Timeline, timeline_from_rows
 from ..interchange.validate import validate_export
+from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from .models import (
     ClipOut,
@@ -582,7 +583,7 @@ def render_timeline(
     )
     job_id = enqueue(
         db,
-        queue="export",
+        queue=queue_for("export.render"),
         kind="export.render",
         payload={"export_id": exp["id"]},
         idempotency_key=f"render:{exp['id']}",

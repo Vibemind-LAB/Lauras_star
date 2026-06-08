@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from ..db import repos
-from ..ingest.ffmpeg import FFmpegError
 from ..jobs.runner import JobContext, JobHandler
 from .mp4 import render_clips_mp4
 
@@ -25,12 +24,16 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         raise ValueError("timeline not found")
 
     project = repos.get_project(ctx.db, exp["project_id"])
-    assert project is not None
+    if project is None:
+        repos.set_export_error(ctx.db, export_id, "project not found")
+        raise ValueError("project not found")
 
     clips: list[tuple[Path, int, int]] = []
     for c in repos.list_timeline_clips(ctx.db, exp["timeline_id"]):
         a = repos.get_asset(ctx.db, c["asset_id"])
-        assert a is not None
+        if a is None:
+            repos.set_export_error(ctx.db, export_id, f"asset not found: {c['asset_id']}")
+            raise ValueError(f"asset not found: {c['asset_id']}")
         clips.append((Path(a["source_path"]), c["src_in_frame"], c["src_out_frame_exclusive"]))
 
     if not clips:
@@ -44,15 +47,14 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             rate_num=project["sequence_rate_num"],
             rate_den=project["sequence_rate_den"],
         )
-    except FFmpegError as e:
+        size_bytes = os.path.getsize(dest)
+    except Exception as e:  # noqa: BLE001 - persist the failure, drop partial output, re-raise
         repos.set_export_error(ctx.db, export_id, str(e)[-500:])
+        if dest.exists():
+            dest.unlink(missing_ok=True)
         raise
 
-    repos.set_export_done(
-        ctx.db, export_id,
-        path=str(dest),
-        size_bytes=os.path.getsize(dest),
-    )
+    repos.set_export_done(ctx.db, export_id, path=str(dest), size_bytes=size_bytes)
     return {"export_id": export_id, "path": str(dest)}
 
 

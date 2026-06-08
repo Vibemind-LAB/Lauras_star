@@ -16,14 +16,15 @@ def render_clips_mp4(
     """clips = [(source, in_frame, out_frame_exclusive)]. Trims each by frame range and
     concatenates them in order via the concat filter (re-encode -> robust across mixed sources)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fps = rate_num / rate_den
     inputs: list[str] = []
     filt: list[str] = []
     for i, (src, fin, fout) in enumerate(clips):
-        ss = fin / fps
-        to = fout / fps
+        # Frame-exact, end-exclusive: trim keeps input frames [start_frame, end_frame).
+        # Integer frames only — never float seconds (frame-accuracy invariant).
         inputs += ["-i", str(src)]
-        filt.append(f"[{i}:v]trim=start={ss:.4f}:end={to:.4f},setpts=PTS-STARTPTS[v{i}]")
+        filt.append(
+            f"[{i}:v]trim=start_frame={fin}:end_frame={fout},setpts=PTS-STARTPTS[v{i}]"
+        )
     concat_in = "".join(f"[v{i}]" for i in range(len(clips)))
     filter_complex = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0[out]"
     run_ffmpeg([
