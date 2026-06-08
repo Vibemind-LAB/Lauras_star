@@ -30,6 +30,7 @@ from .integrity import is_media_file, verify_decode
 from .probe import probe_asset, sha256_file
 from .proxy import build_poster, build_proxy
 from .waveform import compute_waveform
+from .ytdlp import download_via_ytdlp, needs_ytdlp, ytdlp_available
 
 
 class _ProgressWriter:
@@ -258,6 +259,27 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
             _finalize_media_asset(ctx, child, extra, full_scan=full_scan)
         return {"asset_id": asset["id"], "engine": "aria2", "media_files": len(media)}
 
+    # --- yt-dlp engine: "site" URLs (YouTube/Drive/Vimeo/...) need extraction ---
+    # Use it when available AND the URL is not a plain media link. Direct links keep
+    # the fast segmented downloader below. If yt-dlp is absent we fall through and let
+    # download_resumable try (and fail clearly) — import/analysis still work without it.
+    use_ytdlp = ytdlp_available() and needs_ytdlp(url)
+    if use_ytdlp:
+        ff_dir = str(Path(os.environ["LAURA_FFMPEG"]).parent) if os.environ.get(
+            "LAURA_FFMPEG"
+        ) else None
+        try:
+            media_path = download_via_ytdlp(
+                url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir
+            )
+        except RuntimeError as exc:
+            raise ValueError(f"yt-dlp download failed: {exc}") from exc
+        ok = _finalize_media_asset(ctx, asset, media_path, full_scan=full_scan)
+        if not ok:
+            raise ValueError("integrity check failed on yt-dlp download")
+        return {"asset_id": asset["id"], "engine": "ytdlp", "downloaded": str(media_path),
+                "size_bytes": os.path.getsize(media_path)}
+
     # --- httpx engine (HTTP/S): keep the existing strict single-asset policy ---
     raw_name = Path(asset["display_name"]).name or "download.bin"
     filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name) or "download.bin"
@@ -265,6 +287,27 @@ def handle_fetch(ctx: JobContext) -> dict[str, Any]:
     download_resumable(url, dest, on_progress=_on_progress)
     report = verify_decode(dest, full_scan=full_scan)
     if not report.ok:
+        # A "direct" link that turns out to be a page/redirect downloads non-media
+        # bytes. If yt-dlp is available, retry through it before giving up.
+        if ytdlp_available():
+            dest.unlink(missing_ok=True)
+            (dest.with_name(dest.name + ".part")).unlink(missing_ok=True)
+            shutil.rmtree(dest.with_name(dest.name + ".parts"), ignore_errors=True)
+            ff_dir = str(Path(os.environ["LAURA_FFMPEG"]).parent) if os.environ.get(
+                "LAURA_FFMPEG"
+            ) else None
+            try:
+                media_path = download_via_ytdlp(
+                    url, base_dir, on_progress=_on_progress, ffmpeg_dir=ff_dir
+                )
+            except RuntimeError as exc:
+                raise ValueError(f"yt-dlp fallback failed: {exc}") from exc
+            ok = _finalize_media_asset(ctx, asset, media_path, full_scan=full_scan)
+            if not ok:
+                raise ValueError("integrity check failed on yt-dlp fallback download")
+            return {"asset_id": asset["id"], "engine": "ytdlp-fallback",
+                    "downloaded": str(media_path),
+                    "size_bytes": os.path.getsize(media_path)}
         report_path = dest.parent / "integrity.json"
         report_path.write_text(json.dumps(asdict(report), indent=2), encoding="utf-8")
         repos.add_asset_file(
