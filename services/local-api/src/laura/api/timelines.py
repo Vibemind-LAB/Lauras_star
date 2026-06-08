@@ -600,7 +600,7 @@ def export_timeline(
     out_path = out_dir / f"timeline.{_EXT[fmt]}"
     out_path.write_text(content, encoding="utf-8")
 
-    export = repos.create_export(
+    export = repos.create_interchange_export(
         db, timeline_id=timeline_id, fmt=fmt, status="succeeded",
         output_path=str(out_path), options=body.options, diagnostics=diagnostics,
     )

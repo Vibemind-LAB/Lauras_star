@@ -498,7 +498,7 @@ def list_timeline_clips(db: Database, timeline_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def create_export(
+def create_interchange_export(
     db: Database,
     *,
     timeline_id: str,
@@ -512,19 +512,69 @@ def create_export(
     now = utcnow_iso()
     with db.transaction() as conn:
         conn.execute(
-            "INSERT INTO exports (id, timeline_id, format, status, output_path, options_json, "
-            "diagnostics_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO interchange_exports"
+            " (id, timeline_id, format, status, output_path, options_json,"
+            " diagnostics_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (eid, timeline_id, fmt, status, output_path, json.dumps(options),
              json.dumps(diagnostics), now),
         )
-        row = conn.execute("SELECT * FROM exports WHERE id=?", (eid,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM interchange_exports WHERE id=?", (eid,)
+        ).fetchone()
     return dict(row)
+
+
+def get_interchange_export(db: Database, export_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM interchange_exports WHERE id=?", (export_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+# --- render-pipeline exports -----------------------------------------------
+
+
+def create_export(
+    db: Database, *, project_id: str, timeline_id: str | None, format: str
+) -> dict[str, Any]:
+    eid = new_id()
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO exports (id, project_id, timeline_id, format, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'rendering', ?)",
+            (eid, project_id, timeline_id, format, now),
+        )
+    row = get_export(db, eid)
+    assert row is not None
+    return row
 
 
 def get_export(db: Database, export_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
-        row = conn.execute("SELECT * FROM exports WHERE id=?", (export_id,)).fetchone()
-        return dict(row) if row is not None else None
+        r = conn.execute("SELECT * FROM exports WHERE id=?", (export_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def list_exports(db: Database, project_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM exports WHERE project_id=? ORDER BY created_at DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_export_done(db: Database, export_id: str, *, path: str, size_bytes: int) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE exports SET status='ready', path=?, size_bytes=? WHERE id=?",
+                     (path, size_bytes, export_id))
+
+
+def set_export_error(db: Database, export_id: str, error: str) -> None:
+    with db.transaction() as conn:
+        conn.execute("UPDATE exports SET status='error', error=? WHERE id=?", (error, export_id))
 
 
 def get_word(db: Database, word_id: str) -> dict[str, Any] | None:
