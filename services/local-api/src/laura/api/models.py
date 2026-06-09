@@ -546,3 +546,24 @@ class SequenceOut(BaseModel):
 
 class SetSequenceScenesRequest(BaseModel):
     scene_ids: list[str]
+
+
+# --- overlays (replacement-lane) -------------------------------------------
+class OverlayRequest(BaseModel):
+    asset_id: str
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+    lane: int = 1
+    src_in_frame: int = 0
+
+
+class OverlayOut(BaseModel):
+    id: str
+    timeline_id: str
+    asset_id: str
+    lane: int
+    role: str
+    src_in_frame: int
+    src_out_frame_exclusive: int
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
