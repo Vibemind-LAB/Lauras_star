@@ -87,3 +87,52 @@ Die KI-Logik = **die Vibemind-Module** als optionale Dep (separat, GPU-isoliert)
 
 GPU-Verfügbarkeit unter Windows (insightface/musetalk); Modell-Downloads; ElevenLabs/OpenAI-Keys +
 Kosten; Lizenzen der Modelle; Ethik/Recht (Consent-Pflicht). Vor AI-3/AI-4 klären.
+
+---
+
+## Update — Modell-Adapter, Kennzeichnung (2 Ebenen), Aufnahme, Probe
+
+### Modell-Adapter (pluggable) — lizenz-sauber
+
+Laura ruft nur `face_swap(clip|frame, target)` — das Backend ist Config:
+
+| Backend | Lizenz | für |
+|---|---|---|
+| inswapper_128 (lokal, insightface) | **non-commercial** | Dev/Demo/intern, **nicht** veröffentlicht |
+| **Picsi.ai** (InsightFace-eigene API, Modelle „Dax"/„Evi", closed) | **kommerziell** | veröffentlichte Education+Marketing-Inhalte |
+| DeepSwap-API · Magic Hour-API · Replicate `easel/advanced-face-swap` | kommerziell (paid) | Alternativen |
+
+→ Kommerziell = praktisch **API-Backend** (Cloud, Kosten); gute *lokale* kommerziell-lizenzierte
+Swap-Gewichte sind rar. Picsi.ai ist die Hausmarke der inswapper-Macher → naheliegendste Lizenz.
+Open-Source-Code bleibt davon unberührt; nur das gewählte Backend entscheidet die Nutzungsrechte.
+
+### Deepfake-Kennzeichnung — **2 Ebenen** (Pflicht, sobald Faceswap an)
+
+- **Ebene 1 — sichtbar:** Burn-in-Label im Render (ffmpeg `drawtext`/`overlay`), z.B. „KI · Deepfake".
+  Erfüllt die EU-AI-Act-Kennzeichnungspflicht (2026 zunehmend Mandat).
+- **Ebene 2 — unsichtbar („versteckter Pixel-Code" = Verifikation „mit Laura erstellt"):**
+  robustes **Pixel-Wasserzeichen** (übersteht Re-Encode/Screenshot) → **Meta Video Seal**
+  (Open-Source, Frequenzdomäne, für Video) **+ C2PA Content Credentials** (signiertes Provenienz-
+  Manifest). Pixel-WZ trägt das Signal *im Bild*, C2PA das signierte „nutrition label" *in den
+  Metadaten* — ergänzen sich (Metadaten lassen sich strippen, Pixel-WZ nicht).
+- **Verify-Tool:** liest Video Seal + C2PA → bestätigt Herkunft. (Vgl. SynthID/AudioSeal als Alternativen.)
+
+### Aufnahme (neue Ingest-Quelle)
+
+Kamera/Screen-Capture als Quelle: Electron `getUserMedia`/`getDisplayMedia` → `MediaRecorder` →
+Datei → **normaler Laura-Ingest** (probe/proxy/audio-extract). So nimmt man Quell- *oder* Ziel-
+Material direkt auf, ohne Import.
+
+### Face-Probe / Vorschau (vor dem langsamen Voll-Render)
+
+Schnelltest „passt das Gesicht auf diese Person?": ein paar **Sample-Frames** swappen (oder
+Live-Vorschau über das vorhandene `faceswap/live_server.py`) → Vorher/Nachher zeigen, **bevor** der
+~3,7-fps-Voll-Render läuft. Spart Zeit, zeigt Qualität früh.
+
+### Quellen (Recherche)
+
+Faceswap-Lizenz/Optionen: [InsightFace commercial licensing](https://www.insightface.ai/services/models-commercial-licensing) ·
+[Replicate advanced-face-swap (commercial)](https://replicate.com/easel/advanced-face-swap) ·
+[DeepSwap](https://www.nemovideo.com/alternative/deepswap). Kennzeichnung/Provenienz:
+[C2PA vs SynthID vs Meta Video Seal](https://www.simalabs.ai/resources/c2pa-vs-synthid-vs-meta-video-seal-2025-enterprise-ai-video-authenticity) ·
+[C2PA & Watermarking-Mandate 2026](https://magiclight.ai/news/c2pa-and-global-watermarking-mandates-for-ai-video-in-2026/).
