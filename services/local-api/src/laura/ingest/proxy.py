@@ -39,7 +39,10 @@ def build_proxy(
         "-crf", "20",
         "-g", "1",                 # all-intra: every frame a keyframe
         "-pix_fmt", "yuv420p",
-        "-an",                     # audio handled separately
+        # Include AAC audio so the editorial player has sound. Separate wav extracts are
+        # still produced for analysis/waveform. No-op when the source has no audio stream.
+        "-c:a", "aac",
+        "-b:a", "192k",
         "-movflags", "+faststart", # moov atom up front -> progressive/range streaming
         str(dest),
     ]
