@@ -17,6 +17,7 @@ def render_clips_mp4(
     vertical: bool = False,
     hook_text: str | None = None,
     disclosure_text: str | None = None,
+    caption_ass: str | None = None,
 ) -> None:
     """Trim each clip by frame range (end-exclusive) and concat into one MP4.
 
@@ -31,6 +32,13 @@ def render_clips_mp4(
 
     With no tracks (or ``music_tracks=None``) the output is video-only
     (unchanged — backward compatible).
+
+    ``caption_ass`` is an optional complete ASS document string (as returned by
+    ``build_ass``).  When set, the subtitles are burned into the output using
+    the ffmpeg ``ass=`` filter.  The file is written next to *dest*, added to
+    the ``reel_files`` cleanup list, and removed after the render regardless of
+    success or failure.  Defaults to ``None`` (no captions, byte-identical to
+    the pre-R1.2 behaviour).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
@@ -63,6 +71,13 @@ def render_clips_mp4(
         reel_files.append(disc_path)
         disc_tf = disc_path.name
 
+    ass_basename: str | None = None
+    if caption_ass:
+        ass_path = dest.parent / f"{dest.stem}.reel_caption.ass"
+        ass_path.write_text(caption_ass, encoding="utf-8")
+        reel_files.append(ass_path)
+        ass_basename = ass_path.name
+
     try:
         reel = reel_video_chain(
             vertical=vertical,
@@ -70,10 +85,12 @@ def render_clips_mp4(
             disclosure_textfile=disc_tf,
             font=resolve_font(),
         )
-        concat_out = "[vcat]" if reel else "[out]"
+        caption_filter = f"ass={ass_basename}" if ass_basename else ""
+        post = ",".join(p for p in (reel, caption_filter) if p)
+        concat_out = "[vcat]" if post else "[out]"
         parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
-        if reel:
-            parts += f";[vcat]{reel}[out]"
+        if post:
+            parts += f";[vcat]{post}[out]"
 
         audio_maps: list[str] = []
         tracks = music_tracks or []
