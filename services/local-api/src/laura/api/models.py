@@ -511,6 +511,12 @@ class RenderRequest(BaseModel):
     format: str = "mp4"
 
 
+class ReelRenderRequest(BaseModel):
+    hook_text: str | None = None
+    disclosure_text: str | None = "KI · synthetisch"
+    vertical: bool = True
+
+
 class RenderExportOut(BaseModel):
     id: str
     project_id: str

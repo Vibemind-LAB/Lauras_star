@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import PIPELINE_VERSION, __version__
 from .analysis.handlers import register_analysis_handlers
-from .api import admin, analysis, assets, jobs, projects, scenes, search, sequences, timelines
+from .api import admin, analysis, assets, jobs, projects, reels, scenes, search, sequences, timelines
 from .api.models import HealthOut
 from .api.ratelimit import RateLimiter, make_rate_limit_middleware
 from .config import Settings, ensure_workspace
@@ -88,6 +88,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(analysis.router)
     app.include_router(timelines.router)
+    app.include_router(reels.router)
     app.include_router(admin.router)
     app.include_router(search.router)
     app.include_router(scenes.router)
