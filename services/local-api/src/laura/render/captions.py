@@ -1,0 +1,203 @@
+"""Pure ASS (Advanced SubStation Alpha) karaoke caption builder for burned-in reel captions.
+
+No file I/O, no ffmpeg calls — this is a pure string builder.
+
+Invariants (CLAUDE.md §"Nicht verhandelbare Invarianten"):
+- All timing state is kept in integer frames.
+- ASS centiseconds are produced *only* at the format edge (``_frame_to_ass_time``).
+- ASS is an export artefact; it is never the source of truth.
+"""
+
+from __future__ import annotations
+
+# Word = (text, start_frame, end_frame)  — end_frame is end-exclusive per project invariant.
+Word = tuple[str, int, int]
+Line = list[Word]
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+_STYLE_FORMAT = (
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+    "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+    "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+)
+
+_EVENTS_FORMAT = "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+
+
+def _frame_to_ass_time(frame: int, rate_num: int, rate_den: int) -> str:
+    """Convert an integer frame index to ASS time ``h:mm:ss.cc``.
+
+    ASS uses centiseconds (1/100 s).  Hours have *no* leading zero by
+    convention (``0:00:01.00``, not ``00:00:01.00``).
+
+    The conversion is done as pure integer arithmetic to avoid float drift,
+    then a single division at the end produces the centisecond component.
+    """
+    # total centiseconds = frame * rate_den * 100 / rate_num  (rounded)
+    # Use integer rounding: add rate_num//2 before dividing for HALF_UP.
+    total_cs_numerator = frame * rate_den * 100
+    total_cs = (total_cs_numerator + rate_num // 2) // rate_num
+
+    # Split into components.
+    h, rem = divmod(total_cs, 360000)   # 100 * 3600
+    m, rem = divmod(rem, 6000)          # 100 * 60
+    s, cc = divmod(rem, 100)
+
+    # cc is already in [0, 99] after the divmod; rounding in integer division
+    # can produce total_cs values that are exact multiples of 6000/360000 so
+    # cc never reaches 100 via this path — but guard anyway.
+    if cc >= 100:  # pragma: no cover
+        cc -= 100
+        s += 1
+        if s >= 60:
+            s -= 60
+            m += 1
+            if m >= 60:
+                m -= 60
+                h += 1
+
+    return f"{h}:{m:02d}:{s:02d}.{cc:02d}"
+
+
+def _escape_ass_text(text: str) -> str:
+    """Escape *word text* so it cannot break ASS override-block syntax.
+
+    Rules:
+    - ``{`` / ``}`` open/close override blocks → replace with ``(`` / ``)``.
+    - Backslash starts tag sequences inside override blocks; outside they are
+      passed through by most renderers but can form spurious ``\\N`` (hard
+      newline) or ``\\h`` (non-breaking space) → drop stray backslashes.
+    - Literal newlines in a word are rare but normalised to ASS hard-newline.
+    """
+    text = text.replace("\\", "")      # drop backslashes first (before \n check)
+    text = text.replace("\n", r"\N")   # soft-wrap → hard ASS newline
+    text = text.replace("{", "(")
+    text = text.replace("}", ")")
+    return text
+
+
+def _kf_cs(start_frame: int, end_frame: int, rate_num: int, rate_den: int) -> int:
+    """Duration of a karaoke syllable in centiseconds (rounded to nearest int)."""
+    duration_cs_num = (end_frame - start_frame) * rate_den * 100
+    return (duration_cs_num + rate_num // 2) // rate_num
+
+
+def _build_dialogue_text(words: Line, rate_num: int, rate_den: int) -> str:
+    """Build the ASS ``Text`` field with ``{\\kf<cs>}`` karaoke tags."""
+    parts: list[str] = []
+    for text, start_frame, end_frame in words:
+        cs = _kf_cs(start_frame, end_frame, rate_num, rate_den)
+        escaped = _escape_ass_text(text)
+        parts.append(f"{{\\kf{cs}}}{escaped}")
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def build_ass(
+    lines: list[list[tuple[str, int, int]]],
+    *,
+    rate_num: int,
+    rate_den: int,
+    play_w: int = 1080,
+    play_h: int = 1920,
+    fontsize: int = 72,
+    margin_v: int = 250,
+) -> str:
+    """Build a complete ASS document with karaoke word-by-word highlighting.
+
+    Parameters
+    ----------
+    lines:
+        Each element is a *line* = list of ``(text, start_frame, end_frame)``
+        tuples.  ``end_frame`` is end-exclusive (project invariant).
+    rate_num, rate_den:
+        Frame rate as a rational ``rate_num / rate_den`` (e.g. 30/1, 24000/1001).
+    play_w, play_h:
+        ASS PlayRes dimensions.
+    fontsize:
+        Point size of the Reel style.
+    margin_v:
+        Vertical margin (pixels from bottom edge for Alignment 2).
+
+    Returns
+    -------
+    str
+        A complete ``.ass`` document as a Unicode string (LF line endings).
+    """
+    sections: list[str] = []
+
+    # ------------------------------------------------------------------
+    # [Script Info]
+    # ------------------------------------------------------------------
+    sections.append(
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {play_w}\n"
+        f"PlayResY: {play_h}\n"
+        "WrapStyle: 2\n"
+    )
+
+    # ------------------------------------------------------------------
+    # [V4+ Styles]
+    # ------------------------------------------------------------------
+    style_fields = (
+        "Reel"           # Name
+        ",Arial"         # Fontname
+        f",{fontsize}"   # Fontsize
+        ",&H00FFFFFF"    # PrimaryColour   — white
+        ",&H0000FFFF"    # SecondaryColour — karaoke pre-highlight (cyan)
+        ",&H00000000"    # OutlineColour   — black
+        ",&H80000000"    # BackColour      — semi-transparent black
+        ",1"             # Bold
+        ",0"             # Italic
+        ",0"             # Underline
+        ",0"             # StrikeOut
+        ",100"           # ScaleX
+        ",100"           # ScaleY
+        ",0"             # Spacing
+        ",0"             # Angle
+        ",1"             # BorderStyle
+        ",3"             # Outline
+        ",1"             # Shadow
+        ",2"             # Alignment — bottom-centre
+        ",80"            # MarginL
+        ",80"            # MarginR
+        f",{margin_v}"   # MarginV
+        ",1"             # Encoding
+    )
+    sections.append(
+        "[V4+ Styles]\n"
+        f"{_STYLE_FORMAT}\n"
+        f"Style: {style_fields}\n"
+    )
+
+    # ------------------------------------------------------------------
+    # [Events]
+    # ------------------------------------------------------------------
+    dialogue_rows: list[str] = []
+    for line in lines:
+        non_empty = [w for w in line if w[0]]
+        if not non_empty:
+            continue
+        start_frame = non_empty[0][1]
+        end_frame = non_empty[-1][2]
+        start_t = _frame_to_ass_time(start_frame, rate_num, rate_den)
+        end_t = _frame_to_ass_time(end_frame, rate_num, rate_den)
+        text = _build_dialogue_text(non_empty, rate_num, rate_den)
+        dialogue_rows.append(
+            f"Dialogue: 0,{start_t},{end_t},Reel,,0,0,0,,{text}"
+        )
+
+    events_body = "\n".join(dialogue_rows)
+    if events_body:
+        events_body += "\n"
+    sections.append(f"[Events]\n{_EVENTS_FORMAT}\n{events_body}")
+
+    return "\n".join(sections)
