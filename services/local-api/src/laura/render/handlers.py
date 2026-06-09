@@ -68,6 +68,8 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
                     int(scene["music_gain_percent"]),
                 )]
 
+    opts: dict[str, object] = exp.get("options") or {}
+
     dest = Path(project["workspace_root"]) / "exports" / f"{export_id}.mp4"
     try:
         render_clips_mp4(
@@ -75,6 +77,9 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             rate_num=project["sequence_rate_num"],
             rate_den=project["sequence_rate_den"],
             music_tracks=music_tracks if music_tracks else None,
+            vertical=bool(opts.get("vertical", False)),
+            hook_text=opts.get("hook_text"),  # type: ignore[arg-type]
+            disclosure_text=opts.get("disclosure_text"),  # type: ignore[arg-type]
         )
         size_bytes = os.path.getsize(dest)
     except Exception as e:  # noqa: BLE001 - persist the failure, drop partial output, re-raise
