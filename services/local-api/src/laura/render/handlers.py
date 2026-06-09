@@ -10,6 +10,8 @@ from ..db import repos
 from ..editing.otio_sync import resolve_clip_rows
 from ..jobs.runner import JobContext, JobHandler
 from ..sequences.music import sequence_music_tracks
+from .captions import build_ass, group_caption_lines
+from .captions_source import timeline_caption_words
 from .mp4 import render_clips_mp4
 
 
@@ -70,6 +72,17 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
 
     opts: dict[str, object] = exp.get("options") or {}
 
+    caption_ass: str | None = None
+    if opts.get("captions"):
+        words = timeline_caption_words(ctx.db, exp["timeline_id"])
+        lines = group_caption_lines(words)
+        if lines:
+            caption_ass = build_ass(
+                lines,
+                rate_num=project["sequence_rate_num"],
+                rate_den=project["sequence_rate_den"],
+            )
+
     dest = Path(project["workspace_root"]) / "exports" / f"{export_id}.mp4"
     try:
         render_clips_mp4(
@@ -80,6 +93,7 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             vertical=bool(opts.get("vertical", False)),
             hook_text=opts.get("hook_text"),  # type: ignore[arg-type]
             disclosure_text=opts.get("disclosure_text"),  # type: ignore[arg-type]
+            caption_ass=caption_ass,
         )
         size_bytes = os.path.getsize(dest)
     except Exception as e:  # noqa: BLE001 - persist the failure, drop partial output, re-raise

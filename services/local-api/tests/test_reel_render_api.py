@@ -45,7 +45,26 @@ def test_render_reel_creates_export_with_options(tmp_path: Path) -> None:
         "vertical": True,
         "hook_text": "H",
         "disclosure_text": "KI",
+        "captions": False,
     }
+
+
+def test_render_reel_captions_stored_in_options(tmp_path: Path) -> None:
+    """POST render-reel with captions=true stores options.captions=True in the export."""
+    client, db = _client_db(tmp_path)
+    pid = _project(client)
+    tl = repos.create_timeline(db, project_id=pid, name="cut", kind="rough_cut")
+
+    r = client.post(
+        f"/timelines/{tl['id']}/render-reel",
+        json={"captions": True, "hook_text": "H"},
+    )
+    assert r.status_code == 202
+
+    export_id = r.json()["export_id"]
+    export = repos.get_export(db, export_id)
+    assert export is not None
+    assert export["options"]["captions"] is True
 
 
 def test_render_reel_unknown_timeline_404(tmp_path: Path) -> None:

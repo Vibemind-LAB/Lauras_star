@@ -105,3 +105,63 @@ def test_no_options_uses_defaults(monkeypatch: Any, tmp_path: Path) -> None:
     assert captured.get("vertical") is False
     assert captured.get("hook_text") is None
     assert captured.get("disclosure_text") is None
+
+
+def test_captions_option_builds_ass_and_forwards(monkeypatch: Any, tmp_path: Path) -> None:
+    """When options={'captions': True}, the handler calls timeline_caption_words,
+    builds an ASS string and passes it to render_clips_mp4 as caption_ass."""
+    captured: dict[str, Any] = {}
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        return [("Hallo", 0, 15), ("Welt", 15, 30)]
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_caption_words)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    exp = repos.create_export(
+        db,
+        project_id=project["id"],
+        timeline_id=tl["id"],
+        format="mp4",
+        options={"captions": True},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    ass = captured.get("caption_ass")
+    assert isinstance(ass, str) and len(ass) > 0
+    assert "Dialogue:" in ass
+
+
+def test_captions_false_passes_none(monkeypatch: Any, tmp_path: Path) -> None:
+    """When captions is falsy, caption_ass must be None and caption_words is not consulted."""
+    captured: dict[str, Any] = {}
+    words_called: list[bool] = []
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        words_called.append(True)
+        return [("Hallo", 0, 15)]
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_caption_words)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    exp = repos.create_export(
+        db,
+        project_id=project["id"],
+        timeline_id=tl["id"],
+        format="mp4",
+        options={},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    assert captured.get("caption_ass") is None
+    assert words_called == []  # stub must not have been called

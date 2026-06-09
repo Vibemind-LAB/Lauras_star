@@ -41,6 +41,7 @@ def render_reel(
             "vertical": body.vertical,
             "hook_text": body.hook_text,
             "disclosure_text": body.disclosure_text,
+            "captions": body.captions,
         },
     )
     job_id = enqueue(

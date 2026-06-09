@@ -515,6 +515,7 @@ class ReelRenderRequest(BaseModel):
     hook_text: str | None = None
     disclosure_text: str | None = "KI · synthetisch"
     vertical: bool = True
+    captions: bool = False
 
 
 class RenderExportOut(BaseModel):
