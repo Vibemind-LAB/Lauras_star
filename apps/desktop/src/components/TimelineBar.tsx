@@ -6,6 +6,7 @@ import {
   type Operation,
   type Timeline,
   type TimelineClip,
+  type Segment,
 } from "../api";
 
 const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
@@ -279,6 +280,7 @@ export function TimelineBar({
   onChange,
   onScrub,
   onSelect,
+  segments,
 }: {
   client: LauraClient;
   timeline: Timeline | null;
@@ -288,6 +290,9 @@ export function TimelineBar({
   /** Notify the parent which clip is selected (null = none) so it can open the
    *  SceneInspector. TimelineBar keeps its own `selected` state as the source of truth. */
   onSelect?: (clipId: string | null) => void;
+  /** Optional transcript — renders a 3rd "TX" lane with each spoken word placed at its
+   *  position on the sequence (words trimmed out of the cut simply don't appear). */
+  segments?: Segment[];
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -382,6 +387,32 @@ export function TimelineBar({
 
   const tl = timeline;
   const total = tl.clips.reduce((m, c) => Math.max(m, c.seq_out_frame_exclusive), 0);
+  // Map each transcript word (asset source frames) onto the sequence timeline via the clip
+  // that contains it. Words trimmed out of the cut have no containing clip and are dropped.
+  const transcriptWords =
+    total > 0 && segments
+      ? segments.flatMap((seg) =>
+          seg.words.flatMap((w) => {
+            const clip = tl.clips.find(
+              (c) => c.src_in_frame <= w.start_frame && w.start_frame < c.src_out_frame_exclusive,
+            );
+            if (!clip) return [];
+            const seqStart = clip.seq_in_frame + (w.start_frame - clip.src_in_frame);
+            const srcEnd = Math.min(w.end_frame, clip.src_out_frame_exclusive);
+            const seqEnd = clip.seq_in_frame + (srcEnd - clip.src_in_frame);
+            return [
+              {
+                id: w.id,
+                text: w.text,
+                assetId: clip.asset_id,
+                srcFrame: w.start_frame,
+                leftPct: (seqStart / total) * 100,
+                widthPct: Math.max(0.4, ((seqEnd - seqStart) / total) * 100),
+              },
+            ];
+          }),
+        )
+      : [];
   const sel = tl.clips.find((c) => c.id === selected) ?? null;
 
   async function runOp(op: Operation): Promise<void> {
@@ -791,6 +822,29 @@ export function TimelineBar({
           {audioDrag && (
             <div className="pl-8 text-[10px] text-emerald-300" data-testid="audio-offset-readout">
               {offsetLabel(audioDrag.offsetFrames)}
+            </div>
+          )}
+          {/* TX — transcript lane: each spoken word placed at its position on the sequence. */}
+          {transcriptWords.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">TX</span>
+              <div
+                aria-label="Transkript-Spur"
+                className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-ink/40"
+              >
+                {transcriptWords.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => onScrub?.(w.assetId, w.srcFrame)}
+                    title={w.text}
+                    style={{ left: `${w.leftPct}%`, width: `${w.widthPct}%` }}
+                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-edge/60 px-0.5 text-left text-[10px] leading-7 text-slate-300 hover:bg-sky-600/40 hover:text-white"
+                  >
+                    {w.text}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>

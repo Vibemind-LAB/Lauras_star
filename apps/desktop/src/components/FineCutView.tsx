@@ -103,6 +103,7 @@ export function FineCutView({
           onChange={() => void scene.reload()}
           onScrub={(_assetId, frame) => onSeek(frame)}
           onSelect={setSelectedClipId}
+          segments={segments}
         />
 
         <TranscriptBar
