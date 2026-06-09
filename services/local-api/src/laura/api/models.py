@@ -244,6 +244,7 @@ class ClipOut(BaseModel):
     seq_in_frame: int
     seq_out_frame_exclusive: int
     lane: int
+    role: str = "base"
     speaker_id: str | None = None
     origin_word_start_id: str | None = None
     origin_word_end_id: str | None = None
@@ -546,6 +547,33 @@ class SequenceOut(BaseModel):
 
 class SetSequenceScenesRequest(BaseModel):
     scene_ids: list[str]
+
+
+# --- reenact / consent -------------------------------------------------------
+class ConsentRequest(BaseModel):
+    subject_label: str
+    source_asset_id: str | None = None
+    confirmed_by: str | None = None
+    note: str | None = None
+
+
+class ConsentOut(BaseModel):
+    id: str
+    project_id: str
+    subject_label: str
+    source_asset_id: str | None
+    confirmed_by: str | None
+    confirmed_at: str
+    note: str | None
+    revoked_at: str | None
+
+
+class ReenactRequest(BaseModel):
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+    portrait_asset_id: str
+    consent_id: str  # MANDATORY — missing -> 422 automatically
+    backend: str | None = None
 
 
 # --- overlays (replacement-lane) -------------------------------------------

@@ -23,6 +23,7 @@ from .api import (
     overlays,
     projects,
     reels,
+    reenact,
     scenes,
     search,
     sequences,
@@ -104,6 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(timelines.router)
     app.include_router(reels.router)
     app.include_router(overlays.router)
+    app.include_router(reenact.router)
     app.include_router(admin.router)
     app.include_router(search.router)
     app.include_router(scenes.router)
