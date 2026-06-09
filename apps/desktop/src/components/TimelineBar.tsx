@@ -281,6 +281,7 @@ export function TimelineBar({
   onScrub,
   onSelect,
   segments,
+  currentFrame,
 }: {
   client: LauraClient;
   timeline: Timeline | null;
@@ -293,6 +294,8 @@ export function TimelineBar({
   /** Optional transcript — renders a 3rd "TX" lane with each spoken word placed at its
    *  position on the sequence (words trimmed out of the cut simply don't appear). */
   segments?: Segment[];
+  /** The player's current SOURCE frame; drawn as a playhead across all lanes. */
+  currentFrame?: number;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -413,6 +416,16 @@ export function TimelineBar({
           }),
         )
       : [];
+  // Playhead position as a fraction of the sequence: map the player's current SOURCE frame
+  // onto the sequence via the clip that contains it (same mapping as the transcript words).
+  const playheadFrac = (() => {
+    if (currentFrame == null || total <= 0) return null;
+    const cf = currentFrame;
+    const clip = tl.clips.find((c) => c.src_in_frame <= cf && cf < c.src_out_frame_exclusive);
+    if (!clip) return null;
+    const seqFrame = clip.seq_in_frame + (cf - clip.src_in_frame);
+    return Math.min(1, Math.max(0, seqFrame / total));
+  })();
   const sel = tl.clips.find((c) => c.id === selected) ?? null;
 
   async function runOp(op: Operation): Promise<void> {
@@ -724,7 +737,16 @@ export function TimelineBar({
           Klicke einen Shot oder Transkript-Satz an, um ihn anzuhängen.
         </div>
       ) : (
-        <div className="flex flex-col gap-1">
+        <div className="relative flex flex-col gap-1">
+          {/* Playhead — a vertical line across V1/A1/TX at the current frame. The lane area
+              starts 2rem in (w-6 label + gap-2), so offset the % into that region. */}
+          {playheadFrac !== null && (
+            <div
+              aria-label="Abspielposition"
+              className="pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 bg-amber-400"
+              style={{ left: `calc(2rem + (100% - 2rem) * ${playheadFrac})` }}
+            />
+          )}
           {/* V1 — picture lane (reorder + edge-trim). */}
           <div className="flex items-center gap-2">
             <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">V1</span>
