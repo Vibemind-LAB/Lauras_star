@@ -9,7 +9,10 @@ Covered:
     - 404 on unknown project
 
   GET /projects/{project_id}/scenes
-    - returns scenes from ALL rough-cut timelines in the project
+    - one set of scenes per source asset (the newest rough cut that has scenes)
+    - stale scenes from older bias-rebuild timelines are dropped
+    - an empty newer rough cut does not hide the older timeline's scenes
+    - each scene is enriched with asset_id (its source video)
     - 404 on unknown project
 """
 
@@ -167,3 +170,37 @@ def test_list_project_scenes_404_on_unknown_project(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     r = client.get("/projects/no-such-project/scenes", headers=_H)
     assert r.status_code == 404
+
+
+def test_list_project_scenes_dedups_to_newest_rough_cut_per_asset(tmp_path: Path) -> None:
+    """A bias rebuild creates a *new* rough_cut for the same asset; the bin must
+    show only the newest timeline's scenes, not the stale older copies."""
+    client, db = _client(tmp_path)
+    pid, aid, _ = _seed(db)
+
+    old = repos.create_timeline(db, project_id=pid, name="RC old", kind="rough_cut", created_from=aid)
+    repos.replace_scenes(db, pid, old["id"], [(0, 30), (30, 60)])
+    new = repos.create_timeline(db, project_id=pid, name="RC new", kind="rough_cut", created_from=aid)
+    repos.replace_scenes(db, pid, new["id"], [(0, 45)])
+
+    scenes = client.get(f"/projects/{pid}/scenes", headers=_H).json()
+
+    assert {s["source_timeline_id"] for s in scenes} == {new["id"]}
+    assert len(scenes) == 1
+    assert all(s["asset_id"] == aid for s in scenes)
+
+
+def test_list_project_scenes_keeps_older_when_newest_has_no_scenes(tmp_path: Path) -> None:
+    """A freshly rebuilt rough cut that has no scenes yet must not hide the
+    older timeline's scenes (otherwise the bin would go empty after a rebuild)."""
+    client, db = _client(tmp_path)
+    pid, aid, _ = _seed(db)
+
+    old = repos.create_timeline(db, project_id=pid, name="RC old", kind="rough_cut", created_from=aid)
+    repos.replace_scenes(db, pid, old["id"], [(0, 30)])
+    repos.create_timeline(db, project_id=pid, name="RC new empty", kind="rough_cut", created_from=aid)
+
+    scenes = client.get(f"/projects/{pid}/scenes", headers=_H).json()
+
+    assert {s["source_timeline_id"] for s in scenes} == {old["id"]}
+    assert len(scenes) == 1
