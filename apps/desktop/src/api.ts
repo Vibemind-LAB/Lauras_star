@@ -436,6 +436,23 @@ export class LauraClient {
     });
   }
 
+  renderReel(
+    timelineId: string,
+    opts: { hookText: string | null; disclosureText: string | null; vertical?: boolean },
+  ): Promise<{ export_id: string; job_id: string }> {
+    return this.request<{ export_id: string; job_id: string }>(
+      `/timelines/${timelineId}/render-reel`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          hook_text: opts.hookText,
+          disclosure_text: opts.disclosureText,
+          vertical: opts.vertical ?? true,
+        }),
+      },
+    );
+  }
+
   listExports(projectId: string): Promise<Export[]> {
     return this.request<Export[]>(`/projects/${projectId}/exports`);
   }
