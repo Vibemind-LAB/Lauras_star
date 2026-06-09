@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..ingest.ffmpeg import run_ffmpeg
+from .reel import reel_video_chain, resolve_font
 
 
 def render_clips_mp4(
@@ -13,6 +14,9 @@ def render_clips_mp4(
     rate_num: int,
     rate_den: int,
     music_tracks: list[tuple[Path, int, int, int]] | None = None,
+    vertical: bool = False,
+    hook_text: str | None = None,
+    disclosure_text: str | None = None,
 ) -> None:
     """Trim each clip by frame range (end-exclusive) and concat into one MP4.
 
@@ -39,7 +43,16 @@ def render_clips_mp4(
             f"[{i}:v]trim=start_frame={fin}:end_frame={fout},setpts=PTS-STARTPTS[v{i}]"
         )
     concat_in = "".join(f"[v{i}]" for i in range(len(clips)))
-    parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0[out]"
+    reel = reel_video_chain(
+        vertical=vertical,
+        hook_text=hook_text,
+        disclosure_text=disclosure_text,
+        font=resolve_font(),
+    )
+    concat_out = "[vcat]" if reel else "[out]"
+    parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+    if reel:
+        parts += f";[vcat]{reel}[out]"
 
     audio_maps: list[str] = []
     tracks = music_tracks or []

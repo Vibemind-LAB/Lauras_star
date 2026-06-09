@@ -68,3 +68,15 @@ def reel_video_chain(
         )
 
     return ",".join(parts)
+
+
+def resolve_font() -> str:
+    """ffmpeg-drawtext-safe font path. LAURA_FONT env overrides; default Windows Arial Bold.
+
+    The Windows drive colon must be escaped as a DOUBLE backslash for the filtergraph
+    (proven: ``C\\:/Windows/Fonts/arialbd.ttf`` works, single backslash fails).
+    """
+    import os
+
+    cand = os.environ.get("LAURA_FONT") or r"C:/Windows/Fonts/arialbd.ttf"
+    return cand.replace(":", r"\\:", 1)  # escape only the drive colon
