@@ -136,3 +136,50 @@ Faceswap-Lizenz/Optionen: [InsightFace commercial licensing](https://www.insight
 [DeepSwap](https://www.nemovideo.com/alternative/deepswap). Kennzeichnung/Provenienz:
 [C2PA vs SynthID vs Meta Video Seal](https://www.simalabs.ai/resources/c2pa-vs-synthid-vs-meta-video-seal-2025-enterprise-ai-video-authenticity) ·
 [C2PA & Watermarking-Mandate 2026](https://magiclight.ai/news/c2pa-and-global-watermarking-mandates-for-ai-video-in-2026/).
+
+---
+
+## Verifizierte Recherche-Updates (Workflow, 15 Agenten, web + adversarial verifiziert)
+
+**Wichtigste Korrektur — Swap ≠ Reenactment.** Das Reel-Szenario („ich spiele, das Zielgesicht
+kopiert meine Mimik, ohne Helm") ist **Reenactment / Portrait-Animation**, **nicht** Face-Swap.
+Lauras geplanter inswapper-Faceswap deckt nur **Swap** ab (fremde Identität auf vorhandene
+Clip-Performance). → **Ein zweiter Effekt-Typ ist nötig**, um das Reel nachzubauen.
+
+**Der „Helm" ist Software.** Die „Tracking-Punkte/Sensoren" sind markerlose Landmarken, aus
+RGB-Video regressiert (mediapipe FaceMesh 468/478 · insightface 2d106 · FAN 68) — reine
+Visualisierung. Beim Swap ist der eigentliche „Treiber" ohnehin das **ArcFace-512-Embedding**
+(via AdaIN in einen GAN), nicht die Landmarken; audio-getrieben (SadTalker) braucht gar kein
+Treiber-Gesicht.
+
+**Ehrliche Qualität.** inswapper_128 + GFPGAN = gut für Social/Phone, **nicht Broadcast/„exakt"**
+(128px-Decke; ~70–85% brauchbar auf unkontrolliertem Material; bricht bei Close-up, Kopfdrehung
+>30°, Bewegungsunschärfe, Verdeckung, Drift/Flackern über lange Clips). „Exakt" braucht **alle vier
+Hebel**: ≥256/512-Generierung + Restoration+Grain-Matching + (Per-Identitäts-Training DeepFaceLab
+512 / 500k–1M Iter / Tage GPU / 24 GB+ **oder** Top-Kommerziell Evi/Dax/DeepSwap 4K) + zeitliche
+Konsistenz.
+
+**Konkrete Plan-Ergänzungen:**
+1. **Adapter in zwei Typen:** `swap` (Identität → Clip) **+** `reenact` (Ziel-Portrait → meine
+   Performance). Reel = `reenact`.
+2. **Reenactment-Backend:** **LivePortrait** (KwaiVGI, **MIT** → kommerziell nutzbar, webcam-fähig,
+   ~12,8 ms/Frame @256 auf RTX 4090) als Default; DeepFaceLive „Face Animator" als Live-Pfad.
+3. **Restoration-Stufe** (wählbar GPEN/CodeFormer/GFPGAN) + Grain-Re-Matching + optional
+   ESRGAN-Upscale + Color-Transfer + gefederter Paste-back. Pipeline: detect/align → swap@128 →
+   restore → upscale → color-match → seamless paste.
+4. **Trained-Model-Pfad** (DeepFaceLab `.DFM`) als optionaler High-End-Adapter — Nische (Tage
+   Training, 24 GB+); Default bleibt Zero-Shot+Restoration **oder** kommerzielle API.
+5. **Temporale Konsistenz first-class** (optical-flow-Smoothing / video-native Chunks; Edits in
+   Ganzzahl-Frames; **Pflicht-Human-QC-Schritt** im Editor).
+6. **Lizenz-Guardrail:** NC-inswapper-Gewichte dürfen **nicht** in veröffentlichten Output → für
+   Published-Inhalte den kommerziellen API-Adapter erzwingen.
+
+**Faktenkorrekturen:** buffalo_l = **ResNet-50** (w600k_r50), nicht R100 (R100 = antelopev2,
+Embedding bleibt 512-dim). C2PA aktuell 2.x; **ISO/IEC DIS 22144 ist noch Draft**, nicht ratifiziert.
+**EU-AI-Act Art. 50 + California SB 942 (verschoben via AB 853): beide ab 2. August 2026.**
+
+Quellen: [LivePortrait (MIT)](https://github.com/KwaiVGI/LivePortrait) ·
+[Faceswap-Modellvergleich](https://1337sheets.com/comparing-face-swap-models-blendswap-ghost-inswapper-simswap-uniface/) ·
+[DeepFaceLab-Guide](https://www.deepfakevfx.com/guides/deepfacelab-2-0-guide/) ·
+[EU AI Act Art. 50](https://artificialintelligenceact.eu/article/50) ·
+[C2PA vs SynthID vs Video Seal](https://www.simalabs.ai/resources/c2pa-vs-synthid-vs-meta-video-seal-2025-enterprise-ai-video-authenticity).
