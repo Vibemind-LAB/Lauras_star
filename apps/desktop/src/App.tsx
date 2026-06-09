@@ -334,7 +334,10 @@ export function App(): ReactElement {
 
   return (
     <div className="flex h-full flex-col">
-      <DropZone onImport={onDropImport} />
+      {/* Import drag-and-drop only in Import/Download. Its window-level dragover
+          listener otherwise pops the full-screen import overlay during clip/scene
+          drags in Rough Cut / Feinschnitt / Zusammenfügen. */}
+      {(stage === "import" || stage === "download") && <DropZone onImport={onDropImport} />}
       <header className="flex items-center justify-between border-b border-edge bg-panel px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold tracking-tight text-white">Laura</h1>
