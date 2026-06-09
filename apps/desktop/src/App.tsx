@@ -2,6 +2,7 @@ import { type FormEvent, type ReactElement, useCallback, useEffect, useState } f
 
 import {
   type Asset,
+  hasFile,
   type Health,
   LauraClient,
   type Project,
@@ -120,6 +121,19 @@ export function App(): ReactElement {
   const loadAssets = useCallback(async (c: LauraClient, projectId: string) => {
     setAssets(await c.listAssets(projectId));
   }, []);
+
+  // Proxy generation runs asynchronously after import/analysis. Poll the asset list while
+  // any video still lacks its proxy, so the player picks it up automatically — no manual
+  // app refresh. Self-stopping: once every video has a proxy, the effect schedules nothing.
+  useEffect(() => {
+    if (!client || !selectedProjectId) return;
+    const waitingForProxy = assets.some((a) => a.type === "video" && !hasFile(a, "proxy"));
+    if (!waitingForProxy) return;
+    const t = window.setTimeout(() => {
+      void loadAssets(client, selectedProjectId);
+    }, 3000);
+    return () => window.clearTimeout(t);
+  }, [client, selectedProjectId, assets, loadAssets]);
 
   // One rough cut per video: load the SELECTED asset's rough cut (created on demand,
   // linked via created_from=asset_id) so switching videos shows that video's scenes.
