@@ -94,7 +94,7 @@ def test_overlay_splits_base_into_three():
     ov   = [{"asset_id":"B","src_in_frame":0,"src_out_frame_exclusive":10,"seq_in_frame":10,"seq_out_frame_exclusive":20,"lane":1,"role":"replace","speed_num":1,"speed_den":1}]
     out = apply_overlay_precedence(base, ov)
     assert [(r["asset_id"], r["src_in_frame"], r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"]) for r in out] == [
-        ("A",100,110,0,10), ("B",0,10,10,20), ("A",110,130,20,30)]
+        ("A",100,110,0,10), ("B",0,10,10,20), ("A",120,130,20,30)]  # rechts: src_in=100+(20-0)=120 (zeit-aligned)
 def test_overlay_full_clip_replaces_whole(): ...   # overlay == base range -> nur Overlay
 def test_no_overlays_returns_base_unchanged(): ...
 def test_overlay_at_clip_start_and_end(): ...      # Grenzfälle: kein Null-Längen-Segment
