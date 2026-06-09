@@ -76,14 +76,18 @@ export function AssembleView({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 bg-ink p-3">
-      {/* Sequence player — re-fetches flattened clips whenever the item count changes */}
-      <SequencePlayer
-        client={client}
-        projectId={projectId}
-        sequenceId={sequence?.timeline_id ?? null}
-        reloadKey={sequence?.items.length}
-      />
+    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto bg-ink p-3">
+      {/* Sequence player — width-capped so the preview stays a reasonable size and the
+          Bin + Sequenz below remain visible (was full-width aspect-video, which on a wide
+          window grew ~850px tall and dominated the whole view). */}
+      <div className="w-full max-w-2xl shrink-0">
+        <SequencePlayer
+          client={client}
+          projectId={projectId}
+          sequenceId={sequence?.timeline_id ?? null}
+          reloadKey={sequence?.items.length}
+        />
+      </div>
 
       {/* Bin */}
       <div className="text-xs font-medium text-slate-400">Szenen-Bin</div>
