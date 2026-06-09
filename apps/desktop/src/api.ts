@@ -205,6 +205,8 @@ export interface TimelineClip {
   seq_in_frame: number;
   seq_out_frame_exclusive: number;
   lane: number;
+  /** "base" for normal clips; "replace" for overlay clips on lane >= 1. */
+  role?: string;
   speaker_id: string | null;
   origin_word_start_id: string | null;
   origin_word_end_id: string | null;
@@ -217,6 +219,14 @@ export interface TimelineClip {
    */
   audio_offset_samples: number;
 }
+
+/**
+ * A replace-overlay clip returned by POST /timelines/{id}/overlays.
+ * Shape mirrors OverlayOut from the backend: `role` is always "replace",
+ * `lane` is always >= 1. This is a type alias over TimelineClip for callers
+ * that want the narrower semantic name.
+ */
+export type OverlayClip = TimelineClip;
 
 export interface Timeline {
   id: string;
@@ -731,5 +741,30 @@ export class LauraClient {
 
   getSequenceFlattened(sequenceId: string): Promise<TimelineClip[]> {
     return this.request<TimelineClip[]>(`/sequences/${sequenceId}/flattened`);
+  }
+
+  /**
+   * Add a replacement-lane overlay clip to a timeline. Returns the created clip including
+   * `role: "replace"` and `lane >= 1`.
+   */
+  setOverlay(
+    timelineId: string,
+    opts: { assetId: string; seqIn: number; seqOut: number; lane?: number; srcIn?: number },
+  ): Promise<TimelineClip> {
+    return this.request<TimelineClip>(`/timelines/${timelineId}/overlays`, {
+      method: "POST",
+      body: JSON.stringify({
+        asset_id: opts.assetId,
+        seq_in_frame: opts.seqIn,
+        seq_out_frame_exclusive: opts.seqOut,
+        lane: opts.lane ?? 1,
+        src_in_frame: opts.srcIn ?? 0,
+      }),
+    });
+  }
+
+  /** Remove an overlay clip from a timeline by clip id. */
+  removeOverlay(timelineId: string, clipId: string): Promise<void> {
+    return this.del(`/timelines/${timelineId}/overlays/${clipId}`);
   }
 }

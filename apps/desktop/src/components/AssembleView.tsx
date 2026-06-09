@@ -1,8 +1,11 @@
-import { type DragEvent, type ReactElement, useEffect, useRef, useState } from "react";
+import { type DragEvent, type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
-import { type Asset, type LauraClient, type Scene } from "../api";
+import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineClip } from "../api";
+import { log } from "../shared/log";
 import { useSequence } from "../hooks/useSequence";
+import { OverlayControls } from "./OverlayControls";
 import { SequencePlayer } from "./SequencePlayer";
+import { TimelineBar } from "./TimelineBar";
 
 /** A small source-frame thumbnail, fetched as a token-authed JPEG object URL. */
 function Thumb({
@@ -72,6 +75,10 @@ export function AssembleView({
   const [scenes, setScenesList] = useState<Scene[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [binError, setBinError] = useState<string | null>(null);
+  // Flattened sequence clip list — used to build the TimelineBar snapshot.
+  const [seqClips, setSeqClips] = useState<TimelineClip[]>([]);
+  // Key used to trigger SequencePlayer reloads and TimelineBar reloads.
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (projectId === null) {
@@ -99,7 +106,47 @@ export function AssembleView({
     };
   }, [client, projectId]);
 
-  const { sequence, setScenes } = useSequence(client, projectId);
+  const { sequence, setScenes, reload: reloadSequence } = useSequence(client, projectId);
+
+  // Fetch the flattened sequence clips whenever the sequence id or reloadKey changes,
+  // so the TimelineBar overlay lane stays in sync after setOverlay / removeOverlay.
+  const sequenceId = sequence?.timeline_id ?? null;
+  const reloadSeqClips = useCallback(() => {
+    setReloadKey((k) => k + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!sequenceId) {
+      setSeqClips([]);
+      return;
+    }
+    let cancelled = false;
+    client
+      .getSequenceFlattened(sequenceId)
+      .then((clips) => {
+        if (!cancelled) setSeqClips(clips);
+      })
+      .catch(() => {
+        if (!cancelled) setSeqClips([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, sequenceId, reloadKey]);
+
+  // Build a synthetic Timeline shell for TimelineBar — editing ops won't be used in this view,
+  // but the bar needs a Timeline object with the correct id for overlay removal.
+  const seqTimeline: Timeline | null =
+    sequence !== null
+      ? {
+          id: sequence.timeline_id,
+          project_id: sequence.project_id,
+          name: "Sequenz",
+          kind: "sequence",
+          created_at: "",
+          clips: seqClips,
+        }
+      : null;
   const items = sequence?.items ?? [];
   const ids = items.map((i) => i.scene_id);
 
@@ -174,16 +221,59 @@ export function AssembleView({
         )}
       </aside>
 
-      {/* Centre: sequence player + the ordered Reihenfolge */}
+      {/* Centre: sequence player + overlay controls + timeline bar + ordered Reihenfolge */}
       <section className="flex min-h-0 flex-col gap-2 overflow-y-auto bg-ink p-3">
         <div className="w-full max-w-2xl">
           <SequencePlayer
             client={client}
             projectId={projectId}
             sequenceId={sequence?.timeline_id ?? null}
-            reloadKey={items.length}
+            reloadKey={reloadKey}
           />
         </div>
+
+        {/* Overlay controls — insert a Replace-Overlay clip onto the sequence timeline. */}
+        <div className="w-full max-w-2xl">
+          <OverlayControls
+            client={client}
+            timelineId={sequence?.timeline_id ?? null}
+            assets={assets.map((a) => ({ id: a.id, display_name: a.display_name }))}
+            onChange={() => {
+              reloadSeqClips();
+              void reloadSequence();
+            }}
+          />
+        </div>
+
+        {/* Timeline bar — shows V1 base clips + V2 overlay lane for the sequence. */}
+        {seqTimeline !== null && (
+          <div className="w-full max-w-2xl">
+            <TimelineBar
+              client={client}
+              timeline={seqTimeline}
+              onChange={() => {
+                reloadSeqClips();
+                void reloadSequence();
+              }}
+              onRemoveOverlay={(clipId) => {
+                if (!sequence) return;
+                client
+                  .removeOverlay(sequence.timeline_id, clipId)
+                  .then(() => {
+                    reloadSeqClips();
+                    void reloadSequence();
+                  })
+                  .catch((e: unknown) => {
+                    log.error(
+                      "removeOverlay failed:",
+                      e instanceof Error ? e.message : String(e),
+                    );
+                  });
+              }}
+            />
+          </div>
+        )}
+
 
         <div className="text-xs font-medium text-slate-300">
           Reihenfolge{" "}

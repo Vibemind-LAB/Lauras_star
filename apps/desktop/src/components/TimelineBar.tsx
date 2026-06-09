@@ -280,6 +280,7 @@ export function TimelineBar({
   onChange,
   onScrub,
   onSelect,
+  onRemoveOverlay,
   segments,
   currentFrame,
 }: {
@@ -291,6 +292,8 @@ export function TimelineBar({
   /** Notify the parent which clip is selected (null = none) so it can open the
    *  SceneInspector. TimelineBar keeps its own `selected` state as the source of truth. */
   onSelect?: (clipId: string | null) => void;
+  /** Called when the user clicks × on an overlay clip (lane >= 1). */
+  onRemoveOverlay?: (clipId: string) => void;
   /** Optional transcript — renders a 3rd "TX" lane with each spoken word placed at its
    *  position on the sequence (words trimmed out of the cut simply don't appear). */
   segments?: Segment[];
@@ -331,7 +334,9 @@ export function TimelineBar({
   }, [tlId, onSelect]);
 
   // Load the selected clip's asset duration so edge-trim can clamp the OUT point to it.
-  const selAssetId = timeline?.clips.find((c) => c.id === selected)?.asset_id ?? null;
+  // Only base clips (lane 0) are selectable for edge-trim.
+  const selAssetId =
+    timeline?.clips.find((c) => c.id === selected && (c.lane ?? 0) === 0)?.asset_id ?? null;
   useEffect(() => {
     if (!selAssetId) {
       setAssetDuration(null);
@@ -351,10 +356,10 @@ export function TimelineBar({
     };
   }, [client, selAssetId]);
 
-  // Load the timeline's audio rate (from its first clip's asset) so the A1 lane can project the
-  // per-clip sample offset onto frames. Rough cuts are single-asset; if clips span assets this is
-  // a reasonable display approximation (the backend re-derives the authoritative frame anyway).
-  const firstAssetId = timeline?.clips[0]?.asset_id ?? null;
+  // Load the timeline's audio rate (from its first base clip's asset) so the A1 lane can project
+  // the per-clip sample offset onto frames. Rough cuts are single-asset; if clips span assets this
+  // is a reasonable display approximation (the backend re-derives the authoritative frame anyway).
+  const firstAssetId = timeline?.clips.find((c) => (c.lane ?? 0) === 0)?.asset_id ?? null;
   useEffect(() => {
     if (!firstAssetId) {
       setAudioRate({ sampleRate: null, rateNum: null, rateDen: null });
@@ -389,6 +394,10 @@ export function TimelineBar({
   }
 
   const tl = timeline;
+  // Separate base (V1) clips from overlay (V2) clips so each lane renders its own set.
+  const baseClips = tl.clips.filter((c) => (c.lane ?? 0) === 0);
+  const overlayClips = tl.clips.filter((c) => (c.lane ?? 0) >= 1);
+  // Total sequence length spans ALL clips (base + overlay share the same timeline geometry).
   const total = tl.clips.reduce((m, c) => Math.max(m, c.seq_out_frame_exclusive), 0);
   // Map each transcript word (asset source frames) onto the sequence timeline via the clip
   // that contains it. Words trimmed out of the cut have no containing clip and are dropped.
@@ -396,7 +405,7 @@ export function TimelineBar({
     total > 0 && segments
       ? segments.flatMap((seg) =>
           seg.words.flatMap((w) => {
-            const clip = tl.clips.find(
+            const clip = baseClips.find(
               (c) => c.src_in_frame <= w.start_frame && w.start_frame < c.src_out_frame_exclusive,
             );
             if (!clip) return [];
@@ -417,16 +426,17 @@ export function TimelineBar({
         )
       : [];
   // Playhead position as a fraction of the sequence: map the player's current SOURCE frame
-  // onto the sequence via the clip that contains it (same mapping as the transcript words).
+  // onto the sequence via the base clip that contains it (same mapping as the transcript words).
   const playheadFrac = (() => {
     if (currentFrame == null || total <= 0) return null;
     const cf = currentFrame;
-    const clip = tl.clips.find((c) => c.src_in_frame <= cf && cf < c.src_out_frame_exclusive);
+    const clip = baseClips.find((c) => c.src_in_frame <= cf && cf < c.src_out_frame_exclusive);
     if (!clip) return null;
     const seqFrame = clip.seq_in_frame + (cf - clip.src_in_frame);
     return Math.min(1, Math.max(0, seqFrame / total));
   })();
-  const sel = tl.clips.find((c) => c.id === selected) ?? null;
+  // Selection is limited to base clips (overlays use the remove button instead).
+  const sel = baseClips.find((c) => c.id === selected) ?? null;
 
   async function runOp(op: Operation): Promise<void> {
     const snapshot = tl.clips;
@@ -715,7 +725,7 @@ export function TimelineBar({
           </button>
         </span>
         <span className="flex items-center gap-2">
-          {tl.clips.length > 0 &&
+          {baseClips.length > 0 &&
             EXPORT_FORMATS.map((f) => (
               <button
                 key={f.fmt}
@@ -727,18 +737,19 @@ export function TimelineBar({
               </button>
             ))}
           <span className="text-xs text-slate-500">
-            {tl.clips.length} Clips · {total} frames
+            {baseClips.length} Clips · {total} frames
+            {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""}` : ""}
           </span>
         </span>
       </div>
       {error && <div className="mb-1 text-xs text-red-400">{error}</div>}
-      {tl.clips.length === 0 ? (
+      {baseClips.length === 0 && overlayClips.length === 0 ? (
         <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-edge text-xs text-slate-600">
           Klicke einen Shot oder Transkript-Satz an, um ihn anzuhängen.
         </div>
       ) : (
         <div className="relative flex flex-col gap-1">
-          {/* Playhead — a vertical line across V1/A1/TX at the current frame. The lane area
+          {/* Playhead — a vertical line across all lanes at the current frame. The lane area
               starts 2rem in (w-6 label + gap-2), so offset the % into that region. */}
           {playheadFrac !== null && (
             <div
@@ -747,7 +758,49 @@ export function TimelineBar({
               style={{ left: `calc(2rem + (100% - 2rem) * ${playheadFrac})` }}
             />
           )}
-          {/* V1 — picture lane (reorder + edge-trim). */}
+          {/* V2/Replace — overlay lane above V1; only shown when overlay clips exist. */}
+          {overlayClips.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-violet-400">V2</span>
+              <div
+                aria-label="Ersatz-Spur (V2/Replace)"
+                className="relative h-8 min-w-0 flex-1 overflow-hidden rounded-md bg-violet-950/40"
+              >
+                {overlayClips.map((c) => {
+                  const leftPct = total > 0 ? (c.seq_in_frame / total) * 100 : 0;
+                  const widthPct =
+                    total > 0
+                      ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100
+                      : 0;
+                  return (
+                    <div
+                      key={c.id}
+                      role="group"
+                      aria-label={`Overlay ${c.id} · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
+                      title={`Replace-Overlay · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
+                      style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                      className="absolute inset-y-0 flex items-center justify-between overflow-hidden rounded-sm bg-violet-700/60 ring-1 ring-inset ring-violet-400/50"
+                    >
+                      <span className="truncate px-1 text-[9px] leading-none text-violet-100">
+                        R{c.seq_in_frame}
+                      </span>
+                      {onRemoveOverlay && (
+                        <button
+                          type="button"
+                          title="Overlay entfernen"
+                          onClick={() => onRemoveOverlay(c.id)}
+                          className="mr-0.5 shrink-0 rounded px-0.5 text-[9px] leading-none text-violet-200 hover:bg-violet-900/80 hover:text-white"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {/* V1 — picture lane (reorder + edge-trim); shows only base clips (lane 0). */}
           <div className="flex items-center gap-2">
             <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">V1</span>
             <div
@@ -757,7 +810,7 @@ export function TimelineBar({
               onPointerUp={() => void onEdgeUp()}
               onPointerCancel={() => void onEdgeUp()}
             >
-              {tl.clips.map((c, i) => (
+              {baseClips.map((c, i) => (
                 <ClipThumb
                   key={c.id}
                   client={client}
@@ -804,9 +857,9 @@ export function TimelineBar({
               />
             </div>
           </div>
-          {/* A1 — audio lane. Each clip's audio leading edge is drawn offset from its picture cut by
-              `audio_offset_samples` (projected to frames); the handle drags a J/L split. The lane
-              shares the V1 timebase (same `total`), so the geometry lines up under the picture. */}
+          {/* A1 — audio lane. Each base clip's audio leading edge is drawn offset from its picture
+              cut by `audio_offset_samples` (projected to frames); the handle drags a J/L split.
+              The lane shares the V1 timebase (same `total`), so the geometry lines up under V1. */}
           <div className="flex items-center gap-2">
             <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">A1</span>
             <div
@@ -816,7 +869,7 @@ export function TimelineBar({
               onPointerUp={() => void onAudioUp()}
               onPointerCancel={() => void onAudioUp()}
             >
-              {tl.clips.map((c, i) => {
+              {baseClips.map((c, i) => {
                 const dragging = audioDrag?.clipId === c.id;
                 const offsetFrames = dragging
                   ? audioDrag.offsetFrames
