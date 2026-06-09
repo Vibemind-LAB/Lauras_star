@@ -43,59 +43,90 @@ def render_clips_mp4(
             f"[{i}:v]trim=start_frame={fin}:end_frame={fout},setpts=PTS-STARTPTS[v{i}]"
         )
     concat_in = "".join(f"[v{i}]" for i in range(len(clips)))
-    reel = reel_video_chain(
-        vertical=vertical,
-        hook_text=hook_text,
-        disclosure_text=disclosure_text,
-        font=resolve_font(),
-    )
-    concat_out = "[vcat]" if reel else "[out]"
-    parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
-    if reel:
-        parts += f";[vcat]{reel}[out]"
 
-    audio_maps: list[str] = []
-    tracks = music_tracks or []
-    if tracks:
-        n_vid = len(clips)
-        audio_labels: list[str] = []
-        for i, (music_path, seq_in, seq_out, gain_percent) in enumerate(tracks):
-            idx = n_vid + i
-            inputs += ["-i", str(music_path)]
-            duration = (seq_out - seq_in) * rate_den / rate_num
-            start_ms = seq_in * rate_den / rate_num * 1000
-            # Build the per-track filter chain:
-            #   volume  — scale the gain
-            #   atrim   — cut the track to at most the scene window duration
-            #   adelay  — push it to the right start position in the mix
-            #   asetpts — reset PTS after the trim so adelay gets a clean base
-            label = f"[a{i}]"
-            parts += (
-                f";[{idx}:a]"
-                f"volume={gain_percent / 100},"
-                f"atrim=0:{duration},"
-                f"asetpts=PTS-STARTPTS,"
-                f"adelay={start_ms:.6f}|{start_ms:.6f}"
-                f"{label}"
-            )
-            audio_labels.append(label)
+    # Reel overlay text goes through drawtext ``textfile=`` (basename, resolved via
+    # ffmpeg's cwd), NOT inline ``text='…'`` — inline text cannot be escaped reliably
+    # for arbitrary user input on Windows and is a filtergraph-injection vector.
+    # Write the UTF-8 files next to dest, reference by basename, run ffmpeg with
+    # cwd=dest.parent, and always clean the files up afterwards.
+    reel_files: list[Path] = []
+    hook_tf: str | None = None
+    disc_tf: str | None = None
+    if hook_text:
+        hook_path = dest.parent / f"{dest.stem}.reel_hook.txt"
+        hook_path.write_text(hook_text, encoding="utf-8")
+        reel_files.append(hook_path)
+        hook_tf = hook_path.name
+    if disclosure_text:
+        disc_path = dest.parent / f"{dest.stem}.reel_disclosure.txt"
+        disc_path.write_text(disclosure_text, encoding="utf-8")
+        reel_files.append(disc_path)
+        disc_tf = disc_path.name
 
-        if len(audio_labels) == 1:
-            # Single track — route directly to [aout] (no amix needed).
-            parts += f";{audio_labels[0]}anull[aout]"
+    try:
+        reel = reel_video_chain(
+            vertical=vertical,
+            hook_textfile=hook_tf,
+            disclosure_textfile=disc_tf,
+            font=resolve_font(),
+        )
+        concat_out = "[vcat]" if reel else "[out]"
+        parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+        if reel:
+            parts += f";[vcat]{reel}[out]"
+
+        audio_maps: list[str] = []
+        tracks = music_tracks or []
+        if tracks:
+            n_vid = len(clips)
+            audio_labels: list[str] = []
+            for i, (music_path, seq_in, seq_out, gain_percent) in enumerate(tracks):
+                idx = n_vid + i
+                inputs += ["-i", str(music_path)]
+                duration = (seq_out - seq_in) * rate_den / rate_num
+                start_ms = seq_in * rate_den / rate_num * 1000
+                # Build the per-track filter chain:
+                #   volume  — scale the gain
+                #   atrim   — cut the track to at most the scene window duration
+                #   adelay  — push it to the right start position in the mix
+                #   asetpts — reset PTS after the trim so adelay gets a clean base
+                label = f"[a{i}]"
+                parts += (
+                    f";[{idx}:a]"
+                    f"volume={gain_percent / 100},"
+                    f"atrim=0:{duration},"
+                    f"asetpts=PTS-STARTPTS,"
+                    f"adelay={start_ms:.6f}|{start_ms:.6f}"
+                    f"{label}"
+                )
+                audio_labels.append(label)
+
+            if len(audio_labels) == 1:
+                # Single track — route directly to [aout] (no amix needed).
+                parts += f";{audio_labels[0]}anull[aout]"
+            else:
+                joined = "".join(audio_labels)
+                parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0[aout]"
+
+            audio_maps = ["-map", "[aout]", "-c:a", "aac"]
+
+        ff_args = [
+            *inputs,
+            "-filter_complex", parts,
+            "-map", "[out]",
+            *audio_maps,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", f"{rate_num}/{rate_den}",
+            str(dest),
+        ]
+        # cwd is only needed so drawtext textfile= basenames resolve. Pass it only
+        # on the reel path so the plain concat call stays byte-identical (and any
+        # run_ffmpeg monkeypatch without a cwd kwarg keeps working).
+        if reel_files:
+            run_ffmpeg(ff_args, cwd=dest.parent)
         else:
-            joined = "".join(audio_labels)
-            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0[aout]"
-
-        audio_maps = ["-map", "[aout]", "-c:a", "aac"]
-
-    run_ffmpeg([
-        *inputs,
-        "-filter_complex", parts,
-        "-map", "[out]",
-        *audio_maps,
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-r", f"{rate_num}/{rate_den}",
-        str(dest),
-    ])
+            run_ffmpeg(ff_args)
+    finally:
+        for reel_file in reel_files:
+            reel_file.unlink(missing_ok=True)

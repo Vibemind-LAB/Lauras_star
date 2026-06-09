@@ -13,7 +13,6 @@ import pytest
 
 from laura.render.mp4 import render_clips_mp4
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -83,3 +82,28 @@ def test_reel_vertical_dimensions(fixture_clip: Path, tmp_path: Path) -> None:
     w, h = _probe_wh(out)
     assert w == 1080, f"expected width 1080, got {w}"
     assert h == 1920, f"expected height 1920, got {h}"
+
+
+@pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg/ffprobe not on PATH")
+def test_reel_hook_with_metacharacters_renders(fixture_clip: Path, tmp_path: Path) -> None:
+    """Regression: hooks with apostrophes/commas/colons/% must not break the render.
+
+    Inline drawtext ``text='…'`` could not escape an apostrophe on Windows, so a
+    benign hook like ``Geht's los, jetzt!`` failed. The ``textfile=`` approach
+    reads the text verbatim, so every metacharacter is safe.
+    """
+    out = tmp_path / "reel_meta.mp4"
+    render_clips_mp4(
+        [(fixture_clip, 0, 25)],
+        out,
+        rate_num=25,
+        rate_den=1,
+        vertical=True,
+        hook_text="Geht's los, jetzt: 100%!",
+        disclosure_text="KI · synthetisch — don't trust",
+    )
+    assert out.exists(), "output file was not created"
+    assert _probe_wh(out) == (1080, 1920)
+    # The temp text files must be cleaned up after rendering.
+    leftovers = list(tmp_path.glob("*.reel_*.txt"))
+    assert leftovers == [], f"reel text files leaked: {leftovers}"

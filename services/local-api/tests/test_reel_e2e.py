@@ -82,9 +82,12 @@ def test_reel_render_job_produces_vertical_mp4(tmp_path: Path) -> None:
         seq_in_frame=0, seq_out_frame_exclusive=30,
     )
 
+    # Apostrophe + comma + colon + % in the hook: a real-world caption that the
+    # old inline drawtext escaping could not render. Locks the textfile= fix E2E.
+    hook = "Geht's los, jetzt: 100%!"
     exp = repos.create_export(
         db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
-        options={"vertical": True, "hook_text": "Hook", "disclosure_text": "KI"},
+        options={"vertical": True, "hook_text": hook, "disclosure_text": "KI"},
     )
 
     registry = default_registry()
@@ -109,5 +112,5 @@ def test_reel_render_job_produces_vertical_mp4(tmp_path: Path) -> None:
     assert _video_dims(done["path"]) == (1080, 1920)
     # Reel options survived the create_export -> get_export round-trip.
     assert done["options"] == {
-        "vertical": True, "hook_text": "Hook", "disclosure_text": "KI",
+        "vertical": True, "hook_text": hook, "disclosure_text": "KI",
     }
