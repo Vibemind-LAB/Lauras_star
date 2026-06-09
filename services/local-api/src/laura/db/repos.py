@@ -519,6 +519,7 @@ def add_timeline_clip(
     speed_num: int = 1,
     speed_den: int = 1,
     audio_offset_samples: int = 0,
+    role: str = "base",
 ) -> dict[str, Any]:
     cid = new_id()
     with db.transaction() as conn:
@@ -526,15 +527,31 @@ def add_timeline_clip(
             "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
             "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
             "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
-            "audio_offset_samples) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "audio_offset_samples, role) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (cid, timeline_id, asset_id, src_in_frame, src_out_frame_exclusive,
              seq_in_frame, seq_out_frame_exclusive, lane, speaker_id,
              origin_word_start_id, origin_word_end_id, speed_num, speed_den,
-             audio_offset_samples),
+             audio_offset_samples, role),
         )
         row = conn.execute("SELECT * FROM timeline_clips WHERE id=?", (cid,)).fetchone()
     return dict(row)
+
+
+def update_timeline_clip_role(db: Database, clip_id: str, role: str) -> bool:
+    with db.transaction() as conn:
+        result = conn.execute(
+            "UPDATE timeline_clips SET role=? WHERE id=?", (role, clip_id)
+        )
+        return result.rowcount > 0
+
+
+def delete_timeline_clip(db: Database, clip_id: str) -> bool:
+    with db.transaction() as conn:
+        result = conn.execute(
+            "DELETE FROM timeline_clips WHERE id=?", (clip_id,)
+        )
+        return result.rowcount > 0
 
 
 def list_timeline_clips(db: Database, timeline_id: str) -> list[dict[str, Any]]:
@@ -596,7 +613,8 @@ def create_export(
     options_text = json.dumps(options) if options is not None else None
     with db.transaction() as conn:
         conn.execute(
-            "INSERT INTO exports (id, project_id, timeline_id, format, status, options, created_at) "
+            "INSERT INTO exports "
+            "(id, project_id, timeline_id, format, status, options, created_at) "
             "VALUES (?, ?, ?, ?, 'rendering', ?, ?)",
             (eid, project_id, timeline_id, format, options_text, now),
         )
