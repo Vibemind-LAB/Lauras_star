@@ -100,6 +100,42 @@ def _build_dialogue_text(words: Line, rate_num: int, rate_den: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def group_caption_lines(
+    words: list[tuple[str, int, int]],
+    *,
+    max_words_per_line: int = 4,
+    max_gap_frames: int = 15,
+) -> list[list[tuple[str, int, int]]]:
+    """Group *words* into caption lines by word-count and silence-gap thresholds.
+
+    A new line is started when:
+    - the current line already contains ``max_words_per_line`` words, **or**
+    - the gap between the previous word's ``seq_end`` and the next word's
+      ``seq_start`` exceeds ``max_gap_frames``.
+
+    Words are never reordered or dropped.  Empty input returns ``[]``.
+    """
+    if not words:
+        return []
+
+    lines: list[list[tuple[str, int, int]]] = []
+    current: list[tuple[str, int, int]] = []
+
+    for word in words:
+        if current:
+            prev_end = current[-1][2]  # seq_end of the last word in the line
+            gap = word[1] - prev_end   # word seq_start − prev seq_end
+            if len(current) >= max_words_per_line or gap > max_gap_frames:
+                lines.append(current)
+                current = []
+        current.append(word)
+
+    if current:
+        lines.append(current)
+
+    return lines
+
+
 def build_ass(
     lines: list[list[tuple[str, int, int]]],
     *,
