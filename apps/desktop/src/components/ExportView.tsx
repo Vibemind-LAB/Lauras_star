@@ -27,6 +27,7 @@ export function ExportView({
   const [error, setError] = useState<string | null>(null);
   const [reelHook, setReelHook] = useState<string>("");
   const [reelDisclosure, setReelDisclosure] = useState<boolean>(true);
+  const [reelCaptions, setReelCaptions] = useState<boolean>(true);
   const [reelBusy, setReelBusy] = useState<boolean>(false);
 
   const load = useCallback(async (): Promise<void> => {
@@ -67,6 +68,7 @@ export function ExportView({
         hookText: reelHook.trim() || null,
         disclosureText: reelDisclosure ? "KI · synthetisch" : "",
         vertical: true,
+        captions: reelCaptions,
       });
       await load();
     } catch (e) {
@@ -75,7 +77,7 @@ export function ExportView({
     } finally {
       setReelBusy(false);
     }
-  }, [client, timelineId, reelHook, reelDisclosure, load]);
+  }, [client, timelineId, reelHook, reelDisclosure, reelCaptions, load]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
@@ -119,6 +121,17 @@ export function ExportView({
           />
           KI-Kennzeichnung einblenden
         </label>
+        <label className="flex items-center gap-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={reelCaptions}
+            onChange={(e) => setReelCaptions(e.target.checked)}
+            disabled={!timelineId}
+            className="disabled:opacity-40"
+          />
+          Untertitel (Captions) einbrennen
+        </label>
+        <span className="text-xs text-slate-400">Captions werden aus dem Transkript der Timeline generiert.</span>
         <button
           type="button"
           onClick={() => void onExportReel()}

@@ -438,7 +438,7 @@ export class LauraClient {
 
   renderReel(
     timelineId: string,
-    opts: { hookText: string | null; disclosureText: string | null; vertical?: boolean },
+    opts: { hookText: string | null; disclosureText: string | null; vertical?: boolean; captions?: boolean },
   ): Promise<{ export_id: string; job_id: string }> {
     return this.request<{ export_id: string; job_id: string }>(
       `/timelines/${timelineId}/render-reel`,
@@ -448,6 +448,7 @@ export class LauraClient {
           hook_text: opts.hookText,
           disclosure_text: opts.disclosureText,
           vertical: opts.vertical ?? true,
+          captions: opts.captions ?? false,
         }),
       },
     );
