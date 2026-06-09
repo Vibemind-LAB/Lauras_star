@@ -1023,10 +1023,70 @@ def get_or_create_asset_rough_cut(
 
 
 def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
-    """All scenes across every timeline in a project, ordered by timeline then position."""
+    """Scenes for the assemble bin — one set per source video, with thumbnail info.
+
+    Returns scenes only from the *newest rough-cut timeline that still has scenes*
+    for each source asset, so re-building a rough cut at a different bias no longer
+    piles up stale duplicate scenes in the bin. Each scene is enriched with
+    ``asset_id`` (the source video) and ``thumb_frame`` (a representative source
+    frame) so the UI can render a thumbnail without extra round-trips.
+    """
     with db.connection() as conn:
-        rows = conn.execute(
+        timelines = conn.execute(
+            "SELECT id, created_from FROM timelines "
+            "WHERE project_id=? AND kind='rough_cut' ORDER BY created_at DESC, id DESC",
+            (project_id,),
+        ).fetchall()
+        scene_rows = conn.execute(
             "SELECT * FROM scenes WHERE project_id=? ORDER BY source_timeline_id, order_index",
             (project_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+
+    clip_cache: dict[str, list[dict[str, Any]]] = {}
+
+    def clips_for(tid: str) -> list[dict[str, Any]]:
+        if tid not in clip_cache:
+            clip_cache[tid] = list_timeline_clips(db, tid)
+        return clip_cache[tid]
+
+    # Asset behind each rough-cut timeline: created_from, else its first clip's asset.
+    timeline_asset: dict[str, str | None] = {}
+    for t in timelines:
+        aid = t["created_from"]
+        if aid is None:
+            cl = clips_for(t["id"])
+            aid = cl[0]["asset_id"] if cl else None
+        timeline_asset[t["id"]] = aid
+
+    tids_with_scenes = {r["source_timeline_id"] for r in scene_rows}
+    # Newest timeline (already ordered newest-first) per asset that actually has scenes.
+    newest_for_asset: dict[str, str] = {}
+    for t in timelines:
+        aid = timeline_asset[t["id"]]
+        if aid is not None and t["id"] in tids_with_scenes:
+            newest_for_asset.setdefault(aid, t["id"])
+    keep = set(newest_for_asset.values())
+    # Never hide scenes whose source asset cannot be derived.
+    keep |= {
+        tid for tid in tids_with_scenes if timeline_asset.get(tid) is None
+    }
+
+    out: list[dict[str, Any]] = []
+    for r in scene_rows:
+        scene = dict(r)
+        tid = scene["source_timeline_id"]
+        if tid not in keep:
+            continue
+        clips = clips_for(tid)
+        match = next(
+            (
+                c
+                for c in clips
+                if c["seq_in_frame"] <= scene["seq_in_frame"] < c["seq_out_frame_exclusive"]
+            ),
+            clips[0] if clips else None,
+        )
+        scene["asset_id"] = timeline_asset.get(tid) or (match["asset_id"] if match else None)
+        scene["thumb_frame"] = int(match["src_in_frame"]) if match else 0
+        out.append(scene)
+    return out

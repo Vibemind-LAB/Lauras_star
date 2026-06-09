@@ -479,6 +479,10 @@ class SceneOut(BaseModel):
     scene_timeline_id: str | None = None
     music_asset_id: str | None = None
     music_gain_percent: int = 100
+    # Enrichment populated only by list_project_scenes (the assemble bin): the source
+    # video this scene came from and a representative source frame for a thumbnail.
+    asset_id: str | None = None
+    thumb_frame: int | None = None
 
 
 class GenerateScenesRequest(BaseModel):

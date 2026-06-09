@@ -103,6 +103,9 @@ export interface Scene {
   scene_timeline_id?: string | null;
   music_asset_id?: string | null;
   music_gain_percent?: number;
+  /** Source video + representative frame — only set by listProjectScenes (assemble bin). */
+  asset_id?: string | null;
+  thumb_frame?: number | null;
 }
 
 export function hasFile(asset: Asset, kind: string): boolean {
