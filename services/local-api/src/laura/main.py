@@ -13,6 +13,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import PIPELINE_VERSION, __version__
+from .ai.handlers import register_ai_handlers
 from .analysis.handlers import register_analysis_handlers
 from .api import (
     admin,
@@ -48,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_ingest_handlers(registry)
     register_analysis_handlers(registry)
     register_render_handlers(registry)
+    register_ai_handlers(registry)
     runner = JobRunner(db, registry, lease_seconds=settings.lease_seconds)
 
     @asynccontextmanager

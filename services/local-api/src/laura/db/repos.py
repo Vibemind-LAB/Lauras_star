@@ -1186,3 +1186,16 @@ def list_consent_records(db: Database, project_id: str) -> list[dict[str, Any]]:
             (project_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def revoke_consent_record(db: Database, consent_id: str) -> bool:
+    """Mark a consent record as revoked. The reenact gate then refuses it.
+
+    Returns True when the record existed and was updated.
+    """
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE consent_records SET revoked_at=? WHERE id=?",
+            (utcnow_iso(), consent_id),
+        )
+        return cur.rowcount > 0
