@@ -4,6 +4,7 @@ import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineC
 import { log } from "../shared/log";
 import { useSequence } from "../hooks/useSequence";
 import { OverlayControls } from "./OverlayControls";
+import { ReenactPanel } from "./ReenactPanel";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
 
@@ -236,6 +237,20 @@ export function AssembleView({
         <div className="w-full max-w-2xl">
           <OverlayControls
             client={client}
+            timelineId={sequence?.timeline_id ?? null}
+            assets={assets.map((a) => ({ id: a.id, display_name: a.display_name }))}
+            onChange={() => {
+              reloadSeqClips();
+              void reloadSequence();
+            }}
+          />
+        </div>
+
+        {/* Reenact panel — consent + LivePortrait stub job for the sequence timeline. */}
+        <div className="w-full max-w-2xl">
+          <ReenactPanel
+            client={client}
+            projectId={projectId}
             timelineId={sequence?.timeline_id ?? null}
             assets={assets.map((a) => ({ id: a.id, display_name: a.display_name }))}
             onChange={() => {

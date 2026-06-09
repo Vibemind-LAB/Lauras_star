@@ -367,6 +367,17 @@ function parseAcceptedSplits(raw: unknown): AcceptedSplit[] {
   return out;
 }
 
+export interface ConsentRecord {
+  id: string;
+  project_id: string;
+  subject_label: string;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  source_asset_id: string | null;
+  note: string | null;
+  revoked_at: string | null;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -766,5 +777,46 @@ export class LauraClient {
   /** Remove an overlay clip from a timeline by clip id. */
   removeOverlay(timelineId: string, clipId: string): Promise<void> {
     return this.del(`/timelines/${timelineId}/overlays/${clipId}`);
+  }
+
+  /**
+   * Record consent for a subject within a project.
+   * POST /projects/{projectId}/consent → 201 ConsentRecord
+   */
+  createConsent(
+    projectId: string,
+    opts: { subjectLabel: string },
+  ): Promise<ConsentRecord> {
+    return this.request<ConsentRecord>(`/projects/${projectId}/consent`, {
+      method: "POST",
+      body: JSON.stringify({ subject_label: opts.subjectLabel }),
+    });
+  }
+
+  /**
+   * Kick off a reenact (LivePortrait) job on a timeline range.
+   * POST /timelines/{timelineId}/reenact → 202 { job_id }
+   * consent_id is MANDATORY; revoked/missing consent is rejected server-side.
+   */
+  reenact(
+    timelineId: string,
+    opts: {
+      seqIn: number;
+      seqOut: number;
+      portraitAssetId: string;
+      consentId: string;
+      backend?: string;
+    },
+  ): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>(`/timelines/${timelineId}/reenact`, {
+      method: "POST",
+      body: JSON.stringify({
+        seq_in_frame: opts.seqIn,
+        seq_out_frame_exclusive: opts.seqOut,
+        portrait_asset_id: opts.portraitAssetId,
+        consent_id: opts.consentId,
+        backend: opts.backend,
+      }),
+    });
   }
 }
