@@ -584,15 +584,21 @@ def get_interchange_export(db: Database, export_id: str) -> dict[str, Any] | Non
 
 
 def create_export(
-    db: Database, *, project_id: str, timeline_id: str | None, format: str
+    db: Database,
+    *,
+    project_id: str,
+    timeline_id: str | None,
+    format: str,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     eid = new_id()
     now = utcnow_iso()
+    options_text = json.dumps(options) if options is not None else None
     with db.transaction() as conn:
         conn.execute(
-            "INSERT INTO exports (id, project_id, timeline_id, format, status, created_at) "
-            "VALUES (?, ?, ?, ?, 'rendering', ?)",
-            (eid, project_id, timeline_id, format, now),
+            "INSERT INTO exports (id, project_id, timeline_id, format, status, options, created_at) "
+            "VALUES (?, ?, ?, ?, 'rendering', ?, ?)",
+            (eid, project_id, timeline_id, format, options_text, now),
         )
     row = get_export(db, eid)
     assert row is not None
@@ -602,7 +608,12 @@ def create_export(
 def get_export(db: Database, export_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         r = conn.execute("SELECT * FROM exports WHERE id=?", (export_id,)).fetchone()
-        return dict(r) if r else None
+        if r is None:
+            return None
+        row = dict(r)
+        raw = row.get("options")
+        row["options"] = json.loads(raw) if raw else {}
+        return row
 
 
 def list_exports(db: Database, project_id: str) -> list[dict[str, Any]]:
@@ -611,7 +622,13 @@ def list_exports(db: Database, project_id: str) -> list[dict[str, Any]]:
             "SELECT * FROM exports WHERE project_id=? ORDER BY created_at DESC",
             (project_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            row = dict(r)
+            raw = row.get("options")
+            row["options"] = json.loads(raw) if raw else {}
+            out.append(row)
+        return out
 
 
 def set_export_done(db: Database, export_id: str, *, path: str, size_bytes: int) -> None:
