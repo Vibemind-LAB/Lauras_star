@@ -205,7 +205,16 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **R1.3c** Frontend: `api.ts renderReel`+`captions`; ExportView „Untertitel (Captions) einbrennen"-Toggle (Default **an**) + Transcript-Hinweis. tsc clean. `f6d8e79`
 - [x] **R1.4** E2E `test_caption_e2e.py`: Endpoint→Job→`handle_render`→ASS aus **echtem** Transcript→`ass=`-Burn → ffprobe 1080×1920 + options round-trip + Cleanup. Volle Suite + tsc grün. (lokaler Commit folgt)
 - **Caption-Stil-Entscheidung (User):** Karaoke-Highlight. Umfang: Voll (Auto aus Transcript + Toggle).
-- **Exit:** ✓ Auto-Karaoke-Captions End-to-End (UI→Endpoint→Job→eingebranntes MP4), gegen echtes ffmpeg+libass verifiziert. **Offen (User-Entscheidung):** R2 Smart-Reframe (heavy Tracking-Extra) · R3 Identitäts-Ebene (reenact/swap + Consent + Face-Probe — Lizenz/Consent-Entscheidungen) · R4 Scene-Compositing · R5 Stimme+Lipsync.
+- **Exit:** ✓ Auto-Karaoke-Captions End-to-End (UI→Endpoint→Job→eingebranntes MP4), gegen echtes ffmpeg+libass verifiziert.
+
+## Portion RL — Replacement-Lane (Source-Replace-Primitive)  `[x]`  (Spec/Plan: docs/superpowers/2026-06-09-replacement-lane-{design,plan})
+> Erstes Bau-Teil des **R3-Programms** (Identitäts-Ebene): nicht-destruktive Source-Replace-Primitive, auf die **R3-C Reenact** (LivePortrait) als Adapter aufsetzt. Brainstorming-Entscheidungen: Reenact zuerst · Sidecar-HTTP · timeline-range-getrieben · Replacement-Lane+Render-Vorrang · opak · beide Tabs.
+- [x] **RL1** Migration `0014_clip_role.sql` (`timeline_clips.role` 'base'|'replace', additiv) + Repos (`add_timeline_clip(lane,role)`, `update_timeline_clip_role`, `delete_timeline_clip`). `35d5ff4`
+- [x] **RL2** Reine `apply_overlay_precedence` (zeit-aligned opaker Replace: Base an Overlay-Grenzen splitten, 1:1-src-Mapping, verdeckte Frames übersprungen, nach seq_in sortiert). 7 Tests. `8b2bbda`
+- [x] **RL3** `resolve_clip_rows` am **einzigen Choke-Point** verdrahtet (Szene: role-Split; Sequenz: flatten-Base + Sequenz-Overlays) → Präzedenz; keine Overlays ⇒ byte-identisch. Echter ffmpeg-Farbprobe-Test (grün→rot→grün) + Regression. `adb851f`
+- [x] **RL4** Overlay-API `POST/DELETE /timelines/{id}/overlays` (eigener Router, `main.py` gemountet, `timelines.py` unberührt) + Validierung (Range/Asset-Länge). 10 Tests, volle Suite grün. `35dd7fa`
+- [x] **RL5** Frontend: `api.ts setOverlay/removeOverlay` + additive **V2-Lane** in geteilter TimelineBar (beide Tabs) + `OverlayControls` in AssembleView. Adversarialer Review fand 3 echte Bugs (stale assetId, still-geschluckter Fehler, Nicht-Integer-Frames) → alle gefixt. tsc clean. `3c9626e`
+- **Exit:** ✓ Nicht-destruktive opake Source-Replace in beiden Tabs, real per ffmpeg-Farbprobe verifiziert; volle Suite + tsc grün; geteilte TimelineBar additiv (alte Lanes/Playhead intakt). **Limit v1:** Speed≠1-Base unter Overlay nicht gesplittet (dokumentiert); transparente B-Roll-Overlays + Übergänge = spätere Multi-Lane-Phasen. **Nächstes R3-Teil:** R3-C Reenact (LivePortrait-Sidecar + Consent-Record + Face-Probe) — eigener Brainstorm/Plan, schwere GPU-Dep (braucht deinen Go).
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
 - [x] **GPU (CUDA)** — **aktiviert & verifiziert** auf RTX 3060: torch/torchaudio via PyTorch-`cu128`-Index (`[tool.uv.sources]`, persistent über `uv sync`), `analysis/device.py` wählt Device (`LAURA_ASR_DEVICE` überschreibt); ASR+Align+Diarisierung laufen auf CUDA, CPU-Pfad bleibt grün. cuBLAS/cuDNN kamen über torch-cu128-Deps
