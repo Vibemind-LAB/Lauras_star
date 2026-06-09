@@ -150,14 +150,17 @@ def create_asset(
     source_path: str,
     asset_id: str | None = None,
     online: bool = True,
+    synthetic: bool = False,
+    ai_effect: str | None = None,
 ) -> dict[str, Any]:
     aid = asset_id or new_id()
     now = utcnow_iso()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO media_assets (id, project_id, type, display_name, source_path, "
-            "online, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (aid, project_id, type, display_name, source_path, int(online), now),
+            "online, synthetic, ai_effect, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (aid, project_id, type, display_name, source_path, int(online),
+             int(synthetic), ai_effect, now),
         )
     asset = get_asset(db, aid)
     assert asset is not None
@@ -181,6 +184,20 @@ def get_asset(db: Database, asset_id: str) -> dict[str, Any] | None:
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
         return dict(row) if row is not None else None
+
+
+def set_asset_synthetic(db: Database, asset_id: str, ai_effect: str | None) -> bool:
+    """Mark an asset as AI-generated / synthetically modified.
+
+    Sets ``synthetic=1`` and records the effect label (e.g. ``"reenact"``).
+    Returns ``True`` when the row was found and updated.
+    """
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE media_assets SET synthetic=1, ai_effect=? WHERE id=?",
+            (ai_effect, asset_id),
+        )
+        return cur.rowcount > 0
 
 
 def list_assets(
@@ -1125,3 +1142,47 @@ def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
         scene["thumb_frame"] = int(match["src_in_frame"]) if match else 0
         out.append(scene)
     return out
+
+
+# --- consent records -------------------------------------------------------
+
+def create_consent_record(
+    db: Database,
+    *,
+    project_id: str,
+    subject_label: str,
+    source_asset_id: str | None = None,
+    confirmed_by: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Create a consent record for a named subject, confirmed right now."""
+    cid = new_id()
+    confirmed_at = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO consent_records "
+            "(id, project_id, subject_label, source_asset_id, confirmed_by, confirmed_at, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid, project_id, subject_label, source_asset_id, confirmed_by, confirmed_at, note),
+        )
+    record = get_consent_record(db, cid)
+    assert record is not None
+    return record
+
+
+def get_consent_record(db: Database, consent_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM consent_records WHERE id=?", (consent_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def list_consent_records(db: Database, project_id: str) -> list[dict[str, Any]]:
+    """All consent records for a project, newest first."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM consent_records WHERE project_id=? ORDER BY confirmed_at DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
