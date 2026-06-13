@@ -1,8 +1,16 @@
 # Vibemind-KI-Effekte → Laura (Integrationsplan)
 
-Quelle: `Vibemind_V1/.../spaces/video/vibevideo_deepfake` (+ `vibevideo`). Ziel: deren
-KI-Fähigkeiten als **optionale Effekte** in Laura nutzen, **andockend an die Overlay-Lanes**
-aus dem Multi-Lane-Plan — ohne Lauras frame-genauen Kern zu verwässern.
+Quelle: die externen VibeVideo-Repos:
+
+- [`Flissel/vibevideo`](https://github.com/Flissel/vibevideo) — MIT; Pipeline für Team-Videos,
+  Sora/Vision-Clips, Product-Demos, TTS/STT.
+- [`Flissel/vibevideo-deepfake`](https://github.com/Flissel/vibevideo-deepfake) — proprietär laut
+  Repo; Voice cloning + Lipsync/Deepfake-Tools, nur mit Consent-/Lizenz-Gate.
+
+Ziel: deren KI-Fähigkeiten als **optionale Effekte** in Laura nutzen, **andockend an die
+Overlay-Lanes** aus dem Multi-Lane-Plan — ohne Lauras frame-genauen Kern zu verwässern.
+
+Feature-Audit nach lokalem Clone: [`2026-06-14-vibevideo-feature-audit.md`](2026-06-14-vibevideo-feature-audit.md).
 
 ## Prinzip (nicht verhandelbar)
 
@@ -40,9 +48,18 @@ perfekt für Lauras Modell.
 
 ## Wiederverwendung
 
-`vibevideo_deepfake` als **optionale Dependency** einbinden; ein dünner Laura-Adapter **importiert**
-`FaceSwapper`, die TTS- und Lipsync-Entrypoints (kein Code-Copy). Schwere Deps (mediapipe, rembg,
-insightface, musetalk, chatterbox) hängen **nur** an den jeweiligen Extras.
+`vibevideo` und `vibevideo-deepfake` als **externe Sidecar-/Adapter-Quellen** behandeln; ein dünner
+Laura-Adapter ruft deren CLI/API-Entrypoints oder einen lokalen Sidecar auf (**kein Code-Copy in den
+Laura-Kern**). Schwere Deps (MoviePy, Sora/OpenAI, ElevenLabs, MuseTalk/Wav2Lip, insightface usw.)
+hängen **nur** an den jeweiligen Extras.
+
+Wichtig: `vibevideo-deepfake` wird wegen proprietärer Lizenz/Identitätsrisiko nicht blind vendort.
+Vor produktiver Nutzung braucht es:
+
+- explizite Lizenz-/Nutzungsfreigabe,
+- Consent-Record pro Person/Job,
+- synthetische Asset-Provenienz,
+- UI-Hinweis, wenn der Deepfake-Sidecar fehlt oder nicht freigegeben ist.
 
 ## Datenmodell (additiv, meins)
 

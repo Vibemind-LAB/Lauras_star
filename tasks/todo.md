@@ -216,15 +216,43 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] **RL5** Frontend: `api.ts setOverlay/removeOverlay` + additive **V2-Lane** in geteilter TimelineBar (beide Tabs) + `OverlayControls` in AssembleView. Adversarialer Review fand 3 echte Bugs (stale assetId, still-geschluckter Fehler, Nicht-Integer-Frames) → alle gefixt. tsc clean. `3c9626e`
 - **Exit:** ✓ Nicht-destruktive opake Source-Replace in beiden Tabs, real per ffmpeg-Farbprobe verifiziert; volle Suite + tsc grün; geteilte TimelineBar additiv (alte Lanes/Playhead intakt). **Limit v1:** Speed≠1-Base unter Overlay nicht gesplittet (dokumentiert); transparente B-Roll-Overlays + Übergänge = spätere Multi-Lane-Phasen.
 
-## Portion R3-C — Reenact-Skelett (konsentiert, gekennzeichnet)  `[~]`  (Spec/Plan: docs/superpowers/2026-06-09-r3c-reenact-{design,plan}) — **Skelett fertig; LivePortrait-Backend = User-Install**
-> Konsentierter, gekennzeichneter Reenact über die Replace-Overlay-Primitive. Dep-freies Skelett mit **Stub-Backend** (kein echtes Modell, sichtbar markiert) — voll testbar; das echte LivePortrait-Backend ist ein reiner Adapter-Tausch (schwere GPU-Dep).
+## Portion R3-C — Reenact-Skelett (konsentiert, gekennzeichnet)  `[~]`  (Spec/Plan: docs/superpowers/2026-06-09-r3c-reenact-{design,plan}) — **Adapter fertig; LivePortrait-Sidecar = User-Install**
+> Konsentierter, gekennzeichneter Reenact über die Replace-Overlay-Primitive. Dep-freies Skelett mit **Stub-Backend** (kein echtes Modell, sichtbar markiert) — voll testbar; echtes LivePortrait läuft als externer Sidecar, damit Laura GPU-frei startbar bleibt.
 - [x] **RC1** Migration `0015` (`media_assets.synthetic`/`ai_effect` + `consent_records`) + Repos (consent CRUD, `set_asset_synthetic`). `e172397`
-- [x] **RC2** Pluggbares `ReenactBackend`-Protocol + `StubReenactBackend` (ffmpeg-Platzhalter „REENACT (stub)", längen-erhaltend) + `resolve_reenact_backend` (env/Default `stub`; LivePortrait=`UnavailableBackend`, null schwere Imports). `8b3a012`
+- [x] **RC2** Pluggbares `ReenactBackend`-Protocol + `StubReenactBackend` (ffmpeg-Platzhalter „REENACT (stub)", längen-erhaltend) + `resolve_reenact_backend` (env/Default `stub`; null schwere Imports). `8b3a012`
 - [x] **RC3** `ai.reenact`-Job: **Consent-Gate zuerst** (verweigert fehlend/unbekannt/**widerrufen**, legt nichts an) → Driving aus **Original-Base** (nie aus früheren synthetischen Overlays) → Stub → `synthetic`-Asset → Replace-Overlay. Adversarial-Review-Härtung (4 Befunde: Migration `0016` Consent-Widerruf, Provenienz, kein verwaistes synthetic-File). `6db9366`
 - [x] **RC4** Consent-/Reenact-API (eigener Router): Consent create/list/**revoke**; `POST /timelines/{id}/reenact` mit Pflicht-`consent_id` + Revoke-Ablehnung am API-Layer (Defense-in-Depth). `b18166f`
 - [x] **RC5** Frontend `ReenactPanel` in AssembleView: Consent-Bestätigung (Schritt 1) → Reenact-Button **erst nach Consent aktiv**; Integer-Frames (≥0 geklemmt); Stub-/synthetic-Hinweis. Review fand 0 Bypass; 2 Hygiene-Fixes. tsc clean. `5cd2833`
 - [x] **RC6** Gesamt-Verifikation: volle pytest-Suite + tsc grün; Consent-Gate adversarial bestätigt (kein Bypass, Backend + UI).
-- **Exit:** ✓ Konsentierter, gekennzeichneter Reenact-Pfad End-to-End mit Stub (UI→API→Job→synthetic-Asset→Overlay), 2× adversarial reviewed + gehärtet. **⛔ WAND (braucht dich):** `LivePortraitBackend` = optionales `[ai-reenact]`-Extra + Sidecar + Modell-Download (RTX 3060, MIT-Lizenz, GB-Gewichte). Reiner Adapter-Tausch — Interface + Job + Consent + Placement stehen. **Weitere R3-Teile danach:** Face-Probe · 2. Kennzeichnungs-Ebene (Video Seal/C2PA) · Swap-Backend · Qualität/Eval (LSE/ArcFace/LPIPS).
+- [x] **RC7** `LivePortraitBackend` als HTTP-Sidecar-Adapter: `GET /healthz`, `POST /reenact` multipart (`driving`, `portrait`, `fps_num`, `fps_den`) → MP4-Bytes; `LAURA_LIVEPORTRAIT_URL`/Timeout; UI-Backend-Auswahl Stub/LivePortrait. Tests: Sidecar-Fake + Renderer-Select grün.
+- **Exit:** ✓ Konsentierter, gekennzeichneter Reenact-Pfad End-to-End mit Stub **oder LivePortrait-Sidecar** (UI→API→Job→synthetic-Asset→Overlay), 2× adversarial reviewed + gehärtet. **⛔ WAND (braucht dich):** Sidecar-Prozess + Modell-Download/Gewichte auf der RTX 3060 starten. Laura importiert weiterhin keine schweren Modelle. **Weitere R3-Teile danach:** Face-Probe · 2. Kennzeichnungs-Ebene (Video Seal/C2PA) · Swap-Backend · Qualität/Eval (LSE/ArcFace/LPIPS).
+
+## Portion AV2 — Assemble Workspace v2: Transcript-first Editing  `[x]`
+> `Zusammenfügen` als leichter 3-Spalten-Arbeitsbereich: links Szenen-Bin, Mitte Sequenz-Player/Timeline/Storyboard, rechts Transkript + Tools. Kein Rewrite-LLM in v1; manuelle Original-Transcript-Korrektur zuerst.
+- [x] **AV2.1 Sequence-Transcript API** — `GET /sequences/{id}/transcript` liefert Transcript-Blöcke in Sequenz-Reihenfolge inkl. Source-/Sequence-Frames und Wort-Mapping; pure Mapper-Tests.
+- [x] **AV2.2 Transcript-Edit + Re-Align Job** — Frontend-Client für `PATCH /transcript/segments/{id}`; `POST /assets/{id}/transcript:realign` validiert Segment-Zugehörigkeit und routet `transcript.realign` auf die GPU-Queue; Handler ersetzt Wörter via vorhandenes WhisperX-Alignment, mit klaren Fehlern bei fehlendem Audio/WhisperX.
+- [x] **AV2.3 Workspace UI** — `AssembleView` auf 3 Spalten umgebaut; Replace/Reenact liegen im rechten `Tools`-Tab; `Transkript`-Tab editiert Sequenz-Blöcke inline und startet Re-Alignment; Preview zeigt aktive Caption als Overlay.
+- [x] **Verifiziert:** Backend full `uv run pytest -q` grün; scoped Backend `ruff`/`mypy` grün; Desktop full `pnpm test`, `tsc --noEmit`, `build:renderer` grün. Full `ruff check` hat bestehende Alt-Test-Lints außerhalb dieser Scheibe.
+- **Exit:** ✓ Transcript-first Zusammenfügen ist bedienbar und testgedeckt; Export nutzt weiterhin den bestehenden Captions-/Transcript-Pfad aus den gespeicherten Segmenten. **Follow-ups:** Sprache nicht hart `en`, Re-Align-Status persistent anzeigen, Caption-Stil-Auswahl, Rewrite-Modell als separater Anschluss.
+
+## Portion AV3 — Assemble Produktreife 1–5  `[x]`
+> Erste integrierte Reife-Scheibe über die priorisierten Punkte 1–5: UX-Polish, Re-Align-Status, Caption-Kontrolle, AI-Sichtbarkeit und Editorial-Hilfen.
+- [x] **AV3.1 Transcript-UX** — Raw-API-Fehler (z. B. 404 JSON) werden im rechten Panel in klare Editor-Zustände übersetzt; aktive Sequenz-Caption markiert den passenden Transcript-Block.
+- [x] **AV3.2 Re-Align-Status** — `api.ts getJob` nutzt den bestehenden `/jobs/{id}`-Endpoint; nach `Speichern + neu ausrichten` zeigt das Panel Job-/Abschlussstatus statt nur fire-and-forget.
+- [x] **AV3.3 Caption-Preview-Kontrolle** — Caption-Overlay im Sequence-Player lässt sich im Workspace ein-/ausblenden, ohne Transcript-Editing zu deaktivieren.
+- [x] **AV3.4 AI/LivePortrait-Sichtbarkeit** — `Tools`-Tab zeigt einen KI-Statushinweis: Stub lokal verfügbar, LivePortrait nur bei laufendem Sidecar/Gewichten.
+- [x] **AV3.5 Editorial-Hilfen** — Sequenz-Gesamtdauer in Frames sichtbar; Storyboard-DnD bekommt eine klare Einfügemarke beim Drag-over.
+- [x] **Verifiziert:** TDD rot→grün (`AssembleView.test.tsx`, `api.test.ts`), `pnpm --dir apps/desktop test` 116 grün, `pnpm --dir apps/desktop exec tsc --noEmit` grün, `pnpm --dir apps/desktop run build:renderer` grün.
+- **Exit:** ✓ `Zusammenfügen` leakt weniger Technik, zeigt Bearbeitungs-/AI-/Caption-Zustände sichtbarer und gibt Editor:innen erste Sequenz-Metadaten.
+
+## Portion AV4 — Persistenter Re-Align-Zustand + Sprache  `[x]`
+> Transcript-Edits haben nun einen dauerhaften Alignment-Lifecycle am Segment; die UI kann nach Neustart zeigen, ob Timing alt ist, läuft oder fehlgeschlagen ist.
+- [x] **AV4.1 Persistenter Segment-State** — Migration `0017_transcript_alignment_state.sql` ergänzt `alignment_status`, `alignment_job_id`, `alignment_language`, `alignment_error`, `alignment_updated_at`; Text-PATCH setzt Segmente auf `stale`.
+- [x] **AV4.2 Re-Align-Lifecycle** — `POST /assets/{id}/transcript:realign` setzt betroffene Segmente auf `aligning`; Worker setzt nach WhisperX-Erfolg `aligned` und bei fehlendem Audio/WhisperX/Runtime-Fehler `failed` mit Ursache.
+- [x] **AV4.3 Sprache smarter** — Re-Align nutzt `body.language` nur als Override; ohne Override kommt die Sprache aus der letzten Analysis-Config, Fallback `en`.
+- [x] **AV4.4 UI-Status** — Sequence-Transcript-Blöcke zeigen persistent `Nicht neu aligned`, `Alignment läuft` oder `Alignment fehlgeschlagen`, inkl. Sprache und Fehlerursache; Frontend sendet keinen harten `en`-Override mehr.
+- [x] **Verifiziert:** `uv run pytest tests/test_sequence_transcript.py -q`; scoped `ruff`/`mypy`; `pnpm --dir apps/desktop test -- src/components/AssembleView.test.tsx src/api.test.ts`; `pnpm --dir apps/desktop exec tsc --noEmit`; `pnpm --dir apps/desktop run build:renderer`.
+- **Exit:** ✓ Transcript-Korrektur ist restart-fähig sichtbar: Text bleibt gespeichert, Timing-Zustand bleibt am Segment. **Follow-ups:** Caption-Export-Regie, Job-Zentrale, Audio-Spuren/Ducking, Transitions.
 
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
 - [x] **GPU (CUDA)** — **aktiviert & verifiziert** auf RTX 3060: torch/torchaudio via PyTorch-`cu128`-Index (`[tool.uv.sources]`, persistent über `uv sync`), `analysis/device.py` wählt Device (`LAURA_ASR_DEVICE` überschreibt); ASR+Align+Diarisierung laufen auf CUDA, CPU-Pfad bleibt grün. cuBLAS/cuDNN kamen über torch-cu128-Deps
@@ -235,6 +263,25 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)
 - [!] **Signierte Builds** — Win-Code-Signing-Cert + Apple-Developer-ID/Notarization
 - [!] **Auto-Update** — Release-/Update-Server (+ signierte Builds)
+- [!] **VibeVideo-Repos als optionale Sidecars** — `Flissel/vibevideo` (MIT: Pipeline,
+  Sora/Vision, Product-Demo, TTS/STT) und `Flissel/vibevideo-deepfake` (proprietär laut Repo:
+  Voice cloning + Lipsync/Deepfake) sind als externe Integrationsquellen in
+  `docs/superpowers/specs/2026-06-09-ai-effects-integration-plan.md` verankert; Feature-Audit:
+  `docs/superpowers/specs/2026-06-14-vibevideo-feature-audit.md`; akzeptiertes Integrationsdesign:
+  `docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md`. Kein Code-Copy in
+  Lauras Kern; Deepfake nur nach Lizenz-/Consent-Gate.
+
+## VibeVideo-Integration  `[ ]`  (Design: docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md)
+- [ ] **VV1 Audio-Lane** — A2-Spur fuer Voiceover/Musik, Gain, Mix/Replace/Mute, einfache Fades,
+  sample-genauer Export-Mix.
+- [ ] **VV2 Voiceover/TTS** — `ai.voiceover` Sidecar-Adapter, `Stimme erzeugen`, WAV-Asset auf A2,
+  Consent-Pflicht bei Personenstimmen.
+- [ ] **VV3 Sync Guard** — Framecount-basierte A/V-Drift-Pruefung und optionaler Fix fuer Exporte
+  und Sidecar-Outputs.
+- [ ] **VV4 Product-Demo Assistant** — Screenrecording analysieren, Szenen/Labels/Voiceovertext als
+  editierbaren Laura-Sequenz-Draft uebernehmen.
+- [ ] **VV5 Lipsync/Deepfake** — Consent-/Lizenz-gated Sidecar mit Face-/Mouth-Probe,
+  synthetischer Kennzeichnung und Quality-Gate.
 
 ---
 
