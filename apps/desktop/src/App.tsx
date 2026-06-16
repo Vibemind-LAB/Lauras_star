@@ -21,6 +21,7 @@ import { ImportBar } from "./components/ImportBar";
 import { ImportProgress } from "./components/ImportProgress";
 import { ImportView } from "./components/ImportView";
 import { InspectorPanel } from "./components/InspectorPanel";
+import { JobCenter } from "./components/JobCenter";
 import { MediaSidebar } from "./components/MediaSidebar";
 import { NavRail } from "./components/NavRail";
 import { Player } from "./components/Player";
@@ -39,6 +40,12 @@ interface FpsPreset {
   drop: boolean;
 }
 
+export interface ExportTarget {
+  id: string;
+  label: string;
+  kind: "sequence" | "rough_cut";
+}
+
 const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "23.976", num: 24000, den: 1001, drop: false },
   { label: "24", num: 24, den: 1, drop: false },
@@ -50,6 +57,8 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "59.94 DF", num: 60000, den: 1001, drop: true },
   { label: "60", num: 60, den: 1, drop: false },
 ];
+
+export const EXPECTED_SCHEMA_VERSION = 22;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
@@ -68,6 +77,7 @@ export function App(): ReactElement {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [roughCut, setRoughCut] = useState<Timeline | null>(null);
+  const [sequenceTimelineId, setSequenceTimelineId] = useState<string | null>(null);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
 
   // A single seek request the Player consumes; a fresh object re-triggers it.
@@ -163,6 +173,27 @@ export function App(): ReactElement {
     }
   }, [client, selectedProjectId, selectedAssetId, loadRoughCut]);
 
+  // Fetch the project sequence timeline id so ExportView can offer it as a source.
+  // Silently clears when no project is selected; errors are non-fatal (no sequence yet).
+  useEffect(() => {
+    if (!client || !selectedProjectId) {
+      setSequenceTimelineId(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const seq = await client.getProjectSequence(selectedProjectId);
+        if (!cancelled) setSequenceTimelineId(seq.timeline_id);
+      } catch {
+        if (!cancelled) setSequenceTimelineId(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, selectedProjectId]);
+
   const seekToFrame = useCallback((frame: number) => setSeek({ frame }), []);
 
   const importPaths = useCallback(
@@ -248,6 +279,21 @@ export function App(): ReactElement {
         drop_frame: preset.drop,
       });
       setName("");
+      setProjects(await client.listProjects());
+      await selectProject(created.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCreateDemoProject(): Promise<void> {
+    if (!client) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await client.createDemoProject();
       setProjects(await client.listProjects());
       await selectProject(created.id);
     } catch (e) {
@@ -402,7 +448,16 @@ export function App(): ReactElement {
               >
                 + Anlegen
               </button>
+              <button
+                type="button"
+                onClick={() => void onCreateDemoProject()}
+                disabled={busy}
+                className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+              >
+                Demo
+              </button>
             </form>
+            <JobCenter client={client} />
           </div>
         )}
         <HealthBadge health={health} offline={offline} />
@@ -760,7 +815,15 @@ export function App(): ReactElement {
               <ExportView
                 client={client}
                 projectId={selectedProjectId}
-                timelineId={roughCut?.id ?? null}
+                project={projects.find((p) => p.id === selectedProjectId) ?? null}
+                exportTargets={[
+                  ...(sequenceTimelineId != null
+                    ? [{ id: sequenceTimelineId, label: "Sequenz (Zusammenfügen)", kind: "sequence" as const }]
+                    : []),
+                  ...(roughCut != null
+                    ? [{ id: roughCut.id, label: `Rough Cut: ${detailAsset?.display_name ?? roughCut.name}`, kind: "rough_cut" as const }]
+                    : []),
+                ]}
               />
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
@@ -793,9 +856,25 @@ function AssetImportRow({
   );
 }
 
-function HealthBadge({ health, offline }: { health: Health | null; offline: boolean }): ReactElement {
+export function HealthBadge({ health, offline }: { health: Health | null; offline: boolean }): ReactElement {
   if (offline) return <Badge color="red" text="Service offline" />;
   if (!health) return <Badge color="amber" text="verbinde…" />;
+  if (health.schema_version < EXPECTED_SCHEMA_VERSION) {
+    return (
+      <Badge
+        color="red"
+        text={`Backend veraltet · schema ${health.schema_version}/${EXPECTED_SCHEMA_VERSION}`}
+      />
+    );
+  }
+  if (health.schema_version > EXPECTED_SCHEMA_VERSION) {
+    return (
+      <Badge
+        color="amber"
+        text={`Frontend veraltet · schema ${health.schema_version}/${EXPECTED_SCHEMA_VERSION}`}
+      />
+    );
+  }
   return <Badge color="green" text={`API v${health.version} · schema ${health.schema_version}`} />;
 }
 

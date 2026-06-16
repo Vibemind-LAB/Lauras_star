@@ -1,9 +1,10 @@
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 
-import type { CaptionMode, CaptionPosition, CaptionPreset, Export, LauraClient } from "../api";
+import type { CaptionMode, CaptionPosition, CaptionPreset, Export, LauraClient, Project, TimelineClip } from "../api";
 import { log } from "../shared/log";
 import { formatBytes } from "../import/format";
 import { MediaCard } from "./MediaCard";
+import type { ExportTarget } from "../App";
 
 const FORMATS = ["mp4", "otio", "edl", "fcpxml", "srt"] as const;
 
@@ -13,15 +14,44 @@ function exportMeta(e: Export): string {
   return "rendert…";
 }
 
+/** Convert a frame count to mm:ss using integer arithmetic — NDF only (internal frames). */
+function framesToMmss(frames: number, rateNum: number, rateDen: number): string {
+  if (rateNum <= 0 || rateDen <= 0) return "0:00";
+  const totalSeconds = Math.floor((frames * rateDen) / rateNum);
+  const mm = Math.floor(totalSeconds / 60);
+  const ss = totalSeconds % 60;
+  return `${mm}:${ss.toString().padStart(2, "0")}`;
+}
+
+/** Derive the highest seq_out_frame_exclusive from a list of flattened clips. */
+function totalFrames(clips: TimelineClip[]): number {
+  let max = 0;
+  for (const c of clips) {
+    if (c.seq_out_frame_exclusive > max) max = c.seq_out_frame_exclusive;
+  }
+  return max;
+}
+
+interface SourceInfo {
+  clipCount: number;
+  duration: string;
+}
+
 export function ExportView({
   client,
   projectId,
-  timelineId,
+  project,
+  exportTargets,
 }: {
   client: LauraClient;
   projectId: string | null;
-  timelineId: string | null;
+  project: Project | null;
+  exportTargets: ExportTarget[];
 }): ReactElement {
+  // Default to the first target (sequence preferred, then rough cut per the caller's ordering).
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(
+    exportTargets[0]?.id ?? null,
+  );
   const [format, setFormat] = useState<string>("mp4");
   const [exports, setExports] = useState<Export[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +64,51 @@ export function ExportView({
   const [captionFontsize, setCaptionFontsize] = useState<number>(72);
   const [captionSafeMargin, setCaptionSafeMargin] = useState<number>(250);
   const [reelBusy, setReelBusy] = useState<boolean>(false);
+  const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
+
+  // Keep selectedTargetId in sync when targets list changes (project switch / sequence loads).
+  useEffect(() => {
+    setSelectedTargetId((prev) => {
+      // Keep current selection if still valid.
+      if (prev != null && exportTargets.some((t) => t.id === prev)) return prev;
+      // Else default to first available.
+      return exportTargets[0]?.id ?? null;
+    });
+  }, [exportTargets]);
+
+  // Derive the active target object.
+  const activeTarget = exportTargets.find((t) => t.id === selectedTargetId) ?? null;
+  // The timeline id used for both renderTimeline and renderReel.
+  const timelineId = activeTarget?.id ?? null;
+
+  // Fetch clip count + duration for the selected timeline whenever it changes.
+  useEffect(() => {
+    if (!timelineId) {
+      setSourceInfo(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const clips = await client.getSequenceFlattened(timelineId);
+        if (cancelled) return;
+        if (clips.length === 0) {
+          setSourceInfo({ clipCount: 0, duration: "0:00" });
+          return;
+        }
+        const dur = project
+          ? framesToMmss(totalFrames(clips), project.sequence_rate_num, project.sequence_rate_den)
+          : "—";
+        setSourceInfo({ clipCount: clips.length, duration: dur });
+      } catch {
+        // Non-fatal — header will show label without counts.
+        if (!cancelled) setSourceInfo(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, timelineId, project]);
 
   const load = useCallback(async (): Promise<void> => {
     if (!projectId) return;
@@ -101,8 +176,48 @@ export function ExportView({
     load,
   ]);
 
+  // Header description: "Exportiere: <label> · N Clips · mm:ss"
+  function renderSourceHeader(): ReactElement | null {
+    if (!activeTarget) return null;
+    const parts: string[] = [activeTarget.label];
+    if (sourceInfo != null) {
+      parts.push(`${sourceInfo.clipCount} Clips`);
+      parts.push(sourceInfo.duration);
+    }
+    return (
+      <p className="mb-3 text-xs text-slate-300">
+        <span className="font-medium text-slate-100">Exportiere:</span>{" "}
+        {parts.join(" · ")}
+      </p>
+    );
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
+      {/* Source selector — only shown when there are multiple choices */}
+      {exportTargets.length > 1 && (
+        <div className="mb-3 flex max-w-md flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Quelle</span>
+          <div className="flex flex-col gap-1">
+            {exportTargets.map((t) => (
+              <label key={t.id} className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
+                <input
+                  type="radio"
+                  name="export-source"
+                  value={t.id}
+                  checked={selectedTargetId === t.id}
+                  onChange={() => setSelectedTargetId(t.id)}
+                  className="accent-sky-500"
+                />
+                {t.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {renderSourceHeader()}
+
       <div className="mb-3 flex max-w-md items-center gap-2">
         <select
           value={format}
