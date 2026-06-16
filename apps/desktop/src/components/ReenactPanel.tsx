@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useState } from "react";
 
 import { type LauraClient } from "../api";
 import { log } from "../shared/log";
+import { framesToTimecode } from "../shared/timecode";
 
 export interface ReenactPanelProps {
   client: LauraClient;
@@ -10,10 +11,16 @@ export interface ReenactPanelProps {
   assets: { id: string; display_name: string }[];
   /** Called after a successful reenact so the parent can reload. */
   onChange: () => void;
+  /** Current live playhead position in sequence frames, forwarded from SequencePlayer. */
+  currentSeqFrame: number;
+  /** Numerator of the project sequence frame rate (e.g. 30000 for 29.97). */
+  rateNum: number;
+  /** Denominator of the project sequence frame rate (e.g. 1001 for 29.97). */
+  rateDen: number;
 }
 
 /**
- * Two-step panel for reenact (identity-layer / LivePortrait stub):
+ * Two-step panel for reenact (identity-layer / stub or LivePortrait sidecar):
  *
  *  1. Consent step — enter a subject label and confirm consent
  *     → `client.createConsent(projectId, { subjectLabel })`
@@ -31,6 +38,9 @@ export function ReenactPanel({
   timelineId,
   assets,
   onChange,
+  currentSeqFrame,
+  rateNum,
+  rateDen,
 }: ReenactPanelProps): ReactElement {
   // --- Consent step state ---
   const [subjectLabel, setSubjectLabel] = useState<string>("");
@@ -43,6 +53,7 @@ export function ReenactPanel({
   const [portraitAssetId, setPortraitAssetId] = useState<string>(assets[0]?.id ?? "");
   const [seqIn, setSeqIn] = useState<number>(0);
   const [seqOut, setSeqOut] = useState<number>(0);
+  const [backend, setBackend] = useState<"stub" | "liveportrait">("stub");
   const [reenactBusy, setReenactBusy] = useState(false);
   const [reenactError, setReenactError] = useState<string | null>(null);
   const [lastJobId, setLastJobId] = useState<string | null>(null);
@@ -92,6 +103,7 @@ export function ReenactPanel({
         seqOut,
         portraitAssetId,
         consentId,
+        backend,
       });
       setLastJobId(result.job_id);
       log.info(
@@ -194,35 +206,72 @@ export function ReenactPanel({
             )}
           </select>
 
+          <select
+            value={backend}
+            onChange={(e) => setBackend(e.target.value === "liveportrait" ? "liveportrait" : "stub")}
+            disabled={reenactBusy}
+            aria-label="Reenact-Backend auswählen"
+            className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
+          >
+            <option value="stub">Stub</option>
+            <option value="liveportrait">LivePortrait Sidecar</option>
+          </select>
+
           {/* seq in */}
-          <label className="flex items-center gap-1 text-xs text-slate-400">
-            <span>seq in</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={seqIn}
-              onChange={(e) => setSeqIn(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
-              disabled={reenactBusy}
-              aria-label="Sequenz-Einpunkt (Frames)"
-              className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
-            />
-          </label>
+          <div className="flex flex-col gap-0.5">
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              <span>seq in</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={seqIn}
+                onChange={(e) => setSeqIn(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
+                disabled={reenactBusy}
+                aria-label="Sequenz-Einpunkt (Frames)"
+                className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+              />
+              <span className="text-[10px] text-slate-600 tabular-nums">
+                {framesToTimecode(seqIn, rateNum, rateDen)}
+              </span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setSeqIn(Math.max(0, Math.trunc(currentSeqFrame)))}
+              disabled={reenactBusy || !Number.isFinite(currentSeqFrame)}
+              className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+            >
+              In = Playhead
+            </button>
+          </div>
 
           {/* seq out */}
-          <label className="flex items-center gap-1 text-xs text-slate-400">
-            <span>seq out</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={seqOut}
-              onChange={(e) => setSeqOut(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
-              disabled={reenactBusy}
-              aria-label="Sequenz-Auspunkt exklusiv (Frames)"
-              className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
-            />
-          </label>
+          <div className="flex flex-col gap-0.5">
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              <span>seq out</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={seqOut}
+                onChange={(e) => setSeqOut(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
+                disabled={reenactBusy}
+                aria-label="Sequenz-Auspunkt exklusiv (Frames)"
+                className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+              />
+              <span className="text-[10px] text-slate-600 tabular-nums">
+                {framesToTimecode(seqOut, rateNum, rateDen)}
+              </span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setSeqOut(Math.max(0, Math.trunc(currentSeqFrame)))}
+              disabled={reenactBusy || !Number.isFinite(currentSeqFrame)}
+              className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+            >
+              Out = Playhead
+            </button>
+          </div>
 
           {/* Submit */}
           <button
@@ -232,14 +281,14 @@ export function ReenactPanel({
             title={!consentId ? "Zuerst Consent bestätigen (Schritt 1)" : undefined}
             className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
           >
-            {reenactBusy ? "…" : "Reenact (stub)"}
+            {reenactBusy ? "…" : backend === "liveportrait" ? "Reenact (LivePortrait)" : "Reenact (stub)"}
           </button>
         </div>
       </div>
 
       {/* Muted hint */}
       <p className="text-[10px] leading-relaxed text-slate-600">
-        LivePortrait nicht installiert — erzeugt eine sichtbar markierte Stub-Ausgabe.
+        Stub erzeugt eine sichtbar markierte Platzhalter-Ausgabe. LivePortrait nutzt den lokalen Sidecar unter LAURA_LIVEPORTRAIT_URL.
         Die Ausgabe wird als <span className="italic">synthetic</span> gekennzeichnet.
       </p>
     </div>

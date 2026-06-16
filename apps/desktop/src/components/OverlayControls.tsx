@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useState } from "react";
 
 import { type LauraClient } from "../api";
 import { log } from "../shared/log";
+import { framesToTimecode } from "../shared/timecode";
 
 export interface OverlayAsset {
   id: string;
@@ -14,6 +15,12 @@ export interface OverlayControlsProps {
   assets: OverlayAsset[];
   /** Called after a successful setOverlay so the parent can reload. */
   onChange: () => void;
+  /** Current live playhead position in sequence frames, forwarded from SequencePlayer. */
+  currentSeqFrame: number;
+  /** Numerator of the project sequence frame rate (e.g. 30000 for 29.97). */
+  rateNum: number;
+  /** Denominator of the project sequence frame rate (e.g. 1001 for 29.97). */
+  rateDen: number;
 }
 
 /**
@@ -32,6 +39,9 @@ export function OverlayControls({
   timelineId,
   assets,
   onChange,
+  currentSeqFrame,
+  rateNum,
+  rateDen,
 }: OverlayControlsProps): ReactElement {
   const [assetId, setAssetId] = useState<string>(assets[0]?.id ?? "");
   const [seqIn, setSeqIn] = useState<number>(0);
@@ -102,33 +112,59 @@ export function OverlayControls({
           )}
         </select>
         {/* Sequence IN */}
-        <label className="flex items-center gap-1 text-xs text-slate-400">
-          <span>seq in</span>
-          <input
-            type="number"
-            min={0}
-            step={1}
-            value={seqIn}
-            onChange={(e) => setSeqIn(Math.trunc(Number(e.target.value)) || 0)}
-            disabled={busy}
-            aria-label="Sequenz-Einpunkt (Frames)"
-            className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
-          />
-        </label>
+        <div className="flex flex-col gap-0.5">
+          <label className="flex items-center gap-1 text-xs text-slate-400">
+            <span>seq in</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={seqIn}
+              onChange={(e) => setSeqIn(Math.trunc(Number(e.target.value)) || 0)}
+              disabled={busy}
+              aria-label="Sequenz-Einpunkt (Frames)"
+              className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+            />
+            <span className="text-[10px] text-slate-600 tabular-nums">
+              {framesToTimecode(seqIn, rateNum, rateDen)}
+            </span>
+          </label>
+          <button
+            type="button"
+            onClick={() => setSeqIn(Math.max(0, Math.trunc(currentSeqFrame)))}
+            disabled={busy || !Number.isFinite(currentSeqFrame)}
+            className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+          >
+            In = Playhead
+          </button>
+        </div>
         {/* Sequence OUT (exclusive) */}
-        <label className="flex items-center gap-1 text-xs text-slate-400">
-          <span>seq out</span>
-          <input
-            type="number"
-            min={0}
-            step={1}
-            value={seqOut}
-            onChange={(e) => setSeqOut(Math.trunc(Number(e.target.value)) || 0)}
-            disabled={busy}
-            aria-label="Sequenz-Auspunkt exklusiv (Frames)"
-            className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
-          />
-        </label>
+        <div className="flex flex-col gap-0.5">
+          <label className="flex items-center gap-1 text-xs text-slate-400">
+            <span>seq out</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={seqOut}
+              onChange={(e) => setSeqOut(Math.trunc(Number(e.target.value)) || 0)}
+              disabled={busy}
+              aria-label="Sequenz-Auspunkt exklusiv (Frames)"
+              className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+            />
+            <span className="text-[10px] text-slate-600 tabular-nums">
+              {framesToTimecode(seqOut, rateNum, rateDen)}
+            </span>
+          </label>
+          <button
+            type="button"
+            onClick={() => setSeqOut(Math.max(0, Math.trunc(currentSeqFrame)))}
+            disabled={busy || !Number.isFinite(currentSeqFrame)}
+            className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+          >
+            Out = Playhead
+          </button>
+        </div>
         {/* Submit */}
         <button
           type="button"

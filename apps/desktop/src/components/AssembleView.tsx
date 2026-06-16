@@ -1,8 +1,29 @@
-import { type DragEvent, type ReactElement, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  type DragEvent,
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineClip } from "../api";
-import { log } from "../shared/log";
+import {
+  type Asset,
+  type LauraClient,
+  type Scene,
+  type SequenceTransitionKind,
+  type SequenceTranscriptBlock,
+  type Timeline,
+  type TimelineAudioClip,
+  type TimelineClip,
+} from "../api";
 import { useSequence } from "../hooks/useSequence";
+import { log } from "../shared/log";
+import { AudioLaneControls } from "./AudioLaneControls";
+import { DemoAssistantPanel } from "./DemoAssistantPanel";
+import { LipsyncPanel } from "./LipsyncPanel";
 import { OverlayControls } from "./OverlayControls";
 import { ReenactPanel } from "./ReenactPanel";
 import { SequencePlayer } from "./SequencePlayer";
@@ -55,11 +76,264 @@ function Thumb({
   );
 }
 
+function frameLabel(start: number, endExclusive: number): string {
+  return `${start}-${Math.max(start, endExclusive - 1)} f`;
+}
+
+function transcriptErrorMessage(error: string | null): string | null {
+  if (error === null) return null;
+  if (error.startsWith("404:")) return "Sequenz-Transkript ist noch nicht verfügbar.";
+  if (error.startsWith("422:")) return "Sequenz-Transkript passt noch nicht zur aktuellen Sequenz.";
+  return "Sequenz-Transkript konnte nicht geladen werden.";
+}
+
+function jobStatusLabel(status: string): string {
+  if (status === "succeeded") return "Re-Alignment abgeschlossen.";
+  if (status === "failed") return "Re-Alignment fehlgeschlagen.";
+  if (status === "cancelled") return "Re-Alignment abgebrochen.";
+  return "Re-Alignment läuft.";
+}
+
+function voiceoverJobStatusLabel(status: string): string {
+  if (status === "succeeded") return "Voiceover erzeugt und auf A2 platziert.";
+  if (status === "failed") return "Voiceover fehlgeschlagen.";
+  if (status === "cancelled") return "Voiceover abgebrochen.";
+  return "Voiceover läuft.";
+}
+
+function alignmentStatusLabel(status: string | undefined): string | null {
+  if (status === "stale") return "Nicht neu aligned";
+  if (status === "aligning") return "Alignment läuft";
+  if (status === "failed") return "Alignment fehlgeschlagen";
+  return null;
+}
+
+function alignmentStatusClass(status: string | undefined): string {
+  if (status === "failed") return "border-red-800/80 bg-red-950/40 text-red-200";
+  if (status === "stale") return "border-amber-800/80 bg-amber-950/40 text-amber-200";
+  if (status === "aligning") return "border-sky-800/80 bg-sky-950/40 text-sky-200";
+  return "border-edge bg-panel text-slate-400";
+}
+
+function TranscriptBlockEditor({
+  client,
+  block,
+  active,
+  timelineId,
+  onSaved,
+  onVoiceoverCreated,
+}: {
+  client: LauraClient;
+  block: SequenceTranscriptBlock;
+  active: boolean;
+  timelineId: string | null;
+  onSaved: () => void;
+  onVoiceoverCreated: () => void;
+}): ReactElement {
+  const [text, setText] = useState(block.text);
+  const [busy, setBusy] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setText(block.text);
+    setStatus(null);
+    setVoiceStatus(null);
+    setError(null);
+  }, [block.segment_id, block.text]);
+
+  async function saveAndRealign(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      await client.updateTranscriptSegment(block.segment_id, { text });
+      const accepted = await client.realignTranscript(block.asset_id, {
+        segmentIds: [block.segment_id],
+      });
+      setStatus(`Re-Alignment läuft: ${accepted.job_id}`);
+      const job = await client.getJob(accepted.job_id);
+      setStatus(jobStatusLabel(job.status));
+      onSaved();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      log.error("transcript edit failed:", msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateVoiceover(): Promise<void> {
+    if (timelineId === null) {
+      setError("Keine Sequenz ausgewählt.");
+      return;
+    }
+    setVoiceBusy(true);
+    setError(null);
+    setVoiceStatus(null);
+    try {
+      const accepted = await client.createVoiceover(timelineId, {
+        segmentId: block.segment_id,
+        text,
+        seqIn: block.seq_in_frame,
+        seqOut: block.seq_out_frame_exclusive,
+      });
+      setVoiceStatus(`Voiceover läuft: ${accepted.job_id}`);
+      const job = await client.getJob(accepted.job_id);
+      setVoiceStatus(voiceoverJobStatusLabel(job.status));
+      onVoiceoverCreated();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      log.error("voiceover generation failed:", msg);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }
+
+  const alignmentLabel = alignmentStatusLabel(block.alignment_status);
+  const alignmentLanguage = block.alignment_language;
+
+  return (
+    <article
+      className={`flex flex-col gap-2 border-b border-edge/80 py-3 last:border-b-0 ${
+        active ? "bg-sky-950/20 px-2" : ""
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide">
+        <span className="truncate font-semibold text-slate-400">
+          {block.speaker_label ?? "Transcript"}
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          {alignmentLabel !== null && (
+            <span
+              className={`rounded border px-1.5 py-0.5 font-semibold ${alignmentStatusClass(
+                block.alignment_status,
+              )}`}
+            >
+              {alignmentLabel}
+            </span>
+          )}
+          <span className="tabular-nums text-slate-600">
+            {frameLabel(block.seq_in_frame, block.seq_out_frame_exclusive)}
+          </span>
+        </span>
+      </div>
+      {block.alignment_status === "stale" && (
+        <div className="rounded border border-amber-900/70 bg-amber-950/20 p-2 text-xs leading-relaxed text-amber-200">
+          Text bleibt gespeichert, Timing ist alt.
+        </div>
+      )}
+      {alignmentLanguage !== null && alignmentLanguage !== undefined && (
+        <div className="text-[11px] text-slate-500">Sprache: {alignmentLanguage}</div>
+      )}
+      {block.alignment_status === "failed" && block.alignment_error ? (
+        <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs leading-relaxed text-red-200">
+          {block.alignment_error}
+        </div>
+      ) : null}
+      <textarea
+        aria-label="Sequenz-Transcript-Text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        disabled={busy}
+        rows={4}
+        className="min-h-24 resize-y rounded border border-edge bg-panel px-2 py-2 text-sm leading-relaxed text-slate-100 outline-none focus:border-sky-600 disabled:opacity-60"
+      />
+      {block.words.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {block.words.map((word) => (
+            <span
+              key={word.id}
+              className="rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-400"
+            >
+              {word.text}
+            </span>
+          ))}
+        </div>
+      )}
+      {error !== null && <div className="text-xs text-red-400">{error}</div>}
+      {status !== null && <div className="text-xs text-sky-400">{status}</div>}
+      {voiceStatus !== null && <div className="text-xs text-emerald-400">{voiceStatus}</div>}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => void saveAndRealign()}
+          disabled={busy || voiceBusy || text.trim() === ""}
+          className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+        >
+          {busy ? "Speichert..." : "Speichern + neu ausrichten"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void generateVoiceover()}
+          disabled={busy || voiceBusy || text.trim() === "" || timelineId === null}
+          className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+        >
+          {voiceBusy ? "Erzeugt..." : "Stimme erzeugen"}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function SequenceTranscriptPanel({
+  client,
+  blocks,
+  error,
+  activeSegmentId,
+  timelineId,
+  onSaved,
+  onVoiceoverCreated,
+}: {
+  client: LauraClient;
+  blocks: SequenceTranscriptBlock[];
+  error: string | null;
+  activeSegmentId: string | null;
+  timelineId: string | null;
+  onSaved: () => void;
+  onVoiceoverCreated: () => void;
+}): ReactElement {
+  const friendlyError = transcriptErrorMessage(error);
+  if (friendlyError !== null) {
+    return (
+      <div className="rounded border border-amber-900/60 bg-amber-950/20 p-3 text-xs leading-relaxed text-amber-200">
+        {friendlyError}
+      </div>
+    );
+  }
+  if (blocks.length === 0) {
+    return (
+      <div className="rounded border border-edge bg-panel/50 p-3 text-xs leading-relaxed text-slate-500">
+        Noch kein Sequenz-Transkript.
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col">
+      {blocks.map((block) => (
+        <TranscriptBlockEditor
+          key={`${block.segment_id}:${block.seq_in_frame}`}
+          client={client}
+          block={block}
+          active={block.segment_id === activeSegmentId}
+          timelineId={timelineId}
+          onSaved={onSaved}
+          onVoiceoverCreated={onVoiceoverCreated}
+        />
+      ))}
+    </div>
+  );
+}
+
 /**
- * Zusammenfügen (assemble) — mirrors the Feinschnitt layout:
- *   left  = all project scenes, grouped by source video, each with a thumbnail
- *   centre= the sequence player + the ordered "Reihenfolge" (the final cut)
- * Clicking a scene on the left appends it to the Reihenfolge; drag to reorder.
+ * Zusammenfügen (assemble) — transcript-first workspace:
+ *   left   = compact scene/asset bin
+ *   centre = sequence player, sequence timeline, storyboard order
+ *   right  = transcript rail with Tools tab for Replace/Reenact
  */
 export function AssembleView({
   client,
@@ -67,19 +341,32 @@ export function AssembleView({
   // roughCutId accepted for API compatibility; the bin is project-wide.
   roughCutId: _roughCutId,
   onSeekScene,
+  rateNum = 30,
+  rateDen = 1,
 }: {
   client: LauraClient;
   projectId: string | null;
   roughCutId?: string | null;
   onSeekScene: (sceneId: string) => void;
+  /** Numerator of the project sequence frame rate. Defaults to 30. */
+  rateNum?: number;
+  /** Denominator of the project sequence frame rate. Defaults to 1. */
+  rateDen?: number;
 }): ReactElement {
   const [scenes, setScenesList] = useState<Scene[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [binError, setBinError] = useState<string | null>(null);
-  // Flattened sequence clip list — used to build the TimelineBar snapshot.
+  const [sceneQuery, setSceneQuery] = useState("");
   const [seqClips, setSeqClips] = useState<TimelineClip[]>([]);
-  // Key used to trigger SequencePlayer reloads and TimelineBar reloads.
+  const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  const [transcriptReloadKey, setTranscriptReloadKey] = useState(0);
+  const [transcript, setTranscript] = useState<SequenceTranscriptBlock[]>([]);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [railTab, setRailTab] = useState<"transcript" | "tools">("transcript");
+  const [seqFrame, setSeqFrame] = useState(0);
+  const [captionPreview, setCaptionPreview] = useState(true);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (projectId === null) {
@@ -107,14 +394,31 @@ export function AssembleView({
     };
   }, [client, projectId]);
 
-  const { sequence, setScenes, reload: reloadSequence } = useSequence(client, projectId);
+  const { sequence, error: sequenceError, setScenes, reload: reloadSequence } = useSequence(
+    client,
+    projectId,
+  );
 
-  // Fetch the flattened sequence clips whenever the sequence id or reloadKey changes,
-  // so the TimelineBar overlay lane stays in sync after setOverlay / removeOverlay.
   const sequenceId = sequence?.timeline_id ?? null;
   const reloadSeqClips = useCallback(() => {
     setReloadKey((k) => k + 1);
   }, []);
+  const reloadTranscript = useCallback(() => {
+    setTranscriptReloadKey((k) => k + 1);
+  }, []);
+  const reloadAudioClips = useCallback(() => {
+    if (!sequenceId) {
+      setAudioClips([]);
+      return;
+    }
+    client
+      .listTimelineAudioClips(sequenceId)
+      .then(setAudioClips)
+      .catch((e: unknown) => {
+        log.error("listTimelineAudioClips failed:", e instanceof Error ? e.message : String(e));
+        setAudioClips([]);
+      });
+  }, [client, sequenceId]);
 
   useEffect(() => {
     if (!sequenceId) {
@@ -135,8 +439,38 @@ export function AssembleView({
     };
   }, [client, sequenceId, reloadKey]);
 
-  // Build a synthetic Timeline shell for TimelineBar — editing ops won't be used in this view,
-  // but the bar needs a Timeline object with the correct id for overlay removal.
+  useEffect(() => {
+    reloadAudioClips();
+  }, [reloadAudioClips]);
+
+  useEffect(() => {
+    if (!sequenceId) {
+      setTranscript([]);
+      setTranscriptError(null);
+      return;
+    }
+    let cancelled = false;
+    client
+      .getSequenceTranscript(sequenceId)
+      .then((blocks) => {
+        if (!cancelled) {
+          setTranscript(blocks);
+          setTranscriptError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setTranscript([]);
+          setTranscriptError(
+            err instanceof Error ? err.message : "Sequenz-Transkript konnte nicht geladen werden.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, sequenceId, transcriptReloadKey]);
+
   const seqTimeline: Timeline | null =
     sequence !== null
       ? {
@@ -155,22 +489,49 @@ export function AssembleView({
   const assetName = (id: string | null | undefined): string =>
     assets.find((a) => a.id === id)?.display_name ?? "Video";
 
-  // Group scenes by their source video (insertion order preserved).
-  const groups: { assetId: string; scenes: Scene[] }[] = [];
-  for (const s of scenes) {
-    const key = s.asset_id ?? "?";
-    const existing = groups.find((g) => g.assetId === key);
-    if (existing) existing.scenes.push(s);
-    else groups.push({ assetId: key, scenes: [s] });
-  }
+  const filteredScenes = useMemo(() => {
+    const needle = sceneQuery.trim().toLocaleLowerCase();
+    if (!needle) return scenes;
+    return scenes.filter((s) => {
+      const hay = `${s.name} ${assetName(s.asset_id)}`.toLocaleLowerCase();
+      return hay.includes(needle);
+    });
+  }, [assets, sceneQuery, scenes]);
 
-  // Drag-reorder within the Reihenfolge.
+  const groups = useMemo(() => {
+    const out: { assetId: string; scenes: Scene[] }[] = [];
+    for (const s of filteredScenes) {
+      const key = s.asset_id ?? "?";
+      const existing = out.find((g) => g.assetId === key);
+      if (existing) existing.scenes.push(s);
+      else out.push({ assetId: key, scenes: [s] });
+    }
+    return out;
+  }, [filteredScenes]);
+
+  const applySceneIds = useCallback(
+    async (sceneIds: string[]): Promise<void> => {
+      await setScenes(sceneIds);
+      reloadSeqClips();
+      reloadTranscript();
+    },
+    [reloadSeqClips, reloadTranscript, setScenes],
+  );
+
+  const activeCaption = transcript.find(
+    (block) => seqFrame >= block.seq_in_frame && seqFrame < block.seq_out_frame_exclusive,
+  ) ?? transcript[0] ?? null;
+  const totalSequenceFrames = seqClips.reduce(
+    (max, clip) => Math.max(max, clip.seq_out_frame_exclusive),
+    0,
+  );
+
   const dragIndex = useRef<number | null>(null);
   const reorder = (from: number, to: number): void => {
     const next = [...ids];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
-    void setScenes(next);
+    void applySceneIds(next);
   };
   const onDragStart = (e: DragEvent<HTMLDivElement>, i: number): void => {
     dragIndex.current = i;
@@ -181,21 +542,53 @@ export function AssembleView({
     const from = dragIndex.current ?? Number(e.dataTransfer.getData("text/plain"));
     if (from !== i) reorder(from, i);
     dragIndex.current = null;
+    setDragOverIndex(null);
   };
   const onDragOver = (e: DragEvent<HTMLDivElement>): void => e.preventDefault();
 
+  const updateTransition = (itemId: string, kind: SequenceTransitionKind): void => {
+    if (!sequence) return;
+    const current = items.find((it) => it.id === itemId);
+    const durationFrames = kind === "hard"
+      ? 0
+      : Math.max(1, current?.transition_after_frames || 12);
+    client
+      .updateSequenceTransition(sequence.timeline_id, itemId, { kind, durationFrames })
+      .then(() => {
+        void reloadSequence();
+        reloadSeqClips();
+      })
+      .catch((e: unknown) => {
+        log.error("updateSequenceTransition failed:", e instanceof Error ? e.message : String(e));
+      });
+  };
+
+  const assetOptions = assets.map((a) => ({ id: a.id, display_name: a.display_name }));
+
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[240px_1fr] gap-px bg-edge">
-      {/* Left: all project scenes, grouped by source video */}
-      <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-ink p-2">
-        <div className="text-xs font-medium text-slate-300">
-          Szenen <span className="text-slate-600">· Klick hängt an</span>
+    <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)_360px] gap-px bg-edge">
+      <aside
+        aria-label="Szenen-Bin"
+        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-ink p-3"
+      >
+        <div>
+          <div className="text-xs font-semibold text-slate-200">Szenen-Bin</div>
+          <div className="text-[11px] text-slate-600">Klick hängt an die Sequenz an</div>
         </div>
+        <input
+          value={sceneQuery}
+          onChange={(e) => setSceneQuery(e.target.value)}
+          placeholder="Szenen suchen"
+          className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-sky-600"
+        />
         {binError !== null && <div className="text-xs text-red-400">{binError}</div>}
+        {sequenceError !== null && <div className="text-xs text-red-400">{sequenceError}</div>}
         {scenes.length === 0 ? (
           <div className="text-xs text-slate-600">
             Noch keine Szenen — erst im Rough Cut Szenen erzeugen.
           </div>
+        ) : groups.length === 0 ? (
+          <div className="text-xs text-slate-600">Keine Szene passt zum Filter.</div>
         ) : (
           groups.map((g) => (
             <div key={g.assetId} className="flex flex-col gap-1">
@@ -207,7 +600,7 @@ export function AssembleView({
                   key={s.id}
                   type="button"
                   title={`„${s.name}" an die Reihenfolge anhängen`}
-                  onClick={() => void setScenes([...ids, s.id])}
+                  onClick={() => void applySceneIds([...ids, s.id])}
                   className="flex items-center gap-2 rounded border border-edge bg-slate-800/50 p-1 text-left text-xs hover:bg-slate-700"
                 >
                   <Thumb client={client} assetId={s.asset_id ?? g.assetId} frame={s.thumb_frame ?? 0} />
@@ -222,53 +615,41 @@ export function AssembleView({
         )}
       </aside>
 
-      {/* Centre: sequence player + overlay controls + timeline bar + ordered Reihenfolge */}
-      <section className="flex min-h-0 flex-col gap-2 overflow-y-auto bg-ink p-3">
-        <div className="w-full max-w-2xl">
+      <section
+        aria-label="Sequenz-Arbeitsfläche"
+        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-ink p-3"
+      >
+        <div className="relative w-full max-w-3xl">
           <SequencePlayer
             client={client}
             projectId={projectId}
             sequenceId={sequence?.timeline_id ?? null}
             reloadKey={reloadKey}
+            onFrame={setSeqFrame}
           />
+          {captionPreview && activeCaption !== null && (
+            <div
+              aria-label="Caption-Preview"
+              className="pointer-events-none absolute inset-x-8 bottom-14 flex justify-center"
+            >
+              <div className="max-w-full rounded bg-black/75 px-3 py-1.5 text-center text-sm font-medium leading-snug text-white shadow">
+                {activeCaption.text}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Overlay controls — insert a Replace-Overlay clip onto the sequence timeline. */}
-        <div className="w-full max-w-2xl">
-          <OverlayControls
-            client={client}
-            timelineId={sequence?.timeline_id ?? null}
-            assets={assets.map((a) => ({ id: a.id, display_name: a.display_name }))}
-            onChange={() => {
-              reloadSeqClips();
-              void reloadSequence();
-            }}
-          />
-        </div>
-
-        {/* Reenact panel — consent + LivePortrait stub job for the sequence timeline. */}
-        <div className="w-full max-w-2xl">
-          <ReenactPanel
-            client={client}
-            projectId={projectId}
-            timelineId={sequence?.timeline_id ?? null}
-            assets={assets.map((a) => ({ id: a.id, display_name: a.display_name }))}
-            onChange={() => {
-              reloadSeqClips();
-              void reloadSequence();
-            }}
-          />
-        </div>
-
-        {/* Timeline bar — shows V1 base clips + V2 overlay lane for the sequence. */}
         {seqTimeline !== null && (
-          <div className="w-full max-w-2xl">
+          <div className="w-full max-w-3xl">
             <TimelineBar
               client={client}
               timeline={seqTimeline}
+              audioClips={audioClips}
               onChange={() => {
                 reloadSeqClips();
+                reloadAudioClips();
                 void reloadSequence();
+                reloadTranscript();
               }}
               onRemoveOverlay={(clipId) => {
                 if (!sequence) return;
@@ -277,24 +658,32 @@ export function AssembleView({
                   .then(() => {
                     reloadSeqClips();
                     void reloadSequence();
+                    reloadTranscript();
                   })
                   .catch((e: unknown) => {
-                    log.error(
-                      "removeOverlay failed:",
-                      e instanceof Error ? e.message : String(e),
-                    );
+                    log.error("removeOverlay failed:", e instanceof Error ? e.message : String(e));
                   });
               }}
             />
           </div>
         )}
 
-
-        <div className="text-xs font-medium text-slate-300">
-          Reihenfolge{" "}
-          <span className="text-slate-600">
-            — in dieser Folge werden die Szenen aneinandergehängt (ziehen zum Umordnen)
-          </span>
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-xs font-semibold text-slate-200">Storyboard</div>
+            <div className="text-[11px] text-slate-600">Ziehen zum Umordnen, Klick springt zur Szene</div>
+          </div>
+          <div className="flex items-center gap-3 text-xs tabular-nums text-slate-500">
+            <button
+              type="button"
+              onClick={() => setCaptionPreview((v) => !v)}
+              className="rounded border border-edge bg-panel px-2 py-1 text-slate-300 hover:bg-slate-800"
+            >
+              {captionPreview ? "Caption-Preview aus" : "Caption-Preview ein"}
+            </button>
+            <span>Gesamtdauer {totalSequenceFrames} f</span>
+            <span>{items.length} Clips</span>
+          </div>
         </div>
         <div className="flex gap-2 overflow-x-auto pb-2">
           {items.length === 0 ? (
@@ -305,40 +694,175 @@ export function AssembleView({
             items.map((it, i) => {
               const sc = sceneById(it.scene_id);
               return (
-                <div
-                  key={it.id}
-                  draggable
-                  onDragStart={(e) => onDragStart(e, i)}
-                  onDragOver={onDragOver}
-                  onDrop={(e) => onDrop(e, i)}
-                  className="flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border border-edge bg-slate-800 p-1 text-xs"
-                >
-                  <Thumb
-                    client={client}
-                    assetId={sc?.asset_id ?? null}
-                    frame={sc?.thumb_frame ?? 0}
-                    className="h-14 w-full"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onSeekScene(it.scene_id)}
-                    className="truncate text-left text-slate-200 hover:text-white"
+                <Fragment key={it.id}>
+                  <div
+                    draggable
+                    onDragStart={(e) => onDragStart(e, i)}
+                    onDragEnter={() => setDragOverIndex(i)}
+                    onDragOver={onDragOver}
+                    onDrop={(e) => onDrop(e, i)}
+                    onDragLeave={() => setDragOverIndex(null)}
+                    className={`flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border bg-slate-800 p-1 text-xs ${
+                      dragOverIndex === i ? "border-sky-400 shadow-[inset_3px_0_0_#38bdf8]" : "border-edge"
+                    }`}
                   >
-                    {i + 1}. {it.scene_name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void setScenes(ids.filter((_, j) => j !== i))}
-                    className="rounded bg-slate-700 px-1 py-0.5 text-[11px] text-slate-300 hover:bg-slate-600"
-                  >
-                    entfernen
-                  </button>
-                </div>
+                    {dragOverIndex === i && (
+                      <span className="sr-only">Einfügemarke vor {i + 1}</span>
+                    )}
+                    <Thumb
+                      client={client}
+                      assetId={sc?.asset_id ?? null}
+                      frame={sc?.thumb_frame ?? 0}
+                      className="h-14 w-full"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onSeekScene(it.scene_id)}
+                      className="truncate text-left text-slate-200 hover:text-white"
+                    >
+                      {i + 1}. {it.scene_name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void applySceneIds(ids.filter((_, j) => j !== i))}
+                      className="rounded bg-slate-700 px-1 py-0.5 text-[11px] text-slate-300 hover:bg-slate-600"
+                    >
+                      entfernen
+                    </button>
+                  </div>
+                  {i < items.length - 1 && (
+                    <label className="flex w-20 shrink-0 flex-col justify-center gap-1 text-[10px] text-slate-500">
+                      <span>Übergang</span>
+                      <select
+                        aria-label={`Transition nach Szene ${i + 1}`}
+                        value={it.transition_after_kind}
+                        onChange={(e) =>
+                          updateTransition(it.id, e.target.value as SequenceTransitionKind)}
+                        className="rounded border border-edge bg-panel px-1 py-1 text-[11px] text-slate-200"
+                      >
+                        <option value="hard">Hard</option>
+                        <option value="dip_black">Dip</option>
+                        <option value="fade_black">Fade</option>
+                        <option value="crossfade">Cross</option>
+                      </select>
+                    </label>
+                  )}
+                </Fragment>
               );
             })
           )}
         </div>
       </section>
+
+      <aside
+        aria-label="Transkript und Werkzeuge"
+        className="flex min-h-0 flex-col overflow-y-auto bg-ink p-3"
+      >
+        <div className="mb-3 flex rounded border border-edge bg-panel p-0.5">
+          <button
+            type="button"
+            onClick={() => setRailTab("transcript")}
+            className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
+              railTab === "transcript" ? "bg-sky-700 text-white" : "text-slate-400 hover:text-slate-100"
+            }`}
+          >
+            Transkript
+          </button>
+          <button
+            type="button"
+            onClick={() => setRailTab("tools")}
+            className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
+              railTab === "tools" ? "bg-sky-700 text-white" : "text-slate-400 hover:text-slate-100"
+            }`}
+          >
+            Tools
+          </button>
+        </div>
+        {railTab === "transcript" ? (
+          <SequenceTranscriptPanel
+            client={client}
+            blocks={transcript}
+            error={transcriptError}
+            activeSegmentId={activeCaption?.segment_id ?? null}
+            timelineId={sequence?.timeline_id ?? null}
+            onSaved={reloadTranscript}
+            onVoiceoverCreated={() => {
+              reloadAudioClips();
+              reloadSeqClips();
+            }}
+          />
+        ) : (
+          <div className="flex flex-col gap-3">
+            <section className="rounded border border-edge bg-panel/50 p-3">
+              <div className="mb-1 text-xs font-semibold text-slate-200">KI-Status</div>
+              <p className="text-xs leading-relaxed text-slate-500">
+                Stub-Reenact ist lokal verfügbar. LivePortrait Sidecar bleibt optional und wird erst
+                genutzt, wenn der lokale Sidecar samt Modellgewichten läuft.
+              </p>
+            </section>
+            <AudioLaneControls
+              client={client}
+              timelineId={sequence?.timeline_id ?? null}
+              assets={assets}
+              onChange={() => {
+                reloadSeqClips();
+                reloadAudioClips();
+                void reloadSequence();
+                reloadTranscript();
+              }}
+            />
+            <DemoAssistantPanel
+              client={client}
+              assets={assets}
+              onApplied={() => {
+                void reloadSequence();
+                reloadSeqClips();
+                reloadAudioClips();
+                reloadTranscript();
+              }}
+            />
+            <OverlayControls
+              client={client}
+              timelineId={sequence?.timeline_id ?? null}
+              assets={assetOptions}
+              onChange={() => {
+                reloadSeqClips();
+                void reloadSequence();
+                reloadTranscript();
+              }}
+              currentSeqFrame={seqFrame}
+              rateNum={rateNum}
+              rateDen={rateDen}
+            />
+            <ReenactPanel
+              client={client}
+              projectId={projectId}
+              timelineId={sequence?.timeline_id ?? null}
+              assets={assetOptions}
+              onChange={() => {
+                reloadSeqClips();
+                void reloadSequence();
+                reloadTranscript();
+              }}
+              currentSeqFrame={seqFrame}
+              rateNum={rateNum}
+              rateDen={rateDen}
+            />
+            <LipsyncPanel
+              client={client}
+              projectId={projectId}
+              timelineId={sequence?.timeline_id ?? null}
+              assets={assets}
+              onChange={() => {
+                reloadSeqClips();
+                reloadAudioClips();
+                void reloadSequence();
+                reloadTranscript();
+              }}
+            />
+          </div>
+        )}
+      </aside>
     </div>
   );
 }

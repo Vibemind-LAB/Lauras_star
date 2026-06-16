@@ -566,6 +566,8 @@ export function App(): ReactElement {
               projectId={selectedProjectId}
               roughCutId={roughCut?.id ?? null}
               onSeekScene={() => undefined}
+              rateNum={projects.find((p) => p.id === selectedProjectId)?.sequence_rate_num ?? 30}
+              rateDen={projects.find((p) => p.id === selectedProjectId)?.sequence_rate_den ?? 1}
             />
           )}
 
