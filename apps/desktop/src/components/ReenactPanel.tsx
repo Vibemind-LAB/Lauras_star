@@ -1,6 +1,7 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 
 import { type LauraClient } from "../api";
+import { useJobStatus } from "../hooks/useJobStatus";
 import { log } from "../shared/log";
 import { framesToTimecode } from "../shared/timecode";
 
@@ -19,6 +20,23 @@ export interface ReenactPanelProps {
   rateDen: number;
 }
 
+function jobChipClass(status: string): string {
+  if (status === "failed") return "border-red-800 bg-red-950/40 text-red-200";
+  if (status === "succeeded") return "border-emerald-800 bg-emerald-950/30 text-emerald-200";
+  if (status === "running" || status === "leased" || status === "queued")
+    return "border-sky-800 bg-sky-950/30 text-sky-200";
+  return "border-edge bg-panel text-slate-300";
+}
+
+function jobChipLabel(status: string): string {
+  if (status === "succeeded") return "Fertig ✓";
+  if (status === "failed") return "Fehlgeschlagen";
+  if (status === "cancelled") return "Abgebrochen";
+  if (status === "running" || status === "leased") return "Läuft…";
+  if (status === "queued") return "In Warteschlange";
+  return status;
+}
+
 /**
  * Two-step panel for reenact (identity-layer / stub or LivePortrait sidecar):
  *
@@ -29,6 +47,8 @@ export interface ReenactPanelProps {
  *  2. Reenact step — choose seq in/out (integer frames), pick a portrait asset,
  *     then kick off the job via `client.reenact(timelineId, { … })`.
  *     The Reenact button is DISABLED until consent is confirmed.
+ *     Live job status is polled every 1.5 s until terminal.
+ *     On success `onChange()` fires exactly once; on failure a Retry button appears.
  *
  * No `any`, no console.log — errors routed through `log.error`.
  */
@@ -58,6 +78,9 @@ export function ReenactPanel({
   const [reenactError, setReenactError] = useState<string | null>(null);
   const [lastJobId, setLastJobId] = useState<string | null>(null);
 
+  // Guard: fire onChange exactly once per succeeded job.
+  const onChangeFiredRef = useRef<string | null>(null);
+
   // Default portrait picker to first asset once assets load.
   useEffect(() => {
     if (!portraitAssetId && assets.length > 0) {
@@ -73,6 +96,21 @@ export function ReenactPanel({
     setConsentError(null);
     setSubjectLabel("");
   }, [projectId]);
+
+  // Poll the active job until terminal.
+  const { jobStatus, error: jobError, isRunning } = useJobStatus(client, lastJobId);
+
+  // Fire onChange exactly once when the job succeeds.
+  useEffect(() => {
+    if (
+      jobStatus !== null &&
+      jobStatus.status === "succeeded" &&
+      onChangeFiredRef.current !== jobStatus.id
+    ) {
+      onChangeFiredRef.current = jobStatus.id;
+      onChange();
+    }
+  }, [jobStatus, onChange]);
 
   async function confirmConsent(): Promise<void> {
     if (!projectId || !subjectLabel.trim()) return;
@@ -97,6 +135,7 @@ export function ReenactPanel({
     setReenactBusy(true);
     setReenactError(null);
     setLastJobId(null);
+    onChangeFiredRef.current = null;
     try {
       const result = await client.reenact(timelineId, {
         seqIn,
@@ -116,7 +155,6 @@ export function ReenactPanel({
         "–",
         seqOut,
       );
-      onChange();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("reenact failed:", msg);
@@ -128,6 +166,7 @@ export function ReenactPanel({
 
   const reenactDisabled =
     reenactBusy ||
+    isRunning ||
     !consentId ||
     !timelineId ||
     seqOut <= seqIn ||
@@ -156,7 +195,7 @@ export function ReenactPanel({
           <div className="flex items-center gap-2">
             <input
               type="text"
-              placeholder={'Subjekt-Label (z. B. „Person A“)'}
+              placeholder={'Subjekt-Label (z. B. „Person A")'}
               value={subjectLabel}
               onChange={(e) => setSubjectLabel(e.target.value)}
               disabled={consentBusy}
@@ -181,9 +220,37 @@ export function ReenactPanel({
           Schritt 2 — Reenact
         </span>
 
-        {reenactError && <div className="text-xs text-red-400">{reenactError}</div>}
-        {lastJobId !== null && (
-          <div className="text-xs text-sky-400">Job gestartet: {lastJobId}</div>
+        {reenactError !== null && <div className="text-xs text-red-400">{reenactError}</div>}
+
+        {/* Live job status chip */}
+        {lastJobId !== null && jobStatus !== null && (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <span
+                className={`rounded border px-2 py-0.5 text-[11px] ${jobChipClass(jobStatus.status)}`}
+              >
+                {jobChipLabel(jobStatus.status)}
+              </span>
+              <span className="truncate text-[10px] text-slate-600">{lastJobId}</span>
+            </div>
+            {jobStatus.status === "failed" && (
+              <>
+                {jobError !== null && (
+                  <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs text-red-200">
+                    {jobError}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void submitReenact()}
+                  disabled={reenactBusy || !consentId || !timelineId || seqOut <= seqIn || !portraitAssetId}
+                  className="self-start rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+                >
+                  Erneut versuchen
+                </button>
+              </>
+            )}
+          </div>
         )}
 
         <div className="flex flex-wrap items-center gap-2">
@@ -191,7 +258,7 @@ export function ReenactPanel({
           <select
             value={portraitAssetId}
             onChange={(e) => setPortraitAssetId(e.target.value)}
-            disabled={reenactBusy || assets.length === 0}
+            disabled={reenactBusy || isRunning || assets.length === 0}
             aria-label="Portrait-Asset auswählen"
             className="min-w-0 flex-1 truncate rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
           >
@@ -209,7 +276,7 @@ export function ReenactPanel({
           <select
             value={backend}
             onChange={(e) => setBackend(e.target.value === "liveportrait" ? "liveportrait" : "stub")}
-            disabled={reenactBusy}
+            disabled={reenactBusy || isRunning}
             aria-label="Reenact-Backend auswählen"
             className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
           >
@@ -227,7 +294,7 @@ export function ReenactPanel({
                 step={1}
                 value={seqIn}
                 onChange={(e) => setSeqIn(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
-                disabled={reenactBusy}
+                disabled={reenactBusy || isRunning}
                 aria-label="Sequenz-Einpunkt (Frames)"
                 className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
               />
@@ -238,7 +305,7 @@ export function ReenactPanel({
             <button
               type="button"
               onClick={() => setSeqIn(Math.max(0, Math.trunc(currentSeqFrame)))}
-              disabled={reenactBusy || !Number.isFinite(currentSeqFrame)}
+              disabled={reenactBusy || isRunning || !Number.isFinite(currentSeqFrame)}
               className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
             >
               In = Playhead
@@ -255,7 +322,7 @@ export function ReenactPanel({
                 step={1}
                 value={seqOut}
                 onChange={(e) => setSeqOut(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
-                disabled={reenactBusy}
+                disabled={reenactBusy || isRunning}
                 aria-label="Sequenz-Auspunkt exklusiv (Frames)"
                 className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
               />
@@ -266,7 +333,7 @@ export function ReenactPanel({
             <button
               type="button"
               onClick={() => setSeqOut(Math.max(0, Math.trunc(currentSeqFrame)))}
-              disabled={reenactBusy || !Number.isFinite(currentSeqFrame)}
+              disabled={reenactBusy || isRunning || !Number.isFinite(currentSeqFrame)}
               className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
             >
               Out = Playhead
@@ -281,7 +348,7 @@ export function ReenactPanel({
             title={!consentId ? "Zuerst Consent bestätigen (Schritt 1)" : undefined}
             className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
           >
-            {reenactBusy ? "…" : backend === "liveportrait" ? "Reenact (LivePortrait)" : "Reenact (stub)"}
+            {reenactBusy ? "…" : isRunning ? "Läuft…" : backend === "liveportrait" ? "Reenact (LivePortrait)" : "Reenact (stub)"}
           </button>
         </div>
       </div>

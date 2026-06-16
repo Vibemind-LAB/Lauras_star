@@ -19,6 +19,7 @@ import {
   type TimelineAudioClip,
   type TimelineClip,
 } from "../api";
+import { useJobStatus } from "../hooks/useJobStatus";
 import { useSequence } from "../hooks/useSequence";
 import { log } from "../shared/log";
 import { AudioLaneControls } from "./AudioLaneControls";
@@ -134,29 +135,53 @@ function TranscriptBlockEditor({
   const [busy, setBusy] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
+
+  // One active job at a time: realign job id or voiceover job id.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // Tracks which kind of job is active so we know which callback to fire on success.
+  const activeJobKindRef = useRef<"realign" | "voiceover" | null>(null);
+  // Guard: fire callbacks exactly once per succeeded job.
+  const onSuccessFiredRef = useRef<string | null>(null);
+
+  const { jobStatus, error: jobError, isRunning: jobRunning } = useJobStatus(client, activeJobId);
 
   useEffect(() => {
     setText(block.text);
-    setStatus(null);
-    setVoiceStatus(null);
+    setActiveJobId(null);
+    activeJobKindRef.current = null;
+    onSuccessFiredRef.current = null;
     setError(null);
   }, [block.segment_id, block.text]);
+
+  // Fire the appropriate callback exactly once when the active job succeeds.
+  useEffect(() => {
+    if (
+      jobStatus === null ||
+      jobStatus.status !== "succeeded" ||
+      onSuccessFiredRef.current === jobStatus.id
+    ) {
+      return;
+    }
+    onSuccessFiredRef.current = jobStatus.id;
+    if (activeJobKindRef.current === "realign") {
+      onSaved();
+    } else if (activeJobKindRef.current === "voiceover") {
+      onVoiceoverCreated();
+    }
+  }, [jobStatus, onSaved, onVoiceoverCreated]);
 
   async function saveAndRealign(): Promise<void> {
     setBusy(true);
     setError(null);
-    setStatus(null);
+    setActiveJobId(null);
+    onSuccessFiredRef.current = null;
     try {
       await client.updateTranscriptSegment(block.segment_id, { text });
       const accepted = await client.realignTranscript(block.asset_id, {
         segmentIds: [block.segment_id],
       });
-      setStatus(`Re-Alignment läuft: ${accepted.job_id}`);
-      const job = await client.getJob(accepted.job_id);
-      setStatus(jobStatusLabel(job.status));
-      onSaved();
+      activeJobKindRef.current = "realign";
+      setActiveJobId(accepted.job_id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -173,7 +198,8 @@ function TranscriptBlockEditor({
     }
     setVoiceBusy(true);
     setError(null);
-    setVoiceStatus(null);
+    setActiveJobId(null);
+    onSuccessFiredRef.current = null;
     try {
       const accepted = await client.createVoiceover(timelineId, {
         segmentId: block.segment_id,
@@ -181,10 +207,8 @@ function TranscriptBlockEditor({
         seqIn: block.seq_in_frame,
         seqOut: block.seq_out_frame_exclusive,
       });
-      setVoiceStatus(`Voiceover läuft: ${accepted.job_id}`);
-      const job = await client.getJob(accepted.job_id);
-      setVoiceStatus(voiceoverJobStatusLabel(job.status));
-      onVoiceoverCreated();
+      activeJobKindRef.current = "voiceover";
+      setActiveJobId(accepted.job_id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -256,13 +280,35 @@ function TranscriptBlockEditor({
         </div>
       )}
       {error !== null && <div className="text-xs text-red-400">{error}</div>}
-      {status !== null && <div className="text-xs text-sky-400">{status}</div>}
-      {voiceStatus !== null && <div className="text-xs text-emerald-400">{voiceStatus}</div>}
+      {activeJobId !== null && jobStatus !== null && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <span
+              className={`rounded border px-2 py-0.5 text-[11px] ${
+                jobStatus.status === "failed"
+                  ? "border-red-800 bg-red-950/40 text-red-200"
+                  : jobStatus.status === "succeeded"
+                    ? "border-emerald-800 bg-emerald-950/30 text-emerald-200"
+                    : "border-sky-800 bg-sky-950/30 text-sky-200"
+              }`}
+            >
+              {activeJobKindRef.current === "realign"
+                ? jobStatusLabel(jobStatus.status)
+                : voiceoverJobStatusLabel(jobStatus.status)}
+            </span>
+          </div>
+          {jobStatus.status === "failed" && jobError !== null && (
+            <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs text-red-200">
+              {jobError}
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => void saveAndRealign()}
-          disabled={busy || voiceBusy || text.trim() === ""}
+          disabled={busy || voiceBusy || jobRunning || text.trim() === ""}
           className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
         >
           {busy ? "Speichert..." : "Speichern + neu ausrichten"}
@@ -270,7 +316,7 @@ function TranscriptBlockEditor({
         <button
           type="button"
           onClick={() => void generateVoiceover()}
-          disabled={busy || voiceBusy || text.trim() === "" || timelineId === null}
+          disabled={busy || voiceBusy || jobRunning || text.trim() === "" || timelineId === null}
           className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
         >
           {voiceBusy ? "Erzeugt..." : "Stimme erzeugen"}
