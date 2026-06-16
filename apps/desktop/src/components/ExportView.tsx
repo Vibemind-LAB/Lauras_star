@@ -1,6 +1,6 @@
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 
-import type { Export, LauraClient } from "../api";
+import type { CaptionMode, CaptionPosition, CaptionPreset, Export, LauraClient } from "../api";
 import { log } from "../shared/log";
 import { formatBytes } from "../import/format";
 import { MediaCard } from "./MediaCard";
@@ -28,6 +28,11 @@ export function ExportView({
   const [reelHook, setReelHook] = useState<string>("");
   const [reelDisclosure, setReelDisclosure] = useState<boolean>(true);
   const [reelCaptions, setReelCaptions] = useState<boolean>(true);
+  const [captionPreset, setCaptionPreset] = useState<CaptionPreset>("reels");
+  const [captionMode, setCaptionMode] = useState<CaptionMode>("karaoke");
+  const [captionPosition, setCaptionPosition] = useState<CaptionPosition>("bottom");
+  const [captionFontsize, setCaptionFontsize] = useState<number>(72);
+  const [captionSafeMargin, setCaptionSafeMargin] = useState<number>(250);
   const [reelBusy, setReelBusy] = useState<boolean>(false);
 
   const load = useCallback(async (): Promise<void> => {
@@ -69,6 +74,11 @@ export function ExportView({
         disclosureText: reelDisclosure ? "KI · synthetisch" : "",
         vertical: true,
         captions: reelCaptions,
+        captionPreset,
+        captionMode,
+        captionPosition,
+        captionFontsize,
+        captionSafeMargin,
       });
       await load();
     } catch (e) {
@@ -77,7 +87,19 @@ export function ExportView({
     } finally {
       setReelBusy(false);
     }
-  }, [client, timelineId, reelHook, reelDisclosure, reelCaptions, load]);
+  }, [
+    client,
+    timelineId,
+    reelHook,
+    reelDisclosure,
+    reelCaptions,
+    captionPreset,
+    captionMode,
+    captionPosition,
+    captionFontsize,
+    captionSafeMargin,
+    load,
+  ]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
@@ -132,6 +154,76 @@ export function ExportView({
           Untertitel (Captions) einbrennen
         </label>
         <span className="text-xs text-slate-400">Captions werden aus dem Transkript der Timeline generiert.</span>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1 text-xs text-slate-300">
+            Caption-Preset
+            <select
+              aria-label="Caption-Preset"
+              value={captionPreset}
+              onChange={(e) => setCaptionPreset(e.target.value as CaptionPreset)}
+              disabled={!timelineId || !reelCaptions}
+              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            >
+              <option value="reels">Reels 9:16</option>
+              <option value="tiktok">TikTok 9:16</option>
+              <option value="shorts">Shorts 9:16</option>
+              <option value="wide">16:9</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-300">
+            Caption-Modus
+            <select
+              aria-label="Caption-Modus"
+              value={captionMode}
+              onChange={(e) => setCaptionMode(e.target.value as CaptionMode)}
+              disabled={!timelineId || !reelCaptions}
+              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            >
+              <option value="karaoke">Karaoke</option>
+              <option value="normal">Normal</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-300">
+            Caption-Position
+            <select
+              aria-label="Caption-Position"
+              value={captionPosition}
+              onChange={(e) => setCaptionPosition(e.target.value as CaptionPosition)}
+              disabled={!timelineId || !reelCaptions}
+              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            >
+              <option value="bottom">Unten</option>
+              <option value="middle">Mitte</option>
+              <option value="top">Oben</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-300">
+            Caption-Groesse
+            <input
+              aria-label="Caption-Groesse"
+              type="number"
+              min={24}
+              max={160}
+              value={captionFontsize}
+              onChange={(e) => setCaptionFontsize(Number(e.target.value))}
+              disabled={!timelineId || !reelCaptions}
+              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-300">
+            Safe-Zone
+            <input
+              aria-label="Safe-Zone"
+              type="number"
+              min={0}
+              max={800}
+              value={captionSafeMargin}
+              onChange={(e) => setCaptionSafeMargin(Number(e.target.value))}
+              disabled={!timelineId || !reelCaptions}
+              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            />
+          </label>
+        </div>
         <button
           type="button"
           onClick={() => void onExportReel()}
@@ -148,15 +240,54 @@ export function ExportView({
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          {exports.map((e) => (
-            <MediaCard
-              key={e.id}
-              title={e.format.toUpperCase()}
-              meta={exportMeta(e)}
-              onClick={() => undefined}
-              onRetry={() => undefined}
-            />
-          ))}
+          {exports.map((e) => {
+            const isReady = e.status === "ready" && Boolean(e.path);
+            const openExport = isReady
+              ? (): void => {
+                  if (!window.laura) return;
+                  void window.laura.openPath(e.path!).then((err) => {
+                    if (err) setError(err);
+                  });
+                }
+              : (): void => undefined;
+            const exportMenu = isReady ? (
+              <div className="flex shrink-0 flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!window.laura) return;
+                    void window.laura.revealPath(e.path!).then((err) => {
+                      if (err) setError(err);
+                    });
+                  }}
+                  className="rounded bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200 hover:bg-slate-600"
+                >
+                  Im Ordner zeigen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(e.path!).catch((err: unknown) => {
+                      setError(String(err));
+                    });
+                  }}
+                  className="rounded bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200 hover:bg-slate-600"
+                >
+                  Pfad kopieren
+                </button>
+              </div>
+            ) : undefined;
+            return (
+              <MediaCard
+                key={e.id}
+                title={e.format.toUpperCase()}
+                meta={exportMeta(e)}
+                onClick={openExport}
+                onRetry={() => undefined}
+                menu={exportMenu}
+              />
+            );
+          })}
         </div>
       )}
     </div>

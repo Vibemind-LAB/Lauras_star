@@ -13,6 +13,10 @@ const bridge = {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke("laura:pick-folder"),
   listMediaInFolder: (folder: string): Promise<string[]> =>
     ipcRenderer.invoke("laura:list-media-in-folder", folder),
+  openPath: (filePath: string): Promise<string> =>
+    ipcRenderer.invoke("laura:open-path", filePath),
+  revealPath: (filePath: string): Promise<string> =>
+    ipcRenderer.invoke("laura:reveal-path", filePath),
 };
 
 contextBridge.exposeInMainWorld("laura", bridge);
