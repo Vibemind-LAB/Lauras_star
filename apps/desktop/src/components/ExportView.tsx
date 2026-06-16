@@ -7,7 +7,14 @@ import { MediaCard } from "./MediaCard";
 import { CaptionPreview } from "./CaptionPreview";
 import type { ExportTarget } from "../App";
 
-const FORMATS = ["mp4", "otio", "edl", "fcpxml", "srt"] as const;
+/** Human-readable hint shown below the format picker. */
+const FORMAT_HINT: Record<string, string> = {
+  mp4:    "Fertiges, teilbares Video",
+  otio:   "Projektaustausch für ein anderes Schnittprogramm (verlustarm)",
+  edl:    "Schnittliste für ein anderes NLE",
+  fcpxml: "Schnittliste für ein anderes NLE",
+  srt:    "Untertitel-Datei (separat)",
+};
 
 function exportMeta(e: Export): string {
   if (e.status === "ready") return formatBytes(e.size_bytes ?? 0);
@@ -65,6 +72,7 @@ export function ExportView({
   const [captionFontsize, setCaptionFontsize] = useState<number>(72);
   const [captionSafeMargin, setCaptionSafeMargin] = useState<number>(250);
   const [reelBusy, setReelBusy] = useState<boolean>(false);
+  const [exportBusy, setExportBusy] = useState<boolean>(false);
   const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
   /** asset_id of the first flattened clip — used for the caption preview poster frame. */
   const [posterAssetId, setPosterAssetId] = useState<string | null>(null);
@@ -141,11 +149,14 @@ export function ExportView({
 
   const onExport = useCallback(async (): Promise<void> => {
     if (!timelineId) return;
+    setExportBusy(true);
     try {
       await client.renderTimeline(timelineId, format);
       await load();
     } catch (e) {
       setError(String(e));
+    } finally {
+      setExportBusy(false);
     }
   }, [client, timelineId, format, load]);
 
@@ -227,25 +238,86 @@ export function ExportView({
 
       {renderSourceHeader()}
 
-      <div className="mb-3 flex max-w-md items-center gap-2">
-        <select
-          value={format}
-          onChange={(e) => setFormat(e.target.value)}
-          disabled={!timelineId}
-          className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
-        >
-          {FORMATS.map((f) => (
-            <option key={f} value={f}>{f.toUpperCase()}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => void onExport()}
-          disabled={!timelineId}
-          className="rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
-        >
-          Exportieren
-        </button>
+      <div className="mb-3 flex max-w-md flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <select
+            value={format}
+            onChange={(e) => setFormat(e.target.value)}
+            disabled={!timelineId}
+            className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+          >
+            <optgroup label="Fertiges Video">
+              <option value="mp4">MP4</option>
+            </optgroup>
+            <optgroup label="Für anderes Schnittprogramm">
+              <option value="otio">OTIO</option>
+              <option value="edl">EDL</option>
+              <option value="fcpxml">FCPXML</option>
+            </optgroup>
+            <optgroup label="Untertitel">
+              <option value="srt">SRT</option>
+            </optgroup>
+          </select>
+          <button
+            type="button"
+            onClick={() => void onExport()}
+            disabled={!timelineId || exportBusy}
+            className="rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+          >
+            {exportBusy ? "rendert…" : "Exportieren"}
+          </button>
+        </div>
+        {format in FORMAT_HINT && (
+          <p className="text-[10px] text-slate-400">{FORMAT_HINT[format]}</p>
+        )}
+      </div>
+      {/* One-click platform presets — set caption state AND call renderReel with the correct
+          values in the same click. We pass the override values directly to client.renderReel
+          so that the render is not subject to stale-closure timing from setState. The setState
+          calls keep the caption controls visually in sync for subsequent manual edits. */}
+      <div className="mb-2 flex max-w-md gap-2">
+        {(
+          [
+            { label: "Reels",  preset: "reels"  as const },
+            { label: "TikTok", preset: "tiktok" as const },
+            { label: "Shorts", preset: "shorts" as const },
+          ] satisfies { label: string; preset: CaptionPreset }[]
+        ).map(({ label, preset }) => (
+          <button
+            key={preset}
+            type="button"
+            disabled={!timelineId || reelBusy}
+            onClick={() => {
+              if (!timelineId) return;
+              // Sync controls so manual controls reflect the last-used preset.
+              setCaptionPreset(preset);
+              setCaptionPosition("bottom");
+              setReelCaptions(true);
+              setReelDisclosure(true);
+              // Fire render with the override values directly — avoids stale-closure issue.
+              setReelBusy(true);
+              void client.renderReel(timelineId, {
+                hookText: reelHook.trim() || null,
+                disclosureText: "KI · synthetisch",
+                vertical: true,
+                captions: true,
+                captionPreset: preset,
+                captionMode,
+                captionPosition: "bottom",
+                captionFontsize,
+                captionSafeMargin,
+              }).then(() => load()).catch((e: unknown) => {
+                log.error("renderReel (preset) failed", e);
+                setError(String(e));
+              }).finally(() => {
+                setReelBusy(false);
+              });
+            }}
+            className="rounded bg-violet-700 px-3 py-1 text-xs text-white hover:bg-violet-600 disabled:opacity-40"
+          >
+            {label}
+          </button>
+        ))}
       </div>
       <div className="mb-4 flex max-w-md flex-col gap-2 rounded border border-slate-700 p-3">
         <span className="text-xs font-semibold text-slate-300">Reel 9:16</span>
