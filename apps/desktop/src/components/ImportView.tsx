@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactElement, useCallback, useRef } from "react";
+import { type KeyboardEvent, type ReactElement, useCallback, useMemo, useRef, useState } from "react";
 
 import type { Asset, LauraClient } from "../api";
 import { ImportBar, type UrlImportRequest } from "./ImportBar";
@@ -124,6 +124,39 @@ function ImportCard({
   );
 }
 
+type SortKey = "newest" | "name" | "duration";
+type FilterKey = "all" | "video" | "audio" | "ai";
+
+/** Compact label/select or label/input pair for the toolbar. */
+function ToolbarSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (v: string) => void;
+}): ReactElement {
+  return (
+    <label className="flex items-center gap-1 text-xs text-slate-400">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function ImportView({
   client,
   disabled,
@@ -143,15 +176,56 @@ export function ImportView({
   onPickFiles: () => void;
   onPickFolder: () => void;
 }): ReactElement {
+  // --- Toolbar state ---
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterKey, setFilterKey] = useState<FilterKey>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("newest");
+
+  // Duplicate detection always uses the FULL asset list so a clip is flagged
+  // even when its twin is currently filtered out.
   const duplicateHashes = buildDuplicateHashes(assets);
 
-  // Roving tabIndex: track which grid index currently "owns" tabIndex=0.
-  // We derive it from selectedAssetId so it stays in sync with App-level state.
-  const focusedIndex = assets.findIndex((a) => a.id === selectedAssetId);
-  // If nothing is selected, first card gets tabIndex=0.
+  // --- Derived visible list (search → filter → sort) ---
+  const visibleAssets = useMemo<Asset[]>(() => {
+    const q = searchQuery.trim().toLowerCase();
+
+    let filtered = assets.filter((a) => {
+      // Text search
+      if (q && !a.display_name.toLowerCase().includes(q)) return false;
+      // Type filter
+      if (filterKey === "video" && a.type !== "video") return false;
+      if (filterKey === "audio" && a.type !== "audio") return false;
+      if (filterKey === "ai" && !a.synthetic) return false;
+      return true;
+    });
+
+    filtered = [...filtered].sort((a, b) => {
+      switch (sortKey) {
+        case "name":
+          return a.display_name.localeCompare(b.display_name);
+        case "duration": {
+          // Nulls last (treat null as -1 so they sort after real values when descending)
+          const da = a.duration_frames ?? -1;
+          const db = b.duration_frames ?? -1;
+          return db - da;
+        }
+        case "newest":
+        default:
+          return b.created_at.localeCompare(a.created_at);
+      }
+    });
+
+    return filtered;
+  }, [assets, searchQuery, filterKey, sortKey]);
+
+  // Roving tabIndex: derive from visibleAssets so arrow-key nav stays within the
+  // filtered/sorted set. If the selected asset is not in view, first visible card
+  // gets tabIndex=0.
+  const focusedIndex = visibleAssets.findIndex((a) => a.id === selectedAssetId);
   const rovingIdx = focusedIndex >= 0 ? focusedIndex : 0;
 
   // Refs to each card div so we can call .focus() on arrow-key movement.
+  // Indexed into visibleAssets, not assets.
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   // Ref to the grid container so we can read the actual column count at key-down time.
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -175,20 +249,20 @@ export function ImportView({
       let next = index;
       switch (e.key) {
         case "ArrowRight":
-          next = Math.min(index + 1, assets.length - 1);
+          next = Math.min(index + 1, visibleAssets.length - 1);
           break;
         case "ArrowLeft":
           next = Math.max(index - 1, 0);
           break;
         case "ArrowDown":
-          next = Math.min(index + cols, assets.length - 1);
+          next = Math.min(index + cols, visibleAssets.length - 1);
           break;
         case "ArrowUp":
           next = Math.max(index - cols, 0);
           break;
         case "Enter":
         case " ":
-          onSelectAsset(assets[index].id);
+          onSelectAsset(visibleAssets[index].id);
           e.preventDefault();
           return;
         default:
@@ -196,21 +270,70 @@ export function ImportView({
       }
       e.preventDefault();
       if (next !== index) {
-        onSelectAsset(assets[next].id);
+        onSelectAsset(visibleAssets[next].id);
         cardRefs.current[next]?.focus();
       }
     },
-    [assets, onSelectAsset],
+    [visibleAssets, onSelectAsset],
   );
+
+  const hasAssets = assets.length > 0;
+  const hasVisible = visibleAssets.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
       <div className="mb-3 max-w-md">
         <ImportBar disabled={disabled} onUrls={onUrls} onPickFiles={onPickFiles} onPickFolder={onPickFolder} />
       </div>
-      {assets.length === 0 ? (
+
+      {hasAssets && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {/* Search */}
+          <label className="flex items-center gap-1 text-xs text-slate-400">
+            <span className="sr-only">Suche</span>
+            <input
+              type="search"
+              placeholder="Suchen…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            />
+          </label>
+
+          {/* Filter */}
+          <ToolbarSelect
+            label="Typ:"
+            value={filterKey}
+            onChange={(v) => setFilterKey(v as FilterKey)}
+            options={[
+              { value: "all", label: "Alle" },
+              { value: "video", label: "Video" },
+              { value: "audio", label: "Audio" },
+              { value: "ai", label: "KI" },
+            ]}
+          />
+
+          {/* Sort */}
+          <ToolbarSelect
+            label="Sortierung:"
+            value={sortKey}
+            onChange={(v) => setSortKey(v as SortKey)}
+            options={[
+              { value: "newest", label: "Neueste" },
+              { value: "name", label: "Name" },
+              { value: "duration", label: "Dauer" },
+            ]}
+          />
+        </div>
+      )}
+
+      {!hasAssets ? (
         <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
           Dateien/Ordner/Links hier ablegen oder importieren.
+        </div>
+      ) : !hasVisible ? (
+        <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
+          Keine Treffer.
         </div>
       ) : (
         <div
@@ -219,7 +342,7 @@ export function ImportView({
           aria-label="Medien-Bin"
           className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"
         >
-          {assets.map((a, i) => (
+          {visibleAssets.map((a, i) => (
             <ImportCard
               key={a.id}
               client={client}
