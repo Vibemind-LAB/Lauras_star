@@ -498,6 +498,8 @@ export function App(): ReactElement {
               client={client}
               disabled={!selectedProjectId}
               assets={assets}
+              selectedAssetId={selectedAssetId}
+              onSelectAsset={setSelectedAssetId}
               onUrls={(req) =>
                 void runImport([], req.urls, {
                   format: req.format,

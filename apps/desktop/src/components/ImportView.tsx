@@ -1,4 +1,4 @@
-import { type ReactElement } from "react";
+import { type KeyboardEvent, type ReactElement, useCallback, useRef } from "react";
 
 import type { Asset, LauraClient } from "../api";
 import { ImportBar, type UrlImportRequest } from "./ImportBar";
@@ -82,24 +82,45 @@ function ImportCard({
   client,
   asset,
   isDuplicate,
+  isSelected,
+  tabIndex,
+  divRef,
+  onSelect,
+  onKeyDown,
 }: {
   client: LauraClient;
   asset: Asset;
   isDuplicate: boolean;
+  isSelected: boolean;
+  tabIndex: number;
+  divRef: (el: HTMLDivElement | null) => void;
+  onSelect: (id: string) => void;
+  onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
 }): ReactElement {
   const settled = asset.files?.some((f) => f.kind === "waveform" || f.kind === "proxy") ?? false;
   const status = useImportStatus(client, settled ? null : asset.id);
   return (
-    <MediaCard
-      title={asset.display_name}
-      meta={assetMeta(asset)}
-      thumbnail={client.fileObjectUrl(asset.id, "poster").catch(() => "")}
-      status={status}
-      onClick={() => undefined}
-      onRetry={() => void client.retryImport(asset.id)}
-      onCancel={() => void client.cancelImport(asset.id)}
-      menu={isDuplicate ? <DuplicateBadge /> : undefined}
-    />
+    <div
+      ref={divRef}
+      role="option"
+      aria-selected={isSelected}
+      tabIndex={tabIndex}
+      onKeyDown={onKeyDown}
+      className={`rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${
+        isSelected ? "ring-2 ring-sky-500" : "ring-0"
+      }`}
+    >
+      <MediaCard
+        title={asset.display_name}
+        meta={assetMeta(asset)}
+        thumbnail={client.fileObjectUrl(asset.id, "poster").catch(() => "")}
+        status={status}
+        onClick={() => onSelect(asset.id)}
+        onRetry={() => void client.retryImport(asset.id)}
+        onCancel={() => void client.cancelImport(asset.id)}
+        menu={isDuplicate ? <DuplicateBadge /> : undefined}
+      />
+    </div>
   );
 }
 
@@ -107,6 +128,8 @@ export function ImportView({
   client,
   disabled,
   assets,
+  selectedAssetId,
+  onSelectAsset,
   onUrls,
   onPickFiles,
   onPickFolder,
@@ -114,11 +137,71 @@ export function ImportView({
   client: LauraClient;
   disabled: boolean;
   assets: Asset[];
+  selectedAssetId: string | null;
+  onSelectAsset: (id: string) => void;
   onUrls: (req: UrlImportRequest) => void;
   onPickFiles: () => void;
   onPickFolder: () => void;
 }): ReactElement {
   const duplicateHashes = buildDuplicateHashes(assets);
+
+  // Roving tabIndex: track which grid index currently "owns" tabIndex=0.
+  // We derive it from selectedAssetId so it stays in sync with App-level state.
+  const focusedIndex = assets.findIndex((a) => a.id === selectedAssetId);
+  // If nothing is selected, first card gets tabIndex=0.
+  const rovingIdx = focusedIndex >= 0 ? focusedIndex : 0;
+
+  // Refs to each card div so we can call .focus() on arrow-key movement.
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // Ref to the grid container so we can read the actual column count at key-down time.
+  const gridRef = useRef<HTMLDivElement | null>(null);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>, index: number) => {
+      const cols = (() => {
+        // Read the runtime column count from the computed grid-template-columns style.
+        // `getComputedStyle` returns one value per column (e.g. "120px 120px 120px"),
+        // so splitting on whitespace-separated values gives the actual column count.
+        if (gridRef.current) {
+          const style = window.getComputedStyle(gridRef.current);
+          const templateCols = style.getPropertyValue("grid-template-columns");
+          // Each column is a non-empty space-delimited token.
+          const count = templateCols.split(" ").filter(Boolean).length;
+          if (count > 0) return count;
+        }
+        return 2; // safe fallback for the smallest breakpoint
+      })();
+
+      let next = index;
+      switch (e.key) {
+        case "ArrowRight":
+          next = Math.min(index + 1, assets.length - 1);
+          break;
+        case "ArrowLeft":
+          next = Math.max(index - 1, 0);
+          break;
+        case "ArrowDown":
+          next = Math.min(index + cols, assets.length - 1);
+          break;
+        case "ArrowUp":
+          next = Math.max(index - cols, 0);
+          break;
+        case "Enter":
+        case " ":
+          onSelectAsset(assets[index].id);
+          e.preventDefault();
+          return;
+        default:
+          return;
+      }
+      e.preventDefault();
+      if (next !== index) {
+        onSelectAsset(assets[next].id);
+        cardRefs.current[next]?.focus();
+      }
+    },
+    [assets, onSelectAsset],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-4">
@@ -130,13 +213,23 @@ export function ImportView({
           Dateien/Ordner/Links hier ablegen oder importieren.
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          {assets.map((a) => (
+        <div
+          ref={gridRef}
+          role="listbox"
+          aria-label="Medien-Bin"
+          className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"
+        >
+          {assets.map((a, i) => (
             <ImportCard
               key={a.id}
               client={client}
               asset={a}
               isDuplicate={a.sha256 != null && duplicateHashes.has(a.sha256)}
+              isSelected={a.id === selectedAssetId}
+              tabIndex={i === rovingIdx ? 0 : -1}
+              divRef={(el) => { cardRefs.current[i] = el; }}
+              onSelect={onSelectAsset}
+              onKeyDown={(e) => handleKeyDown(e, i)}
             />
           ))}
         </div>
