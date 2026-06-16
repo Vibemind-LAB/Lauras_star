@@ -1,9 +1,8 @@
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
-import type { CaptionMode, CaptionPosition, CaptionPreset, Export, LauraClient, Project, TimelineClip } from "../api";
+import type { CaptionMode, CaptionPosition, CaptionPreset, Export, JobStatus, LauraClient, Project, TimelineClip } from "../api";
 import { log } from "../shared/log";
 import { formatBytes } from "../import/format";
-import { MediaCard } from "./MediaCard";
 import { CaptionPreview } from "./CaptionPreview";
 import type { ExportTarget } from "../App";
 
@@ -20,6 +19,33 @@ function exportMeta(e: Export): string {
   if (e.status === "ready") return formatBytes(e.size_bytes ?? 0);
   if (e.status === "error") return e.error ?? "Fehler";
   return "rendert…";
+}
+
+/**
+ * Attempt to parse a numeric progress fraction [0..1] from a job's result_json
+ * or any future progress field. Backend does not yet emit render progress, so
+ * this is purely defensive/forward-compatible. Returns null when no parseable
+ * value is found — callers fall back to indeterminate display.
+ */
+function parseJobProgress(job: JobStatus): number | null {
+  // result_json may carry partial progress in some future backends.
+  for (const raw of [job.result_json]) {
+    if (typeof raw !== "string" || raw === "") continue;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const obj = parsed as Record<string, unknown>;
+      // Try "percent" (0-100) first, then "fraction" (0-1), then "processed"/"total".
+      if (typeof obj.percent === "number") return Math.min(1, Math.max(0, obj.percent / 100));
+      if (typeof obj.fraction === "number") return Math.min(1, Math.max(0, obj.fraction));
+      if (typeof obj.processed === "number" && typeof obj.total === "number" && obj.total > 0) {
+        return Math.min(1, Math.max(0, obj.processed / obj.total));
+      }
+    } catch {
+      // Malformed JSON — ignore.
+    }
+  }
+  return null;
 }
 
 /** Convert a frame count to mm:ss using integer arithmetic — NDF only (internal frames). */
@@ -63,6 +89,18 @@ export function ExportView({
   const [format, setFormat] = useState<string>("mp4");
   const [exports, setExports] = useState<Export[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Maps export_id → job_id for renders fired in the current session.
+   * Exports from a previous session have no entry here and show plain "rendert…".
+   */
+  const [jobByExport, setJobByExport] = useState<Record<string, string>>({});
+  /**
+   * Caches the latest JobStatus fetched per job_id during the active poll loop.
+   * Key = job_id, value = latest JobStatus snapshot.
+   */
+  const jobStatusCacheRef = useRef<Record<string, JobStatus>>({});
+  /** Re-render trigger for the job-status cache — incremented after each poll batch. */
+  const [jobPollTick, setJobPollTick] = useState<number>(0);
   const [reelHook, setReelHook] = useState<string>("");
   const [reelDisclosure, setReelDisclosure] = useState<boolean>(true);
   const [reelCaptions, setReelCaptions] = useState<boolean>(true);
@@ -151,7 +189,8 @@ export function ExportView({
     if (!timelineId) return;
     setExportBusy(true);
     try {
-      await client.renderTimeline(timelineId, format);
+      const result = await client.renderTimeline(timelineId, format);
+      setJobByExport((prev) => ({ ...prev, [result.export_id]: result.job_id }));
       await load();
     } catch (e) {
       setError(String(e));
@@ -164,7 +203,7 @@ export function ExportView({
     if (!timelineId) return;
     setReelBusy(true);
     try {
-      await client.renderReel(timelineId, {
+      const result = await client.renderReel(timelineId, {
         hookText: reelHook.trim() || null,
         disclosureText: reelDisclosure ? "KI · synthetisch" : "",
         vertical: true,
@@ -175,6 +214,7 @@ export function ExportView({
         captionFontsize,
         captionSafeMargin,
       });
+      setJobByExport((prev) => ({ ...prev, [result.export_id]: result.job_id }));
       await load();
     } catch (e) {
       log.error("renderReel failed", e);
@@ -195,6 +235,54 @@ export function ExportView({
     captionSafeMargin,
     load,
   ]);
+
+  // Poll job status for all in-flight renders that have a known job_id this session.
+  // Runs on the same 1.5s cadence as the export list poll; piggybacks on the exports
+  // useEffect timer rather than adding a second interval.
+  useEffect(() => {
+    const renderingExportIds = exports
+      .filter((e) => e.status === "rendering")
+      .map((e) => e.id);
+
+    // Collect job_ids we need to poll this cycle.
+    const jobIds = renderingExportIds
+      .map((eid) => jobByExport[eid])
+      .filter((jid): jid is string => typeof jid === "string");
+
+    if (jobIds.length === 0) return;
+
+    let cancelled = false;
+    const poll = (): void => {
+      const fetches = jobIds.map((jid) =>
+        client.getJob(jid).then((job) => {
+          if (cancelled) return;
+          jobStatusCacheRef.current = { ...jobStatusCacheRef.current, [jid]: job };
+        }).catch((err: unknown) => {
+          log.error("ExportView job poll failed", jid, err instanceof Error ? err.message : String(err));
+        }),
+      );
+      void Promise.allSettled(fetches).then(() => {
+        if (!cancelled) setJobPollTick((t) => t + 1);
+      });
+    };
+
+    poll();
+    const intervalId = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- jobStatusCacheRef is a ref, intentionally excluded
+  }, [client, exports, jobByExport]);
+
+  const onCancelJob = useCallback(async (jobId: string): Promise<void> => {
+    try {
+      await client.cancelJob(jobId);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [client, load]);
 
   // Header description: "Exportiere: <label> · N Clips · mm:ss"
   function renderSourceHeader(): ReactElement | null {
@@ -306,7 +394,10 @@ export function ExportView({
                 captionPosition: "bottom",
                 captionFontsize,
                 captionSafeMargin,
-              }).then(() => load()).catch((e: unknown) => {
+              }).then((result) => {
+                setJobByExport((prev) => ({ ...prev, [result.export_id]: result.job_id }));
+                return load();
+              }).catch((e: unknown) => {
                 log.error("renderReel (preset) failed", e);
                 setError(String(e));
               }).finally(() => {
@@ -451,6 +542,17 @@ export function ExportView({
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
           {exports.map((e) => {
             const isReady = e.status === "ready" && Boolean(e.path);
+            const isRendering = e.status === "rendering";
+            const knownJobId = jobByExport[e.id];
+            // Resolve cached job status. jobPollTick is read here (not just in deps) to
+            // force React to re-render the map on each poll cycle as the ref updates.
+            const cachedJob: JobStatus | undefined =
+              jobPollTick >= 0 && typeof knownJobId === "string"
+                ? jobStatusCacheRef.current[knownJobId]
+                : undefined;
+            const progress: number | null =
+              cachedJob !== undefined ? parseJobProgress(cachedJob) : null;
+
             const openExport = isReady
               ? (): void => {
                   if (!window.laura) return;
@@ -459,6 +561,12 @@ export function ExportView({
                   });
                 }
               : (): void => undefined;
+
+            // Build the card meta string — add "%" hint when progress is known.
+            const metaText = isRendering && progress !== null
+              ? `rendert… ${Math.round(progress * 100)}%`
+              : exportMeta(e);
+
             const exportMenu = isReady ? (
               <div className="flex shrink-0 flex-col gap-1">
                 <button
@@ -485,16 +593,49 @@ export function ExportView({
                   Pfad kopieren
                 </button>
               </div>
+            ) : isRendering && typeof knownJobId === "string" ? (
+              <button
+                type="button"
+                onClick={() => void onCancelJob(knownJobId)}
+                className="shrink-0 self-start rounded bg-red-700 px-2 py-0.5 text-[10px] text-white hover:bg-red-600"
+              >
+                Abbrechen
+              </button>
             ) : undefined;
+
+            // Progress bar node — shown below title/meta for in-flight renders this session.
+            const progressBar = isRendering && typeof knownJobId === "string" ? (
+              <div className="mx-2 mb-2 h-1 overflow-hidden rounded-full bg-slate-700">
+                {progress !== null ? (
+                  <div
+                    className="h-full rounded-full bg-sky-500 transition-all duration-500"
+                    style={{ width: `${Math.round(progress * 100)}%` }}
+                  />
+                ) : (
+                  /* Indeterminate shimmer — no numeric progress available from backend yet. */
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-sky-500/60" />
+                )}
+              </div>
+            ) : undefined;
+
             return (
-              <MediaCard
-                key={e.id}
-                title={e.format.toUpperCase()}
-                meta={exportMeta(e)}
-                onClick={openExport}
-                onRetry={() => undefined}
-                menu={exportMenu}
-              />
+              <div key={e.id} className="flex flex-col overflow-hidden rounded-lg border border-edge bg-panel">
+                <button
+                  type="button"
+                  onClick={openExport}
+                  className="flex aspect-video w-full items-center justify-center bg-black text-slate-700"
+                >
+                  <span className="text-xs">kein Vorschaubild</span>
+                </button>
+                <div className="flex items-start justify-between gap-2 p-2">
+                  <button type="button" onClick={openExport} className="min-w-0 text-left">
+                    <div className="truncate text-sm text-slate-100">{e.format.toUpperCase()}</div>
+                    {metaText && <div className="truncate text-[11px] text-slate-500">{metaText}</div>}
+                  </button>
+                  {exportMenu}
+                </div>
+                {progressBar}
+              </div>
             );
           })}
         </div>
