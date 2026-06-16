@@ -31,6 +31,14 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// Dev/test: expose the renderer over the Chrome DevTools Protocol so an external driver
+// (e.g. Playwright connect_over_cdp) can screenshot/inspect the UI without visible DevTools.
+// Inert unless LAURA_REMOTE_DEBUG is set to a port; must run before the app is ready.
+if (process.env.LAURA_REMOTE_DEBUG) {
+  app.commandLine.appendSwitch("remote-debugging-port", process.env.LAURA_REMOTE_DEBUG);
+  app.commandLine.appendSwitch("remote-allow-origins", "*");
+}
+
 let serviceInfo: ServiceInfo | null = null;
 let stopService: (() => void) | null = null;
 
