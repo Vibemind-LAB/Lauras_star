@@ -4,6 +4,7 @@ import type { CaptionMode, CaptionPosition, CaptionPreset, Export, LauraClient, 
 import { log } from "../shared/log";
 import { formatBytes } from "../import/format";
 import { MediaCard } from "./MediaCard";
+import { CaptionPreview } from "./CaptionPreview";
 import type { ExportTarget } from "../App";
 
 const FORMATS = ["mp4", "otio", "edl", "fcpxml", "srt"] as const;
@@ -65,6 +66,8 @@ export function ExportView({
   const [captionSafeMargin, setCaptionSafeMargin] = useState<number>(250);
   const [reelBusy, setReelBusy] = useState<boolean>(false);
   const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
+  /** asset_id of the first flattened clip — used for the caption preview poster frame. */
+  const [posterAssetId, setPosterAssetId] = useState<string | null>(null);
 
   // Keep selectedTargetId in sync when targets list changes (project switch / sequence loads).
   useEffect(() => {
@@ -85,6 +88,7 @@ export function ExportView({
   useEffect(() => {
     if (!timelineId) {
       setSourceInfo(null);
+      setPosterAssetId(null);
       return;
     }
     let cancelled = false;
@@ -92,6 +96,8 @@ export function ExportView({
       try {
         const clips = await client.getSequenceFlattened(timelineId);
         if (cancelled) return;
+        // Capture first clip's asset_id for the caption preview poster frame.
+        setPosterAssetId(clips[0]?.asset_id ?? null);
         if (clips.length === 0) {
           setSourceInfo({ clipCount: 0, duration: "0:00" });
           return;
@@ -102,7 +108,10 @@ export function ExportView({
         setSourceInfo({ clipCount: clips.length, duration: dur });
       } catch {
         // Non-fatal — header will show label without counts.
-        if (!cancelled) setSourceInfo(null);
+        if (!cancelled) {
+          setSourceInfo(null);
+          setPosterAssetId(null);
+        }
       }
     })();
     return () => {
@@ -269,6 +278,19 @@ export function ExportView({
           Untertitel (Captions) einbrennen
         </label>
         <span className="text-xs text-slate-400">Captions werden aus dem Transkript der Timeline generiert.</span>
+        {/* Live 9:16 caption preview — updates as controls change, no render needed. */}
+        <CaptionPreview
+          client={client}
+          posterAssetId={posterAssetId}
+          posterFrame={0}
+          hook={reelHook}
+          disclosure={reelDisclosure}
+          captionsOn={reelCaptions}
+          mode={captionMode}
+          position={captionPosition}
+          fontsize={captionFontsize}
+          safeMargin={captionSafeMargin}
+        />
         <div className="grid grid-cols-2 gap-2">
           <label className="flex flex-col gap-1 text-xs text-slate-300">
             Caption-Preset
