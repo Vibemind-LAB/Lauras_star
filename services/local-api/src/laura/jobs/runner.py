@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -218,19 +219,22 @@ class JobRunner:
                 target=_heartbeat_loop, name=f"hb-{str(job['id'])[:8]}", daemon=True
             )
             hb.start()
+            # The terminal DB write (finish_ok/finish_fail) runs INSIDE the try so the
+            # heartbeat keeps the lease fresh until the job is marked terminal — otherwise
+            # a concurrent worker's reaper could requeue the job in the gap between the
+            # heartbeat stopping and the status write, causing a double-run.
             try:
                 result = handler(ctx)
+                sp.set_attribute("job.status", "succeeded")
+                self._finish_ok(str(job["id"]), result)
+                JOBS.labels(kind, "succeeded").inc()
             except Exception as exc:  # noqa: BLE001 - we record any handler failure
                 sp.set_attribute("job.status", "failed")
                 self._finish_fail(job, f"{type(exc).__name__}: {exc}")
                 JOBS.labels(kind, "failed").inc()
-                return
             finally:
                 stop_hb.set()
                 hb.join(timeout=2.0)
-            sp.set_attribute("job.status", "succeeded")
-            self._finish_ok(str(job["id"]), result)
-            JOBS.labels(kind, "succeeded").inc()
 
     def run_once(self) -> bool:
         """Reap, then claim and run at most one job. Returns True if a job ran."""
@@ -264,8 +268,9 @@ class JobRunner:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
+        deadline = time.monotonic() + timeout
         for t in self._threads:
-            t.join(timeout=timeout)
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
         self._threads = []
 
 
