@@ -121,6 +121,7 @@ class JobRunner:
         lease_seconds: int = 60,
         poll_interval: float = 0.5,
         queues: tuple[str, ...] | None = None,
+        concurrency: int = 1,
     ) -> None:
         self.db = db
         self.registry: dict[str, JobHandler] = registry or {}
@@ -128,8 +129,9 @@ class JobRunner:
         self.lease_seconds = lease_seconds
         self.poll_interval = poll_interval
         self.queues = queues  # None = all queues
+        self.concurrency = max(1, concurrency)
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
 
     # --- registry ---------------------------------------------------------
     def register(self, kind: str, handler: JobHandler) -> None:
@@ -252,17 +254,19 @@ class JobRunner:
                 self._stop.wait(self.poll_interval)
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._threads:
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="laura-job-runner", daemon=True)
-        self._thread.start()
+        for i in range(self.concurrency):
+            t = threading.Thread(target=self._loop, name=f"laura-job-runner-{i}", daemon=True)
+            t.start()
+            self._threads.append(t)
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            self._thread = None
+        for t in self._threads:
+            t.join(timeout=timeout)
+        self._threads = []
 
 
 # --- default handlers -----------------------------------------------------

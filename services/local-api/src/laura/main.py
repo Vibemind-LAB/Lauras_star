@@ -19,7 +19,10 @@ from .api import (
     admin,
     analysis,
     assets,
+    audio,
+    demo,
     jobs,
+    lipsync,
     overlays,
     projects,
     reels,
@@ -28,11 +31,13 @@ from .api import (
     search,
     sequences,
     timelines,
+    voiceover,
 )
 from .api.models import HealthOut
 from .api.ratelimit import RateLimiter, make_rate_limit_middleware
 from .config import Settings, ensure_workspace
 from .db.database import create_database
+from .demo.handlers import register_demo_handlers
 from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
@@ -51,7 +56,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_analysis_handlers(registry)
     register_render_handlers(registry)
     register_ai_handlers(registry)
-    runner = JobRunner(db, registry, lease_seconds=settings.lease_seconds)
+    register_demo_handlers(registry)
+    runner = JobRunner(
+        db, registry,
+        lease_seconds=settings.lease_seconds,
+        concurrency=settings.worker_concurrency,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -103,6 +113,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(analysis.router)
     app.include_router(timelines.router)
+    app.include_router(audio.router)
     app.include_router(reels.router)
     app.include_router(overlays.router)
     app.include_router(reenact.router)
@@ -110,6 +121,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search.router)
     app.include_router(scenes.router)
     app.include_router(sequences.router)
+    app.include_router(voiceover.router)
+    app.include_router(lipsync.router)
+    app.include_router(demo.router)
     return app
 
 
