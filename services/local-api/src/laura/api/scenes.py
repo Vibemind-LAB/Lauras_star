@@ -72,10 +72,30 @@ def generate_scenes(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run")
     clips = repos.list_timeline_clips(db, timeline_id)
     if not clips:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "rough cut is empty; build it from shots first",
-        )
+        # Auto-build a minimal rough cut from the asset's kept shots so generation is
+        # never a dead-end. The dedicated /timelines/from-shots endpoint offers the richer
+        # build (quality filtering, split-cut recommendations); this is the fallback.
+        offset = 0
+        for shot in repos.list_shots(db, body.asset_id, run["id"]):
+            if not shot.get("keep", True):
+                continue
+            length = shot["src_out_frame_exclusive"] - shot["src_in_frame"]
+            repos.add_timeline_clip(
+                db,
+                timeline_id=timeline_id,
+                asset_id=body.asset_id,
+                src_in_frame=shot["src_in_frame"],
+                src_out_frame_exclusive=shot["src_out_frame_exclusive"],
+                seq_in_frame=offset,
+                seq_out_frame_exclusive=offset + length,
+            )
+            offset += length
+        clips = repos.list_timeline_clips(db, timeline_id)
+        if not clips:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "asset has no kept shots to build a rough cut from",
+            )
     words = _asset_words(repos.get_transcript(db, body.asset_id, run["id"]))
     words_by_clip = _assign_words(clips, words)
     if body.gap_frames is not None:

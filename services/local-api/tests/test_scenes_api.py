@@ -148,6 +148,7 @@ def test_split_at_non_boundary_is_422(tmp_path: Path) -> None:
 
 
 def test_generate_on_empty_timeline_is_422(tmp_path: Path) -> None:
+    """Empty timeline AND no kept shots to auto-build from -> still 422."""
     client, db = _client(tmp_path)
     project = repos.create_project(
         db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
@@ -167,3 +168,57 @@ def test_generate_on_empty_timeline_is_422(tmp_path: Path) -> None:
         headers=_H,
     )
     assert r.status_code == 422
+
+
+def test_generate_on_empty_timeline_autobuilds_from_kept_shots(tmp_path: Path) -> None:
+    """When the rough cut has no clips, generate auto-builds a minimal rough cut
+    from the asset's KEPT shots (keep=False shots are excluded) and proceeds —
+    so 'generate scenes' is never a dead-end."""
+    client, db = _client(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a",
+        source_path="/tmp/a.mp4",
+    )
+    run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="t", config={}
+    )
+    repos.insert_shots(
+        db,
+        asset_id=asset["id"],
+        run_id=run["id"],
+        shots=[
+            {"src_in_frame": 0, "src_out_frame_exclusive": 30, "keep": True},
+            {"src_in_frame": 30, "src_out_frame_exclusive": 50, "keep": False},
+            {"src_in_frame": 50, "src_out_frame_exclusive": 90, "keep": True},
+        ],
+    )
+    tl = repos.create_timeline(db, project_id=project["id"], name="rc", kind="rough_cut")
+    # timeline has NO clips at this point
+    assert repos.list_timeline_clips(db, tl["id"]) == []
+
+    r = client.post(
+        f"/timelines/{tl['id']}/scenes:generate",
+        json={"asset_id": asset["id"], "gap_frames": None},
+        headers=_H,
+    )
+    assert r.status_code == 200, r.text
+    scenes = r.json()
+    assert len(scenes) > 0
+
+    # Only the two KEPT shots were laid down, gapless on the sequence.
+    clips = repos.list_timeline_clips(db, tl["id"])
+    assert len(clips) == 2
+    assert [(c["src_in_frame"], c["src_out_frame_exclusive"]) for c in clips] == [
+        (0, 30),
+        (50, 90),
+    ]
+    assert [(c["seq_in_frame"], c["seq_out_frame_exclusive"]) for c in clips] == [
+        (0, 30),
+        (30, 70),
+    ]
