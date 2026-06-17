@@ -1,6 +1,7 @@
 import { type ReactElement, useState } from "react";
 
 import { type LauraClient, type Segment } from "../api";
+import { type CutWord } from "../shared/transcriptProjection";
 
 function SegmentText({
   segment,
@@ -47,12 +48,17 @@ function SegmentText({
  * The full-width transcript bar beneath the timeline (Clipchamp-captions style). Words are
  * clickable to seek; segments derived from a rough cut can be appended; captions export and
  * (P7) re-transcription live in its header.
+ *
+ * When `cutWords` is provided (Feinschnitt cut-mode), only those projected words are rendered
+ * (trimmed-out words are suppressed) and the existing segment-rendering path is bypassed.
+ * All other callers that pass `segments` without `cutWords` are unaffected.
  */
 export function TranscriptBar({
   client,
   assetId,
   assetName,
   segments,
+  cutWords,
   note,
   currentFrame,
   onSeek,
@@ -64,6 +70,11 @@ export function TranscriptBar({
   assetId: string | null;
   assetName: string | null;
   segments: Segment[];
+  /**
+   * When provided, render the cut-projected word list instead of the raw segments.
+   * Words are already sorted by seqStart (cut order). Highlighting and seek use srcFrame.
+   */
+  cutWords?: CutWord[];
   note: string | null;
   currentFrame: number;
   onSeek: (frame: number) => void;
@@ -85,6 +96,44 @@ export function TranscriptBar({
     }
   }
 
+  // Cut-mode: render only the projected surviving words, in cut order.
+  if (cutWords !== undefined) {
+    const hasWords = cutWords.length > 0;
+    return (
+      <div className="flex h-32 flex-col border-t border-edge bg-panel">
+        <div className="flex items-center justify-between px-5 py-1.5">
+          <span className="text-xs uppercase tracking-wide text-slate-500">Transkript (Schnitt)</span>
+          <span className="flex items-center gap-1">
+            {error && <span className="mr-2 text-xs text-red-400">{error}</span>}
+          </span>
+        </div>
+        {!hasWords ? (
+          <div className="flex flex-1 items-center px-5 text-xs text-slate-600">
+            {assetId ? "Keine Wörter im Schnitt." : "Wähle ein Medium."}
+          </div>
+        ) : (
+          <div className="flex-1 overflow-auto px-5 pb-2 text-sm leading-relaxed text-slate-200">
+            {cutWords.map((w) => {
+              const active = currentFrame >= w.srcFrame && currentFrame < w.srcEndFrame;
+              return (
+                <span key={w.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSeek(w.srcFrame)}
+                    className={`rounded px-0.5 hover:bg-edge ${active ? "bg-sky-600/50 text-white" : ""}`}
+                  >
+                    {w.text}
+                  </button>{" "}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Default (raw-segment) mode — used by App.tsx / ImportView / RoughCut etc.
   return (
     <div className="flex h-32 flex-col border-t border-edge bg-panel">
       <div className="flex items-center justify-between px-5 py-1.5">

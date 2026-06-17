@@ -1,8 +1,9 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 
 import { type Asset, type LauraClient, type Segment } from "../api";
 import { useSceneTimeline } from "../hooks/useSceneTimeline";
 import { useScenes } from "../hooks/useScenes";
+import { projectCutWords } from "../shared/transcriptProjection";
 import { Player } from "./Player";
 import { SceneInspector } from "./SceneInspector";
 import { SceneMusicControls } from "./SceneMusicControls";
@@ -41,8 +42,14 @@ export function FineCutView({
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const selectedScene = scenes.find((s) => s.id === selectedSceneId);
 
-  // Auto-select the first scene once the list is loaded.
+  // Auto-select the first scene once the list is loaded, and recover when a
+  // regenerated scene list invalidates the previous selection.
   useEffect(() => {
+    if (selectedSceneId && !scenes.some((s) => s.id === selectedSceneId)) {
+      setSelectedSceneId(scenes[0]?.id ?? null);
+      setSelectedClipId(null);
+      return;
+    }
     if (!selectedSceneId && scenes[0]) {
       setSelectedSceneId(scenes[0].id);
     }
@@ -54,6 +61,27 @@ export function FineCutView({
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const clips = scene.timeline?.clips ?? [];
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? clips[0] ?? null;
+
+  // Seek to the first clip's in-point when the SCENE changes, but not on every
+  // clips-array identity change (e.g. after a trim reload). Keying on
+  // scene.timeline?.id (or selectedSceneId as fallback) keeps the playhead stable
+  // while the user fine-tunes In/Out points in SceneInspector.
+  const timelineId = scene.timeline?.id ?? null;
+  useEffect(() => {
+    if (!selectedSceneId || !timelineId) return;
+    const firstClip = clips[0];
+    if (!firstClip) return;
+    onSeek(firstClip.src_in_frame);
+    // Intentionally NOT including `clips` — we only want to seek on scene/timeline change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSceneId, timelineId, onSeek]);
+
+  // Project the source transcript onto the cut: only words surviving the trim, in cut order.
+  const cutWords = useMemo(
+    () => projectCutWords(segments, clips),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [segments, scene.timeline?.clips],
+  );
 
   if (scenes.length === 0) {
     return (
@@ -71,7 +99,10 @@ export function FineCutView({
           <button
             key={s.id}
             type="button"
-            onClick={() => setSelectedSceneId(s.id)}
+            onClick={() => {
+              setSelectedSceneId(s.id);
+              setSelectedClipId(null);
+            }}
             className={`truncate rounded px-2 py-1 text-left text-xs ${
               s.id === selectedSceneId
                 ? "bg-sky-700 text-white"
@@ -112,6 +143,7 @@ export function FineCutView({
           assetId={asset?.id ?? null}
           assetName={asset?.display_name ?? null}
           segments={segments}
+          cutWords={cutWords}
           note={null}
           currentFrame={currentFrame}
           onSeek={onSeek}
