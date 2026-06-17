@@ -8,6 +8,7 @@ worker died is requeued once its lease expires (until ``max_attempts``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from collections.abc import Callable
@@ -80,11 +81,15 @@ def enqueue(
                 # previous attempt failed/canceled — drop it so the key can be reused
                 conn.execute("DELETE FROM jobs WHERE id = ?", (row["id"],))
         job_id = new_id()
+        order_row = conn.execute(
+            "SELECT COALESCE(MAX(created_order), 0) + 1 AS created_order FROM jobs"
+        ).fetchone()
+        created_order = int(order_row["created_order"])
         conn.execute(
             "INSERT INTO jobs (id, queue, kind, priority, payload_json, status, attempt, "
-            "max_attempts, caused_by_job_id, pipeline_version, idempotency_key, "
+            "max_attempts, caused_by_job_id, pipeline_version, idempotency_key, created_order, "
             "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?)",
             (
                 job_id,
                 queue,
@@ -95,6 +100,7 @@ def enqueue(
                 caused_by_job_id,
                 pipeline_version,
                 idempotency_key,
+                created_order,
                 now,
                 now,
             ),
@@ -195,6 +201,21 @@ class JobRunner:
                 db=self.db,
                 lease_seconds=self.lease_seconds,
             )
+            # Keep the lease fresh for the whole (possibly minutes-long) handler so a
+            # concurrent worker's reaper never requeues an in-flight job. This decouples
+            # liveness from handler internals — no handler needs to call heartbeat itself.
+            stop_hb = threading.Event()
+
+            def _heartbeat_loop() -> None:
+                interval = max(1.0, self.lease_seconds / 2)
+                while not stop_hb.wait(interval):
+                    with contextlib.suppress(Exception):  # heartbeat is best-effort
+                        ctx.heartbeat()
+
+            hb = threading.Thread(
+                target=_heartbeat_loop, name=f"hb-{str(job['id'])[:8]}", daemon=True
+            )
+            hb.start()
             try:
                 result = handler(ctx)
             except Exception as exc:  # noqa: BLE001 - we record any handler failure
@@ -202,6 +223,9 @@ class JobRunner:
                 self._finish_fail(job, f"{type(exc).__name__}: {exc}")
                 JOBS.labels(kind, "failed").inc()
                 return
+            finally:
+                stop_hb.set()
+                hb.join(timeout=2.0)
             sp.set_attribute("job.status", "succeeded")
             self._finish_ok(str(job["id"]), result)
             JOBS.labels(kind, "succeeded").inc()
