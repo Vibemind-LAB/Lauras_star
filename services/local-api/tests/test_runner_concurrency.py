@@ -61,3 +61,21 @@ def test_pool_runs_each_job_once_with_overlap(db):
 
     assert sorted(state["ran"]) == sorted(ids)  # each ran exactly once
     assert state["peak"] >= 2                    # genuine concurrency
+
+
+def test_heartbeat_stops_after_max_runtime_so_wedged_job_is_reapable(db):
+    # A handler that blocks far longer than the max runtime: once the cap passes, the
+    # auto-heartbeat must stop refreshing the lease so the reaper can reap it.
+    def wedged(ctx):
+        time.sleep(6)
+        return {"ok": True}
+
+    runner = JobRunner(db, {"wedged": wedged}, lease_seconds=2, max_runtime_seconds=2)
+    enqueue(db, queue="ingest.io", kind="wedged")
+
+    t = threading.Thread(target=runner.run_once, daemon=True)
+    t.start()
+    time.sleep(4.5)  # > max_runtime(2) + lease(2): heartbeat has stopped, lease expired
+    reaped = runner.reap_expired()
+    assert reaped >= 1  # the wedged job's lease was NOT kept fresh past the cap
+    t.join(timeout=8)

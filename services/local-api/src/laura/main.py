@@ -61,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db, registry,
         lease_seconds=settings.lease_seconds,
         concurrency=settings.worker_concurrency,
+        max_runtime_seconds=settings.job_max_runtime_seconds,
     )
 
     @asynccontextmanager

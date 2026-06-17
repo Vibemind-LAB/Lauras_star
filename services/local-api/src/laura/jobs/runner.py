@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -21,6 +22,8 @@ from ..db.database import Database
 from ..metrics import JOBS
 from ..telemetry import span
 from ..util import new_id, utcnow_iso
+
+logger = logging.getLogger(__name__)
 
 # A handler receives a JobContext and returns an optional JSON-serialisable result.
 JobHandler = Callable[["JobContext"], "dict[str, Any] | None"]
@@ -123,6 +126,7 @@ class JobRunner:
         poll_interval: float = 0.5,
         queues: tuple[str, ...] | None = None,
         concurrency: int = 1,
+        max_runtime_seconds: int = 3600,
     ) -> None:
         self.db = db
         self.registry: dict[str, JobHandler] = registry or {}
@@ -131,6 +135,7 @@ class JobRunner:
         self.poll_interval = poll_interval
         self.queues = queues  # None = all queues
         self.concurrency = max(1, concurrency)
+        self.max_runtime_seconds = max_runtime_seconds
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -208,10 +213,17 @@ class JobRunner:
             # concurrent worker's reaper never requeues an in-flight job. This decouples
             # liveness from handler internals — no handler needs to call heartbeat itself.
             stop_hb = threading.Event()
+            hb_started = time.monotonic()
 
             def _heartbeat_loop() -> None:
                 interval = max(1.0, self.lease_seconds / 2)
                 while not stop_hb.wait(interval):
+                    if time.monotonic() - hb_started > self.max_runtime_seconds:
+                        logger.warning(
+                            "job %s exceeded max runtime %ss; ceasing heartbeat so the "
+                            "reaper can recover it", job["id"], self.max_runtime_seconds,
+                        )
+                        return
                     with contextlib.suppress(Exception):  # heartbeat is best-effort
                         ctx.heartbeat()
 
