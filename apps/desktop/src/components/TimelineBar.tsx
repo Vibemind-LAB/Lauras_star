@@ -5,6 +5,7 @@ import {
   type LauraClient,
   type Operation,
   type Timeline,
+  type TimelineAudioClip,
   type TimelineClip,
   type Segment,
 } from "../api";
@@ -274,6 +275,34 @@ function AudioBlock({
   );
 }
 
+function A2Block({
+  clip,
+  total,
+}: {
+  clip: TimelineAudioClip;
+  total: number;
+}): ReactElement {
+  const leftPct = total > 0 ? (clip.seq_in_frame / total) * 100 : 0;
+  const widthPct =
+    total > 0
+      ? ((clip.seq_out_frame_exclusive - clip.seq_in_frame) / total) * 100
+      : 0;
+  const label = clip.label ?? `Audio ${clip.asset_id}`;
+  return (
+    <div
+      role="group"
+      aria-label={`A2 Clip ${label} · seq ${clip.seq_in_frame}–${clip.seq_out_frame_exclusive}`}
+      title={`${label} · seq ${clip.seq_in_frame}–${clip.seq_out_frame_exclusive} · ${clip.gain_percent}%`}
+      style={{ left: `${leftPct}%`, width: `${Math.max(0.6, widthPct)}%` }}
+      className="absolute inset-y-0 flex items-center overflow-hidden rounded-sm bg-cyan-800/50 ring-1 ring-inset ring-cyan-400/40"
+    >
+      <span className="truncate px-1 text-[9px] leading-none text-cyan-100/90">
+        {label} · {clip.gain_percent}%
+      </span>
+    </div>
+  );
+}
+
 export function TimelineBar({
   client,
   timeline,
@@ -281,6 +310,7 @@ export function TimelineBar({
   onScrub,
   onSelect,
   onRemoveOverlay,
+  audioClips = [],
   segments,
   currentFrame,
 }: {
@@ -294,6 +324,8 @@ export function TimelineBar({
   onSelect?: (clipId: string | null) => void;
   /** Called when the user clicks × on an overlay clip (lane >= 1). */
   onRemoveOverlay?: (clipId: string) => void;
+  /** Optional sequence-level audio overlays shown as the A2 lane. */
+  audioClips?: TimelineAudioClip[];
   /** Optional transcript — renders a 3rd "TX" lane with each spoken word placed at its
    *  position on the sequence (words trimmed out of the cut simply don't appear). */
   segments?: Segment[];
@@ -398,7 +430,10 @@ export function TimelineBar({
   const baseClips = tl.clips.filter((c) => (c.lane ?? 0) === 0);
   const overlayClips = tl.clips.filter((c) => (c.lane ?? 0) >= 1);
   // Total sequence length spans ALL clips (base + overlay share the same timeline geometry).
-  const total = tl.clips.reduce((m, c) => Math.max(m, c.seq_out_frame_exclusive), 0);
+  const total = [...tl.clips, ...audioClips].reduce(
+    (m, c) => Math.max(m, c.seq_out_frame_exclusive),
+    0,
+  );
   // Map each transcript word (asset source frames) onto the sequence timeline via the clip
   // that contains it. Words trimmed out of the cut have no containing clip and are dropped.
   const transcriptWords =
@@ -772,17 +807,30 @@ export function TimelineBar({
                     total > 0
                       ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100
                       : 0;
+                  // Label and tooltip for the overlay block. TimelineBar does not receive an
+                  // `assets` prop, so we derive what we can from the clip itself: `role` is
+                  // always "replace" for lane->=1 clips; no asset.synthetic / ai_effect is
+                  // available here without a new data dependency, so we label by role only.
+                  const overlayLabel = c.role === "replace" ? "Replace" : (c.role ?? "Overlay");
+                  const overlayTitle = `${overlayLabel}-Overlay · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`;
                   return (
                     <div
                       key={c.id}
                       role="group"
                       aria-label={`Overlay ${c.id} · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
-                      title={`Replace-Overlay · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
+                      title={overlayTitle}
                       style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
                       className="absolute inset-y-0 flex items-center justify-between overflow-hidden rounded-sm bg-violet-700/60 ring-1 ring-inset ring-violet-400/50"
                     >
-                      <span className="truncate px-1 text-[9px] leading-none text-violet-100">
-                        R{c.seq_in_frame}
+                      <span className="flex min-w-0 items-center gap-0.5 truncate px-1">
+                        {/* Role badge — amber pill for replace/AI overlays, matching the KI badge
+                            style used elsewhere (MediaSidebar). */}
+                        <span className="shrink-0 rounded-full bg-amber-500/80 px-1 py-px text-[8px] font-semibold leading-none text-amber-950">
+                          {overlayLabel}
+                        </span>
+                        <span className="truncate text-[9px] leading-none text-violet-100">
+                          {c.seq_in_frame}–{c.seq_out_frame_exclusive}
+                        </span>
                       </span>
                       {onRemoveOverlay && (
                         <button
@@ -897,6 +945,20 @@ export function TimelineBar({
           {audioDrag && (
             <div className="pl-8 text-[10px] text-emerald-300" data-testid="audio-offset-readout">
               {offsetLabel(audioDrag.offsetFrames)}
+            </div>
+          )}
+          {/* A2 — sequence audio overlays (music/voiceover). Editing lives in the Tools rail. */}
+          {audioClips.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-cyan-400">A2</span>
+              <div
+                aria-label="Audio-Lane A2"
+                className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-cyan-950/30"
+              >
+                {audioClips.map((clip) => (
+                  <A2Block key={clip.id} clip={clip} total={total} />
+                ))}
+              </div>
             </div>
           )}
           {/* TX — transcript lane: each spoken word placed at its position on the sequence. */}
