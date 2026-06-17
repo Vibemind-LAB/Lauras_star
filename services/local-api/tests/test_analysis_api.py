@@ -44,6 +44,13 @@ def test_analysis_noop_run_and_endpoints(tmp_path: Path) -> None:
         resp = client.post(f"/assets/{asset_id}/analysis", json={"scene": False, "asr": False})
         assert resp.status_code == 202, resp.text
         run_id = resp.json()["analysis_run_id"]
+        job_id = resp.json()["job_id"]
+
+        # analysis.run is enqueued with a reduced max_attempts so a poison input that
+        # crashes/wedges a worker is bounded (not retried the default 3 times).
+        with db.connection() as conn:
+            row = conn.execute("SELECT max_attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert row["max_attempts"] == 2
 
         assert _runner(db).run_once() is True
 
