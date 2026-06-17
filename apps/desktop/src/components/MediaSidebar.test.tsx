@@ -1,8 +1,19 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { type Asset, type LauraClient } from "../api";
+import { type AnalysisRun, type Asset, type LauraClient } from "../api";
 import { MediaSidebar } from "./MediaSidebar";
+
+const analysisRun = (status: string): AnalysisRun =>
+  ({
+    id: "run-1",
+    asset_id: "a1",
+    pipeline_version: "v",
+    status,
+    started_at: null,
+    finished_at: null,
+    diagnostics: {},
+  });
 
 // jsdom cannot load real images, so assetFrameUrl returns a promise that never
 // resolves — the same "never-resolving stub" pattern used by SceneInspector.test.tsx
@@ -10,12 +21,14 @@ import { MediaSidebar } from "./MediaSidebar";
 function makeClient(
   overrides: Partial<{
     getLatestAnalysis: ReturnType<typeof vi.fn>;
+    getAssetProvenance: ReturnType<typeof vi.fn>;
     startAnalysis: ReturnType<typeof vi.fn>;
   }> = {},
 ): LauraClient {
   return {
     assetFrameUrl: vi.fn().mockReturnValue(new Promise<string>(() => undefined)),
     getLatestAnalysis: vi.fn().mockResolvedValue(null),
+    getAssetProvenance: vi.fn().mockResolvedValue(null),
     startAnalysis: vi.fn().mockResolvedValue({ analysis_run_id: "run-1" }),
     ...overrides,
   } as unknown as LauraClient;
@@ -39,6 +52,8 @@ function makeAsset(id: string, displayName: string): Asset {
     codec_video: "h264",
     codec_audio: "aac",
     is_vfr: false,
+    synthetic: false,
+    ai_effect: null,
     created_at: "2025-01-01T00:00:00Z",
     files: [],
   };
@@ -145,6 +160,45 @@ describe("MediaSidebar", () => {
     });
   });
 
+  it("keeps polling past the old 3-minute cap until terminal — no bogus Timeout", async () => {
+    // Regression: the old schedulePoll gave up after POLL_MAX (120 * 1.5s = 180s) with
+    // "Timeout — bitte erneut versuchen". A 30-min video's transcription runs longer, so
+    // the poll must continue until the run is actually terminal.
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const getLatestAnalysis = vi.fn(async () => {
+        calls += 1;
+        // calls===1 is the mount probe; stay "running" well past the old 120-poll cap.
+        return calls > 130 ? analysisRun("succeeded") : analysisRun("running");
+      });
+      const client = makeClient({ getLatestAnalysis });
+      render(
+        <MediaSidebar
+          client={client}
+          assets={[makeAsset("a1", "long-clip.mp4")]}
+          selectedAssetId={null}
+          onSelect={vi.fn()}
+        />,
+      );
+      // Flush the mount probe so the "Analysieren" button renders.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const btn = screen.getByRole("button", { name: "Analysieren" });
+      await act(async () => {
+        fireEvent.click(btn);
+        // Advance far past the old 180s cap so >120 poll iterations elapse.
+        await vi.advanceTimersByTimeAsync(300_000);
+      });
+
+      expect(screen.queryByText(/Timeout/)).toBeNull();
+      expect(screen.getByText("✓ analysiert")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("highlights the selected asset row", async () => {
     const client = makeClient();
     const { findByText } = render(
@@ -160,5 +214,52 @@ describe("MediaSidebar", () => {
     const row = el.closest("[aria-pressed]");
     expect(row).toBeTruthy();
     expect(row?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("marks synthetic AI assets with their effect label", () => {
+    const client = makeClient();
+    const synthetic: Asset = {
+      ...makeAsset("synthetic-1", "lipsync-output.mp4"),
+      synthetic: true,
+      ai_effect: "lipsync",
+    };
+    render(
+      <MediaSidebar
+        client={client}
+        assets={[synthetic]}
+        selectedAssetId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("KI · lipsync")).toBeTruthy();
+  });
+
+  it("shows provenance details for the selected synthetic asset", async () => {
+    const getAssetProvenance = vi.fn().mockResolvedValue({
+      schema: "laura.ai.provenance.v1",
+      asset_id: "synthetic-1",
+      ai_effect: "lipsync",
+      media_sha256: "0123456789abcdef",
+      source: { timeline_id: "tl-1" },
+    });
+    const client = makeClient({ getAssetProvenance });
+    const synthetic: Asset = {
+      ...makeAsset("synthetic-1", "lipsync-output.mp4"),
+      synthetic: true,
+      ai_effect: "lipsync",
+    };
+
+    render(
+      <MediaSidebar
+        client={client}
+        assets={[synthetic]}
+        selectedAssetId="synthetic-1"
+        onSelect={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Provenance")).toBeTruthy();
+    expect(screen.getByText("sha256 0123456789ab")).toBeTruthy();
+    expect(getAssetProvenance).toHaveBeenCalledWith("synthetic-1");
   });
 });
