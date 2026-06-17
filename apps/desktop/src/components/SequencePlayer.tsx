@@ -56,6 +56,14 @@ export interface SequencePlayerProps {
   projectId: string | null;
   sequenceId: string | null;
   reloadKey?: unknown;
+  /**
+   * Optional external seek in SEQUENCE frames. When this prop changes to a
+   * non-null value the player scrubs to that sequence frame. Mirrors the
+   * `seekTo` pattern in Player.tsx (object identity change triggers the effect;
+   * pass a new `{ frame }` object each time to re-seek). AssembleView does not
+   * pass this prop — default behaviour is unchanged.
+   */
+  seekTo?: { frame: number } | null;
   onFrame?: (seqFrame: number) => void;
 }
 
@@ -64,6 +72,7 @@ export function SequencePlayer({
   projectId,
   sequenceId,
   reloadKey,
+  seekTo,
   onFrame,
 }: SequencePlayerProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -197,6 +206,19 @@ export function SequencePlayer({
       setSeqFrame(target);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // External seek (sequence frames) — mirrors Player.tsx's seekTo-effect.
+  // Only fires when the seekTo object reference changes and is non-null.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!seekTo) return;
+    // Depend on `clips` too: a seekTo that arrives before the async flatten
+    // completes would otherwise be dropped (clips still []). Re-running once
+    // clips populate re-applies the pending seek. seekToSeqFrame no-ops on empty clips.
+    seekToSeqFrame(seekTo.frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekTo, clips]);
 
   const total = totalFrames(clips);
   const proxyReady = (i: number): boolean => {

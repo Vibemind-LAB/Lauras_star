@@ -1,11 +1,11 @@
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 
-import { type Asset, type LauraClient, type Segment } from "../api";
+import { type Asset, type LauraClient, type Segment, type TimelineClip } from "../api";
 import { useSceneTimeline } from "../hooks/useSceneTimeline";
 import { useScenes } from "../hooks/useScenes";
 import { projectCutWords } from "../shared/transcriptProjection";
-import { Player } from "./Player";
 import { SceneInspector } from "./SceneInspector";
+import { SequencePlayer } from "./SequencePlayer";
 import { SceneMusicControls } from "./SceneMusicControls";
 import { TimelineBar } from "./TimelineBar";
 import { TranscriptBar } from "./TranscriptBar";
@@ -59,7 +59,10 @@ export function FineCutView({
 
   // The clip currently being fine-trimmed (defaults to the scene's first clip).
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const clips = scene.timeline?.clips ?? [];
+  // Stable reference: only changes when the timeline object changes (a reload),
+  // not on every render — so seekToSeq/cutWords don't recompute spuriously and
+  // SequencePlayer isn't re-seeked mid-playback.
+  const clips = useMemo(() => scene.timeline?.clips ?? [], [scene.timeline]);
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? clips[0] ?? null;
 
   // Seek to the first clip's in-point when the SCENE changes, but not on every
@@ -76,12 +79,66 @@ export function FineCutView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSceneId, timelineId, onSeek]);
 
-  // Project the source transcript onto the cut: only words surviving the trim, in cut order.
-  const cutWords = useMemo(
-    () => projectCutWords(segments, clips),
+  // ---------------------------------------------------------------------------
+  // SEQ <-> SOURCE frame conversions (lane-0 base clips of the scene timeline)
+  //
+  // v1 limitation: the round-trip is unambiguous only when each source range
+  // appears once in cut order. Reordered or duplicated clips may place the
+  // playhead on the first matching clip when converting SOURCE -> SEQ.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Convert a SEQUENCE frame to a SOURCE (asset) frame.
+   * Returns null when there are no clips or the frame is out of range.
+   */
+  function seqToSrc(clips: TimelineClip[], seqFrame: number): number | null {
+    for (const c of clips) {
+      if (seqFrame >= c.seq_in_frame && seqFrame < c.seq_out_frame_exclusive) {
+        return c.src_in_frame + (seqFrame - c.seq_in_frame);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Convert a SOURCE (asset) frame to a SEQUENCE frame.
+   * Returns null when no clip contains that source frame.
+   */
+  function srcToSeq(clips: TimelineClip[], srcFrame: number): number | null {
+    for (const c of clips) {
+      if (srcFrame >= c.src_in_frame && srcFrame < c.src_out_frame_exclusive) {
+        return c.seq_in_frame + (srcFrame - c.src_in_frame);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Translate the incoming SOURCE-frame seek into a SEQUENCE-frame seek for
+   * SequencePlayer. Produces a new object when the result changes so that
+   * SequencePlayer's seekTo effect fires correctly.
+   */
+  const seekToSeq = useMemo<{ frame: number } | null>(() => {
+    if (!seek || clips.length === 0) return null;
+    const seqFrame = srcToSeq(clips, seek.frame);
+    if (seqFrame === null) return null;
+    return { frame: seqFrame };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [segments, scene.timeline?.clips],
-  );
+  }, [seek, clips]);
+
+  /**
+   * Called by SequencePlayer on every frame tick. Converts the SEQUENCE frame
+   * back to a SOURCE frame so that TimelineBar, SceneInspector, and
+   * TranscriptBar continue to receive SOURCE frames unchanged.
+   */
+  function handleSeqFrame(seqFrame: number): void {
+    if (clips.length === 0) return;
+    const srcFrame = seqToSrc(clips, seqFrame);
+    if (srcFrame !== null) onFrame(srcFrame);
+  }
+
+  // Project the source transcript onto the cut: only words surviving the trim, in cut order.
+  const cutWords = useMemo(() => projectCutWords(segments, clips), [segments, clips]);
 
   if (scenes.length === 0) {
     return (
@@ -121,10 +178,19 @@ export function FineCutView({
           frame-genau trimmen · ✂ am Transkript schneidet Wörter (Ripple).
         </div>
         <div className="flex min-h-0 flex-1 items-center justify-center bg-black/40 p-4">
-          {asset ? (
-            <Player asset={asset} seekTo={seek} onFrame={onFrame} />
+          {scene.timeline ? (
+            <SequencePlayer
+              client={client}
+              projectId={asset?.project_id ?? null}
+              sequenceId={scene.timeline.id}
+              reloadKey={scene.timeline.id}
+              seekTo={seekToSeq}
+              onFrame={handleSeqFrame}
+            />
           ) : (
-            <span className="text-xs text-slate-600">Kein Medium gewählt.</span>
+            <span className="text-xs text-slate-600">
+              {asset ? "Szene wird geladen…" : "Kein Medium gewählt."}
+            </span>
           )}
         </div>
 
