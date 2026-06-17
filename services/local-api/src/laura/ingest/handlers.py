@@ -191,7 +191,11 @@ def _maybe_auto_analyze(ctx: JobContext, asset_id: str) -> str | None:
         return None
     config: dict[str, Any] = {
         "stages": {"scene": True, "asr": True, "diarize": False, "align": False},
-        "model": None,
+        # Must be a real model size, NOT None: handle_analysis_run does
+        # config.get("model", "base"), which returns None (not "base") when the key is
+        # present-but-None, and WhisperModel(None) then crashes (stat(None)). "base" is
+        # the asr DEFAULT_MODEL. language None is fine (Whisper auto-detects).
+        "model": "base",
         "language": None,
         "detector": "adaptive",
     }

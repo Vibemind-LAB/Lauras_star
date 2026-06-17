@@ -7,6 +7,8 @@ After the import chain finishes (proxy + audio + waveform), ``handle_waveform`` 
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from laura.db import repos
@@ -57,6 +59,11 @@ def test_auto_analyze_enqueues_when_enabled(
     jobs = _analysis_jobs(db)
     assert len(jobs) == 1
     assert jobs[0]["max_attempts"] == 2
+    # Regression: model must be a real size, not None — config.get("model", "base") returns
+    # None for a present-but-None key, and WhisperModel(None) crashes (stat(None)). Caught live.
+    payload = json.loads(jobs[0]["payload_json"])
+    assert payload["config"]["model"] == "base"
+    assert payload["config"]["stages"]["asr"] is True
 
 
 def test_auto_analyze_skips_when_disabled(
