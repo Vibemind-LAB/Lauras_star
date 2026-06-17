@@ -11,9 +11,11 @@ exactly like :mod:`laura.analysis.asr` / :mod:`laura.analysis.diarize`.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
+from ..gpu import torch_cuda_available
 from .types import ShotResult
 
 
@@ -47,6 +49,11 @@ def _load_model() -> Any:
     except Exception as exc:  # noqa: BLE001 - weights download / construction may fail
         msg = f"TransNetV2 inference unavailable: {type(exc).__name__}: {exc}"
         raise RuntimeError(msg) from exc
+    if torch_cuda_available():
+        to_fn = getattr(model, "to", None)
+        if callable(to_fn):
+            with contextlib.suppress(Exception):  # stay on CPU if the move fails
+                model = to_fn("cuda") or model
     return model
 
 
