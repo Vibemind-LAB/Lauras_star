@@ -78,28 +78,41 @@ export function RuntimeStatusPanel({
     [client],
   );
 
-  const load = useCallback(async (refreshExpandedEvents = false): Promise<void> => {
-    setLoading(true);
-    try {
-      setRuntimes(await client.listAiRuntimes());
-      if (refreshExpandedEvents) {
-        const expandedRuntimeId = expandedEventsIdRef.current;
-        if (expandedRuntimeId !== null) {
-          await loadEvents(expandedRuntimeId, true);
+  const load = useCallback(
+    async ({
+      invalidateEvents = false,
+      refreshExpandedEvents = false,
+    }: {
+      invalidateEvents?: boolean;
+      refreshExpandedEvents?: boolean;
+    } = {}): Promise<void> => {
+      setLoading(true);
+      try {
+        if (invalidateEvents) {
+          eventsByRuntimeRef.current = {};
+          setEventsByRuntime({});
         }
+        setRuntimes(await client.listAiRuntimes());
+        if (refreshExpandedEvents) {
+          const expandedRuntimeId = expandedEventsIdRef.current;
+          if (expandedRuntimeId !== null) {
+            await loadEvents(expandedRuntimeId, true);
+          }
+        }
+        setError(null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error("listAiRuntimes failed:", message);
+        setError(message);
+      } finally {
+        setLoading(false);
       }
-      setError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error("listAiRuntimes failed:", message);
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [client, loadEvents]);
+    },
+    [client, loadEvents],
+  );
 
   useEffect(() => {
-    void load(true);
+    void load({ invalidateEvents: true, refreshExpandedEvents: true });
   }, [load, reloadKey]);
 
   const sortedRuntimes = useMemo(
@@ -118,15 +131,7 @@ export function RuntimeStatusPanel({
     setError(null);
     try {
       await action(runtimeId);
-      setEventsByRuntime((current) => {
-        if (current[runtimeId] === undefined) {
-          return current;
-        }
-        const next = { ...current };
-        delete next[runtimeId];
-        return next;
-      });
-      await load(true);
+      await load({ invalidateEvents: true, refreshExpandedEvents: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("runtime action failed:", message);
@@ -161,7 +166,7 @@ export function RuntimeStatusPanel({
         </div>
         <button
           type="button"
-          onClick={() => void load(true)}
+          onClick={() => void load({ invalidateEvents: true, refreshExpandedEvents: true })}
           disabled={loading}
           className="rounded border border-edge bg-ink px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800 disabled:opacity-40"
         >

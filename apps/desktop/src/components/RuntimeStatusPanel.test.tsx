@@ -208,6 +208,54 @@ describe("RuntimeStatusPanel", () => {
     await waitFor(() => expect(listAiRuntimeEvents).toHaveBeenCalledTimes(2));
   });
 
+  it("re-fetches events after reload when the events panel was collapsed", async () => {
+    const listAiRuntimeEvents = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: "ev-1",
+          runtime_id: "rt-1",
+          event_type: "health",
+          level: "info",
+          message: "Healthy",
+          payload: {},
+          created_at: "2026-06-18T10:00:00Z",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "ev-2",
+          runtime_id: "rt-1",
+          event_type: "health",
+          level: "info",
+          message: "Fresh after reload",
+          payload: {},
+          created_at: "2026-06-18T10:05:00Z",
+        },
+      ]);
+
+    const rendered = render(
+      <RuntimeStatusPanel client={client({ listAiRuntimeEvents })} reloadKey={0} />,
+    );
+
+    await screen.findByText("Stub Lipsync");
+
+    fireEvent.click(screen.getByRole("button", { name: "Events" }));
+    expect(await screen.findByText("Healthy")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Events" }));
+    await waitFor(() => expect(screen.queryByText("Healthy")).toBeNull());
+
+    rendered.rerender(
+      <RuntimeStatusPanel client={client({ listAiRuntimeEvents })} reloadKey={1} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Events" }));
+
+    expect(await screen.findByText("Fresh after reload")).toBeTruthy();
+    await waitFor(() => expect(listAiRuntimeEvents).toHaveBeenCalledTimes(2));
+  });
+
   it("re-fetches expanded events after a runtime action", async () => {
     const refreshAiRuntime = vi.fn().mockResolvedValue({});
     const listAiRuntimes = vi
