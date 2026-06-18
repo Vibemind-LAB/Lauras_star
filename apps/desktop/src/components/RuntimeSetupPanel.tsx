@@ -1,6 +1,6 @@
 import { type ReactElement, useState } from "react";
 
-import { type LauraClient, type RuntimeEffect, type RuntimeKind } from "../api";
+import { type AiRuntimeCreate, type LauraClient, type RuntimeEffect, type RuntimeKind } from "../api";
 
 const EFFECTS: RuntimeEffect[] = ["voice", "reenact", "lipsync", "faceswap", "restore"];
 const KINDS: RuntimeKind[] = ["stub", "external_http", "container"];
@@ -12,6 +12,14 @@ function defaultContainerName(effect: RuntimeEffect, name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
   return `laura-${effect}${slug ? `-${slug}` : ""}`;
+}
+
+function parseContainerPort(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "" || !/^\d+$/.test(trimmed)) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return undefined;
+  return parsed;
 }
 
 export function RuntimeSetupPanel({
@@ -38,20 +46,26 @@ export function RuntimeSetupPanel({
     setBusy(true);
     setError(null);
     try {
-      const runtime = await client.createAiRuntime({
+      const trimmedDisplayName = displayName.trim();
+      const runtime: AiRuntimeCreate = {
         kind,
         effect,
-        displayName: displayName.trim(),
-        baseUrl: kind === "external_http" && baseUrl.trim() ? baseUrl.trim() : undefined,
-        containerImage:
-          kind === "container" && containerImage.trim() ? containerImage.trim() : undefined,
-        containerName: kind === "container" ? defaultContainerName(effect, displayName) : undefined,
-        port: port.trim() ? Number(port) : undefined,
-        modelMount: kind === "container" && modelMount.trim() ? modelMount.trim() : undefined,
-        requiresGpu: kind === "container" ? requiresGpu : false,
+        displayName: trimmedDisplayName,
         licenseStatus: licenseAccepted ? "accepted" : kind === "stub" ? "not_required" : "unknown",
-      });
-      await client.refreshAiRuntime(runtime.id);
+      };
+      if (kind === "external_http" && baseUrl.trim() !== "") {
+        runtime.baseUrl = baseUrl.trim();
+      }
+      if (kind === "container") {
+        if (containerImage.trim() !== "") runtime.containerImage = containerImage.trim();
+        runtime.containerName = defaultContainerName(effect, trimmedDisplayName);
+        const parsedPort = parseContainerPort(port);
+        if (parsedPort !== undefined) runtime.port = parsedPort;
+        if (modelMount.trim() !== "") runtime.modelMount = modelMount.trim();
+        runtime.requiresGpu = requiresGpu;
+      }
+      const runtimeCreated = await client.createAiRuntime(runtime);
+      await client.refreshAiRuntime(runtimeCreated.id);
       setDisplayName("");
       setBaseUrl("");
       setContainerImage("");
