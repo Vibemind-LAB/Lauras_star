@@ -1373,6 +1373,226 @@ def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
     return out
 
 
+# --- ai runtimes + personas ------------------------------------------------
+
+def _json_obj(value: dict[str, Any] | None = None) -> str:
+    return json.dumps(value or {})
+
+
+def _json_list(value: list[str] | None = None) -> str:
+    return json.dumps(value or [])
+
+
+def _decode_ai_runtime(row: dict[str, Any]) -> dict[str, Any]:
+    row["requires_gpu"] = bool(row.get("requires_gpu"))
+    row["enabled"] = bool(row.get("enabled"))
+    row["status"] = json.loads(row.pop("status_cache_json") or "{}")
+    row["capabilities"] = json.loads(row.pop("capabilities_json") or "{}")
+    return row
+
+
+def create_ai_runtime(
+    db: Database,
+    *,
+    kind: str,
+    effect: str,
+    display_name: str,
+    base_url: str | None = None,
+    container_image: str | None = None,
+    container_name: str | None = None,
+    port: int | None = None,
+    workspace_mount: str | None = None,
+    model_mount: str | None = None,
+    requires_gpu: bool = False,
+    enabled: bool = True,
+    license_status: str = "unknown",
+) -> dict[str, Any]:
+    runtime_id = new_id()
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ai_runtimes "
+            "(id, kind, effect, display_name, base_url, container_image, container_name, "
+            "port, workspace_mount, model_mount, requires_gpu, enabled, license_status, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                runtime_id,
+                kind,
+                effect,
+                display_name,
+                base_url,
+                container_image,
+                container_name,
+                port,
+                workspace_mount,
+                model_mount,
+                int(requires_gpu),
+                int(enabled),
+                license_status,
+                now,
+                now,
+            ),
+        )
+    runtime = get_ai_runtime(db, runtime_id)
+    assert runtime is not None
+    return runtime
+
+
+def get_ai_runtime(db: Database, runtime_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM ai_runtimes WHERE id=?", (runtime_id,)).fetchone()
+    return _decode_ai_runtime(dict(row)) if row is not None else None
+
+
+def list_ai_runtimes(db: Database, *, effect: str | None = None) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM ai_runtimes"
+    params: list[Any] = []
+    if effect is not None:
+        sql += " WHERE effect=?"
+        params.append(effect)
+    sql += " ORDER BY effect, display_name"
+    with db.connection() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [_decode_ai_runtime(dict(row)) for row in rows]
+
+
+def update_ai_runtime_status(
+    db: Database,
+    runtime_id: str,
+    *,
+    status: dict[str, Any],
+    capabilities: dict[str, Any] | None = None,
+) -> bool:
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        if capabilities is None:
+            cur = conn.execute(
+                "UPDATE ai_runtimes SET status_cache_json=?, last_health_at=?, updated_at=? "
+                "WHERE id=?",
+                (json.dumps(status), now, now, runtime_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE ai_runtimes SET status_cache_json=?, capabilities_json=?, "
+                "last_health_at=?, updated_at=? WHERE id=?",
+                (json.dumps(status), json.dumps(capabilities), now, now, runtime_id),
+            )
+        return cur.rowcount > 0
+
+
+def create_ai_runtime_event(
+    db: Database,
+    *,
+    runtime_id: str,
+    event_type: str,
+    level: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event_id = new_id()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ai_runtime_events "
+            "(id, runtime_id, event_type, level, message, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                runtime_id,
+                event_type,
+                level,
+                message,
+                json.dumps(payload or {}),
+                utcnow_iso(),
+            ),
+        )
+        row = conn.execute("SELECT * FROM ai_runtime_events WHERE id=?", (event_id,)).fetchone()
+    event = dict(row)
+    event["payload"] = json.loads(event.pop("payload_json") or "{}")
+    return event
+
+
+def list_ai_runtime_events(
+    db: Database, runtime_id: str, *, limit: int = 100
+) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ai_runtime_events WHERE runtime_id=? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (runtime_id, limit),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        event = dict(row)
+        event["payload"] = json.loads(event.pop("payload_json") or "{}")
+        out.append(event)
+    return out
+
+
+def _decode_ai_persona(row: dict[str, Any]) -> dict[str, Any]:
+    row["style"] = json.loads(row.pop("style_json") or "{}")
+    row["allowed_effects"] = json.loads(row.pop("allowed_effects_json") or "[]")
+    row["preferred_runtimes"] = json.loads(row.pop("preferred_runtimes_json") or "{}")
+    return row
+
+
+def create_ai_persona(
+    db: Database,
+    *,
+    name: str,
+    consent_id: str,
+    project_id: str | None = None,
+    face_reference_asset_id: str | None = None,
+    voice_reference_asset_id: str | None = None,
+    style: dict[str, Any] | None = None,
+    allowed_effects: list[str] | None = None,
+    preferred_runtimes: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    persona_id = new_id()
+    now = utcnow_iso()
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ai_personas "
+            "(id, project_id, name, consent_id, face_reference_asset_id, "
+            "voice_reference_asset_id, style_json, allowed_effects_json, "
+            "preferred_runtimes_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                persona_id,
+                project_id,
+                name,
+                consent_id,
+                face_reference_asset_id,
+                voice_reference_asset_id,
+                _json_obj(style),
+                _json_list(allowed_effects),
+                _json_obj(preferred_runtimes),
+                now,
+                now,
+            ),
+        )
+    persona = get_ai_persona(db, persona_id)
+    assert persona is not None
+    return persona
+
+
+def get_ai_persona(db: Database, persona_id: str) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM ai_personas WHERE id=?", (persona_id,)).fetchone()
+    return _decode_ai_persona(dict(row)) if row is not None else None
+
+
+def list_ai_personas(db: Database, *, project_id: str | None = None) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM ai_personas"
+    params: list[Any] = []
+    if project_id is not None:
+        sql += " WHERE project_id=? OR project_id IS NULL"
+        params.append(project_id)
+    sql += " ORDER BY created_at DESC"
+    with db.connection() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [_decode_ai_persona(dict(row)) for row in rows]
+
+
 # --- consent records -------------------------------------------------------
 
 def create_consent_record(
