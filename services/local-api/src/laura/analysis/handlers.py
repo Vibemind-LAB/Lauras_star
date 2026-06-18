@@ -24,7 +24,7 @@ from .asr import faster_whisper_available, transcribe
 from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
 from .mapping import map_segment
-from .quality import compute_shot_metrics, decide_keep, mark_duplicates
+from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark_duplicates
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
 from .types import SegmentResult, ShotResult, WordResult
 
@@ -156,6 +156,15 @@ def _run_scene(
     thumb_dir = Path(project["workspace_root"]) / "analysis" / asset["id"] / "thumbnails"
     rate_num = asset["rate_num"] or 25
     rate_den = asset["rate_den"] or 1
+    # Quality metrics for every shot in ONE decode pass (O(N) vs the per-shot O(N²) that made
+    # long-video analysis crawl). Metric-identical to per-shot; falls back to per-shot if the
+    # batch decode fails, so a hiccup never loses metrics.
+    try:
+        batch_metrics = batch_shot_metrics(
+            video, [(s.src_in_frame, s.src_out_frame_exclusive) for s in shots]
+        )
+    except Exception:  # noqa: BLE001 - fall back to per-shot below
+        batch_metrics = None
     rows: list[dict[str, Any]] = []
     for i, s in enumerate(shots):
         thumbnail: str | None = None
@@ -167,8 +176,10 @@ def _run_scene(
             thumbnail = None
         keep, reason, metrics = True, None, None
         try:
-            metrics = compute_shot_metrics(
-                video, s.src_in_frame, s.src_out_frame_exclusive
+            metrics = (
+                batch_metrics[i]
+                if batch_metrics is not None
+                else compute_shot_metrics(video, s.src_in_frame, s.src_out_frame_exclusive)
             )
             keep, reason = decide_keep(
                 metrics, length_frames=s.src_out_frame_exclusive - s.src_in_frame
