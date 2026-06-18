@@ -89,3 +89,26 @@ describe("TranscriptBar inline edit", () => {
     expect(screen.queryByRole("button", { name: "Hallo" })).toBeNull();
   });
 });
+
+describe("TranscriptBar search", () => {
+  it("counts matching segments as the query changes", () => {
+    renderBar({
+      segments: [
+        seg({ id: "s1", text: "intro about the prototype" }),
+        seg({ id: "s2", text: "and then the demo" }),
+      ],
+    });
+    const box = screen.getByLabelText("Im Transkript suchen");
+    fireEvent.change(box, { target: { value: "prototype" } });
+    expect(screen.getByText("1 Treffer")).toBeTruthy();
+    fireEvent.change(box, { target: { value: "the" } });
+    expect(screen.getByText("2 Treffer")).toBeTruthy();
+    fireEvent.change(box, { target: { value: "zzz" } });
+    expect(screen.getByText("0 Treffer")).toBeTruthy();
+  });
+
+  it("shows no search box when there is no transcript", () => {
+    renderBar({ segments: [] });
+    expect(screen.queryByLabelText("Im Transkript suchen")).toBeNull();
+  });
+});

@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 
 import { type LauraClient, type Segment } from "../api";
 import { type CutWord } from "../shared/transcriptProjection";
@@ -97,11 +97,30 @@ export function TranscriptBar({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  // Transcript search (raw-segment mode): highlight matching segments + jump to the first.
+  const [search, setSearch] = useState("");
+  const firstMatchRef = useRef<HTMLSpanElement | null>(null);
 
-  // Never let an open editor leak across assets (the segment ids belong to the old asset).
+  // Never let an open editor / search leak across assets (ids belong to the old asset).
   useEffect(() => {
     setEditingId(null);
+    setSearch("");
   }, [assetId]);
+
+  // Scroll the first match into view whenever the query changes.
+  useEffect(() => {
+    if (search.trim()) {
+      firstMatchRef.current?.scrollIntoView?.({ block: "nearest", inline: "center" });
+    }
+  }, [search]);
+
+  const query = search.trim().toLowerCase();
+  const matchCount = query
+    ? segments.reduce((acc, s) => acc + (s.text.toLowerCase().includes(query) ? 1 : 0), 0)
+    : 0;
+  const firstMatchId = query
+    ? (segments.find((s) => s.text.toLowerCase().includes(query))?.id ?? null)
+    : null;
 
   async function saveEdit(segmentId: string): Promise<void> {
     if (!onEditSegment) return;
@@ -176,6 +195,19 @@ export function TranscriptBar({
           {error && <span className="mr-2 text-xs text-red-400">{error}</span>}
           {segments.length > 0 && (
             <>
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Im Transkript suchen"
+                aria-label="Im Transkript suchen"
+                className="w-40 rounded bg-ink px-2 py-0.5 text-xs text-slate-200 placeholder:text-slate-600"
+              />
+              {query && (
+                <span className="mr-1 text-[10px] tabular-nums text-slate-500">
+                  {matchCount} Treffer
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => void exportCaptions("srt")}
@@ -203,10 +235,15 @@ export function TranscriptBar({
           {segments.map((seg) => {
             const active =
               currentFrame >= seg.start_frame && currentFrame < seg.end_frame;
+            const isMatch = query !== "" && seg.text.toLowerCase().includes(query);
+            const dimmed = query !== "" && !isMatch;
             return (
               <span
                 key={seg.id}
-                className={`mr-1 inline rounded px-1 ${active ? "bg-sky-900/40" : ""}`}
+                ref={seg.id === firstMatchId ? firstMatchRef : undefined}
+                className={`mr-1 inline rounded px-1 ${active ? "bg-sky-900/40" : ""} ${
+                  isMatch ? "bg-amber-500/20 ring-1 ring-amber-400/60" : ""
+                } ${dimmed ? "opacity-40" : ""}`}
               >
                 {seg.speaker_label && (
                   <span className="mr-1 rounded bg-ink px-1.5 py-0.5 text-xs text-sky-300">
