@@ -505,3 +505,73 @@ describe("LauraClient timeline audio clip methods", () => {
     );
   });
 });
+
+describe("LauraClient AI runtime and persona methods", () => {
+  it("creates and refreshes AI runtimes", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "rt-1" }), { status: 201 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "rt-1", status: { ready: true } }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LauraClient("http://localhost", "token");
+
+    await client.createAiRuntime({
+      kind: "container",
+      effect: "lipsync",
+      displayName: "Lipsync",
+      containerImage: "laura-runtime-lipsync:local",
+    });
+    await client.refreshAiRuntime("rt-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost/ai/runtimes",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          kind: "container",
+          effect: "lipsync",
+          display_name: "Lipsync",
+          container_image: "laura-runtime-lipsync:local",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost/ai/runtimes/rt-1/refresh",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("creates AI personas with preferred runtimes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "persona-1" }), { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LauraClient("http://localhost", "token");
+
+    await client.createAiPersona({
+      projectId: "project-1",
+      name: "Persona",
+      consentId: "consent-1",
+      allowedEffects: ["voice", "lipsync"],
+      preferredRuntimes: { voice: "rt-voice" },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/ai/personas",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          project_id: "project-1",
+          name: "Persona",
+          consent_id: "consent-1",
+          allowed_effects: ["voice", "lipsync"],
+          preferred_runtimes: { voice: "rt-voice" },
+        }),
+      }),
+    );
+  });
+});

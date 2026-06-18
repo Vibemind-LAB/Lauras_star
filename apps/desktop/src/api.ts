@@ -592,6 +592,81 @@ export interface ConsentRecord {
   revoked_at: string | null;
 }
 
+export type RuntimeKind = "stub" | "external_http" | "container";
+export type RuntimeEffect = "voice" | "reenact" | "lipsync" | "faceswap" | "restore";
+export type LicenseStatus = "unknown" | "accepted" | "rejected" | "not_required";
+
+export interface AiRuntime {
+  id: string;
+  kind: RuntimeKind;
+  effect: RuntimeEffect;
+  display_name: string;
+  base_url: string | null;
+  container_image: string | null;
+  container_name: string | null;
+  port: number | null;
+  workspace_mount: string | null;
+  model_mount: string | null;
+  requires_gpu: boolean;
+  enabled: boolean;
+  license_status: LicenseStatus;
+  status: Record<string, unknown>;
+  capabilities: Record<string, unknown>;
+  last_health_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiRuntimeCreate {
+  kind: RuntimeKind;
+  effect: RuntimeEffect;
+  displayName: string;
+  baseUrl?: string;
+  containerImage?: string;
+  containerName?: string;
+  port?: number;
+  workspaceMount?: string;
+  modelMount?: string;
+  requiresGpu?: boolean;
+  enabled?: boolean;
+  licenseStatus?: LicenseStatus;
+}
+
+export interface AiRuntimeEvent {
+  id: string;
+  runtime_id: string;
+  event_type: string;
+  level: string;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AiPersona {
+  id: string;
+  project_id: string | null;
+  name: string;
+  consent_id: string;
+  face_reference_asset_id: string | null;
+  voice_reference_asset_id: string | null;
+  style: Record<string, unknown>;
+  allowed_effects: RuntimeEffect[];
+  preferred_runtimes: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiPersonaCreate {
+  projectId?: string;
+  name: string;
+  consentId: string;
+  faceReferenceAssetId?: string;
+  voiceReferenceAssetId?: string;
+  style?: Record<string, unknown>;
+  allowedEffects?: RuntimeEffect[];
+  preferredRuntimes?: Record<string, string>;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -1187,6 +1262,75 @@ export class LauraClient {
       method: "POST",
       body: JSON.stringify({ subject_label: opts.subjectLabel }),
     });
+  }
+
+  createAiRuntime(input: AiRuntimeCreate): Promise<AiRuntime> {
+    const body: Record<string, unknown> = {
+      kind: input.kind,
+      effect: input.effect,
+      display_name: input.displayName,
+    };
+    if (input.baseUrl !== undefined) body.base_url = input.baseUrl;
+    if (input.containerImage !== undefined) body.container_image = input.containerImage;
+    if (input.containerName !== undefined) body.container_name = input.containerName;
+    if (input.port !== undefined) body.port = input.port;
+    if (input.workspaceMount !== undefined) body.workspace_mount = input.workspaceMount;
+    if (input.modelMount !== undefined) body.model_mount = input.modelMount;
+    if (input.requiresGpu !== undefined) body.requires_gpu = input.requiresGpu;
+    if (input.enabled !== undefined) body.enabled = input.enabled;
+    if (input.licenseStatus !== undefined) body.license_status = input.licenseStatus;
+    return this.request<AiRuntime>("/ai/runtimes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  listAiRuntimes(effect?: RuntimeEffect): Promise<AiRuntime[]> {
+    const qs = effect ? `?effect=${encodeURIComponent(effect)}` : "";
+    return this.request<AiRuntime[]>(`/ai/runtimes${qs}`);
+  }
+
+  refreshAiRuntime(runtimeId: string): Promise<AiRuntime> {
+    return this.request<AiRuntime>(`/ai/runtimes/${runtimeId}/refresh`, { method: "POST" });
+  }
+
+  startAiRuntime(runtimeId: string): Promise<AiRuntime> {
+    return this.request<AiRuntime>(`/ai/runtimes/${runtimeId}/start`, { method: "POST" });
+  }
+
+  stopAiRuntime(runtimeId: string): Promise<AiRuntime> {
+    return this.request<AiRuntime>(`/ai/runtimes/${runtimeId}/stop`, { method: "POST" });
+  }
+
+  listAiRuntimeEvents(runtimeId: string): Promise<AiRuntimeEvent[]> {
+    return this.request<AiRuntimeEvent[]>(`/ai/runtimes/${runtimeId}/events`);
+  }
+
+  createAiPersona(input: AiPersonaCreate): Promise<AiPersona> {
+    const body: Record<string, unknown> = {
+      project_id: input.projectId,
+      name: input.name,
+      consent_id: input.consentId,
+    };
+    if (input.projectId === undefined) delete body.project_id;
+    if (input.faceReferenceAssetId !== undefined) {
+      body.face_reference_asset_id = input.faceReferenceAssetId;
+    }
+    if (input.voiceReferenceAssetId !== undefined) {
+      body.voice_reference_asset_id = input.voiceReferenceAssetId;
+    }
+    if (input.style !== undefined) body.style = input.style;
+    if (input.allowedEffects !== undefined) body.allowed_effects = input.allowedEffects;
+    if (input.preferredRuntimes !== undefined) body.preferred_runtimes = input.preferredRuntimes;
+    return this.request<AiPersona>("/ai/personas", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  listAiPersonas(projectId?: string): Promise<AiPersona[]> {
+    const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return this.request<AiPersona[]>(`/ai/personas${qs}`);
   }
 
   /**
