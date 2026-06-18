@@ -51,9 +51,12 @@ class ReenactBackend(Protocol):
 - **StubReenactBackend** (dep-frei, Default im Skelett): erzeugt ein deterministisches Platzhalter-MP4
   aus dem Driving-Clip — z. B. Driving + sichtbares „REENACT (stub)"-Overlay/Tönung — damit die ganze
   Pipeline (Job→Asset→Overlay) end-to-end läuft. **Bewusst offensichtlich kein echter Deepfake.**
-- **LivePortraitBackend** (später, optionales Extra `[ai-reenact]`): ruft den lokalen Sidecar
-  (`POST http://127.0.0.1:<port>/reenact`), Modell bleibt warm. `available()` = Sidecar erreichbar.
-  Auswahl per `LAURA_REENACT_BACKEND` env / Job-Param; Default `stub`.
+- **LivePortraitBackend** (Sidecar-Adapter, keine schweren Imports in Laura): ruft den lokalen
+  Sidecar (`GET /healthz`, `POST http://127.0.0.1:<port>/reenact` multipart mit `driving`,
+  `portrait`, `fps_num`, `fps_den`; Antwort = MP4-Bytes). Modell bleibt warm im Sidecar.
+  `available()` = Sidecar erreichbar. Auswahl per `LAURA_REENACT_BACKEND` env / Job-Param
+  oder UI-Select; Default `stub`. Sidecar-URL: `LAURA_LIVEPORTRAIT_URL` (Default
+  `http://127.0.0.1:8899`).
 
 ## Datenmodell (additiv, meins)
 
@@ -81,8 +84,8 @@ Keine neue Platzierungslogik. Render zeigt es über die `resolve_clip_rows`-Prä
 
 - API: `create_consent`, `reenact` (oben).
 - UI: kleine `ReenactPanel`-Komponente (in AssembleView, wie OverlayControls): Driving-Range-Felder +
-  Portrait-Asset-Auswahl + Consent-Bestätigung (subject_label) → Button „Reenact (stub)". Zeigt Job-Status.
-  Backend-Auswahl: solange nur Stub verfügbar, fix „stub" + Hinweis „LivePortrait nicht installiert".
+  Portrait-Asset-Auswahl + Consent-Bestätigung (subject_label) → Backend-Auswahl `Stub` /
+  `LivePortrait Sidecar` → Button „Reenact …". Zeigt Job-Status.
 
 ## Invarianten
 
@@ -95,13 +98,15 @@ nicht-umgehbar; `timelines.py` (User) unberührt — separate Endpoints.
 - Consent-Gate: `reenact` ohne/mit ungültigem `consent_id` → Fehler; mit gültigem → Job läuft (pytest).
 - Stub-Job e2e: echtes ffmpeg, Driving-Range → Stub-Output → `synthetic`-Asset → Replace-Overlay gesetzt
   → `resolve_clip_rows` zeigt es in der Range (ffprobe + Präsenz-Check). 
-- `synthetic`/`ai_effect`-Round-Trip; Backend-`available()`-Schalter (Stub immer true).
+- `synthetic`/`ai_effect`-Round-Trip; Backend-`available()`-Schalter (Stub immer true,
+  LivePortrait via Sidecar-Healthcheck).
 - API/UI: consent + reenact-Endpoint (TestClient); tsc.
 - **„Evaluiert" auf Skelett-Ebene = volle Suite + e2e grün.** Die echte Qualitäts-Eval (LSE/ArcFace/
   LPIPS/Human-MOS) kommt mit dem LivePortrait-Backend (eigenes Teil).
 
 ## Heavy-Dep-Wand (hier pausiere ich)
 
-`LivePortraitBackend` + Sidecar + Modell-Download (RTX 3060, MIT-Lizenz, ~GB Gewichte) = **User-Install**.
-Das Skelett ist so gebaut, dass dieser Schritt ein reiner **Adapter-Tausch** ist (Interface + Sidecar-
-Contract stehen), kein Umbau.
+Der `LivePortraitBackend`-Adapter ist gebaut; die verbleibende Wand ist der **Sidecar-Betrieb**:
+LivePortrait-Repo/venv, Modell-Download (RTX 3060, MIT-Lizenz, ~GB Gewichte) und ein lokaler
+HTTP-Prozess, der den oben beschriebenen Contract erfüllt. Laura bleibt ohne diesen Prozess startbar
+und fällt weiter sauber auf Stub oder „Sidecar nicht erreichbar" zurück.

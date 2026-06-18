@@ -271,17 +271,91 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
   `docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md`. Kein Code-Copy in
   Lauras Kern; Deepfake nur nach Lizenz-/Consent-Gate.
 
-## VibeVideo-Integration  `[ ]`  (Design: docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md)
-- [ ] **VV1 Audio-Lane** — A2-Spur fuer Voiceover/Musik, Gain, Mix/Replace/Mute, einfache Fades,
-  sample-genauer Export-Mix.
-- [ ] **VV2 Voiceover/TTS** — `ai.voiceover` Sidecar-Adapter, `Stimme erzeugen`, WAV-Asset auf A2,
-  Consent-Pflicht bei Personenstimmen.
-- [ ] **VV3 Sync Guard** — Framecount-basierte A/V-Drift-Pruefung und optionaler Fix fuer Exporte
-  und Sidecar-Outputs.
-- [ ] **VV4 Product-Demo Assistant** — Screenrecording analysieren, Szenen/Labels/Voiceovertext als
-  editierbaren Laura-Sequenz-Draft uebernehmen.
-- [ ] **VV5 Lipsync/Deepfake** — Consent-/Lizenz-gated Sidecar mit Face-/Mouth-Probe,
-  synthetischer Kennzeichnung und Quality-Gate.
+## VibeVideo-Integration  `[~]`  (Design: docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md)
+- [x] **VV1 Audio-Lane v1** — `timeline_audio_clips` (Migration 0018) + CRUD-API,
+  strukturierte `AudioOverlay`s im MP4-Renderpfad, Gain + einfache Fade-in/out,
+  Assemble-Tools-Control und sichtbare A2-Spur in `TimelineBar`. Verifiziert:
+  `test_timeline_audio_clips`, `test_render_audio_overlays`, `test_render_handler_options`,
+  `test_render_music`, Desktop `api`/`AudioLaneControls`/`TimelineBar`/`AssembleView`, `tsc`.
+  **AV-Audio-Pro Update:** MP4-Render bewahrt Source-Originalton, A2-Clips koennen
+  `mix`/`replace_original`/`mute_original` und Ducking-Prozent setzen; UI zeigt Modus und
+  Ducking. Verifiziert: fokussierte Render-/Audio-API-/UI-Tests, scoped ruff/mypy, `tsc`.
+  **Follow-up:** Keyframes und Spur-level-Presets.
+- [x] **VV2 Voiceover/TTS v1** — `ai.voiceover` Job + `VoiceoverBackend` (`stub` + HTTP-Sidecar),
+  Button `Stimme erzeugen` im Transcript-Panel, synthetisches WAV-Asset (`ai_effect=voiceover`)
+  wird framegenau als A2-Clip platziert. Verifiziert: `test_voiceover`, scoped ruff/mypy,
+  Desktop `api`/`AssembleView`, `tsc`. **Follow-up:** echte VibeVideo/Chatterbox/Fish-Sidecar-
+  Runtime anschliessen, Voice-ID/Reference-Audio/Consent fuer Personenstimmen.
+- [x] **Job-/Export-Zentrale v1** — `GET /jobs`, `POST /jobs/{id}/cancel`,
+  `POST /jobs/{id}/retry`; Header-Drawer `JobCenter` zeigt laufende/fehlgeschlagene Jobs,
+  Fehlerursachen, Retry und Cancel. Verifiziert: `test_jobs_api`, scoped ruff/mypy,
+  Desktop `api`/`JobCenter`, `tsc`.
+- [x] **Caption-Export-Regie v1** — Reel-Export-Optionen fuer Presets (`reels`/`tiktok`/
+  `shorts`/`wide`), Normal/Karaoke, Position, Groesse und Safe-Zone; `build_ass` rendert
+  Preview-nahe ASS-Parameter und `ExportView` sendet sie explizit. Verifiziert:
+  `test_captions_ass`, `test_reel_render_api`, `test_render_handler_options`,
+  Desktop `api`/`ExportView`, scoped ruff/mypy, `tsc`.
+- [x] **Transitions v1** — Storyboard-Boundary-State auf `sequence_items`
+  (`hard`/`dip_black`/`fade_black`/`crossfade`), PATCH-API und kompakter Chip zwischen
+  Szenen im Assemble-Storyboard. MP4-Export uebergibt Boundary-Transitions an den Renderer;
+  Dip/Fade-to-black werden als finale Fade-Filter gerendert. Verifiziert:
+  `test_sequences_api`, `test_render_handler_options`, `test_render_mp4_filter`,
+  Desktop `api`/`AssembleView`, scoped ruff/mypy, `tsc`. **Follow-up:** echter xfade-
+  Crossfade mit ueberlappenden Scene-Streams und Audio-Crossfade.
+- [x] **Demo-Projekt + Version-Guard v1** — `POST /projects/demo` erzeugt ein lokales
+  Demo-Projekt mit synthetischen Clips, Assets, Rough-Cut, Szenen, Sequenz und Dip-Transition;
+  Header-Button `Demo` legt es per One-click an. `HealthBadge` vergleicht Backend-Schema mit
+  der erwarteten Renderer-Schema-Version und meldet Backend-/Frontend-Mismatch sichtbar.
+  Verifiziert: `test_api_projects`, Desktop `App`/`api`, full `uv run pytest -q`,
+  full `uv run ruff check .`, `uv run mypy src`, full Desktop `pnpm test`,
+  `tsc --noEmit`, `build:renderer`. Full `mypy src tests` bleibt durch bestehende
+  Test-Typisierungsschulden rot.
+- [x] **VV3 Sync Guard** — Framecount-basierte A/V-Drift-Pruefung + optionaler
+  Duration-Fix fuer Exporte und Sidecar-Outputs. `render/sync.py` prueft Video-Frames
+  und Audio-Dauer gegen die erwartete Sequence-Laenge; Export-, Reenact- und Voiceover-
+  Jobs normalisieren bei Drift einmal per ffmpeg und pruefen danach erneut, bevor Assets/
+  Exporte als gueltig markiert werden. Verifiziert: `test_sync_guard`, Render/Reel/Caption-
+  E2E, Reenact-Job, Voiceover-Job, full ruff, `mypy src`.
+- [x] **VV4 Product-Demo Assistant** — Screenrecording analysieren, Szenen/Labels/Voiceovertext als
+  editierbaren Laura-Sequenz-Draft uebernehmen. Backend `demo_drafts` speichert Draft-Items,
+  `demo.analyze` erzeugt Shot-/Transcript-basierte Vorschlaege, PATCH editiert Labels/
+  Voiceovertexte, Apply baut Szenen + Sequenz. Desktop `DemoAssistantPanel` sitzt im
+  Assemble-Tools-Rail und aktualisiert Sequenz/Storyboard/Transcript nach Apply. Verifiziert:
+  `test_demo_drafts`, full `uv run pytest -q`, full `uv run ruff check .`, `uv run mypy src`,
+  Desktop `api`/`DemoAssistantPanel`/`AssembleView`, full `pnpm --dir apps/desktop test`,
+  `pnpm --dir apps/desktop exec tsc --noEmit`, `pnpm --dir apps/desktop run build:renderer`.
+  **Follow-up:** Draft-Voiceovertexte optional direkt als A2-Voiceover-Jobs materialisieren.
+- [x] **VV5 Lipsync/Deepfake** — Consent-/Lizenz-gated Sidecar mit Face-/Mouth-Probe,
+  synthetischer Kennzeichnung und Quality-Gate. Backend `ai.lipsync` rendert die gewaehlte
+  Sequenz-Range, nimmt ein Audio-/Voiceover-Asset, prueft `license_accepted`, nicht widerrufenen
+  Consent, Sidecar-Verfuegbarkeit, Probe (`face_detected`, `mouth_visible`, `audio_present`) und
+  Quality-Metriken (`sync_score`, `mouth_score`, `temporal_score`) vor Asset-Registrierung.
+  Output wird als `synthetic`/`ai_effect=lipsync` registriert und als Replace-Overlay platziert;
+  Stub bleibt sichtbar markiert, echter VibeVideo/MuseTalk/Wav2Lip-Pfad laeuft nur als optionaler
+  HTTP-Sidecar. Desktop `LipsyncPanel` sitzt im Assemble-Tools-Rail mit Consent-Schritt,
+  Lizenz-Checkbox, Audio-Auswahl und Backend-Wahl. Verifiziert: `test_lipsync_job`,
+  `test_lipsync_api`, full `uv run pytest -q`, full `uv run ruff check .`, `uv run mypy src`,
+  Desktop `api`/`LipsyncPanel`/`AssembleView`, full `pnpm --dir apps/desktop test`,
+  `pnpm --dir apps/desktop exec tsc --noEmit`, `pnpm --dir apps/desktop run build:renderer`.
+  **Follow-ups:** echten Sidecar samt Modellgewichten installieren, staerkere Mouth-/Identity-
+  Quality-Metriken (SyncNet/ArcFace/LPIPS), zweite Kennzeichnungs-Ebene (C2PA/Video Seal).
+- [x] **VV6 AI Provenance Manifest v1** — Dep-freie zweite Kennzeichnungsebene fuer
+  synthetische Medien: Voiceover/Reenact/Lipsync schreiben neben dem erzeugten Media-File ein
+  `.laura-provenance.json` mit Schema, Asset-/Projekt-ID, `synthetic`, `ai_effect`, SHA-256,
+  Quelle/Range und Job-Kontext. Die Asset-API liefert `synthetic`/`ai_effect` bis in den Renderer;
+  die Medienliste markiert KI-Assets sichtbar. Verifiziert: `test_ai_provenance`,
+  Voiceover/Reenact/Lipsync-Jobtests, full `uv run pytest -q`, full `uv run ruff check .`,
+  `uv run mypy src`, full `pnpm --dir apps/desktop test`,
+  `pnpm --dir apps/desktop exec tsc --noEmit`, `pnpm --dir apps/desktop run build:renderer`.
+  **Follow-up:** echtes C2PA/Video-Seal-Embedding als optionaler Signatur-/Manifest-Adapter.
+- [x] **VV7 AI Provenance Inspector v1** — `GET /assets/{id}/provenance` liest das
+  `.laura-provenance.json` Sidecar sicher aus, validiert die `asset_id` gegen das angefragte
+  Asset und liefert das Manifest fuer lokale UI-Inspektion. `LauraClient.getAssetProvenance`
+  verdrahtet den Endpoint; die Medienliste laedt Provenance nur fuer das ausgewaehlte
+  synthetische Asset und zeigt Schema, Effekt und kurzen SHA-256-Fingerprint. Verifiziert:
+  `test_api_assets.py::test_get_asset_provenance_returns_manifest`, `test_ai_provenance`,
+  Desktop `api`/`MediaSidebar`, scoped ruff/mypy, `tsc`.
+  **Follow-up:** Provenance in Export-Reports aufnehmen und spaeter C2PA/Video-Seal einbetten.
 
 ---
 

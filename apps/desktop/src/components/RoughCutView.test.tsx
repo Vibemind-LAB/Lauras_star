@@ -43,8 +43,11 @@ function client(over: Partial<LauraClient>): LauraClient {
 }
 
 describe("RoughCutView", () => {
-  it("builds the rough cut then generates scenes when clips are empty", async () => {
+  it("builds the rough cut then generates scenes when the backend says the cut is empty", async () => {
     const c = client({});
+    c.generateScenes = vi.fn()
+      .mockRejectedValueOnce(new Error("422: rough cut is empty; build it from shots first"))
+      .mockResolvedValueOnce([SCENE]);
     const onRoughCutChange = vi.fn().mockResolvedValue(undefined);
     const { getByText } = render(
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={emptyRc}
@@ -52,12 +55,24 @@ describe("RoughCutView", () => {
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
     );
     fireEvent.click(getByText("Szenen erzeugen"));
-    await waitFor(() => expect(c.generateScenes).toHaveBeenCalledWith("tl", "a"));
+    await waitFor(() => expect(c.generateScenes).toHaveBeenCalledTimes(2));
     // Builds with the default cut_bias forwarded as the 4th argument.
     expect(c.buildRoughCutFromShots).toHaveBeenCalledWith("p", "a", "tl", {
       cutBias: DEFAULT_CUT_BIAS,
     });
     expect(onRoughCutChange).toHaveBeenCalled();
+  });
+
+  it("uses the backend rough cut as truth when generating scenes, even if props look empty", async () => {
+    const c = client({});
+    const { getByText } = render(
+      <RoughCutView client={c} projectId="p" asset={asset} roughCut={emptyRc}
+        segments={[]} onRoughCutChange={vi.fn().mockResolvedValue(undefined)}
+        seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
+    );
+    fireEvent.click(getByText("Szenen erzeugen"));
+    await waitFor(() => expect(c.generateScenes).toHaveBeenCalledWith("tl", "a"));
+    expect(c.buildRoughCutFromShots).not.toHaveBeenCalled();
   });
 
   it("skips the build when the rough cut already has clips", async () => {
@@ -93,6 +108,9 @@ describe("RoughCutView", () => {
 
   it("renders the quality panel after a build returns a score", async () => {
     const c = client({
+      generateScenes: vi.fn()
+        .mockRejectedValueOnce(new Error("422: rough cut is empty; build it from shots first"))
+        .mockResolvedValueOnce([SCENE]),
       buildRoughCutFromShots: vi.fn().mockResolvedValue(
         buildResult({
           quality: {

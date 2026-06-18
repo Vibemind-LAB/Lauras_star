@@ -202,18 +202,18 @@ export function Player({
     <div
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="space-y-2 rounded-md outline-none focus:ring-1 focus:ring-sky-600/50"
+      className="flex min-h-0 flex-1 flex-col gap-2 rounded-md outline-none focus:ring-1 focus:ring-sky-600/50"
     >
-      <div className="overflow-hidden rounded-md border border-edge bg-black">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-edge bg-black">
         {loadError ? (
-          <div className="flex aspect-video w-full items-center justify-center px-6 text-center text-xs text-red-400">
+          <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-red-400">
             {loadError}
           </div>
         ) : url ? (
           <video
             ref={videoRef}
             src={url}
-            className="aspect-video w-full"
+            className="h-full w-full object-contain"
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onLoadedData={() => {
@@ -239,7 +239,7 @@ export function Player({
             }}
           />
         ) : (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex h-full w-full items-center justify-center text-xs text-slate-600">
             {proxyReady ? "lade Proxy…" : "Proxy wird erstellt…"}
           </div>
         )}

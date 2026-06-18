@@ -768,17 +768,22 @@ def rename_timeline(
     return _timeline_out(db, row)
 
 
-@router.delete("/timelines/{timeline_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/timelines/{timeline_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def delete_timeline(
     timeline_id: str,
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
-) -> None:
+) -> Response:
     db = _db(request)
     if repos.get_timeline(db, timeline_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     repos.delete_timeline(db, timeline_id)
     audit.record(db, principal, "timeline.delete", entity_type="timeline", entity_id=timeline_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _require(value: Any, message: str) -> Any:

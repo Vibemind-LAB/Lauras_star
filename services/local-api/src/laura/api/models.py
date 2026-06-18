@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -86,6 +86,8 @@ class AssetOut(BaseModel):
     codec_audio: str | None = None
     is_vfr: bool = False
     online: bool = True
+    synthetic: bool = False
+    ai_effect: str | None = None
     created_at: str
     files: list[AssetFileOut] = Field(default_factory=list)
 
@@ -102,6 +104,10 @@ class JobOut(BaseModel):
     created_at: str
     updated_at: str
     finished_at: str | None = None
+
+
+class JobAccepted(BaseModel):
+    job_id: str
 
 
 class AnalysisStart(BaseModel):
@@ -166,6 +172,11 @@ class SegmentOut(BaseModel):
     end_frame: int
     text: str
     confidence: float | None = None
+    alignment_status: str = "aligned"
+    alignment_job_id: str | None = None
+    alignment_language: str | None = None
+    alignment_error: str | None = None
+    alignment_updated_at: str | None = None
     words: list[WordOut] = Field(default_factory=list)
 
 
@@ -262,6 +273,50 @@ class TimelineOut(BaseModel):
     kind: str
     created_at: str
     clips: list[ClipOut] = Field(default_factory=list)
+
+
+class TimelineAudioClipBase(BaseModel):
+    asset_id: str = Field(min_length=1)
+    seq_in_frame: int = Field(ge=0)
+    seq_out_frame_exclusive: int = Field(gt=0)
+    asset_in_frame: int = Field(default=0, ge=0)
+    gain_percent: int = Field(default=100, ge=0, le=400)
+    fade_in_frames: int = Field(default=0, ge=0)
+    fade_out_frames: int = Field(default=0, ge=0)
+    mix_mode: Literal["mix", "replace_original", "mute_original"] = "mix"
+    ducking_percent: int = Field(default=100, ge=0, le=100)
+    label: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _valid_range_and_fades(self) -> TimelineAudioClipBase:
+        duration = self.seq_out_frame_exclusive - self.seq_in_frame
+        if duration <= 0:
+            raise ValueError("seq_out_frame_exclusive must be greater than seq_in_frame")
+        if self.fade_in_frames + self.fade_out_frames > duration:
+            raise ValueError("fade frames cannot exceed clip duration")
+        return self
+
+
+class TimelineAudioClipCreate(TimelineAudioClipBase):
+    pass
+
+
+class TimelineAudioClipUpdate(BaseModel):
+    seq_in_frame: int | None = Field(default=None, ge=0)
+    seq_out_frame_exclusive: int | None = Field(default=None, gt=0)
+    asset_in_frame: int | None = Field(default=None, ge=0)
+    gain_percent: int | None = Field(default=None, ge=0, le=400)
+    fade_in_frames: int | None = Field(default=None, ge=0)
+    fade_out_frames: int | None = Field(default=None, ge=0)
+    mix_mode: Literal["mix", "replace_original", "mute_original"] | None = None
+    ducking_percent: int | None = Field(default=None, ge=0, le=100)
+    label: str | None = Field(default=None, max_length=200)
+
+
+class TimelineAudioClipOut(TimelineAudioClipBase):
+    id: str
+    timeline_id: str
+    created_at: str
 
 
 class FromShotsOut(BaseModel):
@@ -455,6 +510,115 @@ class SegmentUpdate(BaseModel):
     speaker_id: str | None = None
 
 
+class TranscriptRealignRequest(BaseModel):
+    segment_ids: list[str] | None = None
+    language: str | None = None
+
+
+class TranscriptRealignAccepted(BaseModel):
+    job_id: str
+
+
+class VoiceoverRequest(BaseModel):
+    segment_id: str | None = None
+    text: str | None = Field(default=None, min_length=1)
+    seq_in_frame: int = Field(ge=0)
+    seq_out_frame_exclusive: int = Field(gt=0)
+    language: str | None = None
+    backend: str | None = None
+    gain_percent: int = Field(default=100, ge=0, le=400)
+    fade_in_frames: int = Field(default=0, ge=0)
+    fade_out_frames: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _valid_voiceover_range(self) -> VoiceoverRequest:
+        duration = self.seq_out_frame_exclusive - self.seq_in_frame
+        if duration <= 0:
+            raise ValueError("seq_out_frame_exclusive must be greater than seq_in_frame")
+        if self.fade_in_frames + self.fade_out_frames > duration:
+            raise ValueError("fade frames cannot exceed voiceover duration")
+        if self.text is None and self.segment_id is None:
+            raise ValueError("provide either text or segment_id")
+        return self
+
+
+class VoiceoverAccepted(BaseModel):
+    job_id: str
+
+
+class DemoDraftItem(BaseModel):
+    src_in_frame: int = Field(ge=0)
+    src_out_frame_exclusive: int = Field(gt=0)
+    label: str = Field(min_length=1, max_length=200)
+    voiceover_text: str = Field(min_length=1, max_length=2000)
+    thumb_frame: int = Field(ge=0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _valid_range(self) -> DemoDraftItem:
+        if self.src_out_frame_exclusive <= self.src_in_frame:
+            raise ValueError("src_out_frame_exclusive must be greater than src_in_frame")
+        return self
+
+
+class DemoDraftAccepted(BaseModel):
+    draft_id: str
+    job_id: str
+
+
+class DemoDraftOut(BaseModel):
+    id: str
+    project_id: str
+    asset_id: str
+    status: str
+    items: list[DemoDraftItem] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+    applied_at: str | None = None
+
+
+class DemoDraftUpdate(BaseModel):
+    items: list[DemoDraftItem]
+
+
+class DemoDraftApplyOut(BaseModel):
+    draft: DemoDraftOut
+    sequence: SequenceOut
+
+
+class SequenceTranscriptWordOut(BaseModel):
+    id: str
+    idx: int
+    segment_id: str
+    asset_id: str
+    source_start_frame: int
+    source_end_frame: int
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+    text: str
+    confidence: float | None = None
+    is_punctuation: bool = False
+
+
+class SequenceTranscriptBlockOut(BaseModel):
+    segment_id: str
+    asset_id: str
+    speaker_label: str | None = None
+    source_start_frame: int
+    source_end_frame: int
+    seq_in_frame: int
+    seq_out_frame_exclusive: int
+    text: str
+    alignment_status: str = "aligned"
+    alignment_job_id: str | None = None
+    alignment_language: str | None = None
+    alignment_error: str | None = None
+    alignment_updated_at: str | None = None
+    words: list[SequenceTranscriptWordOut] = Field(default_factory=list)
+
+
 class RenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
@@ -517,6 +681,11 @@ class ReelRenderRequest(BaseModel):
     disclosure_text: str | None = "KI · synthetisch"
     vertical: bool = True
     captions: bool = False
+    caption_preset: str = "reels"
+    caption_mode: str = "karaoke"
+    caption_position: str = "bottom"
+    caption_fontsize: int = Field(default=72, ge=24, le=160)
+    caption_safe_margin: int = Field(default=250, ge=0, le=800)
 
 
 class RenderExportOut(BaseModel):
@@ -537,6 +706,8 @@ class SequenceItemOut(BaseModel):
     scene_id: str
     scene_name: str
     order_index: int
+    transition_after_kind: str = "hard"
+    transition_after_frames: int = 0
 
 
 class SequenceOut(BaseModel):
@@ -547,6 +718,11 @@ class SequenceOut(BaseModel):
 
 class SetSequenceScenesRequest(BaseModel):
     scene_ids: list[str]
+
+
+class SequenceTransitionRequest(BaseModel):
+    kind: str = "hard"
+    duration_frames: int = Field(default=0, ge=0, le=240)
 
 
 # --- reenact / consent -------------------------------------------------------
@@ -574,6 +750,28 @@ class ReenactRequest(BaseModel):
     portrait_asset_id: str
     consent_id: str  # MANDATORY — missing -> 422 automatically
     backend: str | None = None
+
+
+class LipsyncRequest(BaseModel):
+    seq_in_frame: int = Field(ge=0)
+    seq_out_frame_exclusive: int = Field(gt=0)
+    audio_asset_id: str
+    consent_id: str
+    license_accepted: bool
+    backend: str | None = None
+    quality_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _valid_lipsync_request(self) -> LipsyncRequest:
+        if self.seq_out_frame_exclusive <= self.seq_in_frame:
+            raise ValueError("seq_out_frame_exclusive must be greater than seq_in_frame")
+        if self.license_accepted is not True:
+            raise ValueError("license_accepted must be true")
+        return self
+
+
+class LipsyncAccepted(BaseModel):
+    job_id: str
 
 
 # --- overlays (replacement-lane) -------------------------------------------

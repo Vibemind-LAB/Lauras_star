@@ -15,9 +15,11 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from laura.ai import handlers as ai_handlers
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
@@ -331,3 +333,121 @@ def test_reenact_stub_e2e(tmp_path: Path) -> None:
     sr = reenact_rows[0]
     assert sr["seq_in_frame"] == 5
     assert sr["seq_out_frame_exclusive"] == 20
+
+
+def test_reenact_stub_runs_sync_guard_before_registering_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_assert_sync(path: Path, **kwargs: Any) -> object:
+        captured["path"] = path
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(ai_handlers, "assert_or_fix_media_sync", fake_assert_sync)
+
+    db, project, base_asset, tl = _setup_scene(tmp_path)
+    portrait = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="portrait.mp4",
+        source_path=base_asset["source_path"],
+    )
+    consent = repos.create_consent_record(
+        db,
+        project_id=project["id"],
+        subject_label="Test Subject",
+        confirmed_by="test",
+    )
+    runner = JobRunner(db, _make_registry())
+
+    enqueue(
+        db,
+        queue="ai",
+        kind="ai.reenact",
+        payload={
+            "timeline_id": tl["id"],
+            "seq_in_frame": 5,
+            "seq_out_frame_exclusive": 20,
+            "portrait_asset_id": portrait["id"],
+            "consent_id": consent["id"],
+            "backend": "stub",
+        },
+        max_attempts=1,
+    )
+    _drain(runner)
+
+    synthetic = [
+        asset
+        for asset in repos.list_assets(db, project["id"])
+        if asset.get("synthetic") and asset.get("ai_effect") == "reenact"
+    ]
+    assert len(synthetic) == 1
+    assert captured["path"] == Path(synthetic[0]["source_path"])
+    assert captured["kwargs"] == {
+        "expected_frames": 15,
+        "rate_num": 30,
+        "rate_den": 1,
+        "require_video": True,
+        "fix": True,
+    }
+
+
+def test_reenact_sync_guard_failure_creates_no_synthetic_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_assert_sync(_path: Path, **_kwargs: Any) -> object:
+        raise ValueError("video frame drift: expected 15, got 42")
+
+    monkeypatch.setattr(ai_handlers, "assert_or_fix_media_sync", fake_assert_sync)
+
+    db, project, base_asset, tl = _setup_scene(tmp_path)
+    portrait = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="portrait.mp4",
+        source_path=base_asset["source_path"],
+    )
+    consent = repos.create_consent_record(
+        db,
+        project_id=project["id"],
+        subject_label="Test Subject",
+        confirmed_by="test",
+    )
+    runner = JobRunner(db, _make_registry())
+
+    job_id = enqueue(
+        db,
+        queue="ai",
+        kind="ai.reenact",
+        payload={
+            "timeline_id": tl["id"],
+            "seq_in_frame": 5,
+            "seq_out_frame_exclusive": 20,
+            "portrait_asset_id": portrait["id"],
+            "consent_id": consent["id"],
+            "backend": "stub",
+        },
+        max_attempts=1,
+    )
+    _drain(runner)
+
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT status, error_json FROM jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "failed"
+    assert "video frame drift" in row["error_json"]
+    synthetic = [
+        asset
+        for asset in repos.list_assets(db, project["id"])
+        if asset.get("synthetic") and asset.get("ai_effect") == "reenact"
+    ]
+    assert synthetic == []

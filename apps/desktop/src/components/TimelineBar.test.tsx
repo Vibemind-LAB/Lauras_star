@@ -1,7 +1,13 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type Asset, type LauraClient, type Timeline, type TimelineClip } from "../api";
+import {
+  type Asset,
+  type LauraClient,
+  type Timeline,
+  type TimelineAudioClip,
+  type TimelineClip,
+} from "../api";
 import { TimelineBar } from "./TimelineBar";
 
 // Auto-cleanup is not wired (no globals/setup file), so unmount between tests
@@ -39,6 +45,25 @@ function clip(over: Partial<TimelineClip> = {}): TimelineClip {
 
 function timeline(clips: TimelineClip[]): Timeline {
   return { id: "t1", project_id: "p1", name: "Rough Cut", kind: "rough_cut", created_at: "", clips };
+}
+
+function audioClip(over: Partial<TimelineAudioClip> = {}): TimelineAudioClip {
+  return {
+    id: "ac1",
+    timeline_id: "t1",
+    asset_id: "a1",
+    seq_in_frame: 10,
+    seq_out_frame_exclusive: 50,
+    asset_in_frame: 0,
+    gain_percent: 80,
+    fade_in_frames: 3,
+    fade_out_frames: 4,
+    mix_mode: "mix",
+    ducking_percent: 100,
+    label: "VO",
+    created_at: "",
+    ...over,
+  };
 }
 
 describe("TimelineBar", () => {
@@ -171,5 +196,18 @@ describe("TimelineBar", () => {
     // The audio block's accessible label reflects the projected offset (L-cut at +5 frames).
     const block = await findByLabelText(/Audio Clip 2 · Ton \+5f → L-Cut/);
     expect(block).not.toBeNull();
+  });
+
+  it("renders timeline audio clips on an A2 lane", () => {
+    const { getByLabelText } = render(
+      <TimelineBar
+        client={stubClient()}
+        timeline={twoClipTimeline()}
+        audioClips={[audioClip()]}
+        onChange={() => undefined}
+      />,
+    );
+    expect(getByLabelText("Audio-Lane A2")).not.toBeNull();
+    expect(getByLabelText("A2 Clip VO · seq 10–50")).not.toBeNull();
   });
 });

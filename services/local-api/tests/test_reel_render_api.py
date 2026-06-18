@@ -8,10 +8,11 @@ from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
+from laura.db.database import Database
 from laura.main import create_app
 
 
-def _client_db(tmp_path: Path) -> tuple[TestClient, object]:
+def _client_db(tmp_path: Path) -> tuple[TestClient, Database]:
     settings = Settings(workspace_root=tmp_path, token=None, start_runner=False)
     app = create_app(settings)
     return TestClient(app), app.state.db
@@ -46,6 +47,11 @@ def test_render_reel_creates_export_with_options(tmp_path: Path) -> None:
         "hook_text": "H",
         "disclosure_text": "KI",
         "captions": False,
+        "caption_preset": "reels",
+        "caption_mode": "karaoke",
+        "caption_position": "bottom",
+        "caption_fontsize": 72,
+        "caption_safe_margin": 250,
     }
 
 
@@ -65,6 +71,39 @@ def test_render_reel_captions_stored_in_options(tmp_path: Path) -> None:
     export = repos.get_export(db, export_id)
     assert export is not None
     assert export["options"]["captions"] is True
+
+
+def test_render_reel_caption_direction_stored_in_options(tmp_path: Path) -> None:
+    client, db = _client_db(tmp_path)
+    pid = _project(client)
+    tl = repos.create_timeline(db, project_id=pid, name="cut", kind="rough_cut")
+
+    r = client.post(
+        f"/timelines/{tl['id']}/render-reel",
+        json={
+            "captions": True,
+            "caption_preset": "reels",
+            "caption_mode": "normal",
+            "caption_position": "top",
+            "caption_fontsize": 84,
+            "caption_safe_margin": 180,
+        },
+    )
+    assert r.status_code == 202
+
+    export = repos.get_export(db, r.json()["export_id"])
+    assert export is not None
+    assert export["options"] == {
+        "vertical": True,
+        "hook_text": None,
+        "disclosure_text": "KI · synthetisch",
+        "captions": True,
+        "caption_preset": "reels",
+        "caption_mode": "normal",
+        "caption_position": "top",
+        "caption_fontsize": 84,
+        "caption_safe_margin": 180,
+    }
 
 
 def test_render_reel_unknown_timeline_404(tmp_path: Path) -> None:

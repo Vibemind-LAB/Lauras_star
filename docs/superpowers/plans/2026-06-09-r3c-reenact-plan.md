@@ -110,10 +110,23 @@ JobRunner/`enqueue`/`register_*_handlers`, Router-Muster `api/overlays.py`/`api/
 - [ ] Stub-Reenact e2e real: Job → synthetic Asset + Replace-Overlay → Render zeigt Stub in der Range (ffprobe).
 - [ ] `tasks/todo.md` + Doku. **STOPP an der LivePortrait-Wand** (Adapter-Tausch, User-Install).
 
+## Task RC7 — LivePortrait-Sidecar-Adapter
+- [x] `LivePortraitBackend` implementiert den bestehenden `ReenactBackend`-Contract ohne schwere Imports:
+  `GET /healthz` prüft Verfügbarkeit; `POST /reenact` sendet multipart `driving`, `portrait`,
+  `fps_num`, `fps_den` und schreibt die MP4-Bytes nach `out_path`.
+- [x] Resolver: `backend:"liveportrait"` / `LAURA_REENACT_BACKEND=liveportrait` liefert den Adapter;
+  URL via `LAURA_LIVEPORTRAIT_URL` (Default `http://127.0.0.1:8899`), Timeout via
+  `LAURA_LIVEPORTRAIT_TIMEOUT`.
+- [x] UI: `ReenactPanel` bietet Backend-Auswahl `Stub`/`LivePortrait Sidecar` und reicht `backend`
+  an `client.reenact` weiter.
+- [x] Tests: fake HTTP-Sidecar für Healthcheck + Render-POST, Renderer-Test für Backend-Auswahl.
+- [ ] **Offen extern:** echter LivePortrait-Sidecar-Prozess + Modellgewichte installieren/starten.
+
 ---
 
 ## Risiken / De-Risk
 - **Consent-Gate** ist der Kern — Test (a) erzwingt: ohne Consent kein Asset, kein Overlay.
 - **Driving-Extraktion** über `render_clips_mp4` (bestehend) + Overlay-Mapping-Formel; v1 erwartet Base-Clips unter der Range.
-- **Keine schweren Deps:** Stub nutzt nur ffmpeg; `liveportrait`-Backend wird NICHT importiert (UnavailableBackend), bis das Extra existiert.
+- **Keine schweren Deps:** Stub nutzt nur ffmpeg; `LivePortraitBackend` spricht nur HTTP und importiert
+  weder torch noch LivePortrait. Der echte Modellprozess lebt im Sidecar.
 - **Kennzeichnung:** `synthetic=true` + R0-Burn-in beim Export; Pixel-Wasserzeichen = späteres Teil.

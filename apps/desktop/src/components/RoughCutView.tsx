@@ -49,7 +49,12 @@ export function RoughCutView({
     setBusy(true);
     setError(null);
     try {
-      if (roughCut.clips.length === 0) {
+      try {
+        await scenes.generate(asset.id);
+        return;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (!message.includes("rough cut is empty")) throw e;
         const res = await client.buildRoughCutFromShots(projectId, asset.id, roughCut.id, {
           cutBias,
         });
@@ -99,7 +104,7 @@ export function RoughCutView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 items-center justify-center bg-black/40 p-2">
+      <div className="flex min-h-0 flex-1 bg-black/40 p-2">
         <Player asset={asset} seekTo={seek} onFrame={onFrame} />
       </div>
       <div className="flex items-start gap-3 border-t border-edge px-3 py-2">

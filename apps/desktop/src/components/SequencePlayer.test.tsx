@@ -57,6 +57,8 @@ const asset1: Asset = {
   codec_video: null,
   codec_audio: null,
   is_vfr: false,
+  synthetic: false,
+  ai_effect: null,
   created_at: "2025-01-01T00:00:00Z",
   files: [{ id: "f1", asset_id: "a1", kind: "proxy", path: "/p1.mp4", size_bytes: null, is_proxy: true, is_waveform: false, is_audio_extract: false, checksum: null }],
 };
@@ -78,6 +80,8 @@ const asset2: Asset = {
   codec_video: null,
   codec_audio: null,
   is_vfr: false,
+  synthetic: false,
+  ai_effect: null,
   created_at: "2025-01-01T00:00:00Z",
   files: [{ id: "f2", asset_id: "a2", kind: "proxy", path: "/p2.mp4", size_bytes: null, is_proxy: true, is_waveform: false, is_audio_extract: false, checksum: null }],
 };

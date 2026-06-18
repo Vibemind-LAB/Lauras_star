@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from pathlib import Path
+
 from laura.config import Settings
 from laura.db.database import SqliteDatabase
 

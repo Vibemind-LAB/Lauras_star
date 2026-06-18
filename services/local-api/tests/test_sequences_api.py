@@ -80,6 +80,30 @@ def test_get_creates_sequence_then_put_orders(tmp_path: Path) -> None:
     # scenes got materialized -> flattened clips exist
     flat = client.get(f"/sequences/{seq_id}/flattened", headers=_H).json()
     assert len(flat) == 2
+    assert items[0]["transition_after_kind"] == "hard"
+    assert items[0]["transition_after_frames"] == 0
+
+
+def test_patch_sequence_item_transition(tmp_path: Path) -> None:
+    client, db = _app(tmp_path)
+    pid, scene_ids = _seed_two_scenes(db)
+    seq_id = client.get(f"/projects/{pid}/sequence", headers=_H).json()["timeline_id"]
+    items = client.put(
+        f"/sequences/{seq_id}/scenes",
+        json={"scene_ids": scene_ids},
+        headers=_H,
+    ).json()["items"]
+
+    r = client.patch(
+        f"/sequences/{seq_id}/items/{items[0]['id']}/transition",
+        json={"kind": "dip_black", "duration_frames": 12},
+        headers=_H,
+    )
+
+    assert r.status_code == 200, r.text
+    updated = r.json()["items"][0]
+    assert updated["transition_after_kind"] == "dip_black"
+    assert updated["transition_after_frames"] == 12
 
 
 def test_put_unknown_scene_422(tmp_path: Path) -> None:

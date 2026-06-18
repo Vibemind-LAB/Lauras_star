@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import SqliteDatabase
 from laura.main import create_app
 
 _TOKEN = "test-token"
@@ -27,7 +26,7 @@ def test_delete_words_ripple_closes_gap(tmp_path: Path) -> None:
     )
 
     # insert_segment_with_words is the real helper in repos.py
-    seg_id = repos.insert_segment_with_words(
+    repos.insert_segment_with_words(
         db,
         asset_id=asset["id"],
         run_id=run["id"],

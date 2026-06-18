@@ -27,6 +27,22 @@ def _video(tmp_path, secs):
     return p
 
 
+def _video_with_audio(tmp_path, secs):
+    p = tmp_path / "va.mp4"
+    run_ffmpeg([
+        "-f", "lavfi",
+        "-i", f"testsrc=duration={secs}:size=320x240:rate=30",
+        "-f", "lavfi",
+        "-i", f"sine=frequency=220:duration={secs}",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-shortest",
+        str(p),
+    ])
+    return p
+
+
 def _audio(tmp_path, name, secs):
     p = tmp_path / name
     run_ffmpeg([
@@ -63,6 +79,13 @@ def test_render_without_music_has_no_audio(tmp_path):
     out = tmp_path / "out2.mp4"
     render_clips_mp4([(v, 0, 30)], out, rate_num=30, rate_den=1)
     assert out.exists() and not _has_audio(out)
+
+
+def test_render_preserves_source_audio_when_present(tmp_path):
+    v = _video_with_audio(tmp_path, 1)
+    out = tmp_path / "out_source_audio.mp4"
+    render_clips_mp4([(v, 0, 30)], out, rate_num=30, rate_den=1)
+    assert out.exists() and _has_audio(out)
 
 
 def test_render_music_at_nonzero_offset_has_audio(tmp_path):

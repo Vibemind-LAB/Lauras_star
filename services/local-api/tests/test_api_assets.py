@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,39 @@ def test_get_asset_file_serves_and_404s(
 
     # kind that has no file -> 404
     assert client.get(f"/assets/{asset['id']}/files/poster").status_code == 404
+
+
+def test_get_asset_provenance_returns_manifest(
+    client: TestClient, db: Database, tmp_path: Path
+) -> None:
+    project_id = _make_project(client)
+    media = tmp_path / "ai.wav"
+    media.write_bytes(b"voice")
+    asset = repos.create_asset(
+        db,
+        project_id=project_id,
+        type="audio",
+        display_name="voice.wav",
+        source_path=str(media),
+        synthetic=True,
+        ai_effect="voiceover",
+    )
+    manifest = {
+        "schema": "laura.ai.provenance.v1",
+        "asset_id": asset["id"],
+        "project_id": project_id,
+        "synthetic": True,
+        "ai_effect": "voiceover",
+        "media_sha256": "abc",
+        "source": {"timeline_id": "tl-1"},
+    }
+    Path(f"{media}.laura-provenance.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    resp = client.get(f"/assets/{asset['id']}/provenance")
+
+    assert resp.status_code == 200
+    assert resp.json()["asset_id"] == asset["id"]
+    assert resp.json()["source"]["timeline_id"] == "tl-1"
 
 
 def test_import_from_url_queues_fetch(client: TestClient, db: Database) -> None:

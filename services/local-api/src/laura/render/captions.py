@@ -85,13 +85,22 @@ def _kf_cs(start_frame: int, end_frame: int, rate_num: int, rate_den: int) -> in
     return (duration_cs_num + rate_num // 2) // rate_num
 
 
-def _build_dialogue_text(words: Line, rate_num: int, rate_den: int) -> str:
+def _build_dialogue_text(
+    words: Line,
+    rate_num: int,
+    rate_den: int,
+    *,
+    mode: str = "karaoke",
+) -> str:
     """Build the ASS ``Text`` field with ``{\\kf<cs>}`` karaoke tags."""
     parts: list[str] = []
     for text, start_frame, end_frame in words:
-        cs = _kf_cs(start_frame, end_frame, rate_num, rate_den)
         escaped = _escape_ass_text(text)
-        parts.append(f"{{\\kf{cs}}}{escaped}")
+        if mode == "normal":
+            parts.append(escaped)
+        else:
+            cs = _kf_cs(start_frame, end_frame, rate_num, rate_den)
+            parts.append(f"{{\\kf{cs}}}{escaped}")
     return " ".join(parts)
 
 
@@ -145,6 +154,8 @@ def build_ass(
     play_h: int = 1920,
     fontsize: int = 72,
     margin_v: int = 250,
+    mode: str = "karaoke",
+    position: str = "bottom",
 ) -> str:
     """Build a complete ASS document with karaoke word-by-word highlighting.
 
@@ -161,6 +172,10 @@ def build_ass(
         Point size of the Reel style.
     margin_v:
         Vertical margin (pixels from bottom edge for Alignment 2).
+    mode:
+        ``"karaoke"`` emits per-word ``\\kf`` tags; ``"normal"`` emits plain lines.
+    position:
+        ``"top"``, ``"middle"`` or ``"bottom"`` mapped to ASS centre alignments.
 
     Returns
     -------
@@ -183,6 +198,10 @@ def build_ass(
     # ------------------------------------------------------------------
     # [V4+ Styles]
     # ------------------------------------------------------------------
+    alignment_by_position = {"top": 8, "middle": 5, "bottom": 2}
+    alignment = alignment_by_position.get(position, 2)
+    caption_mode = "normal" if mode == "normal" else "karaoke"
+
     style_fields = (
         "Reel"           # Name
         ",Arial"         # Fontname
@@ -202,7 +221,7 @@ def build_ass(
         ",1"             # BorderStyle
         ",3"             # Outline
         ",1"             # Shadow
-        ",2"             # Alignment — bottom-centre
+        f",{alignment}"  # Alignment — centre by requested vertical position
         ",80"            # MarginL
         ",80"            # MarginR
         f",{margin_v}"   # MarginV
@@ -226,7 +245,7 @@ def build_ass(
         end_frame = non_empty[-1][2]
         start_t = _frame_to_ass_time(start_frame, rate_num, rate_den)
         end_t = _frame_to_ass_time(end_frame, rate_num, rate_den)
-        text = _build_dialogue_text(non_empty, rate_num, rate_den)
+        text = _build_dialogue_text(non_empty, rate_num, rate_den, mode=caption_mode)
         dialogue_rows.append(
             f"Dialogue: 0,{start_t},{end_t},Reel,,0,0,0,,{text}"
         )

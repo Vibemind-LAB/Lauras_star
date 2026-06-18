@@ -1,6 +1,8 @@
 # services/local-api/tests/test_flatten_sequence.py
 from __future__ import annotations
+
 from pathlib import Path
+
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
@@ -10,19 +12,45 @@ from laura.sequences.flatten import flatten_sequence
 def _scene_timeline(db, project_id, asset_id, src_in, src_out):
     """A materialized scene timeline with one clip, rebased to seq 0."""
     tl = repos.create_timeline(db, project_id=project_id, name="s", kind="scene")
-    repos.replace_timeline_clips(db, tl["id"], [{
-        "asset_id": asset_id, "src_in_frame": src_in, "src_out_frame_exclusive": src_out,
-        "seq_in_frame": 0, "seq_out_frame_exclusive": src_out - src_in,
-        "lane": 0, "speed_num": 1, "speed_den": 1}])
+    repos.replace_timeline_clips(
+        db,
+        tl["id"],
+        [
+            {
+                "asset_id": asset_id,
+                "src_in_frame": src_in,
+                "src_out_frame_exclusive": src_out,
+                "seq_in_frame": 0,
+                "seq_out_frame_exclusive": src_out - src_in,
+                "lane": 0,
+                "speed_num": 1,
+                "speed_den": 1,
+            }
+        ],
+    )
     return tl
 
 
 def test_flatten_concatenates_scenes_with_offsets(tmp_path: Path) -> None:
     db = SqliteDatabase(Settings(workspace_root=tmp_path / "ws", start_runner=False).db_path)
     db.migrate()
-    project = repos.create_project(db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p")
-    a1 = repos.create_asset(db, project_id=project["id"], type="video", display_name="a1", source_path="/tmp/a1.mp4")
-    a2 = repos.create_asset(db, project_id=project["id"], type="video", display_name="a2", source_path="/tmp/a2.mp4")
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    a1 = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a1",
+        source_path="/tmp/a1.mp4",
+    )
+    a2 = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a2",
+        source_path="/tmp/a2.mp4",
+    )
     rc = repos.create_timeline(db, project_id=project["id"], name="rc", kind="rough_cut")
     repos.replace_scenes(db, project["id"], rc["id"], [(0, 30), (30, 70)])
     s1, s2 = repos.list_scenes(db, rc["id"])

@@ -146,6 +146,29 @@ def test_custom_play_res_and_margin() -> None:
     assert ",120" in ass  # margin_v appears in the style line
 
 
+def test_normal_caption_mode_omits_karaoke_tags() -> None:
+    ass = build_ass(
+        [[("Hello", 0, 15), ("world", 15, 30)]],
+        rate_num=30,
+        rate_den=1,
+        mode="normal",
+    )
+    events = ass.split("[Events]")[1]
+    assert r"\kf" not in events
+    assert "Hello world" in events
+
+
+def test_position_keyword_maps_to_ass_alignment() -> None:
+    ass = build_ass(
+        [[("Top", 0, 30)]],
+        rate_num=30,
+        rate_den=1,
+        position="top",
+    )
+    style = next(line for line in ass.splitlines() if line.startswith("Style: Reel"))
+    assert ",8," in style
+
+
 # ---------------------------------------------------------------------------
 # 8. Backslash in word text is dropped (not turned into a spurious \N tag)
 # ---------------------------------------------------------------------------

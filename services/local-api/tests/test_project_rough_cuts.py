@@ -178,9 +178,13 @@ def test_list_project_scenes_dedups_to_newest_rough_cut_per_asset(tmp_path: Path
     client, db = _client(tmp_path)
     pid, aid, _ = _seed(db)
 
-    old = repos.create_timeline(db, project_id=pid, name="RC old", kind="rough_cut", created_from=aid)
+    old = repos.create_timeline(
+        db, project_id=pid, name="RC old", kind="rough_cut", created_from=aid
+    )
     repos.replace_scenes(db, pid, old["id"], [(0, 30), (30, 60)])
-    new = repos.create_timeline(db, project_id=pid, name="RC new", kind="rough_cut", created_from=aid)
+    new = repos.create_timeline(
+        db, project_id=pid, name="RC new", kind="rough_cut", created_from=aid
+    )
     repos.replace_scenes(db, pid, new["id"], [(0, 45)])
 
     scenes = client.get(f"/projects/{pid}/scenes", headers=_H).json()
@@ -196,9 +200,13 @@ def test_list_project_scenes_keeps_older_when_newest_has_no_scenes(tmp_path: Pat
     client, db = _client(tmp_path)
     pid, aid, _ = _seed(db)
 
-    old = repos.create_timeline(db, project_id=pid, name="RC old", kind="rough_cut", created_from=aid)
+    old = repos.create_timeline(
+        db, project_id=pid, name="RC old", kind="rough_cut", created_from=aid
+    )
     repos.replace_scenes(db, pid, old["id"], [(0, 30)])
-    repos.create_timeline(db, project_id=pid, name="RC new empty", kind="rough_cut", created_from=aid)
+    repos.create_timeline(
+        db, project_id=pid, name="RC new empty", kind="rough_cut", created_from=aid
+    )
 
     scenes = client.get(f"/projects/{pid}/scenes", headers=_H).json()
 
