@@ -82,10 +82,15 @@ export function ExportView({
   project: Project | null;
   exportTargets: ExportTarget[];
 }): ReactElement {
-  // Default to the first target (sequence preferred, then rough cut per the caller's ordering).
+  // Provisional default; the effect below upgrades it to the first source that actually has
+  // clips (so a freshly-imported asset exports its populated rough cut, not the empty sequence).
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(
     exportTargets[0]?.id ?? null,
   );
+  // Clip count per target (all targets), used to pick a non-empty default + label each option.
+  const [targetCounts, setTargetCounts] = useState<Record<string, number>>({});
+  // Set once the user picks a source explicitly, so auto-selection stops overriding them.
+  const userPickedRef = useRef(false);
   const [format, setFormat] = useState<string>("mp4");
   const [exports, setExports] = useState<Export[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -115,15 +120,41 @@ export function ExportView({
   /** asset_id of the first flattened clip — used for the caption preview poster frame. */
   const [posterAssetId, setPosterAssetId] = useState<string | null>(null);
 
-  // Keep selectedTargetId in sync when targets list changes (project switch / sequence loads).
+  // Fetch the clip count of every target so we can default to a non-empty source and label
+  // each option. Targets are few (sequence + per-asset rough cut); each fetch is local + cheap.
+  useEffect(() => {
+    let cancelled = false;
+    userPickedRef.current = false; // a new target set -> auto-selection may run again
+    void (async () => {
+      const entries = await Promise.all(
+        exportTargets.map(async (t) => {
+          try {
+            const clips = await client.getSequenceFlattened(t.id);
+            return [t.id, clips.length] as const;
+          } catch {
+            return [t.id, 0] as const;
+          }
+        }),
+      );
+      if (!cancelled) setTargetCounts(Object.fromEntries(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, exportTargets]);
+
+  // Keep selectedTargetId valid and default to the first NON-EMPTY source — so landing on
+  // Export right after import selects the populated rough cut instead of the still-empty
+  // assembled sequence (which would export 0 clips). An explicit user pick wins.
   useEffect(() => {
     setSelectedTargetId((prev) => {
-      // Keep current selection if still valid.
-      if (prev != null && exportTargets.some((t) => t.id === prev)) return prev;
-      // Else default to first available.
-      return exportTargets[0]?.id ?? null;
+      const valid = prev != null && exportTargets.some((t) => t.id === prev);
+      if (userPickedRef.current && valid) return prev;
+      const firstNonEmpty = exportTargets.find((t) => (targetCounts[t.id] ?? 0) > 0);
+      if (firstNonEmpty) return firstNonEmpty.id;
+      return valid ? prev : (exportTargets[0]?.id ?? null);
     });
-  }, [exportTargets]);
+  }, [exportTargets, targetCounts]);
 
   // Derive the active target object.
   const activeTarget = exportTargets.find((t) => t.id === selectedTargetId) ?? null;
@@ -307,19 +338,28 @@ export function ExportView({
         <div className="mb-3 flex max-w-md flex-col gap-1">
           <span className="text-xs font-medium text-slate-400">Quelle</span>
           <div className="flex flex-col gap-1">
-            {exportTargets.map((t) => (
-              <label key={t.id} className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
-                <input
-                  type="radio"
-                  name="export-source"
-                  value={t.id}
-                  checked={selectedTargetId === t.id}
-                  onChange={() => setSelectedTargetId(t.id)}
-                  className="accent-sky-500"
-                />
-                {t.label}
-              </label>
-            ))}
+            {exportTargets.map((t) => {
+              const count = targetCounts[t.id];
+              return (
+                <label key={t.id} className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
+                  <input
+                    type="radio"
+                    name="export-source"
+                    value={t.id}
+                    checked={selectedTargetId === t.id}
+                    onChange={() => {
+                      userPickedRef.current = true;
+                      setSelectedTargetId(t.id);
+                    }}
+                    className="accent-sky-500"
+                  />
+                  {t.label}
+                  {count != null && (
+                    <span className="text-slate-500">{count > 0 ? `· ${count} Clips` : "· leer"}</span>
+                  )}
+                </label>
+              );
+            })}
           </div>
         </div>
       )}

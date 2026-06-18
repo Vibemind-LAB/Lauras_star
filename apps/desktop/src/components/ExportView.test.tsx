@@ -19,6 +19,7 @@ function mkClient(over: Partial<LauraClient>): LauraClient {
     renderTimeline: vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" }),
     renderReel: vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" }),
     getSequenceFlattened: vi.fn().mockResolvedValue([]),
+    assetFrameUrl: vi.fn().mockResolvedValue("blob:poster"),
     ...over,
   } as unknown as LauraClient;
 }
@@ -37,6 +38,24 @@ describe("ExportView", () => {
     render(<ExportView client={client} projectId="p1" project={null} exportTargets={[TARGET]} />);
     fireEvent.click(screen.getByRole("button", { name: /exportieren/i }));
     await waitFor(() => expect(renderTimeline).toHaveBeenCalledWith("t1", "mp4"));
+  });
+
+  it("defaults to the first non-empty source (skips the empty assembled sequence)", async () => {
+    const SEQ: ExportTarget = { id: "seq1", label: "Sequenz (Zusammenfügen)", kind: "sequence" };
+    const RC: ExportTarget = { id: "rc1", label: "Rough Cut: video.mp4", kind: "rough_cut" };
+    const getSequenceFlattened = vi.fn(async (id: string) =>
+      id === "rc1" ? [{ asset_id: "a", seq_out_frame_exclusive: 100 }] : [],
+    );
+    const client = mkClient({
+      getSequenceFlattened: getSequenceFlattened as unknown as LauraClient["getSequenceFlattened"],
+    });
+    render(<ExportView client={client} projectId="p1" project={null} exportTargets={[SEQ, RC]} />);
+    // The populated rough cut is auto-selected even though the empty sequence is listed first.
+    await waitFor(() => {
+      const rc = screen.getByRole("radio", { name: /Rough Cut/ }) as HTMLInputElement;
+      expect(rc.checked).toBe(true);
+    });
+    expect((screen.getByRole("radio", { name: /Sequenz/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("sends caption direction options for reel export", async () => {
