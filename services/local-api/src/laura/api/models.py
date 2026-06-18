@@ -774,6 +774,63 @@ class LipsyncAccepted(BaseModel):
     job_id: str
 
 
+# --- ai runtimes / personas -------------------------------------------------
+RuntimeKind = Literal["stub", "external_http", "container"]
+RuntimeEffect = Literal["voice", "reenact", "lipsync", "faceswap", "restore"]
+LicenseStatus = Literal["unknown", "accepted", "rejected", "not_required"]
+
+
+class AiRuntimeCreate(BaseModel):
+    kind: RuntimeKind
+    effect: RuntimeEffect
+    display_name: str = Field(min_length=1, max_length=200)
+    base_url: str | None = None
+    container_image: str | None = None
+    container_name: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    workspace_mount: str | None = None
+    model_mount: str | None = None
+    requires_gpu: bool = False
+    enabled: bool = True
+    license_status: LicenseStatus = "unknown"
+
+
+class AiRuntimeOut(AiRuntimeCreate):
+    id: str
+    status: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    last_health_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiRuntimeEventOut(BaseModel):
+    id: str
+    runtime_id: str
+    event_type: str
+    level: str
+    message: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class AiPersonaCreate(BaseModel):
+    project_id: str | None = None
+    name: str = Field(min_length=1, max_length=200)
+    consent_id: str
+    face_reference_asset_id: str | None = None
+    voice_reference_asset_id: str | None = None
+    style: dict[str, Any] = Field(default_factory=dict)
+    allowed_effects: list[RuntimeEffect] = Field(default_factory=list)
+    preferred_runtimes: dict[str, str] = Field(default_factory=dict)
+
+
+class AiPersonaOut(AiPersonaCreate):
+    id: str
+    created_at: str
+    updated_at: str
+
+
 # --- overlays (replacement-lane) -------------------------------------------
 class OverlayRequest(BaseModel):
     asset_id: str

@@ -24,6 +24,7 @@ from .api import (
     jobs,
     lipsync,
     overlays,
+    persona,
     projects,
     reels,
     reenact,
@@ -124,6 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sequences.router)
     app.include_router(voiceover.router)
     app.include_router(lipsync.router)
+    app.include_router(persona.router)
     app.include_router(demo.router)
     return app
 
