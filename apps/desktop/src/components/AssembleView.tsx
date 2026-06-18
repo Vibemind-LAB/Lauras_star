@@ -638,8 +638,20 @@ export function AssembleView({
         ) : (
           groups.map((g) => (
             <div key={g.assetId} className="flex flex-col gap-1">
-              <div className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                {assetName(g.assetId)} · {g.scenes.length}
+              <div className="flex items-center justify-between gap-1">
+                <div className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  {assetName(g.assetId)} · {g.scenes.length}
+                </div>
+                {g.scenes.length > 1 && (
+                  <button
+                    type="button"
+                    title={`Alle ${g.scenes.length} Szenen von „${assetName(g.assetId)}" anhängen`}
+                    onClick={() => void applySceneIds([...ids, ...g.scenes.map((s) => s.id)])}
+                    className="shrink-0 rounded bg-sky-700 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-sky-600"
+                  >
+                    + alle
+                  </button>
+                )}
               </div>
               {g.scenes.map((s) => (
                 <button
