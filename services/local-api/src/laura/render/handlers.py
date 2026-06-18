@@ -50,6 +50,28 @@ def cap_clips_to_frames(
     return out
 
 
+def snap_budget_to_word_boundary(
+    budget_frames: int, total_frames: int, word_seq_ends: list[int]
+) -> int:
+    """Snap a reel duration-cap budget *down* to the latest transcript word boundary at or below
+    ``budget_frames``, so a capped reel ends on a complete word instead of mid-word.
+
+    ``word_seq_ends`` are end-exclusive *sequence* frames (e.g. the third element of each
+    ``timeline_caption_words`` token). Prefix-preserving: the result is only ever <= the budget,
+    so the kept clips still start at seq 0 and burned captions / music stay aligned.
+
+    Returns ``budget_frames`` unchanged whenever a snap would be a no-op: a non-positive budget,
+    a cut that already fits (``total_frames <= budget_frames``), or no word boundary lying in
+    ``(0, budget_frames]`` (e.g. B-roll with no transcript) — so the no-transcript path is identical
+    to the plain ``cap_clips_to_frames`` tail-trim."""
+    if budget_frames <= 0 or total_frames <= budget_frames:
+        return budget_frames
+    candidates = [w for w in word_seq_ends if 0 < w <= budget_frames]
+    if not candidates:
+        return budget_frames
+    return max(candidates)
+
+
 def _option_str(opts: dict[str, object], key: str, default: str, allowed: set[str]) -> str:
     value = opts.get(key)
     if not isinstance(value, str):
@@ -151,6 +173,14 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
     max_s = (exp.get("options") or {}).get("max_duration_seconds")
     if isinstance(max_s, int) and max_s > 0:
         budget = round(max_s * project["sequence_rate_num"] / project["sequence_rate_den"])
+        total = sum(fout - fin for _src, fin, fout in clips)
+        # Smart end (default): snap the cut down to the latest transcript word boundary so the reel
+        # finishes on a complete word, not mid-word. Still prefix-preserving (kept clips start at
+        # seq 0), so alignment is untouched. Only consulted when a cut is actually needed; opt out
+        # with reel_exact_duration=true to hit the exact frame budget.
+        if total > budget and not (exp.get("options") or {}).get("reel_exact_duration"):
+            word_ends = [w[2] for w in timeline_caption_words(ctx.db, exp["timeline_id"])]
+            budget = snap_budget_to_word_boundary(budget, total, word_ends)
         clips = cap_clips_to_frames(clips, budget)
 
     if not clips:
@@ -175,18 +205,18 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
                     (c["seq_out_frame_exclusive"] for c in clip_rows),
                     default=0,
                 )
-                music_tracks = [(
-                    Path(masset["source_path"]),
-                    0,
-                    total_frames,
-                    int(scene["music_gain_percent"]),
-                )]
+                music_tracks = [
+                    (
+                        Path(masset["source_path"]),
+                        0,
+                        total_frames,
+                        int(scene["music_gain_percent"]),
+                    )
+                ]
 
     audio_overlays = _timeline_audio_overlays(ctx.db, exp["timeline_id"])
     video_transitions = (
-        _sequence_video_transitions(ctx.db, exp["timeline_id"])
-        if tl["kind"] == "sequence"
-        else []
+        _sequence_video_transitions(ctx.db, exp["timeline_id"]) if tl["kind"] == "sequence" else []
     )
 
     opts: dict[str, object] = exp.get("options") or {}
@@ -217,7 +247,8 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
     dest = Path(project["workspace_root"]) / "exports" / f"{export_id}.mp4"
     try:
         render_clips_mp4(
-            clips, dest,
+            clips,
+            dest,
             rate_num=project["sequence_rate_num"],
             rate_den=project["sequence_rate_den"],
             music_tracks=music_tracks if music_tracks else None,
