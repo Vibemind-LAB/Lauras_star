@@ -1,6 +1,7 @@
 import { type ReactElement, useEffect, useState } from "react";
 
 import { type Asset, type LauraClient, type Scene, type Segment, type TimelineClip } from "../api";
+import { TranscriptBar } from "./TranscriptBar";
 
 function clipsInScene(scene: Scene, clips: TimelineClip[]): TimelineClip[] {
   return clips.filter(
@@ -166,6 +167,20 @@ export function SceneStrip({
   onRename: (sceneId: string, name: string) => void;
   onSeek: (frame: number) => void;
 }): ReactElement {
+  // Local optimistic copy so inline transcript edits show immediately — the parent passes
+  // `segments` read-only and only refreshes it on asset reselect / analysis.reload.
+  const [segs, setSegs] = useState<Segment[]>(segments);
+  useEffect(() => {
+    setSegs(segments);
+  }, [segments]);
+
+  async function handleEditSegment(segmentId: string, text: string): Promise<void> {
+    await client.updateTranscriptSegment(segmentId, { text });
+    setSegs((prev) =>
+      prev.map((s) => (s.id === segmentId ? { ...s, text, alignment_status: "stale" } : s)),
+    );
+  }
+
   if (scenes.length === 0) {
     return (
       <div className="flex h-24 items-center justify-center text-xs text-slate-600">
@@ -174,25 +189,43 @@ export function SceneStrip({
     );
   }
   return (
-    <div className="flex w-full gap-2 overflow-x-auto p-2">
-      {scenes.map((scene, i) => {
-        const inScene = clipsInScene(scene, clips);
-        return (
-          <SceneCard
-            key={scene.id}
-            client={client}
-            asset={asset}
-            scene={scene}
-            inScene={inScene}
-            excerptText={excerpt(scene, inScene, segments)}
-            canMerge={i < scenes.length - 1}
-            onSplit={onSplit}
-            onMerge={onMerge}
-            onRename={onRename}
-            onSeek={onSeek}
-          />
-        );
-      })}
+    <div className="flex w-full flex-col">
+      <div className="flex w-full gap-2 overflow-x-auto p-2">
+        {scenes.map((scene, i) => {
+          const inScene = clipsInScene(scene, clips);
+          return (
+            <SceneCard
+              key={scene.id}
+              client={client}
+              asset={asset}
+              scene={scene}
+              inScene={inScene}
+              excerptText={excerpt(scene, inScene, segs)}
+              canMerge={i < scenes.length - 1}
+              onSplit={onSplit}
+              onMerge={onMerge}
+              onRename={onRename}
+              onSeek={onSeek}
+            />
+          );
+        })}
+      </div>
+      {/* Asset transcript: searchable + inline-editable (✎). Surfaced here so transcript fixes
+          happen in the Rough Cut stage, not only in Zusammenfügen. */}
+      {segs.length > 0 && (
+        <TranscriptBar
+          client={client}
+          assetId={asset.id}
+          assetName={asset.display_name}
+          segments={segs}
+          note={null}
+          currentFrame={0}
+          onSeek={onSeek}
+          canAppend={false}
+          onAppendSegment={() => undefined}
+          onEditSegment={handleEditSegment}
+        />
+      )}
     </div>
   );
 }
