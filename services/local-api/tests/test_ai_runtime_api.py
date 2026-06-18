@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -39,3 +40,39 @@ def test_refresh_stub_runtime_returns_ready_status(client: TestClient) -> None:
     events = client.get(f"/ai/runtimes/{created['id']}/events")
     assert events.status_code == 200
     assert events.json()[0]["event_type"] == "health"
+
+
+def test_start_and_stop_stub_runtime_return_stateful_status(client: TestClient) -> None:
+    created = client.post(
+        "/ai/runtimes",
+        json={"kind": "stub", "effect": "voice", "display_name": "Stub Voice"},
+    ).json()
+
+    started = client.post(f"/ai/runtimes/{created['id']}/start")
+    assert started.status_code == 200
+    assert started.json()["status"]["state"] == "ready"
+    assert started.json()["status"]["ready"] is True
+
+    stopped = client.post(f"/ai/runtimes/{created['id']}/stop")
+    assert stopped.status_code == 200
+    assert stopped.json()["status"]["state"] == "stopped"
+    assert stopped.json()["status"]["ready"] is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/ai/runtimes/missing-runtime/refresh",
+        "/ai/runtimes/missing-runtime/start",
+        "/ai/runtimes/missing-runtime/stop",
+        "/ai/runtimes/missing-runtime/events",
+    ],
+)
+def test_runtime_endpoints_return_404_for_missing_runtime(
+    client: TestClient, path: str
+) -> None:
+    if path.endswith(("/refresh", "/start", "/stop")):
+        response = client.post(path)
+    else:
+        response = client.get(path)
+    assert response.status_code == 404

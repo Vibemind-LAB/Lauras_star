@@ -22,6 +22,25 @@ def _db(request: Request) -> Database:
     return db
 
 
+def _require_reference_asset(
+    db: Database,
+    asset_id: str | None,
+    *,
+    field_label: str,
+    project_id: str,
+) -> None:
+    if asset_id is None:
+        return
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{field_label} asset not found")
+    if asset["project_id"] != project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{field_label} asset belongs to another project",
+        )
+
+
 @router.post("/ai/runtimes", response_model=AiRuntimeOut, status_code=status.HTTP_201_CREATED)
 def create_runtime(body: AiRuntimeCreate, request: Request) -> AiRuntimeOut:
     runtime = repos.create_ai_runtime(_db(request), **body.model_dump())
@@ -84,7 +103,24 @@ def create_persona(body: AiPersonaCreate, request: Request) -> AiPersonaOut:
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "consent belongs to another project",
         )
-    persona = repos.create_ai_persona(db, **body.model_dump())
+    project_id = str(consent["project_id"])
+    _require_reference_asset(
+        db,
+        body.face_reference_asset_id,
+        field_label="face reference",
+        project_id=project_id,
+    )
+    _require_reference_asset(
+        db,
+        body.voice_reference_asset_id,
+        field_label="voice reference",
+        project_id=project_id,
+    )
+    persona = repos.create_ai_persona(
+        db,
+        **body.model_dump(exclude={"project_id"}),
+        project_id=project_id,
+    )
     return AiPersonaOut(**persona)
 
 
