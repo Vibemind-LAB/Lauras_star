@@ -265,4 +265,20 @@ describe("AssembleView", () => {
     expect(await findByText("AI Runtimes")).toBeTruthy();
     expect(await findByText("Stub Lipsync")).toBeTruthy();
   });
+
+  it("re-fetches runtime status in the tools rail when the assemble reload key changes", async () => {
+    const c = client({});
+    const { findByText, getByRole, getByTitle } = render(
+      <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Tools" }));
+    expect(await findByText("Stub Lipsync")).toBeTruthy();
+    expect(c.listAiRuntimes).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(getByTitle(/Szene 2.*Reihenfolge anhängen/));
+
+    await waitFor(() => expect(c.setSequenceScenes).toHaveBeenCalledWith("seq", ["s1", "s2"]));
+    await waitFor(() => expect(c.listAiRuntimes).toHaveBeenCalledTimes(2));
+  });
 });

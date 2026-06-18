@@ -1,4 +1,4 @@
-import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { type AiRuntime, type AiRuntimeEvent, type LauraClient } from "../api";
 import { log } from "../shared/log";
@@ -52,11 +52,42 @@ export function RuntimeStatusPanel({
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const eventsByRuntimeRef = useRef<Record<string, AiRuntimeEvent[]>>({});
+  const expandedEventsIdRef = useRef<string | null>(null);
 
-  const load = useCallback(async (): Promise<void> => {
+  useEffect(() => {
+    eventsByRuntimeRef.current = eventsByRuntime;
+  }, [eventsByRuntime]);
+
+  useEffect(() => {
+    expandedEventsIdRef.current = expandedEventsId;
+  }, [expandedEventsId]);
+
+  const loadEvents = useCallback(
+    async (runtimeId: string, force = false): Promise<AiRuntimeEvent[]> => {
+      if (!force) {
+        const cachedEvents = eventsByRuntimeRef.current[runtimeId];
+        if (cachedEvents !== undefined) {
+          return cachedEvents;
+        }
+      }
+      const events = await client.listAiRuntimeEvents(runtimeId);
+      setEventsByRuntime((current) => ({ ...current, [runtimeId]: events }));
+      return events;
+    },
+    [client],
+  );
+
+  const load = useCallback(async (refreshExpandedEvents = false): Promise<void> => {
     setLoading(true);
     try {
       setRuntimes(await client.listAiRuntimes());
+      if (refreshExpandedEvents) {
+        const expandedRuntimeId = expandedEventsIdRef.current;
+        if (expandedRuntimeId !== null) {
+          await loadEvents(expandedRuntimeId, true);
+        }
+      }
       setError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -65,10 +96,10 @@ export function RuntimeStatusPanel({
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [client, loadEvents]);
 
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load, reloadKey]);
 
   const sortedRuntimes = useMemo(
@@ -87,7 +118,15 @@ export function RuntimeStatusPanel({
     setError(null);
     try {
       await action(runtimeId);
-      await load();
+      setEventsByRuntime((current) => {
+        if (current[runtimeId] === undefined) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[runtimeId];
+        return next;
+      });
+      await load(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("runtime action failed:", message);
@@ -102,16 +141,13 @@ export function RuntimeStatusPanel({
       setExpandedEventsId(null);
       return;
     }
-    if (eventsByRuntime[runtimeId] === undefined) {
-      try {
-        const events = await client.listAiRuntimeEvents(runtimeId);
-        setEventsByRuntime((current) => ({ ...current, [runtimeId]: events }));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log.error("listAiRuntimeEvents failed:", message);
-        setError(message);
-        return;
-      }
+    try {
+      await loadEvents(runtimeId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("listAiRuntimeEvents failed:", message);
+      setError(message);
+      return;
     }
     setExpandedEventsId(runtimeId);
   }
@@ -125,7 +161,7 @@ export function RuntimeStatusPanel({
         </div>
         <button
           type="button"
-          onClick={() => void load()}
+          onClick={() => void load(true)}
           disabled={loading}
           className="rounded border border-edge bg-ink px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800 disabled:opacity-40"
         >

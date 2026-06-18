@@ -852,7 +852,7 @@ export function AssembleView({
           />
         ) : (
           <div className="flex flex-col gap-3">
-            <RuntimeStatusPanel client={client} />
+            <RuntimeStatusPanel client={client} reloadKey={reloadKey} />
             <AudioLaneControls
               client={client}
               timelineId={sequence?.timeline_id ?? null}
