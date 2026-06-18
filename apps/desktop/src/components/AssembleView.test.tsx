@@ -82,6 +82,7 @@ function client(over: Partial<LauraClient>): LauraClient {
       },
     ]),
     refreshAiRuntime: vi.fn().mockResolvedValue({}),
+    createAiRuntime: vi.fn().mockResolvedValue({ id: "rt-2" }),
     startAiRuntime: vi.fn().mockResolvedValue({}),
     stopAiRuntime: vi.fn().mockResolvedValue({}),
     listAiRuntimeEvents: vi.fn().mockResolvedValue([]),
@@ -266,7 +267,7 @@ describe("AssembleView", () => {
     expect(await findByText("Stub Lipsync")).toBeTruthy();
   });
 
-  it("re-fetches runtime status in the tools rail when the assemble reload key changes", async () => {
+  it("keeps runtime status stable when only the sequence reload key changes", async () => {
     const c = client({});
     const { findByText, getByRole, getByTitle } = render(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />,
@@ -279,6 +280,46 @@ describe("AssembleView", () => {
     fireEvent.click(getByTitle(/Szene 2.*Reihenfolge anhängen/));
 
     await waitFor(() => expect(c.setSequenceScenes).toHaveBeenCalledWith("seq", ["s1", "s2"]));
+    expect(c.listAiRuntimes).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads runtime status after a new runtime is created from the tools rail", async () => {
+    const createAiRuntime = vi.fn().mockResolvedValue({ id: "rt-2" });
+    const refreshAiRuntime = vi.fn().mockResolvedValue({ id: "rt-2" });
+    const c = client({ createAiRuntime, refreshAiRuntime });
+    const { getByRole, getByLabelText, findByText } = render(
+      <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Tools" }));
+    expect(await findByText("Stub Lipsync")).toBeTruthy();
+    expect(c.listAiRuntimes).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(getByLabelText("Runtime-Name"), {
+      target: { value: "Local Lipsync" },
+    });
+    fireEvent.change(getByLabelText("Runtime-Art"), {
+      target: { value: "external_http" },
+    });
+    fireEvent.change(getByLabelText("Effekt"), {
+      target: { value: "lipsync" },
+    });
+    fireEvent.change(getByLabelText("Base-URL"), {
+      target: { value: "http://127.0.0.1:8901" },
+    });
+    fireEvent.click(getByRole("button", { name: /runtime registrieren/i }));
+
+    await waitFor(() =>
+      expect(createAiRuntime).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "external_http",
+          effect: "lipsync",
+          displayName: "Local Lipsync",
+          baseUrl: "http://127.0.0.1:8901",
+        }),
+      ),
+    );
+    await waitFor(() => expect(refreshAiRuntime).toHaveBeenCalledWith("rt-2"));
     await waitFor(() => expect(c.listAiRuntimes).toHaveBeenCalledTimes(2));
   });
 });

@@ -27,6 +27,7 @@ import { DemoAssistantPanel } from "./DemoAssistantPanel";
 import { LipsyncPanel } from "./LipsyncPanel";
 import { OverlayControls } from "./OverlayControls";
 import { ReenactPanel } from "./ReenactPanel";
+import { RuntimeSetupPanel } from "./RuntimeSetupPanel";
 import { RuntimeStatusPanel } from "./RuntimeStatusPanel";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
@@ -407,6 +408,7 @@ export function AssembleView({
   const [seqClips, setSeqClips] = useState<TimelineClip[]>([]);
   const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  const [runtimeReloadKey, setRuntimeReloadKey] = useState(0);
   const [transcriptReloadKey, setTranscriptReloadKey] = useState(0);
   const [transcript, setTranscript] = useState<SequenceTranscriptBlock[]>([]);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
@@ -852,7 +854,11 @@ export function AssembleView({
           />
         ) : (
           <div className="flex flex-col gap-3">
-            <RuntimeStatusPanel client={client} reloadKey={reloadKey} />
+            <RuntimeStatusPanel client={client} reloadKey={runtimeReloadKey} />
+            <RuntimeSetupPanel
+              client={client}
+              onCreated={() => setRuntimeReloadKey((key) => key + 1)}
+            />
             <AudioLaneControls
               client={client}
               timelineId={sequence?.timeline_id ?? null}
