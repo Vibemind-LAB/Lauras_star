@@ -432,6 +432,25 @@ export function App(): ReactElement {
                 </option>
               ))}
             </select>
+            {selectedProjectId && (
+              <button
+                type="button"
+                title="Aktuelles Projekt löschen"
+                aria-label="Projekt löschen"
+                onClick={() => {
+                  const proj = projects.find((p) => p.id === selectedProjectId);
+                  if (
+                    proj &&
+                    window.confirm(`Projekt „${proj.name}" und alle zugehörigen Daten löschen?`)
+                  ) {
+                    void onDeleteProject(selectedProjectId);
+                  }
+                }}
+                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-red-600/40 hover:text-red-200"
+              >
+                🗑
+              </button>
+            )}
             <form onSubmit={(e) => void onCreateProject(e)} className="flex items-center gap-1">
               <input
                 value={name}
