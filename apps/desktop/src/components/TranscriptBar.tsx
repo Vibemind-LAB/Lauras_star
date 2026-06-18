@@ -1,4 +1,4 @@
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 
 import { type LauraClient, type Segment } from "../api";
 import { type CutWord } from "../shared/transcriptProjection";
@@ -12,7 +12,10 @@ function SegmentText({
   currentFrame: number;
   onSeek: (frame: number) => void;
 }): ReactElement {
-  if (segment.words.length === 0) {
+  // After a text edit the word-level timings go stale, so the old word chips no longer match
+  // the corrected text — fall back to the plain (single seek button) rendering until a realign
+  // rebuilds the words. Word-less segments use the same path.
+  if (segment.words.length === 0 || segment.alignment_status === "stale") {
     const active = currentFrame >= segment.start_frame && currentFrame < segment.end_frame;
     return (
       <button
@@ -65,6 +68,7 @@ export function TranscriptBar({
   canAppend,
   onAppendSegment,
   onDeleteWords,
+  onEditSegment,
 }: {
   client: LauraClient | null;
   assetId: string | null;
@@ -83,8 +87,38 @@ export function TranscriptBar({
   /** When provided, each segment with words gets a ripple-delete affordance that passes
    *  the segment's first and last word ids. Additive — existing callers are unaffected. */
   onDeleteWords?: (wordStartId: string, wordEndId: string) => void;
+  /** When provided, each segment gets an edit (✎) affordance that opens an inline editor for
+   *  its text; saving calls this with the segment id + new text. Additive — existing callers
+   *  unaffected. Only active in raw-segment mode (never in the cut-mode word list). */
+  onEditSegment?: (segmentId: string, text: string) => Promise<void> | void;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
+  // Inline transcript text editing (raw-segment mode only): one segment editable at a time.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Never let an open editor leak across assets (the segment ids belong to the old asset).
+  useEffect(() => {
+    setEditingId(null);
+  }, [assetId]);
+
+  async function saveEdit(segmentId: string): Promise<void> {
+    if (!onEditSegment) return;
+    setSaving(true);
+    try {
+      await onEditSegment(segmentId, draft.trim());
+      setEditingId(null);
+    } catch (e) {
+      setError(String(e)); // stay in edit mode so the user can retry
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function cancelEdit(): void {
+    setEditingId(null);
+  }
 
   async function exportCaptions(fmt: "srt" | "vtt"): Promise<void> {
     if (!client || !assetId) return;
@@ -179,28 +213,85 @@ export function TranscriptBar({
                     {seg.speaker_label}
                   </span>
                 )}
-                <SegmentText segment={seg} currentFrame={currentFrame} onSeek={onSeek} />
-                {canAppend && seg.words.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onAppendSegment(seg)}
-                    title="an Rough Cut anhängen"
-                    className="ml-0.5 rounded bg-ink px-1 text-xs text-emerald-300 hover:bg-edge"
-                  >
-                    →
-                  </button>
-                )}
-                {onDeleteWords && seg.words.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onDeleteWords(seg.words[0].id, seg.words[seg.words.length - 1].id)
-                    }
-                    title="Segment ripple-löschen"
-                    className="ml-0.5 rounded bg-ink px-1 text-xs text-red-400 hover:bg-red-600/40"
-                  >
-                    ✂
-                  </button>
+                {editingId === seg.id ? (
+                  <span className="inline-flex items-center gap-1 align-middle">
+                    <textarea
+                      aria-label="Segmenttext bearbeiten"
+                      autoFocus
+                      rows={1}
+                      value={draft}
+                      disabled={saving}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void saveEdit(seg.id);
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelEdit();
+                        }
+                      }}
+                      className="w-64 max-w-full rounded bg-ink px-1 align-middle text-sm text-slate-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void saveEdit(seg.id)}
+                      disabled={saving}
+                      title="Speichern"
+                      className="rounded bg-ink px-1 text-xs text-emerald-300 hover:bg-edge disabled:opacity-50"
+                    >
+                      ✓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelEdit}
+                      disabled={saving}
+                      title="Abbrechen"
+                      className="rounded bg-ink px-1 text-xs text-slate-400 hover:bg-edge disabled:opacity-50"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ) : (
+                  <>
+                    <SegmentText segment={seg} currentFrame={currentFrame} onSeek={onSeek} />
+                    {canAppend && seg.words.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onAppendSegment(seg)}
+                        title="an Rough Cut anhängen"
+                        className="ml-0.5 rounded bg-ink px-1 text-xs text-emerald-300 hover:bg-edge"
+                      >
+                        →
+                      </button>
+                    )}
+                    {onDeleteWords && seg.words.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onDeleteWords(seg.words[0].id, seg.words[seg.words.length - 1].id)
+                        }
+                        title="Segment ripple-löschen"
+                        className="ml-0.5 rounded bg-ink px-1 text-xs text-red-400 hover:bg-red-600/40"
+                      >
+                        ✂
+                      </button>
+                    )}
+                    {onEditSegment && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setError(null);
+                          setDraft(seg.text);
+                          setEditingId(seg.id);
+                        }}
+                        title="Transkript bearbeiten"
+                        className="ml-0.5 rounded bg-ink px-1 text-xs text-slate-300 hover:bg-edge"
+                      >
+                        ✎
+                      </button>
+                    )}
+                  </>
                 )}{" "}
               </span>
             );

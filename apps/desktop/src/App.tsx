@@ -821,6 +821,11 @@ export function App(): ReactElement {
                 onSeek={seekToFrame}
                 canAppend={roughCut != null}
                 onAppendSegment={(s) => void onAppendSegment(s)}
+                onEditSegment={async (segmentId, text) => {
+                  if (!client) return;
+                  await client.updateTranscriptSegment(segmentId, { text });
+                  await analysis.reload();
+                }}
               />
             </>
           )}
