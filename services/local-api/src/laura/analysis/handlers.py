@@ -29,6 +29,19 @@ from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
 from .types import SegmentResult, ShotResult, WordResult
 
 
+def _auto_rough_cut_enabled() -> bool:
+    """Whether to auto-build a rough cut + scenes after a successful analysis run.
+
+    Mirrors the ``LAURA_AUTO_ANALYZE`` gate in ``ingest/handlers.py``: enabled by default,
+    opt out with ``LAURA_AUTO_ROUGH_CUT=0`` (also ``false``/``no``/``off``)."""
+    return os.environ.get("LAURA_AUTO_ROUGH_CUT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 def _scene_detect_height() -> int:
     """Target height for the downscaled scene-detection proxy (env override).
 
@@ -283,6 +296,23 @@ def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:
         diagnostics["scene"] = _run_scene(ctx.db, asset, run_id, files, config)
     if stages_cfg.get("asr", True):
         diagnostics["asr"] = _run_transcript(ctx.db, asset, project, run_id, files, config)
+
+    # Smart handling: land the asset edit-ready (rough cut + scenes) with zero clicks.
+    # Best-effort and gated — a failure here must NEVER fail the analysis run. Only fires
+    # when the scene stage produced shots; otherwise there is nothing to build from.
+    if _auto_rough_cut_enabled() and diagnostics.get("scene", {}).get("status") == "ok":
+        try:
+            from ..scenes.build import autobuild_asset_edit_ready
+
+            n = autobuild_asset_edit_ready(
+                ctx.db, project_id=asset["project_id"], asset_id=asset_id, run_id=run_id
+            )
+            diagnostics["auto_rough_cut"] = {"status": "ok", "scenes": n}
+        except Exception as exc:  # noqa: BLE001 - auto-build must never fail the run
+            diagnostics["auto_rough_cut"] = {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     manifest_dest = Path(project["workspace_root"]) / "analysis" / asset_id / "manifest.json"
     write_manifest(
