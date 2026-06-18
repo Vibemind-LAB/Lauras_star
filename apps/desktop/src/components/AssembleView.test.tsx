@@ -59,6 +59,32 @@ function client(over: Partial<LauraClient>): LauraClient {
     getSequenceTranscript: vi.fn().mockResolvedValue([]),
     getJob: vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" }),
     createVoiceover: vi.fn().mockResolvedValue({ job_id: "voice-job-1" }),
+    listAiRuntimes: vi.fn().mockResolvedValue([
+      {
+        id: "rt-1",
+        kind: "stub",
+        effect: "lipsync",
+        display_name: "Stub Lipsync",
+        status: { state: "ready", ready: true },
+        capabilities: { effects: ["lipsync"] },
+        base_url: null,
+        container_image: null,
+        container_name: null,
+        port: null,
+        workspace_mount: null,
+        model_mount: null,
+        requires_gpu: false,
+        enabled: true,
+        license_status: "not_required",
+        last_health_at: null,
+        created_at: "",
+        updated_at: "",
+      },
+    ]),
+    refreshAiRuntime: vi.fn().mockResolvedValue({}),
+    startAiRuntime: vi.fn().mockResolvedValue({}),
+    stopAiRuntime: vi.fn().mockResolvedValue({}),
+    listAiRuntimeEvents: vi.fn().mockResolvedValue([]),
     updateSequenceTransition: vi.fn().mockResolvedValue(seq),
     updateTranscriptSegment: vi.fn().mockResolvedValue({}),
     realignTranscript: vi.fn().mockResolvedValue({ job_id: "job-1" }),
@@ -217,7 +243,7 @@ describe("AssembleView", () => {
     expect(await findByLabelText("Sequenz-Transcript-Text")).toBeTruthy();
   });
 
-  it("surfaces AI readiness in the tools rail and sequence duration in the work area", async () => {
+  it("surfaces runtime status in the tools rail and sequence duration in the work area", async () => {
     const c = client({
       getSequenceFlattened: vi.fn().mockResolvedValue([
         { id: "c1", asset_id: "a1", src_in_frame: 0, src_out_frame_exclusive: 30,
@@ -236,7 +262,7 @@ describe("AssembleView", () => {
     expect(await findByText("Gesamtdauer 75 f")).toBeTruthy();
     fireEvent.click(getByRole("button", { name: "Tools" }));
 
-    expect(await findByText("KI-Status")).toBeTruthy();
-    expect(await findByText(/bleibt optional/)).toBeTruthy();
+    expect(await findByText("AI Runtimes")).toBeTruthy();
+    expect(await findByText("Stub Lipsync")).toBeTruthy();
   });
 });

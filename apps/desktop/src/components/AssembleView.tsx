@@ -27,6 +27,7 @@ import { DemoAssistantPanel } from "./DemoAssistantPanel";
 import { LipsyncPanel } from "./LipsyncPanel";
 import { OverlayControls } from "./OverlayControls";
 import { ReenactPanel } from "./ReenactPanel";
+import { RuntimeStatusPanel } from "./RuntimeStatusPanel";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
 
@@ -851,13 +852,7 @@ export function AssembleView({
           />
         ) : (
           <div className="flex flex-col gap-3">
-            <section className="rounded border border-edge bg-panel/50 p-3">
-              <div className="mb-1 text-xs font-semibold text-slate-200">KI-Status</div>
-              <p className="text-xs leading-relaxed text-slate-500">
-                Stub-Reenact ist lokal verfügbar. LivePortrait Sidecar bleibt optional und wird erst
-                genutzt, wenn der lokale Sidecar samt Modellgewichten läuft.
-              </p>
-            </section>
+            <RuntimeStatusPanel client={client} />
             <AudioLaneControls
               client={client}
               timelineId={sequence?.timeline_id ?? null}
