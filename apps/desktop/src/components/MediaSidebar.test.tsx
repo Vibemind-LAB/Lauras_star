@@ -301,4 +301,64 @@ describe("MediaSidebar", () => {
     expect(screen.getByText("sha256 0123456789ab")).toBeTruthy();
     expect(getAssetProvenance).toHaveBeenCalledWith("synthetic-1");
   });
+
+  it("shows no × delete affordance when onDelete is absent (backward compatible)", () => {
+    const client = makeClient();
+    render(
+      <MediaSidebar
+        client={client}
+        assets={ASSETS}
+        selectedAssetId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.queryAllByTitle("Medium löschen")).toHaveLength(0);
+  });
+
+  it("calls onDelete with the asset id when × is confirmed (and not onSelect)", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      const client = makeClient();
+      const onDelete = vi.fn();
+      const onSelect = vi.fn();
+      render(
+        <MediaSidebar
+          client={client}
+          assets={ASSETS}
+          selectedAssetId={null}
+          onSelect={onSelect}
+          onDelete={onDelete}
+        />,
+      );
+      const buttons = screen.getAllByTitle("Medium löschen");
+      expect(buttons).toHaveLength(2);
+      fireEvent.click(buttons[1]);
+      expect(onDelete).toHaveBeenCalledWith("a2");
+      // stopPropagation: clicking × must not also select the row
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("does not call onDelete when the confirm is cancelled", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      const client = makeClient();
+      const onDelete = vi.fn();
+      render(
+        <MediaSidebar
+          client={client}
+          assets={ASSETS}
+          selectedAssetId={null}
+          onSelect={vi.fn()}
+          onDelete={onDelete}
+        />,
+      );
+      fireEvent.click(screen.getAllByTitle("Medium löschen")[0]);
+      expect(onDelete).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
 });

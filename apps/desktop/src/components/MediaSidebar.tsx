@@ -91,12 +91,14 @@ function MediaSidebarItem({
   index,
   isSelected,
   onSelect,
+  onDelete,
 }: {
   client: LauraClient;
   asset: Asset;
   index: number;
   isSelected: boolean;
   onSelect: (assetId: string) => void;
+  onDelete?: (assetId: string) => void;
 }): ReactElement {
   const [analysisState, setAnalysisState] = useState<ItemAnalysisState>({ kind: "loading" });
   const [provenanceState, setProvenanceState] = useState<ProvenanceState>({ kind: "hidden" });
@@ -303,6 +305,20 @@ function MediaSidebarItem({
           </div>
         )}
       </div>
+      {onDelete && (
+        <button
+          type="button"
+          title="Medium löschen"
+          aria-label="Medium löschen"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (window.confirm(`Medium „${asset.display_name}" löschen?`)) onDelete(asset.id);
+          }}
+          className="shrink-0 rounded px-1 text-sm text-slate-600 hover:bg-red-600/40 hover:text-red-200"
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }
@@ -316,6 +332,8 @@ export interface MediaSidebarProps {
   assets: Asset[];
   selectedAssetId: string | null;
   onSelect: (assetId: string) => void;
+  /** When provided, each media row gets a × delete affordance (confirms first). */
+  onDelete?: (assetId: string) => void;
 }
 
 export function MediaSidebar({
@@ -323,6 +341,7 @@ export function MediaSidebar({
   assets,
   selectedAssetId,
   onSelect,
+  onDelete,
 }: MediaSidebarProps): ReactElement {
   return (
     <aside className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-edge bg-ink p-2">
@@ -343,6 +362,7 @@ export function MediaSidebar({
             index={i}
             isSelected={asset.id === selectedAssetId}
             onSelect={onSelect}
+            onDelete={onDelete}
           />
         ))
       )}

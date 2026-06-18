@@ -508,6 +508,7 @@ export function App(): ReactElement {
             assets={assets}
             selectedAssetId={selectedAssetId}
             onSelect={setSelectedAssetId}
+            onDelete={(id) => void onDeleteAsset(id)}
           />
         )}
 
