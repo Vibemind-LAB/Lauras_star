@@ -114,6 +114,8 @@ export function ExportView({
   const [captionPosition, setCaptionPosition] = useState<CaptionPosition>("bottom");
   const [captionFontsize, setCaptionFontsize] = useState<number>(72);
   const [captionSafeMargin, setCaptionSafeMargin] = useState<number>(250);
+  /** Optional hard cap on the reel length in seconds (platform max-durations); null = no cap. */
+  const [reelMaxDuration, setReelMaxDuration] = useState<number | null>(null);
   const [reelBusy, setReelBusy] = useState<boolean>(false);
   const [exportBusy, setExportBusy] = useState<boolean>(false);
   const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
@@ -253,6 +255,7 @@ export function ExportView({
         captionPosition,
         captionFontsize,
         captionSafeMargin,
+        maxDurationSeconds: reelMaxDuration,
       });
       setJobByExport((prev) => ({ ...prev, [result.export_id]: result.job_id }));
       await load();
@@ -273,6 +276,7 @@ export function ExportView({
     captionPosition,
     captionFontsize,
     captionSafeMargin,
+    reelMaxDuration,
     load,
   ]);
 
@@ -443,6 +447,7 @@ export function ExportView({
                 captionPosition: "bottom",
                 captionFontsize,
                 captionSafeMargin,
+                maxDurationSeconds: reelMaxDuration,
               }).then((result) => {
                 setJobByExport((prev) => ({ ...prev, [result.export_id]: result.job_id }));
                 return load();
@@ -469,6 +474,20 @@ export function ExportView({
           disabled={!timelineId}
           className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 disabled:opacity-40"
         />
+        <label className="flex items-center gap-2 text-xs text-slate-300">
+          Max. Dauer (Sek.)
+          <input
+            type="number"
+            min={1}
+            max={600}
+            value={reelMaxDuration ?? ""}
+            onChange={(e) =>
+              setReelMaxDuration(e.target.value === "" ? null : Math.max(1, Number(e.target.value)))}
+            placeholder="kein Limit"
+            disabled={!timelineId}
+            className="w-28 rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 disabled:opacity-40"
+          />
+        </label>
         <label className="flex items-center gap-2 text-xs text-slate-300">
           <input
             type="checkbox"

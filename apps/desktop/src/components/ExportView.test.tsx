@@ -86,6 +86,17 @@ describe("ExportView", () => {
       captionPosition: "top",
       captionFontsize: 84,
       captionSafeMargin: 180,
+      maxDurationSeconds: null,
     }));
+  });
+
+  it("forwards the reel max-duration cap to renderReel", async () => {
+    const renderReel = vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" });
+    const client = mkClient({ renderReel });
+    render(<ExportView client={client} projectId="p1" project={null} exportTargets={[TARGET]} />);
+    fireEvent.change(screen.getByLabelText("Max. Dauer (Sek.)"), { target: { value: "60" } });
+    fireEvent.click(screen.getByRole("button", { name: /Reel 9:16/i }));
+    await waitFor(() =>
+      expect(renderReel).toHaveBeenCalledWith("t1", expect.objectContaining({ maxDurationSeconds: 60 })));
   });
 });

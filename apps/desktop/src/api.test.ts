@@ -346,6 +346,7 @@ describe("LauraClient sequence transcript methods", () => {
       caption_position: "top",
       caption_fontsize: 84,
       caption_safe_margin: 180,
+      max_duration_seconds: null,
     });
   });
 

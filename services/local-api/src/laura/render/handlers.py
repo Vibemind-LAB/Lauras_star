@@ -24,6 +24,32 @@ _CAPTION_PRESETS: dict[str, tuple[int, int]] = {
 }
 
 
+def cap_clips_to_frames(
+    clips: list[tuple[Path, int, int]], budget_frames: int
+) -> list[tuple[Path, int, int]]:
+    """Keep only the first ``budget_frames`` output frames of a ``(path, src_in, src_out)`` clip
+    list (deterministic tail-trim for the reel duration cap): full clips until the budget, the
+    boundary clip trimmed to fit, the rest dropped. Integer frames, end-exclusive. No-op when
+    ``budget_frames <= 0`` or the clips already fit within the budget."""
+    if budget_frames <= 0:
+        return clips
+    out: list[tuple[Path, int, int]] = []
+    used = 0
+    for path, fin, fout in clips:
+        length = fout - fin
+        if used + length <= budget_frames:
+            out.append((path, fin, fout))
+            used += length
+            if used == budget_frames:
+                break
+        else:
+            remaining = budget_frames - used
+            if remaining > 0:
+                out.append((path, fin, fin + remaining))
+            break
+    return out
+
+
 def _option_str(opts: dict[str, object], key: str, default: str, allowed: set[str]) -> str:
     value = opts.get(key)
     if not isinstance(value, str):
@@ -118,6 +144,14 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             repos.set_export_error(ctx.db, export_id, f"asset not found: {c['asset_id']}")
             raise ValueError(f"asset not found: {c['asset_id']}")
         clips.append((Path(a["source_path"]), c["src_in_frame"], c["src_out_frame_exclusive"]))
+
+    # Reel duration cap: keep only the first N seconds (deterministic tail-trim). Captions, music
+    # and transitions reference seq positions from the start, so trimming the tail leaves the kept
+    # portion aligned. No-op when unset or the cut is already within budget.
+    max_s = (exp.get("options") or {}).get("max_duration_seconds")
+    if isinstance(max_s, int) and max_s > 0:
+        budget = round(max_s * project["sequence_rate_num"] / project["sequence_rate_den"])
+        clips = cap_clips_to_frames(clips, budget)
 
     if not clips:
         repos.set_export_error(ctx.db, export_id, "timeline has no clips")

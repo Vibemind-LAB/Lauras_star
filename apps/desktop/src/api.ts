@@ -450,6 +450,8 @@ export interface ReelRenderOptions {
   captionPosition?: CaptionPosition;
   captionFontsize?: number;
   captionSafeMargin?: number;
+  /** Hard cap on the reel length in seconds (platform max-durations). null/undefined = no cap. */
+  maxDurationSeconds?: number | null;
 }
 
 export interface AnalysisRun {
@@ -689,6 +691,7 @@ export class LauraClient {
             caption_position: opts.captionPosition ?? "bottom",
             caption_fontsize: opts.captionFontsize ?? 72,
             caption_safe_margin: opts.captionSafeMargin ?? 250,
+            max_duration_seconds: opts.maxDurationSeconds ?? null,
           }),
         },
       );

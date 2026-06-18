@@ -52,18 +52,20 @@ def test_render_reel_creates_export_with_options(tmp_path: Path) -> None:
         "caption_position": "bottom",
         "caption_fontsize": 72,
         "caption_safe_margin": 250,
+        "max_duration_seconds": None,
     }
 
 
 def test_render_reel_captions_stored_in_options(tmp_path: Path) -> None:
-    """POST render-reel with captions=true stores options.captions=True in the export."""
+    """POST render-reel with captions=true stores options.captions=True in the export, and a
+    provided max_duration_seconds (the reel length cap) is stored too."""
     client, db = _client_db(tmp_path)
     pid = _project(client)
     tl = repos.create_timeline(db, project_id=pid, name="cut", kind="rough_cut")
 
     r = client.post(
         f"/timelines/{tl['id']}/render-reel",
-        json={"captions": True, "hook_text": "H"},
+        json={"captions": True, "hook_text": "H", "max_duration_seconds": 60},
     )
     assert r.status_code == 202
 
@@ -71,6 +73,7 @@ def test_render_reel_captions_stored_in_options(tmp_path: Path) -> None:
     export = repos.get_export(db, export_id)
     assert export is not None
     assert export["options"]["captions"] is True
+    assert export["options"]["max_duration_seconds"] == 60
 
 
 def test_render_reel_caption_direction_stored_in_options(tmp_path: Path) -> None:
@@ -103,6 +106,7 @@ def test_render_reel_caption_direction_stored_in_options(tmp_path: Path) -> None
         "caption_position": "top",
         "caption_fontsize": 84,
         "caption_safe_margin": 180,
+        "max_duration_seconds": None,
     }
 
 

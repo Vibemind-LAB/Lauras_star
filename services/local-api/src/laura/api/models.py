@@ -686,6 +686,9 @@ class ReelRenderRequest(BaseModel):
     caption_position: str = "bottom"
     caption_fontsize: int = Field(default=72, ge=24, le=160)
     caption_safe_margin: int = Field(default=250, ge=0, le=800)
+    # Optional hard cap on the reel length (social platforms enforce max durations). When set,
+    # the render keeps only the first N seconds of the cut (deterministic tail-trim). None = no cap.
+    max_duration_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
 class RenderExportOut(BaseModel):
