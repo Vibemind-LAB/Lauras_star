@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactElement, useCallback, useEffect, useState } from "react";
+import { type FormEvent, type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type Asset,
@@ -29,7 +29,7 @@ import { RoughCutView } from "./components/RoughCutView";
 import { SceneInspector } from "./components/SceneInspector";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
-import { useAnalysis } from "./hooks/useAnalysis";
+import { type AnalysisStatus, useAnalysis } from "./hooks/useAnalysis";
 import { useImportStatus } from "./hooks/useImportStatus";
 import type { Stage } from "./pipeline/stages";
 
@@ -172,6 +172,17 @@ export function App(): ReactElement {
       setRoughCut(null);
     }
   }, [client, selectedProjectId, selectedAssetId, loadRoughCut]);
+
+  // Reveal the auto-built rough cut: when a background analysis reaches "done", reload the
+  // selected asset's rough cut. Fire only on the transition *into* done (ref guard) so we
+  // don't reload on every render while status stays "done".
+  const prevAnalysisStatusRef = useRef<AnalysisStatus>("idle");
+  useEffect(() => {
+    if (analysis.status === "done" && prevAnalysisStatusRef.current !== "done") {
+      reloadRoughCut();
+    }
+    prevAnalysisStatusRef.current = analysis.status;
+  }, [analysis.status, reloadRoughCut]);
 
   // Fetch the project sequence timeline id so ExportView can offer it as a source.
   // Silently clears when no project is selected; errors are non-fatal (no sequence yet).

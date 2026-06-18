@@ -113,6 +113,13 @@ function MediaSidebarItem({
         if (cancelled) return;
         if (run && run.status === "succeeded") {
           setAnalysisState({ kind: "done" });
+        } else if (run && run.status === "failed") {
+          setAnalysisState({ kind: "failed", message: "Analyse fehlgeschlagen" });
+        } else if (run && run.status !== "succeeded" && run.status !== "failed") {
+          // Background analysis already in flight (queued/running): show progress and poll
+          // to terminal instead of offering a misleading second "Analysieren" trigger.
+          setAnalysisState({ kind: "running", label: `${run.status}…` });
+          schedulePoll(0);
         } else {
           setAnalysisState({ kind: "idle" });
         }

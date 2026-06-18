@@ -127,3 +127,47 @@ describe("useAnalysis.runAnalysis", () => {
     expect(result.current.status).toBe("error");
   });
 });
+
+describe("useAnalysis background (auto) analysis", () => {
+  it("polls a non-terminal latest run on mount and reveals results when it succeeds", async () => {
+    // No manual runAnalysis(): the mount effect must itself poll a background run to
+    // terminal and expose the shots/transcript the auto-analysis produced.
+    let polls = 0;
+    const getLatestAnalysis = vi.fn(async () => {
+      polls += 1;
+      return polls > 2 ? run("succeeded") : run("running");
+    });
+    const getShots = vi.fn().mockResolvedValue([{ id: "s1" }]);
+    const getTranscript = vi.fn().mockResolvedValue([{ id: "seg1" }]);
+    const client = makeClient({ getLatestAnalysis, getShots, getTranscript });
+
+    const { result } = renderHook(() => useAnalysis(client, asset));
+    // First poll returns "running" → status becomes "running".
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.status).toBe("running");
+
+    // Advance through the remaining polls until the run reports "succeeded".
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 1000);
+    });
+
+    expect(result.current.status).toBe("done");
+    expect(result.current.shots).toEqual([{ id: "s1" }]);
+    expect(result.current.segments).toEqual([{ id: "seg1" }]);
+  });
+
+  it("reports status=error when a background run finishes failed", async () => {
+    const getLatestAnalysis = vi.fn().mockResolvedValue(run("failed"));
+    const client = makeClient({ getLatestAnalysis });
+
+    const { result } = renderHook(() => useAnalysis(client, asset));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe("error");
+    expect(result.current.error).toBeTruthy();
+  });
+});

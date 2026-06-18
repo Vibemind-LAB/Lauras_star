@@ -169,7 +169,9 @@ describe("MediaSidebar", () => {
       let calls = 0;
       const getLatestAnalysis = vi.fn(async () => {
         calls += 1;
-        // calls===1 is the mount probe; stay "running" well past the old 120-poll cap.
+        // calls===1 is the mount probe: no run yet → the "Analysieren" button renders. After
+        // the user clicks, stay "running" well past the old 120-poll cap, then succeed.
+        if (calls === 1) return null;
         return calls > 130 ? analysisRun("succeeded") : analysisRun("running");
       });
       const client = makeClient({ getLatestAnalysis });
@@ -193,6 +195,43 @@ describe("MediaSidebar", () => {
       });
 
       expect(screen.queryByText(/Timeout/)).toBeNull();
+      expect(screen.getByText("✓ analysiert")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows progress (not an Analysieren button) for a background-running run and polls to ✓", async () => {
+    // Auto-analysis is already in flight at mount: the item must show progress and poll to
+    // completion, never offer a misleading "Analysieren" button that starts a second run.
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const getLatestAnalysis = vi.fn(async () => {
+        calls += 1;
+        // Stay non-terminal for the mount probe + first poll, then succeed.
+        return calls > 2 ? analysisRun("succeeded") : analysisRun("running");
+      });
+      const client = makeClient({ getLatestAnalysis });
+      render(
+        <MediaSidebar
+          client={client}
+          assets={[makeAsset("a1", "auto-clip.mp4")]}
+          selectedAssetId={null}
+          onSelect={vi.fn()}
+        />,
+      );
+      // Flush the mount probe: it returns "running" → progress label, no button.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.queryByRole("button", { name: "Analysieren" })).toBeNull();
+      expect(screen.getByText("running…")).toBeTruthy();
+
+      // Advance so the poll observes "succeeded".
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
       expect(screen.getByText("✓ analysiert")).toBeTruthy();
     } finally {
       vi.useRealTimers();
