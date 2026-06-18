@@ -29,6 +29,15 @@ def _base_url(runtime: dict[str, Any]) -> str | None:
     return None
 
 
+def _container_refresh_status(runtime: dict[str, Any]) -> RuntimeHealth:
+    name = str(runtime.get("container_name") or runtime.get("display_name") or "container runtime")
+    return RuntimeHealth(
+        "unknown",
+        False,
+        f"{name} has no base_url or port; HTTP health is unavailable",
+    )
+
+
 def refresh_runtime(
     db: Database,
     runtime_id: str,
@@ -43,7 +52,10 @@ def refresh_runtime(
     else:
         base = _base_url(runtime)
         if base is None:
-            status = RuntimeHealth("error", False, "runtime has no base_url or port").to_json()
+            if runtime["kind"] == "container":
+                status = _container_refresh_status(runtime).to_json()
+            else:
+                status = RuntimeHealth("error", False, "runtime has no base_url or port").to_json()
             capabilities = runtime.get("capabilities", {})
         else:
             try:

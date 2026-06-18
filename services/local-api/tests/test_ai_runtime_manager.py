@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+from unittest.mock import patch
 
+from laura.ai.docker_runtime import DockerAdapter
 from laura.ai.runtime_manager import refresh_runtime, start_runtime, stop_runtime
 from laura.ai.runtime_types import RuntimeHealth
 from laura.config import Settings
@@ -100,3 +102,48 @@ def test_start_and_stop_container_runtime_are_evented(tmp_path):
 
     events = repos.list_ai_runtime_events(db, rt["id"])
     assert [e["event_type"] for e in events[:2]] == ["stop", "start"]
+
+
+def test_docker_adapter_handles_missing_cli_without_crashing():
+    runtime = {
+        "container_name": "laura-voice",
+        "container_image": "laura-runtime-voice:local",
+        "port": 8898,
+    }
+    adapter = DockerAdapter()
+
+    with patch("laura.ai.docker_runtime.subprocess.run", side_effect=FileNotFoundError):
+        started = adapter.start(runtime)
+        stopped = adapter.stop(runtime)
+        logs = adapter.logs(runtime)
+
+    assert started == RuntimeHealth("error", False, "docker CLI not available")
+    assert stopped == RuntimeHealth("error", False, "docker CLI not available")
+    assert logs == "docker CLI not available"
+
+
+def test_refresh_container_runtime_without_http_metadata_is_safe(tmp_path):
+    db = _db(tmp_path)
+    rt = repos.create_ai_runtime(
+        db,
+        kind="container",
+        effect="voice",
+        display_name="Voice",
+        container_image="laura-runtime-voice:local",
+        container_name="laura-voice",
+    )
+    repos.update_ai_runtime_status(
+        db,
+        rt["id"],
+        status={"state": "starting", "ready": False},
+        capabilities={"effects": ["voice"]},
+    )
+
+    refreshed = refresh_runtime(db, rt["id"])
+
+    assert refreshed["status"]["state"] == "unknown"
+    assert refreshed["status"]["ready"] is False
+    assert refreshed["status"]["message"] == (
+        "laura-voice has no base_url or port; HTTP health is unavailable"
+    )
+    assert refreshed["capabilities"] == {"effects": ["voice"]}

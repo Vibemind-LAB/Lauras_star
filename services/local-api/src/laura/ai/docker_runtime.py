@@ -9,6 +9,20 @@ from .runtime_types import RuntimeHealth
 class DockerAdapter:
     """Small Docker CLI adapter. Dependency-free and easy to fake in tests."""
 
+    def _run(self, args: list[str]) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+
+    def _missing_cli_health(self) -> RuntimeHealth:
+        return RuntimeHealth("error", False, "docker CLI not available")
+
     def start(self, runtime: dict[str, Any]) -> RuntimeHealth:
         name = str(runtime.get("container_name") or "")
         image = str(runtime.get("container_image") or "")
@@ -16,18 +30,14 @@ class DockerAdapter:
         if not name or not image:
             return RuntimeHealth("error", False, "container_name and container_image are required")
 
-        existing = subprocess.run(
-            ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            check=False,
+        existing = self._run(
+            ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}"]
         )
+        if existing is None:
+            return self._missing_cli_health()
         if name in existing.stdout.splitlines():
-            result = subprocess.run(
+            result = self._run(
                 ["docker", "start", name],
-                capture_output=True,
-                text=True,
-                check=False,
             )
         else:
             cmd = ["docker", "run", "-d", "--name", name]
@@ -42,8 +52,10 @@ class DockerAdapter:
             if runtime.get("requires_gpu"):
                 cmd.extend(["--gpus", "all"])
             cmd.append(image)
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = self._run(cmd)
 
+        if result is None:
+            return self._missing_cli_health()
         if result.returncode != 0:
             return RuntimeHealth("error", False, (result.stderr or result.stdout).strip())
         return RuntimeHealth("starting", False, "container started")
@@ -52,12 +64,11 @@ class DockerAdapter:
         name = str(runtime.get("container_name") or "")
         if not name:
             return RuntimeHealth("error", False, "container_name is required")
-        result = subprocess.run(
+        result = self._run(
             ["docker", "stop", name],
-            capture_output=True,
-            text=True,
-            check=False,
         )
+        if result is None:
+            return self._missing_cli_health()
         if result.returncode != 0:
             return RuntimeHealth("error", False, (result.stderr or result.stdout).strip())
         return RuntimeHealth("stopped", False, "container stopped")
@@ -66,10 +77,9 @@ class DockerAdapter:
         name = str(runtime.get("container_name") or "")
         if not name:
             return ""
-        result = subprocess.run(
+        result = self._run(
             ["docker", "logs", "--tail", str(tail), name],
-            capture_output=True,
-            text=True,
-            check=False,
         )
+        if result is None:
+            return "docker CLI not available"
         return result.stdout if result.returncode == 0 else result.stderr
