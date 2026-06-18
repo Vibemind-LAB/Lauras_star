@@ -265,6 +265,7 @@ describe("AssembleView", () => {
 
     expect(await findByText("AI Runtimes")).toBeTruthy();
     expect(await findByText("Stub Lipsync")).toBeTruthy();
+    expect(await findByText("AI Persona Kit")).toBeTruthy();
   });
 
   it("keeps runtime status stable when only the sequence reload key changes", async () => {

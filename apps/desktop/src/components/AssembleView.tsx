@@ -26,6 +26,7 @@ import { AudioLaneControls } from "./AudioLaneControls";
 import { DemoAssistantPanel } from "./DemoAssistantPanel";
 import { LipsyncPanel } from "./LipsyncPanel";
 import { OverlayControls } from "./OverlayControls";
+import { PersonaKitPanel } from "./PersonaKitPanel";
 import { ReenactPanel } from "./ReenactPanel";
 import { RuntimeSetupPanel } from "./RuntimeSetupPanel";
 import { RuntimeStatusPanel } from "./RuntimeStatusPanel";
@@ -855,6 +856,11 @@ export function AssembleView({
         ) : (
           <div className="flex flex-col gap-3">
             <RuntimeStatusPanel client={client} reloadKey={runtimeReloadKey} />
+            <PersonaKitPanel
+              key={`persona-kit:${projectId ?? "none"}:${runtimeReloadKey}`}
+              client={client}
+              projectId={projectId}
+            />
             <RuntimeSetupPanel
               client={client}
               onCreated={() => setRuntimeReloadKey((key) => key + 1)}
