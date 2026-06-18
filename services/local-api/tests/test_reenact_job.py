@@ -451,3 +451,57 @@ def test_reenact_sync_guard_failure_creates_no_synthetic_asset(
         if asset.get("synthetic") and asset.get("ai_effect") == "reenact"
     ]
     assert synthetic == []
+
+
+def test_reenact_runtime_id_routes_to_legacy_backend_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db, project, base_asset, tl = _setup_scene(tmp_path)
+    portrait = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="portrait.mp4",
+        source_path=base_asset["source_path"],
+    )
+    consent = repos.create_consent_record(
+        db,
+        project_id=project["id"],
+        subject_label="Test Subject",
+        confirmed_by="test",
+    )
+    runtime = repos.create_ai_runtime(
+        db,
+        kind="container",
+        effect="reenact",
+        display_name="LivePortrait",
+        container_image="laura-runtime-liveportrait:local",
+    )
+    captured: list[str | None] = []
+    original_resolver = ai_handlers.resolve_reenact_backend
+
+    def capture_resolver(name: str | None) -> object:
+        captured.append(name)
+        return original_resolver(name)
+
+    monkeypatch.setattr(ai_handlers, "resolve_reenact_backend", capture_resolver)
+    runner = JobRunner(db, _make_registry())
+
+    enqueue(
+        db,
+        queue="ai",
+        kind="ai.reenact",
+        payload={
+            "timeline_id": tl["id"],
+            "seq_in_frame": 5,
+            "seq_out_frame_exclusive": 20,
+            "portrait_asset_id": portrait["id"],
+            "consent_id": consent["id"],
+            "runtime_id": runtime["id"],
+        },
+        max_attempts=1,
+    )
+    _drain(runner)
+
+    assert captured == ["liveportrait"]

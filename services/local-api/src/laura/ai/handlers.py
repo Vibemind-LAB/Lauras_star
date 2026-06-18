@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import repos
+from ..db.database import Database
 from ..jobs.runner import JobContext, JobHandler
 from ..render.mp4 import render_clips_mp4
 from ..render.sync import assert_or_fix_media_sync
@@ -20,6 +21,30 @@ from .lipsync_backend import resolve_lipsync_backend
 from .provenance import write_ai_provenance_manifest
 from .reenact_backend import resolve_reenact_backend
 from .voiceover_backend import DEFAULT_VOICEOVER_SAMPLE_RATE, resolve_voiceover_backend
+
+
+def _backend_from_runtime(
+    db: Database, runtime_id: str | None, fallback: str | None
+) -> str | None:
+    if runtime_id is None:
+        return fallback
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise ValueError(f"runtime not found: {runtime_id!r}")
+    if runtime["kind"] == "stub":
+        return "stub"
+    effect_backend = {
+        "voice": "sidecar",
+        "reenact": "liveportrait",
+        "lipsync": "vibevideo",
+    }.get(str(runtime["effect"]))
+    if effect_backend is None:
+        raise ValueError(f"unsupported runtime effect: {runtime['effect']!r}")
+    if runtime["kind"] == "external_http":
+        return effect_backend
+    if runtime["kind"] == "container":
+        return effect_backend
+    raise ValueError(f"unsupported runtime kind: {runtime['kind']!r}")
 
 
 def handle_reenact(ctx: JobContext) -> dict[str, Any]:
@@ -128,7 +153,9 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
         )
 
         # ── 5. Resolve and validate backend ──────────────────────────────────
-        backend = resolve_reenact_backend(payload.get("backend"))
+        backend = resolve_reenact_backend(
+            _backend_from_runtime(ctx.db, payload.get("runtime_id"), payload.get("backend"))
+        )
         if not backend.available():
             raise RuntimeError(
                 f"ai.reenact: reenact backend '{backend.name}' is not installed"
@@ -256,7 +283,9 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
     rate_den = int(project["sequence_rate_den"])
     sample_rate = DEFAULT_VOICEOVER_SAMPLE_RATE
 
-    backend = resolve_voiceover_backend(payload.get("backend"))
+    backend = resolve_voiceover_backend(
+        _backend_from_runtime(ctx.db, payload.get("runtime_id"), payload.get("backend"))
+    )
     if not backend.available():
         raise RuntimeError(f"ai.voiceover: voiceover backend '{backend.name}' is not installed")
 
@@ -468,7 +497,9 @@ def handle_lipsync(ctx: JobContext) -> dict[str, Any]:
 
     try:
         render_clips_mp4(driving_clips, driving_tmp, rate_num=rate_num, rate_den=rate_den)
-        backend = resolve_lipsync_backend(payload.get("backend"))
+        backend = resolve_lipsync_backend(
+            _backend_from_runtime(ctx.db, payload.get("runtime_id"), payload.get("backend"))
+        )
         if not backend.available():
             raise RuntimeError(f"ai.lipsync: lipsync backend '{backend.name}' is not installed")
 

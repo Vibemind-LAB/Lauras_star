@@ -257,3 +257,101 @@ def test_voiceover_rejects_segment_from_other_project(client: TestClient, tmp_pa
 
     assert response.status_code == 422
     assert "segment does not belong to this timeline project" in response.text
+
+
+def test_voiceover_api_accepts_runtime_id_and_preserves_it(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+    runtime = client.post(
+        "/ai/runtimes",
+        json={"kind": "stub", "effect": "voice", "display_name": "Stub Voice"},
+    ).json()
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 12,
+            "seq_out_frame_exclusive": 72,
+            "runtime_id": runtime["id"],
+        },
+    )
+
+    assert accepted.status_code == 202, accepted.text
+    job = repos.get_job(db, accepted.json()["job_id"])
+    assert job is not None
+    payload = json.loads(job["payload_json"])
+    assert payload["runtime_id"] == runtime["id"]
+
+
+def test_voiceover_api_returns_422_for_disabled_runtime(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+    runtime = repos.create_ai_runtime(
+        db,
+        kind="stub",
+        effect="voice",
+        display_name="Disabled Voice",
+        enabled=False,
+    )
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 12,
+            "seq_out_frame_exclusive": 72,
+            "runtime_id": runtime["id"],
+        },
+    )
+
+    assert accepted.status_code == 422
+    assert "runtime is disabled" in accepted.text
+
+
+def test_voiceover_runtime_id_routes_to_legacy_backend_name(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: list[str | None] = []
+    original_resolver = ai_handlers.resolve_voiceover_backend
+
+    def capture_resolver(name: str | None) -> object:
+        captured.append(name)
+        return original_resolver(name)
+
+    monkeypatch.setattr(ai_handlers, "resolve_voiceover_backend", capture_resolver)
+
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+    runtime = repos.create_ai_runtime(
+        db,
+        kind="external_http",
+        effect="voice",
+        display_name="Voice HTTP",
+        base_url="http://127.0.0.1:8898",
+    )
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 12,
+            "seq_out_frame_exclusive": 72,
+            "runtime_id": runtime["id"],
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+
+    assert app.state.runner.run_once() is True
+    assert captured == ["sidecar"]

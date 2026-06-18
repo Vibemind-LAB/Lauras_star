@@ -29,6 +29,21 @@ def _consent_out(rec: dict[str, object]) -> ConsentOut:
     return ConsentOut(**{k: rec.get(k) for k in ConsentOut.model_fields})  # type: ignore[arg-type]
 
 
+def _validate_runtime(db: Database, runtime_id: str | None, effect: str) -> None:
+    if runtime_id is None:
+        return
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "runtime not found")
+    if runtime["effect"] != effect:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"runtime effect must be {effect}",
+        )
+    if not runtime["enabled"]:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "runtime is disabled")
+
+
 @router.post(
     "/projects/{project_id}/consent",
     status_code=status.HTTP_201_CREATED,
@@ -103,6 +118,8 @@ def reenact(
             "seq_out_frame_exclusive must be greater than seq_in_frame",
         )
 
+    _validate_runtime(db, body.runtime_id, "reenact")
+
     consent = repos.get_consent_record(db, body.consent_id)
     if consent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "consent record not found")
@@ -116,18 +133,22 @@ def reenact(
     if portrait is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "portrait asset not found")
 
+    payload = {
+        "timeline_id": timeline_id,
+        "seq_in_frame": body.seq_in_frame,
+        "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
+        "portrait_asset_id": body.portrait_asset_id,
+        "consent_id": body.consent_id,
+        "backend": body.backend,
+    }
+    if body.runtime_id is not None:
+        payload["runtime_id"] = body.runtime_id
+
     job_id = enqueue(
         db,
         queue=queue_for("ai.reenact", default="ai"),
         kind="ai.reenact",
-        payload={
-            "timeline_id": timeline_id,
-            "seq_in_frame": body.seq_in_frame,
-            "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
-            "portrait_asset_id": body.portrait_asset_id,
-            "consent_id": body.consent_id,
-            "backend": body.backend,
-        },
+        payload=payload,
         idempotency_key=(
             f"reenact:{timeline_id}:{body.seq_in_frame}:{body.seq_out_frame_exclusive}"
             f":{body.portrait_asset_id}"

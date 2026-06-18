@@ -137,3 +137,79 @@ def test_lipsync_api_rejects_non_audio_asset(client: TestClient, tmp_path: Path)
 
     assert response.status_code == 422
     assert "audio" in response.text
+
+
+def test_lipsync_api_accepts_runtime_id(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    db, _, timeline, _, audio, consent_id = _seed_lipsync_api(client, tmp_path)
+    runtime = client.post(
+        "/ai/runtimes",
+        json={"kind": "stub", "effect": "lipsync", "display_name": "Stub Lipsync"},
+    ).json()
+
+    response = client.post(
+        f"/timelines/{timeline['id']}/lipsync",
+        json={
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 12,
+            "audio_asset_id": audio["id"],
+            "consent_id": consent_id,
+            "license_accepted": True,
+            "runtime_id": runtime["id"],
+        },
+    )
+    assert response.status_code == 202
+    job = repos.get_job(db, response.json()["job_id"])
+    assert job is not None
+    payload = json.loads(job["payload_json"])
+    assert payload["runtime_id"] == runtime["id"]
+
+
+def test_lipsync_api_returns_404_for_missing_runtime(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _, _, timeline, _, audio, consent_id = _seed_lipsync_api(client, tmp_path)
+
+    response = client.post(
+        f"/timelines/{timeline['id']}/lipsync",
+        json={
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 12,
+            "audio_asset_id": audio["id"],
+            "consent_id": consent_id,
+            "license_accepted": True,
+            "runtime_id": "missing-runtime",
+        },
+    )
+
+    assert response.status_code == 404
+    assert "runtime not found" in response.text
+
+
+def test_lipsync_api_returns_422_for_wrong_runtime_effect(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _, _, timeline, _, audio, consent_id = _seed_lipsync_api(client, tmp_path)
+    runtime = client.post(
+        "/ai/runtimes",
+        json={"kind": "stub", "effect": "voice", "display_name": "Stub Voice"},
+    ).json()
+
+    response = client.post(
+        f"/timelines/{timeline['id']}/lipsync",
+        json={
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 12,
+            "audio_asset_id": audio["id"],
+            "consent_id": consent_id,
+            "license_accepted": True,
+            "runtime_id": runtime["id"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "runtime effect must be lipsync" in response.text

@@ -526,6 +526,7 @@ class VoiceoverRequest(BaseModel):
     seq_out_frame_exclusive: int = Field(gt=0)
     language: str | None = None
     backend: str | None = None
+    runtime_id: str | None = None
     gain_percent: int = Field(default=100, ge=0, le=400)
     fade_in_frames: int = Field(default=0, ge=0)
     fade_out_frames: int = Field(default=0, ge=0)
@@ -750,6 +751,7 @@ class ReenactRequest(BaseModel):
     portrait_asset_id: str
     consent_id: str  # MANDATORY — missing -> 422 automatically
     backend: str | None = None
+    runtime_id: str | None = None
 
 
 class LipsyncRequest(BaseModel):
@@ -759,6 +761,7 @@ class LipsyncRequest(BaseModel):
     consent_id: str
     license_accepted: bool
     backend: str | None = None
+    runtime_id: str | None = None
     quality_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
     @model_validator(mode="after")

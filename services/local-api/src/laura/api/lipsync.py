@@ -21,6 +21,21 @@ def _db(request: Request) -> Database:
     return db
 
 
+def _validate_runtime(db: Database, runtime_id: str | None, effect: str) -> None:
+    if runtime_id is None:
+        return
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "runtime not found")
+    if runtime["effect"] != effect:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"runtime effect must be {effect}",
+        )
+    if not runtime["enabled"]:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "runtime is disabled")
+
+
 @router.post(
     "/timelines/{timeline_id}/lipsync",
     status_code=status.HTTP_202_ACCEPTED,
@@ -35,6 +50,8 @@ def create_lipsync(
     timeline = repos.get_timeline(db, timeline_id)
     if timeline is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+
+    _validate_runtime(db, body.runtime_id, "lipsync")
 
     audio = repos.get_asset(db, body.audio_asset_id)
     if audio is None:
@@ -74,6 +91,8 @@ def create_lipsync(
         "backend": body.backend,
         "quality_threshold": body.quality_threshold,
     }
+    if body.runtime_id is not None:
+        payload["runtime_id"] = body.runtime_id
     job_id = enqueue(
         db,
         queue=queue_for("ai.lipsync", default="ai"),
