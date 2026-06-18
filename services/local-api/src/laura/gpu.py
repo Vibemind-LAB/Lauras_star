@@ -30,7 +30,8 @@ def nvenc_available() -> bool:
 def asr_cuda_available() -> bool:
     """True if ctranslate2 (faster-whisper backend) sees a CUDA device."""
     try:
-        import ctranslate2  # type: ignore[import-untyped]
+        import ctranslate2
+
         return int(ctranslate2.get_cuda_device_count()) > 0
     except Exception:  # noqa: BLE001
         return False

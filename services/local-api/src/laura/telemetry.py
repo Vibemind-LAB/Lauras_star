@@ -14,11 +14,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-_otel_trace: Any = None
 try:  # API is enough to instrument; the SDK/exporter only matter when exporting.
-    from opentelemetry import trace as _otel_trace
+    from opentelemetry import trace as otel_trace
 except Exception:  # noqa: BLE001 - any import problem -> tracing disabled
-    _otel_trace = None
+    otel_trace = None
+
+_otel_trace: Any = otel_trace
 
 
 class _NoopSpan:
