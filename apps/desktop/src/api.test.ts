@@ -507,6 +507,19 @@ describe("LauraClient timeline audio clip methods", () => {
 });
 
 describe("LauraClient AI runtime and persona methods", () => {
+  it("lists AI runtimes with an effect query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LauraClient("http://localhost", "token");
+
+    await client.listAiRuntimes("lipsync");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/ai/runtimes?effect=lipsync",
+      expect.anything(),
+    );
+  });
+
   it("creates and refreshes AI runtimes", async () => {
     const fetchMock = vi
       .fn()
@@ -545,6 +558,57 @@ describe("LauraClient AI runtime and persona methods", () => {
     );
   });
 
+  it("starts and stops AI runtimes", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "rt-1", enabled: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "rt-1", enabled: false }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LauraClient("http://localhost", "token");
+
+    await client.startAiRuntime("rt-1");
+    await client.stopAiRuntime("rt-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost/ai/runtimes/rt-1/start",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost/ai/runtimes/rt-1/stop",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("lists AI runtime events", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([{ id: "evt-1", runtime_id: "rt-1" }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LauraClient("http://localhost", "token");
+
+    await client.listAiRuntimeEvents("rt-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/ai/runtimes/rt-1/events",
+      expect.anything(),
+    );
+  });
+
+  it("lists AI personas with a project query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new LauraClient("http://localhost", "token");
+
+    await client.listAiPersonas("project-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost/ai/personas?project_id=project-1",
+      expect.anything(),
+    );
+  });
+
   it("creates AI personas with preferred runtimes", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: "persona-1" }), { status: 201 }),
@@ -560,18 +624,17 @@ describe("LauraClient AI runtime and persona methods", () => {
       preferredRuntimes: { voice: "rt-voice" },
     });
 
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost/ai/personas",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          project_id: "project-1",
-          name: "Persona",
-          consent_id: "consent-1",
-          allowed_effects: ["voice", "lipsync"],
-          preferred_runtimes: { voice: "rt-voice" },
-        }),
-      }),
+      expect.objectContaining({ method: "POST" }),
     );
+    expect(JSON.parse(init.body as string)).toEqual({
+      project_id: "project-1",
+      name: "Persona",
+      consent_id: "consent-1",
+      allowed_effects: ["voice", "lipsync"],
+      preferred_runtimes: { voice: "rt-voice" },
+    });
   });
 });

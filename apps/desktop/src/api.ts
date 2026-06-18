@@ -595,6 +595,7 @@ export interface ConsentRecord {
 export type RuntimeKind = "stub" | "external_http" | "container";
 export type RuntimeEffect = "voice" | "reenact" | "lipsync" | "faceswap" | "restore";
 export type LicenseStatus = "unknown" | "accepted" | "rejected" | "not_required";
+export type PreferredRuntimeMap = Partial<Record<RuntimeEffect, string>>;
 
 export interface AiRuntime {
   id: string;
@@ -651,7 +652,7 @@ export interface AiPersona {
   voice_reference_asset_id: string | null;
   style: Record<string, unknown>;
   allowed_effects: RuntimeEffect[];
-  preferred_runtimes: Record<string, string>;
+  preferred_runtimes: PreferredRuntimeMap;
   created_at: string;
   updated_at: string;
 }
@@ -664,7 +665,7 @@ export interface AiPersonaCreate {
   voiceReferenceAssetId?: string;
   style?: Record<string, unknown>;
   allowedEffects?: RuntimeEffect[];
-  preferredRuntimes?: Record<string, string>;
+  preferredRuntimes?: PreferredRuntimeMap;
 }
 
 export class LauraClient {
@@ -1308,11 +1309,10 @@ export class LauraClient {
 
   createAiPersona(input: AiPersonaCreate): Promise<AiPersona> {
     const body: Record<string, unknown> = {
-      project_id: input.projectId,
       name: input.name,
       consent_id: input.consentId,
     };
-    if (input.projectId === undefined) delete body.project_id;
+    if (input.projectId !== undefined) body.project_id = input.projectId;
     if (input.faceReferenceAssetId !== undefined) {
       body.face_reference_asset_id = input.faceReferenceAssetId;
     }
