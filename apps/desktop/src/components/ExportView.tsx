@@ -120,6 +120,16 @@ export function ExportView({
   /** asset_id of the first flattened clip — used for the caption preview poster frame. */
   const [posterAssetId, setPosterAssetId] = useState<string | null>(null);
 
+  // Kind-aware clip fetch: a sequence resolves its scene references via /flattened, whereas a
+  // rough-cut timeline carries its clips directly (getSequenceFlattened returns [] for it).
+  const fetchTargetClips = useCallback(
+    async (t: ExportTarget): Promise<TimelineClip[]> =>
+      t.kind === "sequence"
+        ? client.getSequenceFlattened(t.id)
+        : (await client.getTimeline(t.id)).clips,
+    [client],
+  );
+
   // Fetch the clip count of every target so we can default to a non-empty source and label
   // each option. Targets are few (sequence + per-asset rough cut); each fetch is local + cheap.
   useEffect(() => {
@@ -129,8 +139,7 @@ export function ExportView({
       const entries = await Promise.all(
         exportTargets.map(async (t) => {
           try {
-            const clips = await client.getSequenceFlattened(t.id);
-            return [t.id, clips.length] as const;
+            return [t.id, (await fetchTargetClips(t)).length] as const;
           } catch {
             return [t.id, 0] as const;
           }
@@ -141,7 +150,7 @@ export function ExportView({
     return () => {
       cancelled = true;
     };
-  }, [client, exportTargets]);
+  }, [fetchTargetClips, exportTargets]);
 
   // Keep selectedTargetId valid and default to the first NON-EMPTY source — so landing on
   // Export right after import selects the populated rough cut instead of the still-empty
@@ -163,7 +172,7 @@ export function ExportView({
 
   // Fetch clip count + duration for the selected timeline whenever it changes.
   useEffect(() => {
-    if (!timelineId) {
+    if (!activeTarget) {
       setSourceInfo(null);
       setPosterAssetId(null);
       return;
@@ -171,7 +180,7 @@ export function ExportView({
     let cancelled = false;
     void (async () => {
       try {
-        const clips = await client.getSequenceFlattened(timelineId);
+        const clips = await fetchTargetClips(activeTarget);
         if (cancelled) return;
         // Capture first clip's asset_id for the caption preview poster frame.
         setPosterAssetId(clips[0]?.asset_id ?? null);
@@ -194,7 +203,7 @@ export function ExportView({
     return () => {
       cancelled = true;
     };
-  }, [client, timelineId, project]);
+  }, [activeTarget, fetchTargetClips, project]);
 
   const load = useCallback(async (): Promise<void> => {
     if (!projectId) return;

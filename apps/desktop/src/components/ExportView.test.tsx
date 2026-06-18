@@ -19,6 +19,9 @@ function mkClient(over: Partial<LauraClient>): LauraClient {
     renderTimeline: vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" }),
     renderReel: vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" }),
     getSequenceFlattened: vi.fn().mockResolvedValue([]),
+    getTimeline: vi.fn().mockResolvedValue({
+      id: "t1", project_id: "p1", name: "t", kind: "rough_cut", created_at: "", clips: [],
+    }),
     assetFrameUrl: vi.fn().mockResolvedValue("blob:poster"),
     ...over,
   } as unknown as LauraClient;
@@ -43,11 +46,14 @@ describe("ExportView", () => {
   it("defaults to the first non-empty source (skips the empty assembled sequence)", async () => {
     const SEQ: ExportTarget = { id: "seq1", label: "Sequenz (Zusammenfügen)", kind: "sequence" };
     const RC: ExportTarget = { id: "rc1", label: "Rough Cut: video.mp4", kind: "rough_cut" };
-    const getSequenceFlattened = vi.fn(async (id: string) =>
-      id === "rc1" ? [{ asset_id: "a", seq_out_frame_exclusive: 100 }] : [],
-    );
+    // The sequence resolves via /flattened (empty); the rough cut carries clips directly.
+    const getTimeline = vi.fn(async (id: string) => ({
+      id, project_id: "p1", name: "rc", kind: "rough_cut", created_at: "",
+      clips: id === "rc1" ? [{ asset_id: "a", seq_out_frame_exclusive: 100 }] : [],
+    }));
     const client = mkClient({
-      getSequenceFlattened: getSequenceFlattened as unknown as LauraClient["getSequenceFlattened"],
+      getSequenceFlattened: vi.fn().mockResolvedValue([]),
+      getTimeline: getTimeline as unknown as LauraClient["getTimeline"],
     });
     render(<ExportView client={client} projectId="p1" project={null} exportTargets={[SEQ, RC]} />);
     // The populated rough cut is auto-selected even though the empty sequence is listed first.
