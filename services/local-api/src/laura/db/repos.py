@@ -601,6 +601,21 @@ def update_timeline_clip_role(db: Database, clip_id: str, role: str) -> bool:
         return result.rowcount > 0
 
 
+def set_clip_transition(db: Database, *, clip_id: str, kind: str, frames: int) -> bool:
+    """Set the transition that plays AFTER ``clip_id`` (mirrors set_sequence_item_transition).
+
+    ``kind`` in {'hard','fade','crossfade'}; ``frames`` is the duration in TIMELINE frames.
+    Returns ``True`` when a row was updated, ``False`` for an unknown clip.
+    """
+    with db.transaction() as conn:
+        result = conn.execute(
+            "UPDATE timeline_clips SET transition_after_kind=?, transition_after_frames=? "
+            "WHERE id=?",
+            (kind, int(frames), clip_id),
+        )
+        return result.rowcount > 0
+
+
 def delete_timeline_clip(db: Database, clip_id: str) -> bool:
     with db.transaction() as conn:
         result = conn.execute(
