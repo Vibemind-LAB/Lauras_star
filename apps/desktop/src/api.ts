@@ -523,6 +523,51 @@ export type SequenceTransitionKind = "hard" | "dip_black" | "fade_black" | "cros
 /** Clip-level transition kinds the renderer supports for rough_cut/scene clips. */
 export type ClipTransitionKind = "hard" | "fade" | "crossfade";
 
+/** A fix the transition review can apply at a cut boundary. */
+export interface SuggestedFix {
+  kind: "none" | "resnap" | "transition";
+  resnap_delta_frames?: number;
+  transition_style?: "crossfade" | "fade";
+  transition_frames?: number;
+}
+
+/** Semantic identity of a cut boundary (stable across upstream edits). */
+export interface BoundaryIdentity {
+  asset_a: string;
+  asset_b: string;
+  src_out_a: number;
+  src_in_b: number;
+}
+
+export type SmoothnessLabel = "smooth" | "jump_cut" | "hard_jolt" | "motion_break";
+
+/** A cached VLM verdict on how smooth one cut transition is. */
+export interface TransitionVerdict {
+  boundary_seq_frame: number;
+  asset_a: string;
+  asset_b: string;
+  src_out_a: number;
+  src_in_b: number;
+  smoothness: number;
+  label: SmoothnessLabel;
+  reason: string;
+  suggested_fix: SuggestedFix;
+  model_id: string;
+  created_at: string;
+}
+
+export interface TransitionReviewResult {
+  verdicts: TransitionVerdict[];
+}
+
+export interface ApplyFixResult {
+  status: "ok" | "error" | "not_supported" | string;
+  applied?: string;
+  reason?: string;
+  delta?: number;
+  style?: string;
+}
+
 export interface Sequence {
   timeline_id: string;
   project_id: string;
@@ -1115,6 +1160,27 @@ export class LauraClient {
 
   getSequenceFlattened(sequenceId: string): Promise<TimelineClip[]> {
     return this.request<TimelineClip[]>(`/sequences/${sequenceId}/flattened`);
+  }
+
+  reviewTransitions(timelineId: string): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>(`/timelines/${timelineId}/transitions/review`, {
+      method: "POST",
+    });
+  }
+
+  getTransitionReview(timelineId: string): Promise<TransitionReviewResult> {
+    return this.request<TransitionReviewResult>(`/timelines/${timelineId}/transitions/review`);
+  }
+
+  applyTransitionFix(
+    timelineId: string,
+    identity: BoundaryIdentity,
+    fix: SuggestedFix,
+  ): Promise<ApplyFixResult> {
+    return this.request<ApplyFixResult>(`/timelines/${timelineId}/transitions/apply-fix`, {
+      method: "POST",
+      body: JSON.stringify({ identity, fix }),
+    });
   }
 
   listTimelineAudioClips(timelineId: string): Promise<TimelineAudioClip[]> {
