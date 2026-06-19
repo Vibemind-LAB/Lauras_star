@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 TimelineKind = Literal["rough_cut", "scene", "sequence"]
 FixKind = Literal["none", "resnap", "transition"]
@@ -88,3 +88,68 @@ def frame_strip_plan(boundary: Boundary, k: int) -> list[tuple[str, int]]:
     b_end = min(boundary.src_in_b + k, boundary.src_out_b)
     b_refs = [(boundary.asset_b, f) for f in range(boundary.src_in_b, b_end)]
     return a_refs + b_refs
+
+
+class VlmBackend(Protocol):
+    """A model (or stub) that judges a single transition from frames + metadata.
+
+    ``review`` receives the boundary frame strip (JPEG bytes, A-side then B-side) and a ``meta``
+    dict (``same_source``, ``removed_gap_frames``, ``k``, ``a_count``, ``b_count``) and returns a
+    structured verdict. ``model_digest`` pins the verdict's identity for the cache (spec §3)."""
+
+    def available(self) -> bool: ...
+    def model_id(self) -> str: ...
+    def model_digest(self) -> str: ...
+    def review(self, frames: list[bytes], meta: dict[str, object]) -> TransitionVerdict: ...
+
+
+class StubVlmBackend:
+    """Deterministic, model-free backend — the default in tests (no model, no ffmpeg).
+
+    Heuristic: a **contiguous same-source** cut (``same_source`` and ``removed_gap_frames == 0``)
+    is the canonical dead-air jump → propose a crossfade. Everything else reads as a clean cut
+    between distinct material → no fix. (Note: ``same_source`` already implies a zero gap; the gap
+    guard is defensive.)"""
+
+    def available(self) -> bool:
+        return True
+
+    def model_id(self) -> str:
+        return "stub"
+
+    def model_digest(self) -> str:
+        return "stub-v1"
+
+    def review(self, frames: list[bytes], meta: dict[str, object]) -> TransitionVerdict:
+        same_source = bool(meta.get("same_source"))
+        gap_raw = meta.get("removed_gap_frames", 0)
+        gap = gap_raw if isinstance(gap_raw, int) else 0
+        if same_source and gap == 0:
+            k_raw = meta.get("k", 6)
+            k = k_raw if isinstance(k_raw, int) else 6
+            return TransitionVerdict(
+                smoothness=0.2,
+                label="jump_cut",
+                reason="contiguous same-source cut (dead-air jump)",
+                suggested_fix=SuggestedFix(
+                    kind="transition", transition_style="crossfade", transition_frames=k
+                ),
+            )
+        return TransitionVerdict(
+            smoothness=0.9,
+            label="smooth",
+            reason="distinct material",
+            suggested_fix=SuggestedFix(kind="none"),
+        )
+
+
+def default_backend() -> VlmBackend | None:
+    """The configured real backend, or ``None`` when the ``[vlm]`` extra is absent.
+
+    Plan B always returns ``None`` (no model); Plan C provides the Ollama-backed implementation.
+    The review job takes a backend argument, so tests inject :class:`StubVlmBackend` directly."""
+    return None
+
+
+def vlm_available() -> bool:
+    return default_backend() is not None
