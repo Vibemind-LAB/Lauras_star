@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useMemo, useState } from "react";
 
 import { type Asset, type LauraClient, type Segment, type TimelineClip } from "../api";
 import { useSceneTimeline } from "../hooks/useSceneTimeline";
+import { TransitionReviewPanel } from "./TransitionReviewPanel";
 import { useScenes } from "../hooks/useScenes";
 import { projectCutWords } from "../shared/transcriptProjection";
 import { SceneInspector } from "./SceneInspector";
@@ -227,6 +228,8 @@ export function FineCutView({
             onChange={() => void reload()}
           />
         )}
+
+        <TransitionReviewPanel client={client} timelineId={scene.timeline?.id ?? null} />
 
         {scene.error && (
           <div className="px-3 py-1 text-xs text-red-400">{scene.error}</div>

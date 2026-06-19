@@ -28,6 +28,7 @@ import { LipsyncPanel } from "./LipsyncPanel";
 import { OverlayControls } from "./OverlayControls";
 import { ReenactPanel } from "./ReenactPanel";
 import { SequencePlayer } from "./SequencePlayer";
+import { TransitionReviewPanel } from "./TransitionReviewPanel";
 import { TimelineBar } from "./TimelineBar";
 
 /** A small source-frame thumbnail, fetched as a token-authed JPEG object URL. */
@@ -857,6 +858,12 @@ export function AssembleView({
                 Stub-Reenact ist lokal verfügbar. LivePortrait Sidecar bleibt optional und wird erst
                 genutzt, wenn der lokale Sidecar samt Modellgewichten läuft.
               </p>
+            </section>
+            <section className="overflow-hidden rounded border border-edge bg-panel/50">
+              <TransitionReviewPanel
+                client={client}
+                timelineId={sequence?.timeline_id ?? null}
+              />
             </section>
             <AudioLaneControls
               client={client}
