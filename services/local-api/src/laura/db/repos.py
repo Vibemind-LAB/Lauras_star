@@ -88,7 +88,16 @@ def rename_project(db: Database, project_id: str, name: str) -> bool:
 
 def delete_project(db: Database, project_id: str) -> bool:
     with db.transaction() as conn:
+        # Deleting the project cascades assets, timelines (and their clips / sequence_items / audio
+        # clips / interchange exports) via ON DELETE CASCADE.
         cur = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        # scenes / exports / consent_records carry a project_id column but have NO foreign key to
+        # projects (historical schema), so the cascade never reaches them. Delete them explicitly
+        # to avoid orphans. Run after the project delete: its cascade has already removed the
+        # sequence_items that reference scenes, so there are no remaining referrers.
+        conn.execute("DELETE FROM scenes WHERE project_id=?", (project_id,))
+        conn.execute("DELETE FROM exports WHERE project_id=?", (project_id,))
+        conn.execute("DELETE FROM consent_records WHERE project_id=?", (project_id,))
         return cur.rowcount > 0
 
 
