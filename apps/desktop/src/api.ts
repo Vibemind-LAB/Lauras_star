@@ -520,6 +520,9 @@ export interface SequenceItem {
 
 export type SequenceTransitionKind = "hard" | "dip_black" | "fade_black" | "crossfade";
 
+/** Clip-level transition kinds the renderer supports for rough_cut/scene clips. */
+export type ClipTransitionKind = "hard" | "fade" | "crossfade";
+
 export interface Sequence {
   timeline_id: string;
   project_id: string;
@@ -1095,6 +1098,18 @@ export class LauraClient {
         kind: body.kind,
         duration_frames: body.durationFrames,
       }),
+    });
+  }
+
+  setClipTransition(
+    timelineId: string,
+    clipId: string,
+    kind: ClipTransitionKind,
+    durationFrames: number,
+  ): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}/clips/${clipId}/transition`, {
+      method: "PATCH",
+      body: JSON.stringify({ kind, duration_frames: durationFrames }),
     });
   }
 

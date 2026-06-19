@@ -63,6 +63,7 @@ from .models import (
     RenderExportOut,
     RenderRequest,
     RoughCutQualityOut,
+    SequenceTransitionRequest,
     SetClipsRequest,
     SplitCutOut,
     TimelineCreate,
@@ -956,6 +957,38 @@ def set_timeline_clips(
     repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
     audit.record(
         db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
+    )
+    return _timeline_out(db, fresh)
+
+
+@router.patch(
+    "/timelines/{timeline_id}/clips/{clip_id}/transition",
+    response_model=TimelineOut,
+)
+def set_clip_transition(
+    timeline_id: str,
+    clip_id: str,
+    body: SequenceTransitionRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> TimelineOut:
+    """Set the transition that plays AFTER a clip: ``hard`` | ``fade`` | ``crossfade``.
+
+    The same shape as the sequence-item transition, but on a rough_cut/scene clip so a
+    smoothness fix applies where the cut is made. ``hard`` forces ``frames`` to 0."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    if not any(c["id"] == clip_id for c in repos.list_timeline_clips(db, timeline_id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "clip not found")
+    allowed = {"hard", "fade", "crossfade"}
+    kind = body.kind if body.kind in allowed else "hard"
+    frames = 0 if kind == "hard" else body.duration_frames
+    repos.set_clip_transition(db, clip_id=clip_id, kind=kind, frames=frames)
+    fresh = repos.get_timeline(db, timeline_id)
+    assert fresh is not None
+    audit.record(
+        db, principal, "timeline.set_clip_transition", entity_type="timeline", entity_id=timeline_id
     )
     return _timeline_out(db, fresh)
 
