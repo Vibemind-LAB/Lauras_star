@@ -107,24 +107,13 @@ def _download_single_stream(
                 raise DownloadError(f"unexpected status {resp.status_code} for {url}")
             total = _expected_total(resp, resume_from)
             downloaded = resume_from
-            buf = bytearray()
-            try:
-                for raw in resp.iter_raw():
-                    buf += raw
-                    if len(buf) >= chunk_bytes:
-                        fh.write(buf)
-                        downloaded += len(buf)
-                        if on_progress is not None:
-                            on_progress(downloaded, total)
-                        buf.clear()
-            finally:
-                # Flush any buffered data before the exception propagates
-                # so a partial .part file survives a mid-stream error.
-                if buf:
-                    fh.write(buf)
-                    downloaded += len(buf)
-                    if on_progress is not None:
-                        on_progress(downloaded, total)
+            for raw in resp.iter_raw(chunk_size=chunk_bytes):
+                if not raw:
+                    continue
+                fh.write(raw)
+                downloaded += len(raw)
+                if on_progress is not None:
+                    on_progress(downloaded, total)
     except httpx.HTTPError as exc:
         raise DownloadError(f"transport error for {url}: {exc}") from exc
     finally:

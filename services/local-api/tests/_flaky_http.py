@@ -7,16 +7,13 @@ completes. Not a fixture — a context manager that yields the URL.
 
 from __future__ import annotations
 
-import socket
-import struct
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 # Small chunk size used for chunked-transfer cut responses so httpx can yield
-# partial data before the RST arrives.  Must be well below the httpx iter_raw()
-# buffer so at least one chunk is delivered.
+# partial data before the incomplete response closes.
 _CUT_CHUNK = 1024
 
 
@@ -31,9 +28,10 @@ def serve(
     """Serve ``content`` at the yielded URL.
 
     If ``cut_after`` is set, the first request that starts at offset 0 sends only
-    ``cut_after`` bytes using chunked transfer encoding, then forces a TCP RST so
-    the client receives the partial data *and* an error.  Any later request —
-    including the Range request a resume sends — is served in full.
+    ``cut_after`` bytes using chunked transfer encoding, then closes without the
+    terminating zero-length chunk so the client receives partial data *and* a
+    protocol error. Any later request — including the Range request a resume
+    sends — is served in full.
 
     If ``ignore_range`` is True, any ``Range`` header in the request is ignored:
     the server always responds ``200`` with the full body and full
@@ -67,7 +65,7 @@ def serve(
             if do_cut:
                 state["cut_used"] = True
                 # Chunked TE: send small complete chunks so httpx yields them,
-                # then RST (SO_LINGER l_linger=0) to make iter_raw raise ReadError.
+                # then close without the terminating zero chunk so iter_raw raises.
                 self.send_response(200)
                 self.send_header("Transfer-Encoding", "chunked")
                 self.send_header("Accept-Ranges", "bytes")
@@ -82,14 +80,6 @@ def serve(
                     self.wfile.write(b"\r\n")
                     sent += n
                 self.wfile.flush()
-                # Force RST (not graceful FIN) so httpx raises rather than
-                # treating EOF as a valid end-of-chunked-body.
-                self.connection.setsockopt(
-                    socket.SOL_SOCKET,
-                    socket.SO_LINGER,
-                    struct.pack("HH", 1, 0),  # Winsock linger: two u_short fields
-                )
-                self.connection.close()
                 self.close_connection = True
                 return
 

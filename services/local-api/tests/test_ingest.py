@@ -47,7 +47,12 @@ def _drain(runner: JobRunner, limit: int = 50) -> int:
     return ran
 
 
-def test_full_ingest_pipeline(tmp_path: Path, sample_media: Path) -> None:
+def test_full_ingest_pipeline(
+    tmp_path: Path,
+    sample_media: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LAURA_AUTO_ANALYZE", "0")
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
     db = SqliteDatabase(settings.db_path)
     db.migrate()

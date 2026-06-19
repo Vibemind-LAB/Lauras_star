@@ -17,6 +17,7 @@ function client(overrides: Partial<LauraClient>): LauraClient {
   };
   return {
     createConsent: vi.fn().mockResolvedValue(consent),
+    getJob: vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" }),
     reenact: vi.fn().mockResolvedValue({ job_id: "job-1" }),
     ...overrides,
   } as unknown as LauraClient;
@@ -24,8 +25,10 @@ function client(overrides: Partial<LauraClient>): LauraClient {
 
 describe("ReenactPanel", () => {
   it("passes liveportrait when the LivePortrait backend is selected", async () => {
+    const getJob = vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" });
+    const onChange = vi.fn();
     const reenact = vi.fn().mockResolvedValue({ job_id: "job-1" });
-    const c = client({ reenact });
+    const c = client({ getJob, reenact });
 
     render(
       <ReenactPanel
@@ -33,7 +36,7 @@ describe("ReenactPanel", () => {
         projectId="project-1"
         timelineId="timeline-1"
         assets={[{ id: "asset-1", display_name: "Portrait" }]}
-        onChange={vi.fn()}
+        onChange={onChange}
         currentSeqFrame={0}
         rateNum={30}
         rateDen={1}
@@ -63,5 +66,7 @@ describe("ReenactPanel", () => {
         backend: "liveportrait",
       }),
     );
+    await waitFor(() => expect(getJob).toHaveBeenCalledWith("job-1"));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
   });
 });

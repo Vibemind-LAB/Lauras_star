@@ -356,6 +356,11 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
   `test_api_assets.py::test_get_asset_provenance_returns_manifest`, `test_ai_provenance`,
   Desktop `api`/`MediaSidebar`, scoped ruff/mypy, `tsc`.
   **Follow-up:** Provenance in Export-Reports aufnehmen und spaeter C2PA/Video-Seal einbetten.
+- [x] **APF1 AI Persona Foundation Design + Runtime Base** - Container-first
+  Persona-Fundament geplant und umgesetzt: Runtime Registry (`stub`/`external_http`/`container`),
+  Health/Capability-Refresh, Container Start/Stop/Events, Persona-Kit mit Consent und bevorzugten
+  Runtimes, sowie `runtime_id`-Routing fuer bestehende Voice/Reenact/Lipsync-Jobs. Echte Modell-
+  Container bleiben optional und werden ueber Setup/Runtime-Status aktiviert.
 
 ---
 
