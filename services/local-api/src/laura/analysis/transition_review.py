@@ -12,8 +12,10 @@ drifts when upstream clips are edited) — see :func:`boundary_signature` and sp
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, Protocol
 
 from ..db import repos
@@ -43,9 +45,9 @@ class Boundary:
     src_in_b: int
     src_out_b: int
     seq_in_a: int
-    seq_out_a: int            # == boundary_seq_frame (denormalised; NOT part of identity)
-    removed_gap_frames: int   # max(0, src_in_b - src_out_a) when same asset, else 0
-    same_source: bool         # asset_a == asset_b AND src_in_b == src_out_a (contiguous source)
+    seq_out_a: int  # == boundary_seq_frame (denormalised; NOT part of identity)
+    removed_gap_frames: int  # max(0, src_in_b - src_out_a) when same asset, else 0
+    same_source: bool  # asset_a == asset_b AND src_in_b == src_out_a (contiguous source)
 
 
 @dataclass(frozen=True)
@@ -251,8 +253,22 @@ def extract_frames(
             continue
         t = max(0, frame) * rate_den / rate_num
         cmd = [
-            ffmpeg_bin(), "-v", "error", "-ss", f"{t:.6f}", "-i", str(path),
-            "-frames:v", "1", "-q:v", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            ffmpeg_bin(),
+            "-v",
+            "error",
+            "-ss",
+            f"{t:.6f}",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-",
         ]
         proc = subprocess.run(cmd, capture_output=True)  # noqa: S603
         if proc.returncode == 0 and proc.stdout:
@@ -320,14 +336,16 @@ def apply_fix(
     except ValueError as exc:
         return {"status": "error", "reason": str(exc)}
     repos.update_clip_frames(
-        db, str(a_row["id"]),
+        db,
+        str(a_row["id"]),
         src_in_frame=int(a_row["src_in_frame"]),
         src_out_frame_exclusive=int(a_row["src_out_frame_exclusive"]) + delta,
         seq_in_frame=int(a_row["seq_in_frame"]),
         seq_out_frame_exclusive=int(a_row["seq_out_frame_exclusive"]) + delta,
     )
     repos.update_clip_frames(
-        db, str(b_row["id"]),
+        db,
+        str(b_row["id"]),
         src_in_frame=int(b_row["src_in_frame"]) + delta,
         src_out_frame_exclusive=int(b_row["src_out_frame_exclusive"]),
         seq_in_frame=int(b_row["seq_in_frame"]) + delta,
@@ -346,3 +364,92 @@ def default_backend() -> VlmBackend | None:
 
 def vlm_available() -> bool:
     return default_backend() is not None
+
+
+FrameExtractor = Callable[..., list[bytes]]
+
+
+def _proxy_paths_for(db: Database, asset_ids: set[str]) -> dict[str, str]:
+    """Resolve each asset's on-disk proxy path (first ``is_proxy`` file), for frame extraction."""
+    out: dict[str, str] = {}
+    for asset_id in asset_ids:
+        for f in repos.list_asset_files(db, asset_id):
+            if f.get("is_proxy"):
+                out[asset_id] = str(f["path"])
+                break
+    return out
+
+
+def run_transition_review(
+    db: Database,
+    timeline_id: str,
+    *,
+    backend: VlmBackend,
+    k: int = 6,
+    frame_extractor: FrameExtractor = extract_frames,
+    progress: Callable[[int, int], None] | None = None,
+) -> dict[str, int]:
+    """Review every boundary of ``timeline_id`` with ``backend``, caching by identity + digest.
+
+    A boundary already cached for this ``model_digest`` is skipped (no inference), so a re-run after
+    no change does zero model calls (idempotency, spec §6). ``frame_extractor`` is injectable for
+    tests (the stub backend ignores the frames). Returns ``{total, reviewed, inferences}``."""
+    boundaries = enumerate_boundaries(db, timeline_id)
+    total = len(boundaries)
+    if total == 0:
+        return {"total": 0, "reviewed": 0, "inferences": 0}
+    tl = repos.get_timeline(db, timeline_id)
+    project = repos.get_project(db, str(tl["project_id"])) if tl else None
+    rate_num = int(project["sequence_rate_num"]) if project else 30
+    rate_den = int(project["sequence_rate_den"]) if project else 1
+    proxy_paths = _proxy_paths_for(
+        db, {b.asset_a for b in boundaries} | {b.asset_b for b in boundaries}
+    )
+    digest, model_id = backend.model_digest(), backend.model_id()
+    reviewed = inferences = 0
+    for b in boundaries:
+        cached = repos.get_cached_review(
+            db,
+            timeline_id=timeline_id,
+            asset_a=b.asset_a,
+            asset_b=b.asset_b,
+            src_out_a=b.src_out_a,
+            src_in_b=b.src_in_b,
+            model_digest=digest,
+        )
+        if cached is None:
+            refs = frame_strip_plan(b, k)
+            frames = frame_extractor(proxy_paths, refs, rate_num=rate_num, rate_den=rate_den)
+            a_count = b.src_out_a - max(b.src_in_a, b.src_out_a - k)
+            b_count = min(b.src_in_b + k, b.src_out_b) - b.src_in_b
+            verdict = backend.review(
+                frames,
+                {
+                    "same_source": b.same_source,
+                    "removed_gap_frames": b.removed_gap_frames,
+                    "k": k,
+                    "a_count": a_count,
+                    "b_count": b_count,
+                },
+            )
+            repos.upsert_transition_review(
+                db,
+                timeline_id=timeline_id,
+                asset_a=b.asset_a,
+                asset_b=b.asset_b,
+                src_out_a=b.src_out_a,
+                src_in_b=b.src_in_b,
+                boundary_seq_frame=b.seq_out_a,
+                boundary_signature=boundary_signature(b, k, proxy_paths.get(b.asset_a, "")),
+                smoothness=verdict.smoothness,
+                label=verdict.label,
+                reason=verdict.reason,
+                suggested_fix_json=json.dumps(asdict(verdict.suggested_fix)),
+                model_id=model_id,
+                model_digest=digest,
+            )
+            inferences += 1
+        reviewed += 1
+        if progress is not None:
+            progress(reviewed, total)
+    return {"total": total, "reviewed": reviewed, "inferences": inferences}

@@ -8,6 +8,7 @@ detection (light) typically runs; ASR/diarization run only when their extras are
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from .manifest import write_manifest
 from .mapping import map_segment
 from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark_duplicates
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
+from .transition_review import default_backend, run_transition_review
 from .types import SegmentResult, ShotResult, WordResult
 
 
@@ -460,8 +462,27 @@ def handle_transcript_realign(ctx: JobContext) -> dict[str, Any]:
     return {"status": "ok", "segments": len(segments)}
 
 
+def handle_transition_review(ctx: JobContext) -> dict[str, Any]:
+    """Review a timeline's cut transitions with the configured VLM backend (on-demand).
+
+    No-op (status ``skipped``) when no backend is installed (the ``[vlm]`` extra is absent), so the
+    job never fails just because the optional model is missing. Progress persisted per boundary."""
+    timeline_id = str(ctx.payload["timeline_id"])
+    backend = default_backend()
+    if backend is None:
+        return {"status": "skipped", "reason": "no vlm backend"}
+
+    def _progress(done: int, total: int) -> None:
+        repos.set_job_progress(ctx.db, ctx.job_id, json.dumps({"reviewed": done, "total": total}))
+        ctx.heartbeat()
+
+    result = run_transition_review(ctx.db, timeline_id, backend=backend, progress=_progress)
+    return {"status": "ok", **result}
+
+
 def register_analysis_handlers(registry: dict[str, JobHandler]) -> None:
     registry["analysis.run"] = handle_analysis_run
     registry["analysis.align"] = handle_analysis_align
     registry["analysis.embed"] = handle_analysis_embed
     registry["transcript.realign"] = handle_transcript_realign
+    registry["transition.review"] = handle_transition_review
