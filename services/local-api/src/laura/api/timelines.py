@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -10,6 +11,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .. import audit
+from ..analysis import transition_review
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.eval_quality import evaluate_rough_cut
@@ -51,6 +53,8 @@ from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from ..timebase.sampling import frame_to_sample
 from .models import (
+    ApplyFixOut,
+    ApplyFixRequest,
     ClipOut,
     ClipSourceOut,
     DroppedShot,
@@ -70,6 +74,8 @@ from .models import (
     TimelineImportOut,
     TimelineImportRequest,
     TimelineOut,
+    TransitionReviewOut,
+    TransitionVerdictOut,
     ValidateOut,
     ValidateRequest,
 )
@@ -991,6 +997,82 @@ def set_clip_transition(
         db, principal, "timeline.set_clip_transition", entity_type="timeline", entity_id=timeline_id
     )
     return _timeline_out(db, fresh)
+
+
+@router.post(
+    "/timelines/{timeline_id}/transitions/review", status_code=status.HTTP_202_ACCEPTED
+)
+def review_transitions(timeline_id: str, request: Request) -> dict[str, str]:
+    """Enqueue an on-demand VLM transition-smoothness review for a timeline.
+
+    No-ops gracefully if no model is installed (the job returns ``skipped``); cached verdicts are
+    served by the GET endpoint."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    job_id = enqueue(
+        db,
+        queue=queue_for("transition.review"),
+        kind="transition.review",
+        payload={"timeline_id": timeline_id},
+        idempotency_key=f"transition.review:{timeline_id}",
+    )
+    return {"job_id": job_id}
+
+
+@router.get(
+    "/timelines/{timeline_id}/transitions/review", response_model=TransitionReviewOut
+)
+def get_transition_review(timeline_id: str, request: Request) -> TransitionReviewOut:
+    """Cached transition verdicts for a timeline (most recent per boundary identity)."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    verdicts: list[TransitionVerdictOut] = []
+    for row in repos.list_transition_reviews(db, timeline_id):
+        try:
+            fix = json.loads(row["suggested_fix_json"])
+        except (TypeError, ValueError):
+            fix = {}
+        verdicts.append(
+            TransitionVerdictOut(
+                boundary_seq_frame=row["boundary_seq_frame"],
+                asset_a=row["asset_a"], asset_b=row["asset_b"],
+                src_out_a=row["src_out_a"], src_in_b=row["src_in_b"],
+                smoothness=row["smoothness"], label=row["label"], reason=row["reason"],
+                suggested_fix=fix, model_id=row["model_id"], created_at=row["created_at"],
+            )
+        )
+    return TransitionReviewOut(verdicts=verdicts)
+
+
+@router.post(
+    "/timelines/{timeline_id}/transitions/apply-fix", response_model=ApplyFixOut
+)
+def apply_transition_fix(
+    timeline_id: str,
+    body: ApplyFixRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> ApplyFixOut:
+    """Apply a transition fix (resnap roll or crossfade/fade) at a boundary by semantic identity."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    fix = transition_review.SuggestedFix(
+        kind=body.fix.kind,
+        resnap_delta_frames=body.fix.resnap_delta_frames,
+        transition_style=body.fix.transition_style,
+        transition_frames=body.fix.transition_frames,
+    )
+    result = transition_review.apply_fix(
+        db, timeline_id=timeline_id, identity=body.identity.model_dump(), fix=fix
+    )
+    audit.record(
+        db, principal, "timeline.apply_transition_fix",
+        entity_type="timeline", entity_id=timeline_id,
+    )
+    return ApplyFixOut(**result)
 
 
 @router.post(

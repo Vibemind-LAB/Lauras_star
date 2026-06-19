@@ -728,6 +728,52 @@ class SequenceTransitionRequest(BaseModel):
     duration_frames: int = Field(default=0, ge=0, le=240)
 
 
+# --- transition smoothness review -------------------------------------------
+class BoundaryIdentity(BaseModel):
+    asset_a: str
+    asset_b: str
+    src_out_a: int
+    src_in_b: int
+
+
+class TransitionFixModel(BaseModel):
+    kind: Literal["none", "resnap", "transition"]
+    resnap_delta_frames: int = 0
+    transition_style: Literal["crossfade", "fade"] = "crossfade"
+    transition_frames: int = Field(default=0, ge=0, le=240)
+
+
+class TransitionVerdictOut(BaseModel):
+    boundary_seq_frame: int
+    asset_a: str
+    asset_b: str
+    src_out_a: int
+    src_in_b: int
+    smoothness: float
+    label: str
+    reason: str
+    suggested_fix: dict[str, Any]
+    model_id: str
+    created_at: str
+
+
+class TransitionReviewOut(BaseModel):
+    verdicts: list[TransitionVerdictOut]
+
+
+class ApplyFixRequest(BaseModel):
+    identity: BoundaryIdentity
+    fix: TransitionFixModel
+
+
+class ApplyFixOut(BaseModel):
+    status: str
+    applied: str | None = None
+    reason: str | None = None
+    delta: int | None = None
+    style: str | None = None
+
+
 # --- reenact / consent -------------------------------------------------------
 class ConsentRequest(BaseModel):
     subject_label: str

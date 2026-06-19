@@ -31,6 +31,7 @@ _STAGE_QUEUE: dict[str, str] = {
     "analysis.align": QUEUE_ANALYSIS_GPU,
     "analysis.embed": QUEUE_ANALYSIS_GPU,
     "transcript.realign": QUEUE_ANALYSIS_GPU,
+    "transition.review": QUEUE_ANALYSIS_GPU,
     "ai.voiceover": QUEUE_ANALYSIS_GPU,
     "ai.lipsync": QUEUE_ANALYSIS_GPU,
     "demo.analyze": QUEUE_ANALYSIS_CPU,
