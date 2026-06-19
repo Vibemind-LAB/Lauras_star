@@ -1,13 +1,18 @@
 # VLM-Übergangs-Smoothness-Review — Design-Spec (v2)
 
 **Datum:** 2026-06-19
-**Status:** Genehmigt (Brainstorming) → v2 nach adversarischem Spec-Review
+**Status:** Genehmigt (Brainstorming) → v3 (adversarischer Review + „bestes, kein halbgares Produkt")
 **Strang:** „Schnitt/Alignment besser" — Teil 3 von 3 (Video-Modell-Review)
 
 > **v2-Änderungen** (adversarischer Review gegen den echten Code): Cache-Key auf **semantische
-> Identität** umgestellt (driftete vorher bei Edits); **Renderer macht `fade`, kein Crossfade** →
-> Fix-Modell korrigiert (resnap primär, echtes Crossfade = Future Work); Frame-Mathe, resnap-Grenzen,
+> Identität** umgestellt (driftete vorher bei Edits); Frame-Mathe, resnap-Grenzen,
 > `enumerate_boundaries` pro Timeline-Art, Determinismus (ffmpeg/Sampling/Modell-Download) präzisiert.
+>
+> **v3-Änderungen** (User: „immer das Beste"): Der Renderer kann heute nur `fade` (Abblende durch
+> Schwarz). Statt das als Krücke zu akzeptieren, kommt ein **echter Crossfade (`xfade`)** in den Renderer
+> und **Transition-Felder auf alle Timeline-Arten** (`timeline_clips`, Migration 0024) — der Jump-Cut-Fix
+> ist damit ein **echtes Dissolve, einheitlich auf rough_cut/scene/sequence**. Wegen der Größe wird die
+> Umsetzung in §12 in **drei geordnete Pläne** zerlegt.
 
 ## 1. Problem & Ziel
 
@@ -88,9 +93,9 @@ class Boundary:
 class SuggestedFix:
     kind: Literal["none", "resnap", "transition"]
     resnap_delta_frames: int = 0      # Source-Frames, Vorzeichen siehe §5
-    transition_style: Literal["fade"] = "fade"   # v1: nur fade (Renderer-Realität); "crossfade" = Future Work
-    transition_frames: int = 0        # TIMELINE-Frames (= sequence_items.transition_after_frames)
-    applicable_on_kinds: tuple[str, ...] = ("rough_cut", "scene", "sequence")  # resnap überall; transition nur sequence
+    transition_style: Literal["crossfade", "fade"] = "crossfade"  # crossfade = echtes Dissolve (Default); fade = Abblende
+    transition_frames: int = 0        # TIMELINE-Frames (transition_after_frames)
+    applicable_on_kinds: tuple[str, ...] = ("rough_cut", "scene", "sequence")  # resnap UND transition überall (nach 0024)
 
 @dataclass(frozen=True)
 class TransitionVerdict:
@@ -183,6 +188,16 @@ CREATE INDEX idx_transition_reviews_timeline ON transition_reviews(timeline_id);
 Repos: `upsert_transition_review`, `list_transition_reviews(timeline_id)` (aktuellste pro Identität),
 `get_cached_review(identity, model_digest)`.
 
+### 4.7 Transitions auf allen Timeline-Arten — Migration `0024_clip_transitions.sql` (v3)
+Heute liegen Transition-Felder nur auf `sequence_items` (0021). Für den einheitlichen Fix bekommen sie auch
+die Clip-Ebene:
+```sql
+ALTER TABLE timeline_clips ADD COLUMN transition_after_kind TEXT NOT NULL DEFAULT 'hard';
+ALTER TABLE timeline_clips ADD COLUMN transition_after_frames INTEGER NOT NULL DEFAULT 0;
+```
+`transition_after_kind ∈ {'hard','fade','crossfade'}`. Damit greift `apply_fix transition` auf
+rough_cut/scene (Clips) **und** sequence (`sequence_items`) — kein „nur Sequenz" mehr.
+
 ## 5. Fix-Anwendung
 
 `apply_fix(db, timeline_id, identity, fix) -> ApplyResult` mit `status: Literal["ok","not_supported","error"]`.
@@ -201,21 +216,28 @@ Repos: `upsert_transition_review`, `list_transition_reviews(timeline_id)` (aktue
   4. Nachfolgende Clips gaplos re-packen (`move`/ripple) + `_normalize_offsets` (First-Clip-0-Invariante).
   *Worked example:* A`[src 100–200, seq 0–100]`, B`[src 200–300, seq 100–200]`, δ=+10 →
   A`[src 100–210, seq 0–110]`, B`[src 210–300, seq 110–200]` (B 10 Frames kürzer, alles gaplos).
-- **`transition` (sekundär, nur `kind=sequence`):** setzt `transition_after_kind` +
-  `transition_after_frames=transition_frames` (TIMELINE-Frames) auf dem `sequence_items`-Eintrag.
-  ⚠️ **Renderer-Realität:** [`render/mp4.py:_video_transition_chain`](../../../services/local-api/src/laura/render/mp4.py)
-  rendert dies als **Abblende/Aufblende durch Schwarz (`fade`)**, **kein** Crossfade. Das *maskiert* einen
-  Jump-Cut (kurzer Flash), ist aber kein echtes Dissolve. Auf `rough_cut/scene` → `status="not_supported"`
-  (Button deaktiviert, Hinweis „erst in der Sequenz"). 
+- **`transition` (für Jump-Cuts, alle kinds):** setzt `transition_after_kind=transition_style` +
+  `transition_after_frames=transition_frames` (TIMELINE-Frames) — auf `sequence_items` (sequence) **oder**
+  `timeline_clips` (rough_cut/scene, nach Migration 0024). `transition_style="crossfade"` rendert ein
+  **echtes Dissolve** über einen neuen `xfade`-Pfad in
+  [`render/mp4.py:_video_transition_chain`](../../../services/local-api/src/laura/render/mp4.py)
+  (heute nur `fade`/Schwarz; v3 ergänzt `xfade`). `"fade"` (Abblende) bleibt als Alternativstil.
+  **Renderer-Arbeit (v3):** `_video_transition_chain` bekommt für `kind="crossfade"` einen ffmpeg-`xfade`-Zweig;
+  der Clip-Render-Pfad (rough_cut/scene) baut die Transition-Kette analog aus `timeline_clips.transition_after_*`.
 - **`none`:** no-op, `status="ok"`.
 - **Batch „Alle anwenden":** sammelt pro Boundary ein `ApplyResult`, **stoppt nicht** bei einem Fehler,
   liefert Teilergebnis-Liste zurück.
 - **Policy 5b:** nichts wird automatisch mutiert; Anwenden ist immer explizit. (Auto-Fix später als
   Opt-in `LAURA_VLM_AUTOFIX`.)
 
-> **Echtes Crossfade = Future Work** (bewusst außerhalb v1): erfordert einen `xfade`-Pfad im Renderer
-> (neuer `transition_after_kind="crossfade"`) — separates, abgegrenztes Stück. **resnap** ist deshalb in v1
-> der eigentliche Smoothness-Fix; `fade` nur als Maskierung.
+> **Fix-Wahl je Label:** `motion_break`/`hard_jolt` → bevorzugt **resnap** (cut-on-action, saubereres
+> Frame-Paar). `jump_cut` (gleiche Quelle, Zeitsprung) → **crossfade** (echtes Dissolve; resnap kann einen
+> Same-Source-Sprung nicht verstecken). Der User wählt im Panel den vorgeschlagenen oder einen anderen Fix.
+
+> **Live-Preview-Ehrlichkeit:** Der `SequencePlayer` spielt Clips sequen­ziell als `<video>` ab und stellt
+> Transitions **nicht in Echtzeit** dar — der Crossfade ist im **Export/materialisierten Render** korrekt
+> sichtbar, in der Live-Vorschau erscheint zunächst der harte Schnitt. Echtzeit-Transition-Vorschau ist ein
+> separater, größerer Schritt (Future Work) und wird **nicht** durch einen Fake im Player vorgetäuscht.
 
 ## 6. Lauf-Modus & Job
 
@@ -251,8 +273,9 @@ Modelle [`api/models.py`](../../../services/local-api/src/laura/api/models.py)):
 - Hook `useTransitionReview(timelineId)` (Polling bis `status != running`).
 - Panel **„Übergänge prüfen"** in `FineCutView` (scene) und `AssembleView` (sequence): Liste der Schnitte
   mit Score-Badge (Farbe nach `smoothness`), Label, Begründung, Fix-Chip + „Anwenden"/„Alle anwenden";
-  Fortschritt; einmaliger Modell-Download sichtbar. **Kind-Gating im UI:** `transition`-Fix nur auf
-  `sequence` aktiv, sonst Button disabled + Tooltip.
+  Fortschritt; einmaliger Modell-Download sichtbar. `transition`-Fix ist auf allen Timeline-Arten aktiv
+  (nach 0024); ein Hinweis macht transparent, dass der Crossfade im Export/Render erscheint, nicht in der
+  Live-Vorschau.
 
 ## 9. Tests & Verifikation (CLAUDE.md „Verifizieren vor fertig")
 
@@ -262,7 +285,10 @@ Modelle [`api/models.py`](../../../services/local-api/src/laura/api/models.py)):
 - `boundary_signature`-Stabilität: gleicher Input → gleiche Signatur; Upstream-Edit ohne semantische
   Änderung → gleiche Identität → **Cache-Hit** (Determinismus-Test).
 - `apply_fix` resnap: Worked-Example, Vorzeichen, Clamping, kein Null-/Negativ-Length, First-Clip-0;
-  `transition` setzt Felder nur bei `kind=sequence`, sonst `not_supported`.
+  `transition` setzt `transition_after_*` auf `timeline_clips` (rough_cut/scene) **und** `sequence_items`
+  (sequence); bei zu wenig Überlapp-Material → `fade`-Fallback (geloggt).
+- Renderer (Plan A): `_video_transition_chain` mit `kind="crossfade"` erzeugt einen `xfade`-Filtergraph
+  (vs. Goldframe-Vergleich); `hard` bleibt unverändert.
 - Idempotenz: zweimal `review` → zweiter Lauf 0 Inferenzen.
 **Opt-in-Integrationstest** (nur mit `[vlm]` + Ollama): echter Lauf gegen `feattest_90s`, prüft
 JSON-Roundtrip + 3× identischer Score (Sampling-Determinismus).
@@ -275,12 +301,32 @@ JSON-Roundtrip + 3× identischer Score (Sampling-Determinismus).
 - **Latenz:** 8B über viele Schnitte langsam (mehrere Sek./Schnitt @12 GB) → on-demand + Fortschritt;
   optionaler billiger Vorfilter (Optical-Flow/SSIM) als **Opt-out** (Default: alle Schnitte, gemäß „voll B").
 - **Erst-Download:** mehrere GB, einmalig, im UI angekündigt; Fehlerpfad: `ModelUnavailable` + Job-Retry.
-- **`fade` ≠ Dissolve:** v1 maskiert nur; echtes Crossfade = Future Work (Renderer-`xfade`).
+- **Crossfade nur im Render sichtbar:** korrekt im Export/materialisierten Render; Live-Vorschau zeigt
+  zunächst den harten Schnitt (Echtzeit-Transition-Preview = Future Work, kein Fake im Player).
+- **ffmpeg-`xfade`** braucht überlappende Eingaben (Clip A muss `transition_frames` länger laufen) — der
+  Render-Pfad muss den Überlapp aus den Source-Reserven ziehen; reicht das Material nicht, fällt der Fix auf
+  `fade` zurück (geloggt).
 
 ## 11. Scope-Grenzen (YAGNI)
 
-**Drin:** Verdict/Schnitt + semantischer Cache, **resnap** überall, `fade`-Transition nur Sequenz
-(ehrlich gelabelt), on-demand-Job, Eval-Harness, „Übergänge prüfen"-Panel, Stub-basierte Tests.
-**Draußen (Future Work, je eigenes Stück):** echtes Crossfade/`xfade` im Renderer; Auto-Fix im Pipeline-Lauf;
-Transition-Felder auf rough_cut/scene-Clips (Migration 0024); Multi-Lane-/Audio-Cut-Review;
-Frame-Disk-Cache; Hintergrund-Vorberechnung beim Import; Multi-Modell-Voting zur Laufzeit.
+**Drin:** Verdict/Schnitt + semantischer Cache; **resnap** überall; **echter Crossfade (`xfade`) im Renderer**
++ Transition-Felder auf allen Timeline-Arten (0024); on-demand-Job; Eval-Harness (3 Modelle);
+„Übergänge prüfen"-Panel; Stub-basierte Tests.
+**Draußen (Future Work, je eigenes Stück):** Echtzeit-Transition-Preview im `SequencePlayer`; Auto-Fix im
+Pipeline-Lauf; Multi-Lane-/Audio-Cut-Review; Frame-Disk-Cache; Hintergrund-Vorberechnung beim Import;
+Multi-Modell-Voting zur Laufzeit; Morph-Cut (optical-flow-Warp) jenseits von `xfade`.
+
+## 12. Implementierungs-Zerlegung (drei geordnete Pläne)
+
+Zu groß für einen Plan → drei abgegrenzte, nacheinander baubare Stücke (jedes für sich testbar & nützlich):
+
+- **Plan A — Transition-Fundament (kein VLM).** Migration 0024 (`timeline_clips.transition_after_*`),
+  `xfade`-Zweig in `_video_transition_chain` + Clip-Render-Pfad, Repos/API zum Setzen einer Transition,
+  Überlapp-aus-Reserven-Logik + `fade`-Fallback. Verifizierbar: Export mit echtem Crossfade vs. Goldframe.
+- **Plan B — Review-Engine (Kern).** `transition_review.py` (Datentypen, `enumerate_boundaries`,
+  `frame_strip_plan`, `boundary_signature`), `extract_frames`, `VlmBackend`+`StubVlmBackend`, Tabelle 0023 +
+  Repos, `apply_fix` (resnap + transition über Plan A), `transition.review`-Job. Tests komplett gegen Stub.
+- **Plan C — Modell + UI + Harness.** `OllamaVlmBackend`, `bench/transition_bench.py` (3 Modelle → Default),
+  API-Endpoints, `api.ts`/`useTransitionReview`, „Übergänge prüfen"-Panel. Opt-in-Integrationstest.
+
+Reihenfolge A → B → C; B hängt an A (transition-Fix), C an B (Engine).
