@@ -12,11 +12,13 @@ drifts when upstream clips are edited) — see :func:`boundary_signature` and sp
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from ..db import repos
 from ..db.database import Database
+from ..ingest.ffmpeg import ffmpeg_bin
 
 TimelineKind = Literal["rough_cut", "scene", "sequence"]
 FixKind = Literal["none", "resnap", "transition"]
@@ -223,6 +225,35 @@ def enumerate_boundaries(db: Database, timeline_id: str) -> list[Boundary]:
     if kind == "sequence":
         return _sequence_boundaries(db, timeline_id)
     return []
+
+
+def extract_frames(
+    proxy_paths: dict[str, str],
+    frame_refs: list[tuple[str, int]],
+    *,
+    rate_num: int,
+    rate_den: int,
+) -> list[bytes]:
+    """Extract one JPEG (bytes) per ``(asset_id, src_frame)`` ref from that asset's proxy.
+
+    ``proxy_paths`` maps each asset id to its resolved on-disk proxy path (A-side and B-side may be
+    different assets). Frame→time uses the project rate; the proxy is CFR so the index→time mapping
+    is exact. A ref whose asset has no proxy path (or whose extraction fails) is skipped, so the
+    returned list may be shorter than ``frame_refs``. Deterministic: exact ``-ss``, mjpeg q=2."""
+    out: list[bytes] = []
+    for asset_id, frame in frame_refs:
+        path = proxy_paths.get(asset_id)
+        if not path:
+            continue
+        t = max(0, frame) * rate_den / rate_num
+        cmd = [
+            ffmpeg_bin(), "-v", "error", "-ss", f"{t:.6f}", "-i", str(path),
+            "-frames:v", "1", "-q:v", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+        ]
+        proc = subprocess.run(cmd, capture_output=True)  # noqa: S603
+        if proc.returncode == 0 and proc.stdout:
+            out.append(proc.stdout)
+    return out
 
 
 def default_backend() -> VlmBackend | None:
