@@ -65,6 +65,13 @@ export interface SequencePlayerProps {
    */
   seekTo?: { frame: number } | null;
   onFrame?: (seqFrame: number) => void;
+  /**
+   * Already-resolved clips to play, bypassing `getSequenceFlattened`. Required for non-sequence
+   * timelines (e.g. a materialized SCENE timeline in Feinschnitt): `/sequences/{id}/flattened`
+   * only resolves kind="sequence" timelines and returns [] for a scene, so without this the player
+   * would show no video. AssembleView omits it and keeps fetching the flattened sequence.
+   */
+  clipsOverride?: TimelineClip[];
 }
 
 export function SequencePlayer({
@@ -74,6 +81,7 @@ export function SequencePlayer({
   reloadKey,
   seekTo,
   onFrame,
+  clipsOverride,
 }: SequencePlayerProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -108,8 +116,10 @@ export function SequencePlayer({
     setError(null);
     void (async () => {
       try {
+        // clipsOverride (e.g. a materialized scene timeline) plays its clips directly; the
+        // flatten endpoint only resolves kind="sequence" timelines and would return [].
         const [fetchedClips, fetchedAssets] = await Promise.all([
-          client.getSequenceFlattened(sequenceId),
+          clipsOverride ?? client.getSequenceFlattened(sequenceId),
           client.listAssets(projectId),
         ]);
         if (cancelled) return;

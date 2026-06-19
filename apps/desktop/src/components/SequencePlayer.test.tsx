@@ -247,4 +247,26 @@ describe("SequencePlayer render", () => {
     rerender(<SequencePlayer client={c} projectId="p" sequenceId="seq" reloadKey={2} />);
     await waitFor(() => expect(c.getSequenceFlattened).toHaveBeenCalledTimes(2));
   });
+
+  it("plays a provided clipsOverride without calling getSequenceFlattened", async () => {
+    // FineCutView passes a materialized SCENE timeline's clips directly. getSequenceFlattened
+    // only resolves kind="sequence" timelines and returns [] for a scene → the player would show
+    // no video. clipsOverride feeds the already-loaded clips so the scene actually renders.
+    const c = {
+      getSequenceFlattened: vi.fn().mockResolvedValue([]),
+      listAssets: vi.fn().mockResolvedValue([asset1, asset2]),
+    } as unknown as LauraClient;
+    const { container, getByText } = render(
+      <SequencePlayer
+        client={c}
+        projectId="p"
+        sequenceId="scene-tl"
+        clipsOverride={[clip1, clip2]}
+      />,
+    );
+    await waitFor(() => expect(container.querySelector("video")).toBeTruthy());
+    // Clips came from the override (110), not from the empty flatten.
+    expect(getByText(/0 \/ 110 f/)).toBeTruthy();
+    expect(c.getSequenceFlattened).not.toHaveBeenCalled();
+  });
 });

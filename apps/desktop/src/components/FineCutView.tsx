@@ -184,6 +184,7 @@ export function FineCutView({
               projectId={asset?.project_id ?? null}
               sequenceId={scene.timeline.id}
               reloadKey={scene.timeline.id}
+              clipsOverride={clips}
               seekTo={seekToSeq}
               onFrame={handleSeqFrame}
             />
