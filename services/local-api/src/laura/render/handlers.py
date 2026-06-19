@@ -141,6 +141,33 @@ def _sequence_video_transitions(db: Any, sequence_timeline_id: str) -> list[Vide
     return transitions
 
 
+def _clip_video_transitions(db: Any, timeline_id: str) -> list[VideoTransition]:
+    """VideoTransitions for a rough_cut/scene timeline, from clip-level transition fields.
+
+    Mirrors :func:`_sequence_video_transitions` but walks lane-0 clips: the boundary frame is a
+    clip's ``seq_out_frame_exclusive`` (== the next clip's seq-in), and the transition that plays
+    after it comes from ``transition_after_kind/frames``. The final clip has no following clip, so
+    a transition set on it is ignored."""
+    transitions: list[VideoTransition] = []
+    clips = [c for c in repos.list_timeline_clips(db, timeline_id) if int(c.get("lane") or 0) == 0]
+    clips.sort(key=lambda c: int(c["seq_in_frame"]))
+    for index, clip in enumerate(clips):
+        if index >= len(clips) - 1:
+            continue
+        kind = str(clip.get("transition_after_kind") or "hard")
+        duration_frames = int(clip.get("transition_after_frames") or 0)
+        if kind == "hard" or duration_frames <= 0:
+            continue
+        transitions.append(
+            VideoTransition(
+                kind=kind,
+                boundary_frame=int(clip["seq_out_frame_exclusive"]),
+                duration_frames=duration_frames,
+            )
+        )
+    return transitions
+
+
 def handle_render(ctx: JobContext) -> dict[str, Any]:
     """Claim an export row, resolve its timeline clips, run ffmpeg, mark done."""
     export_id = ctx.payload["export_id"]
@@ -216,7 +243,9 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
 
     audio_overlays = _timeline_audio_overlays(ctx.db, exp["timeline_id"])
     video_transitions = (
-        _sequence_video_transitions(ctx.db, exp["timeline_id"]) if tl["kind"] == "sequence" else []
+        _sequence_video_transitions(ctx.db, exp["timeline_id"])
+        if tl["kind"] == "sequence"
+        else _clip_video_transitions(ctx.db, exp["timeline_id"])
     )
 
     opts: dict[str, object] = exp.get("options") or {}
