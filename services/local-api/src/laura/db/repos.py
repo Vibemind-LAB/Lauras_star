@@ -616,6 +616,77 @@ def set_clip_transition(db: Database, *, clip_id: str, kind: str, frames: int) -
         return result.rowcount > 0
 
 
+# --- transition smoothness reviews (cached VLM verdicts) -------------------
+def upsert_transition_review(
+    db: Database,
+    *,
+    timeline_id: str,
+    asset_a: str,
+    asset_b: str,
+    src_out_a: int,
+    src_in_b: int,
+    boundary_seq_frame: int,
+    boundary_signature: str,
+    smoothness: float,
+    label: str,
+    reason: str,
+    suggested_fix_json: str,
+    model_id: str,
+    model_digest: str,
+) -> None:
+    """Insert or refresh a verdict, keyed by the SEMANTIC boundary identity + model digest.
+
+    The unique key excludes ``boundary_seq_frame`` (it drifts on upstream edits), so re-reviewing
+    the same source-frame pair after an unrelated edit updates the existing row instead of
+    creating a duplicate (idempotency, invariant #7)."""
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO transition_reviews (id, timeline_id, asset_a, asset_b, src_out_a, "
+            "src_in_b, boundary_seq_frame, boundary_signature, smoothness, label, reason, "
+            "suggested_fix_json, model_id, model_digest, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(timeline_id, asset_a, asset_b, src_out_a, src_in_b, model_digest) "
+            "DO UPDATE SET boundary_seq_frame=excluded.boundary_seq_frame, "
+            "boundary_signature=excluded.boundary_signature, smoothness=excluded.smoothness, "
+            "label=excluded.label, reason=excluded.reason, "
+            "suggested_fix_json=excluded.suggested_fix_json, model_id=excluded.model_id, "
+            "created_at=excluded.created_at",
+            (
+                new_id(), timeline_id, asset_a, asset_b, int(src_out_a), int(src_in_b),
+                int(boundary_seq_frame), boundary_signature, float(smoothness), label, reason,
+                suggested_fix_json, model_id, model_digest, utcnow_iso(),
+            ),
+        )
+
+
+def list_transition_reviews(db: Database, timeline_id: str) -> list[dict[str, Any]]:
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM transition_reviews WHERE timeline_id=? ORDER BY boundary_seq_frame",
+            (timeline_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_cached_review(
+    db: Database,
+    *,
+    timeline_id: str,
+    asset_a: str,
+    asset_b: str,
+    src_out_a: int,
+    src_in_b: int,
+    model_digest: str,
+) -> dict[str, Any] | None:
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM transition_reviews WHERE timeline_id=? AND asset_a=? AND asset_b=? "
+            "AND src_out_a=? AND src_in_b=? AND model_digest=?",
+            (timeline_id, asset_a, asset_b, int(src_out_a), int(src_in_b), model_digest),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def delete_timeline_clip(db: Database, clip_id: str) -> bool:
     with db.transaction() as conn:
         result = conn.execute(
