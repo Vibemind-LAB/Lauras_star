@@ -1,12 +1,22 @@
-"""Render a list of timeline clip segments into one MP4 via ffmpeg (trim + concat)."""
+"""Render a list of timeline clip segments into one MP4 via ffmpeg (trim + concat).
+
+Hard cuts use a single ``concat`` (byte-identical to the pre-crossfade renderer). When any
+boundary carries a real ``crossfade`` transition the video/audio assembly switches to a
+pairwise fold: ``xfade``/``acrossfade`` with a **reserve overlap** (clip A is extended by the
+transition duration into its post-cut source handles), so the assembled length stays exactly
+the sum of clip content lengths (sync invariant) and B loses no content.
+"""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..ingest.ffmpeg import FFmpegError, probe, run_ffmpeg
 from .audio import AudioOverlay
 from .reel import reel_video_chain, resolve_font
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,141 @@ def _video_transition_chain(
     return ",".join(filters)
 
 
+def _source_video_frames(path: Path) -> int:
+    """Total frame count of ``path``'s first video stream (0 when unknown).
+
+    Used to decide whether a clip has post-cut handles for a crossfade reserve. Prefers the
+    container's ``nb_frames``; falls back to ``duration * avg_frame_rate``. Returns 0 when neither
+    is available so the caller degrades the crossfade to a hard cut rather than guessing."""
+    try:
+        data = probe(path)
+    except FFmpegError:
+        return 0
+    for stream in data.get("streams", []):
+        if not isinstance(stream, dict) or stream.get("codec_type") != "video":
+            continue
+        nb = stream.get("nb_frames")
+        if nb not in (None, "N/A"):
+            try:
+                return int(str(nb))
+            except (TypeError, ValueError):
+                pass
+        dur = stream.get("duration") or data.get("format", {}).get("duration")
+        rate = stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0/1"
+        try:
+            num, den = (int(x) for x in str(rate).split("/"))
+            if dur is not None and den:
+                return int(float(dur) * num / den)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    return 0
+
+
+def _crossfade_durations(
+    clips: list[tuple[Path, int, int]],
+    video_transitions: list[VideoTransition] | None,
+    *,
+    source_frames: object | None = None,
+) -> list[int]:
+    """Per-boundary crossfade duration in frames (``0`` = hard cut), length ``len(clips) - 1``.
+
+    Only ``kind == "crossfade"`` boundaries produce a non-zero entry. Each is clamped to the
+    reserve actually available in clip A's source (frames after its out-point); when no reserve
+    exists the boundary degrades to a hard cut (logged). ``source_frames`` is the frame-count
+    function (defaults to :func:`_source_video_frames`); inject a stub in unit tests.
+    """
+    n = len(clips)
+    out = [0] * max(0, n - 1)
+    if not video_transitions or n < 2:
+        return out
+    frames_of = _source_video_frames if source_frames is None else source_frames
+    by_boundary = {
+        t.boundary_frame: t.duration_frames
+        for t in video_transitions
+        if t.kind == "crossfade" and t.duration_frames > 0
+    }
+    cum = 0
+    for i in range(n - 1):
+        cum += clips[i][2] - clips[i][1]  # cumulative content length up to end of clip i
+        want = by_boundary.get(cum)
+        if not want:
+            continue
+        avail = frames_of(clips[i][0]) - clips[i][2]  # type: ignore[operator]
+        eff = min(int(want), max(0, int(avail)))
+        out[i] = eff
+        if eff < want:
+            logger.warning(
+                "crossfade at boundary %s shortened %s->%s frames (reserve=%s)",
+                cum, want, eff, avail,
+            )
+    return out
+
+
+def _xfade_base_graph(
+    clips: list[tuple[Path, int, int]],
+    *,
+    xdur: list[int],
+    audio_flags: list[bool],
+    has_base_audio: bool,
+    rate_num: int,
+    rate_den: int,
+) -> tuple[list[str], str, str | None]:
+    """Build the trim + pairwise xfade/concat filter parts for the crossfade path.
+
+    ``xdur[i]`` is the crossfade duration (frames) for the boundary after clip ``i`` (0 = hard).
+    A crossfade clip is trimmed ``xdur[i]`` frames past its out-point (reserve overlap). Returns
+    ``(parts, video_label, audio_label_or_None)``. Pure — no IO, fully unit-testable."""
+    n = len(clips)
+    parts: list[str] = []
+    lens = [fout - fin for _, fin, fout in clips]
+    for i, (_src, fin, fout) in enumerate(clips):
+        reserve = xdur[i] if i < n - 1 else 0
+        end = fout + reserve
+        parts.append(
+            f"[{i}:v]trim=start_frame={fin}:end_frame={end},setpts=PTS-STARTPTS[v{i}]"
+        )
+        if has_base_audio:
+            if audio_flags[i]:
+                start = _seconds(fin * rate_den / rate_num)
+                end_s = _seconds(end * rate_den / rate_num)
+                parts.append(
+                    f"[{i}:a]atrim=start={start}:end={end_s},asetpts=PTS-STARTPTS[ba{i}]"
+                )
+            else:
+                dur = _seconds((end - fin) * rate_den / rate_num)
+                parts.append(
+                    "anullsrc=channel_layout=stereo:sample_rate=48000,"
+                    f"atrim=duration={dur},asetpts=PTS-STARTPTS[ba{i}]"
+                )
+    v_acc = "v0"
+    a_acc: str | None = "ba0" if has_base_audio else None
+    content = lens[0]
+    for i in range(1, n):
+        d = xdur[i - 1]
+        if d > 0:
+            offset = _seconds(content * rate_den / rate_num)
+            dd = _seconds(d * rate_den / rate_num)
+            nxt_v = f"xv{i}"
+            parts.append(
+                f"[{v_acc}][v{i}]xfade=transition=fade:duration={dd}:offset={offset}[{nxt_v}]"
+            )
+            v_acc = nxt_v
+            if has_base_audio:
+                nxt_a = f"xa{i}"
+                parts.append(f"[{a_acc}][ba{i}]acrossfade=d={dd}[{nxt_a}]")
+                a_acc = nxt_a
+        else:
+            nxt_v = f"cv{i}"
+            parts.append(f"[{v_acc}][v{i}]concat=n=2:v=1:a=0[{nxt_v}]")
+            v_acc = nxt_v
+            if has_base_audio:
+                nxt_a = f"ca{i}"
+                parts.append(f"[{a_acc}][ba{i}]concat=n=2:v=0:a=1[{nxt_a}]")
+                a_acc = nxt_a
+        content += lens[i]
+    return parts, v_acc, a_acc
+
+
 def render_clips_mp4(
     clips: list[tuple[Path, int, int]],
     dest: Path,
@@ -118,35 +263,15 @@ def render_clips_mp4(
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
-    filt: list[str] = []
     audio_flags = [_source_has_audio(src) for src, _, _ in clips]
     has_base_audio = any(audio_flags)
-    for i, (src, fin, fout) in enumerate(clips):
-        # Frame-exact, end-exclusive: trim keeps input frames [start_frame, end_frame).
-        # Integer frames only — never float seconds (frame-accuracy invariant).
+    for src, _fin, _fout in clips:
         inputs += ["-i", str(src)]
-        filt.append(
-            f"[{i}:v]trim=start_frame={fin}:end_frame={fout},setpts=PTS-STARTPTS[v{i}]"
-        )
-        if has_base_audio:
-            start = fin * rate_den / rate_num
-            end = fout * rate_den / rate_num
-            duration = (fout - fin) * rate_den / rate_num
-            if audio_flags[i]:
-                filt.append(
-                    f"[{i}:a]atrim=start={_seconds(start)}:end={_seconds(end)},"
-                    f"asetpts=PTS-STARTPTS[ba{i}]"
-                )
-            else:
-                filt.append(
-                    "anullsrc=channel_layout=stereo:sample_rate=48000,"
-                    f"atrim=duration={_seconds(duration)},asetpts=PTS-STARTPTS[ba{i}]"
-                )
-    concat_in = (
-        "".join(f"[v{i}][ba{i}]" for i in range(len(clips)))
-        if has_base_audio
-        else "".join(f"[v{i}]" for i in range(len(clips)))
-    )
+    # Per-boundary crossfade durations (frames; 0 = hard cut). Any non-zero entry switches the
+    # video/audio assembly to the xfade/acrossfade fold; otherwise the byte-identical concat path
+    # (which also renders the dip-to-black ``fade`` transition via _video_transition_chain).
+    xdur = _crossfade_durations(clips, video_transitions)
+    has_crossfade = any(d > 0 for d in xdur)
 
     # Reel overlay text goes through drawtext ``textfile=`` (basename, resolved via
     # ffmpeg's cwd), NOT inline ``text='…'`` — inline text cannot be escaped reliably
@@ -175,11 +300,6 @@ def render_clips_mp4(
         ass_basename = ass_path.name
 
     try:
-        transition_chain = _video_transition_chain(
-            video_transitions,
-            rate_num=rate_num,
-            rate_den=rate_den,
-        )
         reel = reel_video_chain(
             vertical=vertical,
             hook_textfile=hook_tf,
@@ -187,17 +307,64 @@ def render_clips_mp4(
             font=resolve_font(),
         )
         caption_filter = f"ass={ass_basename}" if ass_basename else ""
-        post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
-        concat_out = "[vcat]" if post else "[out]"
-        if has_base_audio:
-            parts = (
-                ";".join(filt)
-                + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
+        if has_crossfade:
+            # Real cross-dissolve: pairwise xfade/acrossfade fold with reserve overlap.
+            fold_parts, v_label, a_label = _xfade_base_graph(
+                clips,
+                xdur=xdur,
+                audio_flags=audio_flags,
+                has_base_audio=has_base_audio,
+                rate_num=rate_num,
+                rate_den=rate_den,
             )
+            post = ",".join(p for p in (reel, caption_filter) if p)
+            fold_parts.append(
+                f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
+            )
+            if has_base_audio and a_label is not None:
+                fold_parts.append(f"[{a_label}]anull[abase]")
+            parts = ";".join(fold_parts)
         else:
-            parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
-        if post:
-            parts += f";[vcat]{post}[out]"
+            # Byte-identical concat path (hard cuts + optional dip-to-black ``fade``).
+            filt: list[str] = []
+            for i, (_src, fin, fout) in enumerate(clips):
+                # Frame-exact, end-exclusive: trim keeps input frames [start_frame, end_frame).
+                filt.append(
+                    f"[{i}:v]trim=start_frame={fin}:end_frame={fout},setpts=PTS-STARTPTS[v{i}]"
+                )
+                if has_base_audio:
+                    start = fin * rate_den / rate_num
+                    end = fout * rate_den / rate_num
+                    duration = (fout - fin) * rate_den / rate_num
+                    if audio_flags[i]:
+                        filt.append(
+                            f"[{i}:a]atrim=start={_seconds(start)}:end={_seconds(end)},"
+                            f"asetpts=PTS-STARTPTS[ba{i}]"
+                        )
+                    else:
+                        filt.append(
+                            "anullsrc=channel_layout=stereo:sample_rate=48000,"
+                            f"atrim=duration={_seconds(duration)},asetpts=PTS-STARTPTS[ba{i}]"
+                        )
+            concat_in = (
+                "".join(f"[v{i}][ba{i}]" for i in range(len(clips)))
+                if has_base_audio
+                else "".join(f"[v{i}]" for i in range(len(clips)))
+            )
+            transition_chain = _video_transition_chain(
+                video_transitions, rate_num=rate_num, rate_den=rate_den
+            )
+            post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
+            concat_out = "[vcat]" if post else "[out]"
+            if has_base_audio:
+                parts = (
+                    ";".join(filt)
+                    + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
+                )
+            else:
+                parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+            if post:
+                parts += f";[vcat]{post}[out]"
 
         audio_maps: list[str] = []
         overlays = [*_music_overlays(music_tracks), *(audio_overlays or [])]
