@@ -616,6 +616,29 @@ def set_clip_transition(db: Database, *, clip_id: str, kind: str, frames: int) -
         return result.rowcount > 0
 
 
+def update_clip_frames(
+    db: Database,
+    clip_id: str,
+    *,
+    src_in_frame: int,
+    src_out_frame_exclusive: int,
+    seq_in_frame: int,
+    seq_out_frame_exclusive: int,
+) -> bool:
+    """Update only a clip's four frame columns (used by a resnap roll), leaving everything else —
+    crucially the transition_after_* fields — untouched. Returns True when a row changed."""
+    with db.transaction() as conn:
+        result = conn.execute(
+            "UPDATE timeline_clips SET src_in_frame=?, src_out_frame_exclusive=?, "
+            "seq_in_frame=?, seq_out_frame_exclusive=? WHERE id=?",
+            (
+                int(src_in_frame), int(src_out_frame_exclusive),
+                int(seq_in_frame), int(seq_out_frame_exclusive), clip_id,
+            ),
+        )
+        return result.rowcount > 0
+
+
 # --- transition smoothness reviews (cached VLM verdicts) -------------------
 def upsert_transition_review(
     db: Database,

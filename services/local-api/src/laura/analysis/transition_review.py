@@ -18,7 +18,11 @@ from typing import Any, Literal, Protocol
 
 from ..db import repos
 from ..db.database import Database
+from ..editing.operations import EditClip, roll_boundary
 from ..ingest.ffmpeg import ffmpeg_bin
+
+# Editorial window for a resnap nudge (matches editorial.DEFAULT_WINDOW).
+RESNAP_WINDOW = 12
 
 TimelineKind = Literal["rough_cut", "scene", "sequence"]
 FixKind = Literal["none", "resnap", "transition"]
@@ -254,6 +258,82 @@ def extract_frames(
         if proc.returncode == 0 and proc.stdout:
             out.append(proc.stdout)
     return out
+
+
+def _find_boundary_pair(
+    lane0_rows: list[dict[str, Any]], identity: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The adjacent lane-0 (A, B) row pair matching a boundary's semantic identity, or None."""
+    for ar, br in zip(lane0_rows, lane0_rows[1:], strict=False):
+        if (
+            str(ar["asset_id"]) == str(identity["asset_a"])
+            and str(br["asset_id"]) == str(identity["asset_b"])
+            and int(ar["src_out_frame_exclusive"]) == int(identity["src_out_a"])
+            and int(br["src_in_frame"]) == int(identity["src_in_b"])
+            and int(ar["seq_out_frame_exclusive"]) == int(br["seq_in_frame"])
+        ):
+            return ar, br
+    return None
+
+
+def apply_fix(
+    db: Database, *, timeline_id: str, identity: dict[str, Any], fix: SuggestedFix
+) -> dict[str, Any]:
+    """Apply a fix at the boundary identified by ``identity`` (asset_a/asset_b/src_out_a/src_in_b).
+
+    ``resnap`` rolls the cut (works on rough_cut/scene/sequence lane-0 clips; transitions kept);
+    ``transition`` sets clip A's ``transition_after`` (crossfade/fade — rendered by Plan A);
+    ``none`` is a no-op. Returns ``{"status": "ok"|"error", ...}``. The delta is clamped to the
+    editorial window and the in-clip bounds; a clamp to 0 is an error (no effective change)."""
+    if fix.kind == "none":
+        return {"status": "ok", "applied": "none"}
+    rows = repos.list_timeline_clips(db, timeline_id)
+    lane0 = sorted(
+        (r for r in rows if int(r.get("lane") or 0) == 0), key=lambda r: int(r["seq_in_frame"])
+    )
+    pair = _find_boundary_pair(lane0, identity)
+    if pair is None:
+        return {"status": "error", "reason": "boundary not found"}
+    a_row, b_row = pair
+
+    if fix.kind == "transition":
+        repos.set_clip_transition(
+            db,
+            clip_id=str(a_row["id"]),
+            kind=fix.transition_style,
+            frames=int(fix.transition_frames),
+        )
+        return {"status": "ok", "applied": "transition", "style": fix.transition_style}
+
+    # resnap — clamp to the editorial window and the in-clip length bounds.
+    len_a = int(a_row["src_out_frame_exclusive"]) - int(a_row["src_in_frame"])
+    len_b = int(b_row["src_out_frame_exclusive"]) - int(b_row["src_in_frame"])
+    lo, hi = -(len_a - 1), (len_b - 1)
+    delta = max(lo, min(hi, max(-RESNAP_WINDOW, min(RESNAP_WINDOW, int(fix.resnap_delta_frames)))))
+    if delta == 0:
+        return {"status": "error", "reason": "no effective resnap delta"}
+    boundary_seq = int(a_row["seq_out_frame_exclusive"])
+    # Validate the roll against the pure op (speed-1 guard, range), then persist the two clips'
+    # frame columns directly so the transition_after_* fields survive (replace would drop them).
+    try:
+        roll_boundary([EditClip.from_row(r) for r in rows], boundary_seq, delta)
+    except ValueError as exc:
+        return {"status": "error", "reason": str(exc)}
+    repos.update_clip_frames(
+        db, str(a_row["id"]),
+        src_in_frame=int(a_row["src_in_frame"]),
+        src_out_frame_exclusive=int(a_row["src_out_frame_exclusive"]) + delta,
+        seq_in_frame=int(a_row["seq_in_frame"]),
+        seq_out_frame_exclusive=int(a_row["seq_out_frame_exclusive"]) + delta,
+    )
+    repos.update_clip_frames(
+        db, str(b_row["id"]),
+        src_in_frame=int(b_row["src_in_frame"]) + delta,
+        src_out_frame_exclusive=int(b_row["src_out_frame_exclusive"]),
+        seq_in_frame=int(b_row["seq_in_frame"]) + delta,
+        seq_out_frame_exclusive=int(b_row["seq_out_frame_exclusive"]),
+    )
+    return {"status": "ok", "applied": "resnap", "delta": delta}
 
 
 def default_backend() -> VlmBackend | None:
