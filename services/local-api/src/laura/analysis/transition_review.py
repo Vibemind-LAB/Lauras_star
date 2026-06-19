@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
@@ -355,11 +356,17 @@ def apply_fix(
 
 
 def default_backend() -> VlmBackend | None:
-    """The configured real backend, or ``None`` when the ``[vlm]`` extra is absent.
+    """The configured real backend, or ``None`` when the ``[vlm]`` model isn't set up.
 
-    Plan B always returns ``None`` (no model); Plan C provides the Ollama-backed implementation.
-    The review job takes a backend argument, so tests inject :class:`StubVlmBackend` directly."""
-    return None
+    Opt-in & local-first: returns an :class:`OllamaVlmBackend` only when ``LAURA_VLM_MODEL`` (or
+    ``LAURA_VLM=1``) is set AND the model is locally available; otherwise ``None`` (so the backend
+    starts/serves cache + apply-fix without a model, and tests inject :class:`StubVlmBackend`)."""
+    if not (os.environ.get("LAURA_VLM_MODEL") or os.environ.get("LAURA_VLM")):
+        return None
+    from .vlm_ollama import OllamaVlmBackend  # lazy — avoids an import cycle
+
+    backend = OllamaVlmBackend()
+    return backend if backend.available() else None
 
 
 def vlm_available() -> bool:
