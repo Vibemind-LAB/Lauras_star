@@ -58,7 +58,7 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "60", num: 60, den: 1, drop: false },
 ];
 
-export const EXPECTED_SCHEMA_VERSION = 22;
+export const EXPECTED_SCHEMA_VERSION = 24;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
