@@ -151,7 +151,8 @@ def reenact(
         payload=payload,
         idempotency_key=(
             f"reenact:{timeline_id}:{body.seq_in_frame}:{body.seq_out_frame_exclusive}"
-            f":{body.portrait_asset_id}"
+            f":{body.portrait_asset_id}:{body.consent_id}"
+            f":{body.runtime_id or ''}:{body.backend or ''}"
         ),
     )
     return {"job_id": job_id}

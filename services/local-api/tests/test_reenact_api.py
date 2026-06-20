@@ -148,6 +148,50 @@ def test_reenact_valid_202(tmp_path: Path) -> None:
     assert "job_id" in r.json()
 
 
+def test_reenact_idempotency_key_includes_runtime_and_consent(tmp_path: Path) -> None:
+    client, db, pid, tl_id, portrait_id = _setup(tmp_path)
+    consent_r = client.post(f"/projects/{pid}/consent", json={"subject_label": "Eve"})
+    cid = consent_r.json()["id"]
+    runtime_one = repos.create_ai_runtime(
+        db,
+        kind="stub",
+        effect="reenact",
+        display_name="Stub One",
+    )
+    runtime_two = repos.create_ai_runtime(
+        db,
+        kind="stub",
+        effect="reenact",
+        display_name="Stub Two",
+    )
+    body = {
+        "seq_in_frame": 0,
+        "seq_out_frame_exclusive": 30,
+        "portrait_asset_id": portrait_id,
+        "consent_id": cid,
+    }
+
+    first = client.post(
+        f"/timelines/{tl_id}/reenact",
+        json={**body, "runtime_id": runtime_one["id"]},
+    )
+    second = client.post(
+        f"/timelines/{tl_id}/reenact",
+        json={**body, "runtime_id": runtime_two["id"]},
+    )
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    assert first.json()["job_id"] != second.json()["job_id"]
+
+    first_job = repos.get_job(db, first.json()["job_id"])
+    second_job = repos.get_job(db, second.json()["job_id"])
+    assert first_job is not None
+    assert second_job is not None
+    assert runtime_one["id"] in first_job["idempotency_key"]
+    assert runtime_two["id"] in second_job["idempotency_key"]
+
+
 def test_reenact_revoked_consent_400(tmp_path: Path) -> None:
     """POST with a revoked consent → 400."""
     client, db, pid, tl_id, portrait_id = _setup(tmp_path)
