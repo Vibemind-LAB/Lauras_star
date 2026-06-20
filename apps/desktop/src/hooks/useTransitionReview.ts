@@ -20,8 +20,12 @@ export interface UseTransitionReview {
   apply: (verdict: TransitionVerdict, fix?: SuggestedFix) => Promise<ApplyFixResult>;
 }
 
-const POLL_INTERVAL_MS = 1000;
-const POLL_ATTEMPTS = 30;
+const POLL_INTERVAL_MS = 1500;
+// Cover a cold model load plus many per-boundary inferences (~18s each): the review job can run
+// for minutes on a long scene. We poll the JOB STATUS rather than stopping at the first verdict,
+// so the panel keeps refreshing as each boundary finishes and finalises when the job is done.
+const POLL_ATTEMPTS = 240;
+const TERMINAL_STATUS = new Set(["succeeded", "failed", "cancelled"]);
 
 function identityOf(verdict: TransitionVerdict): BoundaryIdentity {
   return {
@@ -54,12 +58,26 @@ export function useTransitionReview(
     setLoading(true);
     setError(null);
     try {
-      await client.reviewTransitions(timelineId);
+      const { job_id } = await client.reviewTransitions(timelineId);
       for (let i = 0; i < POLL_ATTEMPTS; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        // Refresh verdicts every cycle so they surface as the model finishes each boundary.
         const res = await client.getTransitionReview(timelineId);
         setVerdicts(res.verdicts);
-        if (res.verdicts.length > 0) break;
+        // Stop when the review JOB is actually done — not at the first verdict — so every
+        // boundary's verdict lands in the panel and a long scene finalises correctly.
+        let done = false;
+        try {
+          const job = await client.getJob(job_id);
+          done = TERMINAL_STATUS.has(job.status);
+        } catch {
+          // Transient job-status hiccup: keep polling on verdicts rather than aborting.
+        }
+        if (done) {
+          const final = await client.getTransitionReview(timelineId);
+          setVerdicts(final.verdicts);
+          break;
+        }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Übergangs-Prüfung fehlgeschlagen");
