@@ -98,12 +98,13 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
     Steps (in order):
     1. Consent gate — raises immediately if consent_id is missing or unknown.
     2. Resolve timeline + project (rate_num / rate_den).
-    3. Extract the driving range from base clip rows that overlap [seq_in, seq_out).
-    4. Render the driving clip to a temporary MP4.
-    5. Resolve and check the reenact backend.
-    6. Animate the portrait asset, write to the project workspace.
-    7. Register the output as a synthetic asset.
-    8. Place a replace-overlay clip on the timeline.
+    3. Verify consent and portrait are scoped to the timeline project.
+    4. Extract the driving range from base clip rows that overlap [seq_in, seq_out).
+    5. Render the driving clip to a temporary MP4.
+    6. Resolve and check the reenact backend.
+    7. Animate the portrait asset, write to the project workspace.
+    8. Register the output as a synthetic asset.
+    9. Place a replace-overlay clip on the timeline.
     """
     payload = ctx.payload
 
@@ -133,6 +134,15 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
     project = repos.get_project(ctx.db, tl["project_id"])
     if project is None:
         raise ValueError(f"ai.reenact: project not found: {tl['project_id']!r}")
+    if consent["project_id"] != tl["project_id"]:
+        raise ValueError("ai.reenact: consent does not belong to this timeline project")
+
+    portrait_asset_id: str = payload["portrait_asset_id"]
+    portrait = repos.get_asset(ctx.db, portrait_asset_id)
+    if portrait is None:
+        raise ValueError(f"ai.reenact: portrait asset not found: {portrait_asset_id!r}")
+    if portrait["project_id"] != tl["project_id"]:
+        raise ValueError("ai.reenact: portrait asset does not belong to this timeline project")
 
     rate_num: int = int(project["sequence_rate_num"])
     rate_den: int = int(project["sequence_rate_den"])
@@ -211,13 +221,6 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
             )
 
         # ── 6. Portrait asset → animate ──────────────────────────────────────
-        portrait_asset_id: str = payload["portrait_asset_id"]
-        portrait = repos.get_asset(ctx.db, portrait_asset_id)
-        if portrait is None:
-            raise ValueError(
-                f"ai.reenact: portrait asset not found: {portrait_asset_id!r}"
-            )
-
         backend.reenact(
             driving_path=driving_tmp,
             portrait_path=Path(portrait["source_path"]),

@@ -4,6 +4,7 @@ import { type LauraClient } from "../api";
 import { useJobStatus } from "../hooks/useJobStatus";
 import { log } from "../shared/log";
 import { framesToTimecode } from "../shared/timecode";
+import { RuntimeSelect } from "./RuntimeSelect";
 
 export interface ReenactPanelProps {
   client: LauraClient;
@@ -18,6 +19,7 @@ export interface ReenactPanelProps {
   rateNum: number;
   /** Denominator of the project sequence frame rate (e.g. 1001 for 29.97). */
   rateDen: number;
+  runtimeReloadKey?: number;
 }
 
 function jobChipClass(status: string): string {
@@ -61,6 +63,7 @@ export function ReenactPanel({
   currentSeqFrame,
   rateNum,
   rateDen,
+  runtimeReloadKey = 0,
 }: ReenactPanelProps): ReactElement {
   // --- Consent step state ---
   const [subjectLabel, setSubjectLabel] = useState<string>("");
@@ -74,6 +77,7 @@ export function ReenactPanel({
   const [seqIn, setSeqIn] = useState<number>(0);
   const [seqOut, setSeqOut] = useState<number>(0);
   const [backend, setBackend] = useState<"stub" | "liveportrait">("stub");
+  const [runtimeId, setRuntimeId] = useState<string>("");
   const [reenactBusy, setReenactBusy] = useState(false);
   const [reenactError, setReenactError] = useState<string | null>(null);
   const [lastJobId, setLastJobId] = useState<string | null>(null);
@@ -137,13 +141,17 @@ export function ReenactPanel({
     setLastJobId(null);
     onChangeFiredRef.current = null;
     try {
-      const result = await client.reenact(timelineId, {
+      const request: Parameters<LauraClient["reenact"]>[1] = {
         seqIn,
         seqOut,
         portraitAssetId,
         consentId,
         backend,
-      });
+      };
+      if (runtimeId !== "") {
+        request.runtimeId = runtimeId;
+      }
+      const result = await client.reenact(timelineId, request);
       setLastJobId(result.job_id);
       log.info(
         "reenact job started",
@@ -283,6 +291,17 @@ export function ReenactPanel({
             <option value="stub">Stub</option>
             <option value="liveportrait">LivePortrait Sidecar</option>
           </select>
+
+          <RuntimeSelect
+            client={client}
+            effect="reenact"
+            label="Reenact-Runtime auswählen"
+            value={runtimeId}
+            onChange={setRuntimeId}
+            disabled={reenactBusy || isRunning}
+            reloadKey={runtimeReloadKey}
+            labelClassName="flex min-w-32 flex-col gap-1 text-xs text-slate-400"
+          />
 
           {/* seq in */}
           <div className="flex flex-col gap-0.5">

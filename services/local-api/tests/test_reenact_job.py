@@ -242,6 +242,114 @@ def test_reenact_consent_gate_revoked(tmp_path: Path) -> None:
     )
 
 
+def test_reenact_consent_gate_rejects_cross_project_consent(tmp_path: Path) -> None:
+    db, project, asset, tl = _setup_scene(tmp_path)
+    other_root = tmp_path / "other-project"
+    other_root.mkdir(parents=True, exist_ok=True)
+    other_project = repos.create_project(
+        db,
+        name="other_project",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(other_root),
+    )
+    consent = repos.create_consent_record(
+        db,
+        project_id=other_project["id"],
+        subject_label="Other Project Subject",
+        confirmed_by="test",
+    )
+    registry = _make_registry()
+    runner = JobRunner(db, registry)
+
+    assets_before = repos.list_assets(db, project["id"])
+    job_id = enqueue(
+        db,
+        queue="ai",
+        kind="ai.reenact",
+        payload={
+            "timeline_id": tl["id"],
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 30,
+            "portrait_asset_id": asset["id"],
+            "consent_id": consent["id"],
+            "backend": "stub",
+        },
+        max_attempts=1,
+    )
+    _drain(runner)
+
+    with db.connection() as conn:
+        row = conn.execute("SELECT status, error_json FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row is not None
+    assert row["status"] == "failed"
+    assert "consent does not belong to this timeline project" in row["error_json"]
+    assert repos.list_assets(db, project["id"]) == assets_before
+    replace_clips = [
+        clip for clip in repos.list_timeline_clips(db, tl["id"]) if clip.get("role") == "replace"
+    ]
+    assert replace_clips == []
+
+
+def test_reenact_rejects_cross_project_portrait_before_asset_registration(
+    tmp_path: Path,
+) -> None:
+    db, project, base_asset, tl = _setup_scene(tmp_path)
+    other_root = tmp_path / "other-project"
+    other_root.mkdir(parents=True, exist_ok=True)
+    other_project = repos.create_project(
+        db,
+        name="other_project",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(other_root),
+    )
+    portrait = repos.create_asset(
+        db,
+        project_id=other_project["id"],
+        type="video",
+        display_name="other-portrait.mp4",
+        source_path=base_asset["source_path"],
+    )
+    consent = repos.create_consent_record(
+        db,
+        project_id=project["id"],
+        subject_label="Test Subject",
+        confirmed_by="test",
+    )
+    runner = JobRunner(db, _make_registry())
+
+    assets_before = repos.list_assets(db, project["id"])
+    job_id = enqueue(
+        db,
+        queue="ai",
+        kind="ai.reenact",
+        payload={
+            "timeline_id": tl["id"],
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 30,
+            "portrait_asset_id": portrait["id"],
+            "consent_id": consent["id"],
+            "backend": "stub",
+        },
+        max_attempts=1,
+    )
+    _drain(runner)
+
+    with db.connection() as conn:
+        row = conn.execute("SELECT status, error_json FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row is not None
+    assert row["status"] == "failed"
+    assert "portrait asset does not belong to this timeline project" in row["error_json"]
+    assert repos.list_assets(db, project["id"]) == assets_before
+    replace_clips = [
+        clip for clip in repos.list_timeline_clips(db, tl["id"]) if clip.get("role") == "replace"
+    ]
+    assert replace_clips == []
+
+
 # ── (b) Stub e2e ───────────────────────────────────────────────────────────────
 
 def test_reenact_stub_e2e(tmp_path: Path) -> None:

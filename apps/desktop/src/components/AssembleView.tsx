@@ -30,6 +30,7 @@ import { PersonaKitPanel } from "./PersonaKitPanel";
 import { ReenactPanel } from "./ReenactPanel";
 import { RuntimeSetupPanel } from "./RuntimeSetupPanel";
 import { RuntimeStatusPanel } from "./RuntimeStatusPanel";
+import { RuntimeSelect } from "./RuntimeSelect";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
 
@@ -137,6 +138,7 @@ function TranscriptBlockEditor({
   const [text, setText] = useState(block.text);
   const [busy, setBusy] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceRuntimeId, setVoiceRuntimeId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   // One active job at a time: realign job id or voiceover job id.
@@ -204,12 +206,16 @@ function TranscriptBlockEditor({
     setActiveJobId(null);
     onSuccessFiredRef.current = null;
     try {
-      const accepted = await client.createVoiceover(timelineId, {
+      const request: Parameters<LauraClient["createVoiceover"]>[1] = {
         segmentId: block.segment_id,
         text,
         seqIn: block.seq_in_frame,
         seqOut: block.seq_out_frame_exclusive,
-      });
+      };
+      if (voiceRuntimeId !== "") {
+        request.runtimeId = voiceRuntimeId;
+      }
+      const accepted = await client.createVoiceover(timelineId, request);
       activeJobKindRef.current = "voiceover";
       setActiveJobId(accepted.job_id);
     } catch (e) {
@@ -307,7 +313,17 @@ function TranscriptBlockEditor({
           )}
         </div>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-end gap-2">
+        <RuntimeSelect
+          client={client}
+          effect="voice"
+          label="Voiceover-Runtime auswählen"
+          value={voiceRuntimeId}
+          onChange={setVoiceRuntimeId}
+          disabled={busy || voiceBusy || jobRunning}
+          labelClassName="flex min-w-40 flex-col gap-1 text-[11px] text-slate-400"
+          selectClassName="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
+        />
         <button
           type="button"
           onClick={() => void saveAndRealign()}
@@ -912,12 +928,14 @@ export function AssembleView({
               currentSeqFrame={seqFrame}
               rateNum={rateNum}
               rateDen={rateDen}
+              runtimeReloadKey={runtimeReloadKey}
             />
             <LipsyncPanel
               client={client}
               projectId={projectId}
               timelineId={sequence?.timeline_id ?? null}
               assets={assets}
+              runtimeReloadKey={runtimeReloadKey}
               onChange={() => {
                 reloadSeqClips();
                 reloadAudioClips();

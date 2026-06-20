@@ -128,10 +128,20 @@ def reenact(
             status.HTTP_400_BAD_REQUEST,
             "consent has been revoked; obtain fresh consent before re-enacting",
         )
+    if consent["project_id"] != tl["project_id"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "consent belongs to another project",
+        )
 
     portrait = repos.get_asset(db, body.portrait_asset_id)
     if portrait is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "portrait asset not found")
+    if portrait["project_id"] != tl["project_id"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "portrait asset belongs to another project",
+        )
 
     payload = {
         "timeline_id": timeline_id,
@@ -143,6 +153,7 @@ def reenact(
     }
     if body.runtime_id is not None:
         payload["runtime_id"] = body.runtime_id
+    routing_key = body.runtime_id if body.runtime_id is not None else body.backend or ""
 
     job_id = enqueue(
         db,
@@ -152,7 +163,7 @@ def reenact(
         idempotency_key=(
             f"reenact:{timeline_id}:{body.seq_in_frame}:{body.seq_out_frame_exclusive}"
             f":{body.portrait_asset_id}:{body.consent_id}"
-            f":{body.runtime_id or ''}:{body.backend or ''}"
+            f":{routing_key}"
         ),
     )
     return {"job_id": job_id}

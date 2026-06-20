@@ -21,6 +21,15 @@ def test_create_persona_requires_active_consent(client: TestClient) -> None:
         f"/projects/{project['id']}/consent",
         json={"subject_label": "Persona"},
     ).json()
+    runtime = client.post(
+        "/ai/runtimes",
+        json={
+            "kind": "stub",
+            "effect": "voice",
+            "display_name": "Stub Voice",
+            "license_status": "not_required",
+        },
+    ).json()
 
     response = client.post(
         "/ai/personas",
@@ -29,7 +38,7 @@ def test_create_persona_requires_active_consent(client: TestClient) -> None:
             "name": "Persona",
             "consent_id": consent["id"],
             "allowed_effects": ["voice", "lipsync"],
-            "preferred_runtimes": {"voice": "stub-voice"},
+            "preferred_runtimes": {"voice": runtime["id"]},
         },
     )
     assert response.status_code == 201
@@ -40,6 +49,158 @@ def test_create_persona_requires_active_consent(client: TestClient) -> None:
     listed = client.get(f"/ai/personas?project_id={project['id']}")
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == persona["id"]
+
+
+def test_create_persona_rejects_unknown_preferred_runtime(client: TestClient) -> None:
+    project = client.post(
+        "/projects",
+        json={
+            "name": "P",
+            "sequence_rate_num": 30,
+            "sequence_rate_den": 1,
+            "drop_frame": False,
+        },
+    ).json()
+    consent = client.post(
+        f"/projects/{project['id']}/consent",
+        json={"subject_label": "Persona"},
+    ).json()
+
+    response = client.post(
+        "/ai/personas",
+        json={
+            "project_id": project["id"],
+            "name": "Persona",
+            "consent_id": consent["id"],
+            "allowed_effects": ["voice"],
+            "preferred_runtimes": {"voice": "missing-runtime"},
+        },
+    )
+
+    assert response.status_code == 404
+    assert "preferred runtime not found" in response.text
+
+
+def test_create_persona_rejects_preferred_runtime_for_disallowed_effect(
+    client: TestClient,
+) -> None:
+    project = client.post(
+        "/projects",
+        json={
+            "name": "P",
+            "sequence_rate_num": 30,
+            "sequence_rate_den": 1,
+            "drop_frame": False,
+        },
+    ).json()
+    consent = client.post(
+        f"/projects/{project['id']}/consent",
+        json={"subject_label": "Persona"},
+    ).json()
+    runtime = client.post(
+        "/ai/runtimes",
+        json={
+            "kind": "stub",
+            "effect": "voice",
+            "display_name": "Stub Voice",
+            "license_status": "not_required",
+        },
+    ).json()
+
+    response = client.post(
+        "/ai/personas",
+        json={
+            "project_id": project["id"],
+            "name": "Persona",
+            "consent_id": consent["id"],
+            "allowed_effects": ["lipsync"],
+            "preferred_runtimes": {"voice": runtime["id"]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "preferred runtime effect is not allowed" in response.text
+
+
+def test_create_persona_rejects_preferred_runtime_with_wrong_effect(
+    client: TestClient,
+) -> None:
+    project = client.post(
+        "/projects",
+        json={
+            "name": "P",
+            "sequence_rate_num": 30,
+            "sequence_rate_den": 1,
+            "drop_frame": False,
+        },
+    ).json()
+    consent = client.post(
+        f"/projects/{project['id']}/consent",
+        json={"subject_label": "Persona"},
+    ).json()
+    runtime = client.post(
+        "/ai/runtimes",
+        json={
+            "kind": "stub",
+            "effect": "lipsync",
+            "display_name": "Stub Lipsync",
+            "license_status": "not_required",
+        },
+    ).json()
+
+    response = client.post(
+        "/ai/personas",
+        json={
+            "project_id": project["id"],
+            "name": "Persona",
+            "consent_id": consent["id"],
+            "allowed_effects": ["voice"],
+            "preferred_runtimes": {"voice": runtime["id"]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "preferred runtime effect must be voice" in response.text
+
+
+def test_create_persona_rejects_disabled_preferred_runtime(client: TestClient) -> None:
+    project = client.post(
+        "/projects",
+        json={
+            "name": "P",
+            "sequence_rate_num": 30,
+            "sequence_rate_den": 1,
+            "drop_frame": False,
+        },
+    ).json()
+    consent = client.post(
+        f"/projects/{project['id']}/consent",
+        json={"subject_label": "Persona"},
+    ).json()
+    runtime = client.post(
+        "/ai/runtimes",
+        json={
+            "kind": "stub",
+            "effect": "voice",
+            "display_name": "Disabled Voice",
+            "enabled": False,
+            "license_status": "not_required",
+        },
+    ).json()
+
+    response = client.post(
+        "/ai/personas",
+        json={
+            "project_id": project["id"],
+            "name": "Persona",
+            "consent_id": consent["id"],
+            "allowed_effects": ["voice"],
+            "preferred_runtimes": {"voice": runtime["id"]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "preferred runtime is disabled" in response.text
 
 
 def test_create_persona_rejects_revoked_consent(client: TestClient) -> None:

@@ -1,6 +1,6 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { type LauraClient, type Scene, type Sequence } from "../api";
+import { type AiRuntime, type LauraClient, type Scene, type Sequence } from "../api";
 import { AssembleView } from "./AssembleView";
 
 vi.mock("./SequencePlayer", () => ({
@@ -42,6 +42,30 @@ const transcript = [{
     is_punctuation: false }],
 }];
 
+function runtime(overrides: Partial<AiRuntime>): AiRuntime {
+  return {
+    id: "rt-1",
+    kind: "stub",
+    effect: "lipsync",
+    display_name: "Stub Lipsync",
+    status: { state: "ready", ready: true },
+    capabilities: { effects: ["lipsync"] },
+    base_url: null,
+    container_image: null,
+    container_name: null,
+    port: null,
+    workspace_mount: null,
+    model_mount: null,
+    requires_gpu: false,
+    enabled: true,
+    license_status: "not_required",
+    last_health_at: null,
+    created_at: "",
+    updated_at: "",
+    ...overrides,
+  };
+}
+
 function client(over: Partial<LauraClient>): LauraClient {
   return { listProjectScenes: vi.fn().mockResolvedValue(scenes),
     listAssets: vi.fn().mockResolvedValue([]),
@@ -59,28 +83,7 @@ function client(over: Partial<LauraClient>): LauraClient {
     getSequenceTranscript: vi.fn().mockResolvedValue([]),
     getJob: vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" }),
     createVoiceover: vi.fn().mockResolvedValue({ job_id: "voice-job-1" }),
-    listAiRuntimes: vi.fn().mockResolvedValue([
-      {
-        id: "rt-1",
-        kind: "stub",
-        effect: "lipsync",
-        display_name: "Stub Lipsync",
-        status: { state: "ready", ready: true },
-        capabilities: { effects: ["lipsync"] },
-        base_url: null,
-        container_image: null,
-        container_name: null,
-        port: null,
-        workspace_mount: null,
-        model_mount: null,
-        requires_gpu: false,
-        enabled: true,
-        license_status: "not_required",
-        last_health_at: null,
-        created_at: "",
-        updated_at: "",
-      },
-    ]),
+    listAiRuntimes: vi.fn().mockResolvedValue([runtime({})]),
     refreshAiRuntime: vi.fn().mockResolvedValue({}),
     createAiRuntime: vi.fn().mockResolvedValue({ id: "rt-2" }),
     startAiRuntime: vi.fn().mockResolvedValue({}),
@@ -232,6 +235,34 @@ describe("AssembleView", () => {
     expect(c.listTimelineAudioClips).toHaveBeenCalledTimes(2);
   });
 
+  it("passes a selected voice runtime into voiceover generation", async () => {
+    const createVoiceover = vi.fn().mockResolvedValue({ job_id: "voice-job-1" });
+    const c = client({
+      getSequenceTranscript: vi.fn().mockResolvedValue(transcript),
+      createVoiceover,
+      getJob: vi.fn().mockResolvedValue({ id: "voice-job-1", status: "succeeded" }),
+      listAiRuntimes: vi.fn().mockResolvedValue([
+        runtime({ id: "rt-voice", effect: "voice", display_name: "Voice Runtime" }),
+      ]),
+    });
+    const { findByLabelText, getByRole } = render(
+      <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
+
+    fireEvent.change(await findByLabelText("Voiceover-Runtime auswählen"), {
+      target: { value: "rt-voice" },
+    });
+    fireEvent.click(getByRole("button", { name: "Stimme erzeugen" }));
+
+    await waitFor(() =>
+      expect(createVoiceover).toHaveBeenCalledWith("seq", {
+        segmentId: "seg-1",
+        text: "Original line",
+        seqIn: 0,
+        seqOut: 30,
+        runtimeId: "rt-voice",
+      }));
+  });
+
   it("lets editors hide the caption preview overlay without disabling transcript editing", async () => {
     const c = client({ getSequenceTranscript: vi.fn().mockResolvedValue(transcript) });
     const { findByLabelText, getByRole, queryByLabelText } = render(
@@ -257,44 +288,66 @@ describe("AssembleView", () => {
           speed_den: 1, audio_offset_samples: 0 },
       ]),
     });
-    const { findByText, getByRole } = render(
+    const { findAllByText, findByText, getByRole } = render(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByText("Gesamtdauer 75 f")).toBeTruthy();
     fireEvent.click(getByRole("button", { name: "Tools" }));
 
     expect(await findByText("AI Runtimes")).toBeTruthy();
-    expect(await findByText("Stub Lipsync")).toBeTruthy();
+    expect((await findAllByText("Stub Lipsync")).length).toBeGreaterThan(0);
     expect(await findByText("AI Persona Kit")).toBeTruthy();
   });
 
   it("keeps runtime status stable when only the sequence reload key changes", async () => {
-    const c = client({});
-    const { findByText, getByRole, getByTitle } = render(
+    const listAiRuntimes = vi.fn().mockResolvedValue([runtime({})]);
+    const c = client({ listAiRuntimes });
+    const { findAllByText, getByRole, getByTitle } = render(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />,
     );
 
     fireEvent.click(getByRole("button", { name: "Tools" }));
-    expect(await findByText("Stub Lipsync")).toBeTruthy();
-    expect(c.listAiRuntimes).toHaveBeenCalledTimes(1);
+    expect((await findAllByText("Stub Lipsync")).length).toBeGreaterThan(0);
+    await waitFor(() => expect(listAiRuntimes.mock.calls.length).toBeGreaterThanOrEqual(3));
+    const callsAfterToolsOpen = listAiRuntimes.mock.calls.length;
 
     fireEvent.click(getByTitle(/Szene 2.*Reihenfolge anhängen/));
 
     await waitFor(() => expect(c.setSequenceScenes).toHaveBeenCalledWith("seq", ["s1", "s2"]));
-    expect(c.listAiRuntimes).toHaveBeenCalledTimes(1);
+    expect(listAiRuntimes).toHaveBeenCalledTimes(callsAfterToolsOpen);
   });
 
   it("reloads runtime status after a new runtime is created from the tools rail", async () => {
-    const createAiRuntime = vi.fn().mockResolvedValue({ id: "rt-2" });
+    let created = false;
+    const createdRuntime = runtime({
+      id: "rt-2",
+      effect: "lipsync",
+      display_name: "Local Lipsync",
+      kind: "external_http",
+    });
+    const createAiRuntime = vi.fn().mockImplementation(() => {
+      created = true;
+      return Promise.resolve({ id: "rt-2" });
+    });
     const refreshAiRuntime = vi.fn().mockResolvedValue({ id: "rt-2" });
-    const c = client({ createAiRuntime, refreshAiRuntime });
-    const { getByRole, getByLabelText, findByText } = render(
+    const listAiRuntimes = vi.fn().mockImplementation((effect?: string) => {
+      const runtimes = created ? [runtime({}), createdRuntime] : [runtime({})];
+      return Promise.resolve(
+        effect === undefined
+          ? runtimes
+          : runtimes.filter((item) => item.effect === effect),
+      );
+    });
+    const c = client({ createAiRuntime, refreshAiRuntime, listAiRuntimes });
+    const { getByRole, getByLabelText, findAllByText } = render(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />,
     );
 
     fireEvent.click(getByRole("button", { name: "Tools" }));
-    expect(await findByText("Stub Lipsync")).toBeTruthy();
-    expect(c.listAiRuntimes).toHaveBeenCalledTimes(1);
+    expect((await findAllByText("Stub Lipsync")).length).toBeGreaterThan(0);
+    expect(getByLabelText("Lipsync-Runtime auswählen").textContent).not.toContain("Local Lipsync");
+    await waitFor(() => expect(listAiRuntimes.mock.calls.length).toBeGreaterThanOrEqual(3));
+    const callsAfterInitialToolsOpen = listAiRuntimes.mock.calls.length;
 
     fireEvent.change(getByLabelText("Runtime-Name"), {
       target: { value: "Local Lipsync" },
@@ -321,6 +374,11 @@ describe("AssembleView", () => {
       ),
     );
     await waitFor(() => expect(refreshAiRuntime).toHaveBeenCalledWith("rt-2"));
-    await waitFor(() => expect(c.listAiRuntimes).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(listAiRuntimes.mock.calls.length).toBeGreaterThan(callsAfterInitialToolsOpen),
+    );
+    await waitFor(() =>
+      expect(getByLabelText("Lipsync-Runtime auswählen").textContent).toContain("Local Lipsync"),
+    );
   });
 });

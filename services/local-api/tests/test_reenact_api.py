@@ -148,6 +148,54 @@ def test_reenact_valid_202(tmp_path: Path) -> None:
     assert "job_id" in r.json()
 
 
+def test_reenact_rejects_consent_from_another_project(tmp_path: Path) -> None:
+    client, _db, _pid, tl_id, portrait_id = _setup(tmp_path)
+    other_pid = _project(client)
+    other_consent = client.post(
+        f"/projects/{other_pid}/consent",
+        json={"subject_label": "Other Project Subject"},
+    ).json()
+
+    response = client.post(
+        f"/timelines/{tl_id}/reenact",
+        json={
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 30,
+            "portrait_asset_id": portrait_id,
+            "consent_id": other_consent["id"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "consent belongs to another project" in response.text
+
+
+def test_reenact_rejects_portrait_from_another_project(tmp_path: Path) -> None:
+    client, db, pid, tl_id, _portrait_id = _setup(tmp_path)
+    other_pid = _project(client)
+    other_portrait = repos.create_asset(
+        db,
+        project_id=other_pid,
+        type="video",
+        display_name="other-portrait.mp4",
+        source_path="/fake/other-portrait.mp4",
+    )
+    consent = client.post(f"/projects/{pid}/consent", json={"subject_label": "Eve"}).json()
+
+    response = client.post(
+        f"/timelines/{tl_id}/reenact",
+        json={
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 30,
+            "portrait_asset_id": other_portrait["id"],
+            "consent_id": consent["id"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "portrait asset belongs to another project" in response.text
+
+
 def test_reenact_idempotency_key_includes_runtime_and_consent(tmp_path: Path) -> None:
     client, db, pid, tl_id, portrait_id = _setup(tmp_path)
     consent_r = client.post(f"/projects/{pid}/consent", json={"subject_label": "Eve"})
@@ -190,6 +238,45 @@ def test_reenact_idempotency_key_includes_runtime_and_consent(tmp_path: Path) ->
     assert second_job is not None
     assert runtime_one["id"] in first_job["idempotency_key"]
     assert runtime_two["id"] in second_job["idempotency_key"]
+
+
+def test_reenact_idempotency_key_ignores_legacy_backend_when_runtime_is_selected(
+    tmp_path: Path,
+) -> None:
+    client, db, pid, tl_id, portrait_id = _setup(tmp_path)
+    consent_r = client.post(f"/projects/{pid}/consent", json={"subject_label": "Eve"})
+    cid = consent_r.json()["id"]
+    runtime = repos.create_ai_runtime(
+        db,
+        kind="stub",
+        effect="reenact",
+        display_name="Stub Reenact",
+    )
+    body = {
+        "seq_in_frame": 0,
+        "seq_out_frame_exclusive": 30,
+        "portrait_asset_id": portrait_id,
+        "consent_id": cid,
+        "runtime_id": runtime["id"],
+    }
+
+    first = client.post(
+        f"/timelines/{tl_id}/reenact",
+        json={**body, "backend": "stub"},
+    )
+    second = client.post(
+        f"/timelines/{tl_id}/reenact",
+        json={**body, "backend": "liveportrait"},
+    )
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    assert first.json()["job_id"] == second.json()["job_id"]
+
+    job = repos.get_job(db, first.json()["job_id"])
+    assert job is not None
+    assert runtime["id"] in job["idempotency_key"]
+    assert "liveportrait" not in job["idempotency_key"]
 
 
 def test_reenact_revoked_consent_400(tmp_path: Path) -> None:

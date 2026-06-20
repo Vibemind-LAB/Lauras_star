@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useMemo, useState } from "react";
 
 import { type Asset, type LauraClient } from "../api";
 import { log } from "../shared/log";
+import { RuntimeSelect } from "./RuntimeSelect";
 
 export function LipsyncPanel({
   client,
@@ -9,12 +10,14 @@ export function LipsyncPanel({
   timelineId,
   assets,
   onChange,
+  runtimeReloadKey = 0,
 }: {
   client: LauraClient;
   projectId: string | null;
   timelineId: string | null;
   assets: Asset[];
   onChange: () => void;
+  runtimeReloadKey?: number;
 }): ReactElement {
   const audioAssets = useMemo(
     () => assets.filter((asset) => asset.type === "audio" || asset.codec_audio !== null),
@@ -27,6 +30,7 @@ export function LipsyncPanel({
   const [seqIn, setSeqIn] = useState(0);
   const [seqOut, setSeqOut] = useState(0);
   const [backend, setBackend] = useState<"stub" | "vibevideo">("stub");
+  const [runtimeId, setRuntimeId] = useState("");
   const [licenseAccepted, setLicenseAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +45,7 @@ export function LipsyncPanel({
     setConfirmedLabel(null);
     setSubjectLabel("");
     setLicenseAccepted(false);
+    setRuntimeId("");
     setError(null);
     setJobId(null);
   }, [projectId]);
@@ -76,7 +81,7 @@ export function LipsyncPanel({
     setError(null);
     setJobId(null);
     try {
-      const accepted = await client.lipsync(timelineId, {
+      const request: Parameters<LauraClient["lipsync"]>[1] = {
         seqIn,
         seqOut,
         audioAssetId,
@@ -84,7 +89,11 @@ export function LipsyncPanel({
         licenseAccepted,
         backend,
         qualityThreshold: 0.6,
-      });
+      };
+      if (runtimeId !== "") {
+        request.runtimeId = runtimeId;
+      }
+      const accepted = await client.lipsync(timelineId, request);
       setJobId(accepted.job_id);
       onChange();
     } catch (e) {
@@ -213,6 +222,17 @@ export function LipsyncPanel({
             <option value="vibevideo">VibeVideo Sidecar</option>
           </select>
         </label>
+        <RuntimeSelect
+          client={client}
+          effect="lipsync"
+          label="Lipsync-Runtime auswählen"
+          value={runtimeId}
+          onChange={setRuntimeId}
+          disabled={busy}
+          reloadKey={runtimeReloadKey}
+          labelClassName="col-span-2 flex flex-col gap-1 text-slate-400"
+          selectClassName="rounded border border-edge bg-panel px-2 py-1 text-slate-200 disabled:opacity-50"
+        />
       </div>
 
       <button

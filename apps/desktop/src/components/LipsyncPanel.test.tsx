@@ -1,8 +1,32 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { type Asset, type LauraClient } from "../api";
+import { type AiRuntime, type Asset, type LauraClient } from "../api";
 import { LipsyncPanel } from "./LipsyncPanel";
+
+function runtime(overrides: Partial<AiRuntime>): AiRuntime {
+  return {
+    id: "rt-lipsync",
+    kind: "stub",
+    effect: "lipsync",
+    display_name: "Stub Lipsync",
+    status: { state: "ready", ready: true },
+    capabilities: {},
+    base_url: null,
+    container_image: null,
+    container_name: null,
+    port: null,
+    workspace_mount: null,
+    model_mount: null,
+    requires_gpu: false,
+    enabled: true,
+    license_status: "not_required",
+    last_health_at: null,
+    created_at: "",
+    updated_at: "",
+    ...overrides,
+  };
+}
 
 function asset(id: string, type: string, name: string): Asset {
   return {
@@ -41,6 +65,7 @@ function client(overrides: Partial<LauraClient> = {}): LauraClient {
       note: null,
       revoked_at: null,
     }),
+    listAiRuntimes: vi.fn().mockResolvedValue([]),
     lipsync: vi.fn().mockResolvedValue({ job_id: "lip-job-1" }),
     ...overrides,
   } as unknown as LauraClient;
@@ -114,5 +139,50 @@ describe("LipsyncPanel", () => {
         qualityThreshold: 0.6,
       }));
     expect(onChange).toHaveBeenCalledOnce();
+  });
+
+  it("submits the selected lipsync runtime id", async () => {
+    const lipsync = vi.fn().mockResolvedValue({ job_id: "lip-job-1" });
+    const c = client({
+      listAiRuntimes: vi.fn().mockResolvedValue([
+        runtime({ id: "rt-vibevideo", kind: "container", display_name: "VibeVideo Local" }),
+      ]),
+      lipsync,
+    });
+    const { getByLabelText, getByRole, findByLabelText, findByText } = render(
+      <LipsyncPanel
+        client={c}
+        projectId="p"
+        timelineId="tl-1"
+        assets={[asset("audio-1", "audio", "voice.wav")]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(getByLabelText("Subjekt-Label für Lipsync-Consent"), {
+      target: { value: "Person A" },
+    });
+    fireEvent.click(getByRole("button", { name: "Consent bestätigen" }));
+    await findByText(/Consent für Person A/);
+
+    fireEvent.change(await findByLabelText("Lipsync-Runtime auswählen"), {
+      target: { value: "rt-vibevideo" },
+    });
+    fireEvent.click(getByLabelText("Lizenz und Nutzung bestätigt"));
+    fireEvent.change(getByLabelText("Lipsync seq out"), { target: { value: "30" } });
+    fireEvent.click(getByRole("button", { name: "Lipsync (stub)" }));
+
+    await waitFor(() =>
+      expect(lipsync).toHaveBeenCalledWith("tl-1", {
+        seqIn: 0,
+        seqOut: 30,
+        audioAssetId: "audio-1",
+        consentId: "consent-1",
+        licenseAccepted: true,
+        backend: "stub",
+        runtimeId: "rt-vibevideo",
+        qualityThreshold: 0.6,
+      }),
+    );
   });
 });

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from ..ai.runtime_manager import refresh_runtime, start_runtime, stop_runtime
@@ -39,6 +41,34 @@ def _require_reference_asset(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"{field_label} asset belongs to another project",
         )
+
+
+def _validate_preferred_runtimes(
+    db: Database,
+    preferred_runtimes: dict[str, str],
+    *,
+    allowed_effects: Iterable[str],
+) -> None:
+    allowed = set(allowed_effects)
+    for effect, runtime_id in preferred_runtimes.items():
+        if effect not in allowed:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "preferred runtime effect is not allowed",
+            )
+        runtime = repos.get_ai_runtime(db, runtime_id)
+        if runtime is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "preferred runtime not found")
+        if runtime["effect"] != effect:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"preferred runtime effect must be {effect}",
+            )
+        if not runtime["enabled"]:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "preferred runtime is disabled",
+            )
 
 
 @router.post("/ai/runtimes", response_model=AiRuntimeOut, status_code=status.HTTP_201_CREATED)
@@ -115,6 +145,11 @@ def create_persona(body: AiPersonaCreate, request: Request) -> AiPersonaOut:
         body.voice_reference_asset_id,
         field_label="voice reference",
         project_id=project_id,
+    )
+    _validate_preferred_runtimes(
+        db,
+        body.preferred_runtimes,
+        allowed_effects=body.allowed_effects,
     )
     persona = repos.create_ai_persona(
         db,
