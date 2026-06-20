@@ -14,6 +14,7 @@ import base64
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -31,16 +32,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3-vl:8b"
 
+_SPECIAL_TOKEN = re.compile(r"<\|[^>]*\|>")  # chat special tokens some models leak into free text
 _LABELS: tuple[SmoothnessLabel, ...] = ("smooth", "jump_cut", "hard_jolt", "motion_break")
 _FIX_KINDS: tuple[FixKind, ...] = ("none", "resnap", "transition")
 _STYLES: tuple[TransitionStyle, ...] = ("crossfade", "fade")
 
 _REVIEW_PROMPT = (
-    "You are a film editor judging a single CUT between two video clips. The first images are the "
-    "last frames of clip A; the rest are the first frames of clip B. Judge how FLUID the "
-    "transition feels (1.0 = seamless, 0.0 = jarring). If A and B are the same continuous shot "
-    "with a time "
-    "jump (a 'dead-air jump cut'), prefer a short crossfade. Reply ONLY as JSON."
+    "You are a film editor. These frames span ONE cut: the first half are the LAST frames of clip "
+    "A, the second half are the FIRST frames of clip B. Judge how fluid the cut feels. "
+    "smoothness: 1.0 = seamless, 0.0 = jarring. "
+    "label: 'jump_cut' if A and B are the SAME shot/scene with a small time jump; "
+    "'smooth' if it is a clean cut between clearly DIFFERENT shots; "
+    "'hard_jolt' or 'motion_break' for an abrupt visual or motion break. "
+    "For a jump_cut, suggest a short crossfade. Keep 'reason' under 12 words. Reply ONLY JSON."
 )
 
 # JSON schema handed to Ollama's `format` so the reply is structured + deterministic.
@@ -49,7 +53,7 @@ _VERDICT_SCHEMA: dict[str, Any] = {
     "properties": {
         "smoothness": {"type": "number"},
         "label": {"type": "string", "enum": list(_LABELS)},
-        "reason": {"type": "string"},
+        "reason": {"type": "string", "maxLength": 160},
         "suggested_fix": {
             "type": "object",
             "properties": {
@@ -84,7 +88,10 @@ def _parse_verdict(obj: dict[str, Any]) -> TransitionVerdict:
     smoothness = min(1.0, max(0.0, _as_float(obj.get("smoothness"), 0.5)))
     raw_label = obj.get("label")
     label: SmoothnessLabel = raw_label if raw_label in _LABELS else "smooth"
-    reason = str(obj.get("reason") or "")
+    # Some quantized models leak chat special tokens (e.g. <|im_start|>) into free-text fields;
+    # strip those + any non-printable noise so the reason stays clean.
+    reason = _SPECIAL_TOKEN.sub("", str(obj.get("reason") or ""))
+    reason = "".join(c for c in reason if c.isascii() and c.isprintable()).strip()[:160]
 
     fix_obj = obj.get("suggested_fix")
     fix_obj = fix_obj if isinstance(fix_obj, dict) else {}
@@ -146,10 +153,15 @@ class OllamaVlmBackend:
             "messages": [{"role": "user", "content": _REVIEW_PROMPT, "images": images}],
             "stream": False,
             "format": _VERDICT_SCHEMA,
-            "options": {"temperature": 0, "top_k": 1, "top_p": 1.0, "seed": 0},
+            "keep_alive": "10m",  # keep the model resident between boundaries
+            # num_predict must be high enough for the full JSON object or the reply gets truncated
+            # mid-string (invalid JSON); deterministic sampling otherwise.
+            "options": {"temperature": 0, "top_k": 1, "top_p": 1.0, "seed": 0, "num_predict": 512},
         }
         try:
-            data = _http_json(f"{self.host}/api/chat", payload)
+            # Vision inference over ~12 frames (plus a cold model load on the first call) easily
+            # exceeds a short timeout, so allow generously.
+            data = _http_json(f"{self.host}/api/chat", payload, timeout=600.0)
             content = data.get("message", {}).get("content", "{}")
             return _parse_verdict(json.loads(content))
         except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
