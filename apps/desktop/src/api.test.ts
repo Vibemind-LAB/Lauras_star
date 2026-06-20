@@ -565,6 +565,7 @@ describe("LauraClient AI runtime and persona methods", () => {
       effect: "lipsync",
       displayName: "Lipsync",
       containerImage: "laura-runtime-lipsync:local",
+      containerEnv: { LAURA_RUNTIME_MODE: "smoke" },
     });
     await client.refreshAiRuntime("rt-1");
 
@@ -578,6 +579,7 @@ describe("LauraClient AI runtime and persona methods", () => {
           effect: "lipsync",
           display_name: "Lipsync",
           container_image: "laura-runtime-lipsync:local",
+          container_env: { LAURA_RUNTIME_MODE: "smoke" },
         }),
       }),
     );

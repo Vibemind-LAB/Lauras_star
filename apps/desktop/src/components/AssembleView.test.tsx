@@ -56,6 +56,7 @@ function runtime(overrides: Partial<AiRuntime>): AiRuntime {
     port: null,
     workspace_mount: null,
     model_mount: null,
+    container_env: {},
     requires_gpu: false,
     enabled: true,
     license_status: "not_required",

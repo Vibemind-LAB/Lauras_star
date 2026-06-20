@@ -361,6 +361,21 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
   Health/Capability-Refresh, Container Start/Stop/Events, Persona-Kit mit Consent und bevorzugten
   Runtimes, sowie `runtime_id`-Routing fuer bestehende Voice/Reenact/Lipsync-Jobs. Echte Modell-
   Container bleiben optional und werden ueber Setup/Runtime-Status aktiviert.
+- [x] **APF2 AI Runtime Sidecar Container** - LivePortrait-, VibeVideo/Lipsync- und Voice-
+  Sidecar-Images gebaut und startbar gemacht: gemeinsamer stdlib-HTTP-Server mit `/healthz`,
+  `/version`, `/capabilities`, `/reenact`, `/probe`, `/lipsync` und `/voiceover`; Dockerfile,
+  Compose-Stack, GPU-Override, Build/Health-Skripte und API-Registrierungsskript. Runtime-
+  Registry kann `container_env` speichern und an `docker run` uebergeben; Host-only Modell- und
+  Workspace-Pfade werden auf `/models:ro` und `/workspace` gemappt. Docker-Smoke: Images gebaut,
+  Compose gestartet, `/healthz`/`/capabilities` und Effekt-Endpunkte antworten in `smoke` mode.
+  Verifiziert: `docker compose -f deploy/ai-runtimes/docker-compose.yml build`, `up -d`, frische
+  `/healthz`-Checks fuer Ports 8898/8899/8901, Endpoint-Smoke fuer Voice WAV, LivePortrait
+  Multipart und VibeVideo Probe/Lipsync, full `uv run pytest -q`, Sidecar-Server-Tests,
+  full `uv run ruff check .` plus Sidecar-Pfade, `uv run mypy src`, Sidecar-Mypy,
+  full `pnpm --dir apps/desktop test`, `pnpm --dir apps/desktop exec tsc --noEmit`,
+  `pnpm --dir apps/desktop run build:renderer`, PowerShell/Bash-Syntaxchecks und
+  `git diff --check`. **Follow-up:** echte lokale Modell-Repos/Gewichte mounten und
+  `LAURA_*_COMMAND` je Runtime fuer produktive Modelloutputs setzen.
 
 ---
 

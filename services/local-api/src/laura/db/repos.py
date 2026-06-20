@@ -1386,6 +1386,7 @@ def _json_list(value: list[str] | None = None) -> str:
 def _decode_ai_runtime(row: dict[str, Any]) -> dict[str, Any]:
     row["requires_gpu"] = bool(row.get("requires_gpu"))
     row["enabled"] = bool(row.get("enabled"))
+    row["container_env"] = json.loads(row.pop("container_env_json") or "{}")
     row["status"] = json.loads(row.pop("status_cache_json") or "{}")
     row["capabilities"] = json.loads(row.pop("capabilities_json") or "{}")
     return row
@@ -1403,6 +1404,7 @@ def create_ai_runtime(
     port: int | None = None,
     workspace_mount: str | None = None,
     model_mount: str | None = None,
+    container_env: dict[str, str] | None = None,
     requires_gpu: bool = False,
     enabled: bool = True,
     license_status: str = "unknown",
@@ -1413,8 +1415,9 @@ def create_ai_runtime(
         conn.execute(
             "INSERT INTO ai_runtimes "
             "(id, kind, effect, display_name, base_url, container_image, container_name, "
-            "port, workspace_mount, model_mount, requires_gpu, enabled, license_status, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "port, workspace_mount, model_mount, container_env_json, requires_gpu, enabled, "
+            "license_status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 runtime_id,
                 kind,
@@ -1426,6 +1429,7 @@ def create_ai_runtime(
                 port,
                 workspace_mount,
                 model_mount,
+                json.dumps(container_env or {}),
                 int(requires_gpu),
                 int(enabled),
                 license_status,

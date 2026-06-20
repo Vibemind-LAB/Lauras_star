@@ -610,6 +610,7 @@ export interface AiRuntime {
   port: number | null;
   workspace_mount: string | null;
   model_mount: string | null;
+  container_env: Record<string, string>;
   requires_gpu: boolean;
   enabled: boolean;
   license_status: LicenseStatus;
@@ -630,6 +631,7 @@ export interface AiRuntimeCreate {
   port?: number;
   workspaceMount?: string;
   modelMount?: string;
+  containerEnv?: Record<string, string>;
   requiresGpu?: boolean;
   enabled?: boolean;
   licenseStatus?: LicenseStatus;
@@ -1281,6 +1283,7 @@ export class LauraClient {
     if (input.port !== undefined) body.port = input.port;
     if (input.workspaceMount !== undefined) body.workspace_mount = input.workspaceMount;
     if (input.modelMount !== undefined) body.model_mount = input.modelMount;
+    if (input.containerEnv !== undefined) body.container_env = input.containerEnv;
     if (input.requiresGpu !== undefined) body.requires_gpu = input.requiresGpu;
     if (input.enabled !== undefined) body.enabled = input.enabled;
     if (input.licenseStatus !== undefined) body.license_status = input.licenseStatus;

@@ -793,6 +793,7 @@ class AiRuntimeCreate(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)
     workspace_mount: str | None = None
     model_mount: str | None = None
+    container_env: dict[str, str] = Field(default_factory=dict)
     requires_gpu: bool = False
     enabled: bool = True
     license_status: LicenseStatus = "unknown"
