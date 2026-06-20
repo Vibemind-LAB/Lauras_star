@@ -392,7 +392,7 @@ def run_transition_review(
     timeline_id: str,
     *,
     backend: VlmBackend,
-    k: int = 6,
+    k: int = 2,  # frames per side; few images keep within the VLM context window (spec §4.3)
     frame_extractor: FrameExtractor = extract_frames,
     progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, int]:

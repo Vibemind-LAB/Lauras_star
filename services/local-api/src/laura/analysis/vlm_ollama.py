@@ -1,11 +1,11 @@
 """OllamaVlmBackend — a real local VLM (Qwen3-VL via Ollama) for transition review (Plan C).
 
 Optional ``[vlm]`` path: talks to a local Ollama server over HTTP (stdlib urllib — no new
-dependency). Deterministic by construction (``temperature=0, top_k=1, top_p=1, seed=0`` + forced
-JSON schema), so a re-review of the same frames yields the same verdict; the model's content digest
-pins the cache identity (spec §3/§4.5). The JSON→verdict parse is pure and defensively coerces the
-model output to Laura's enums, so a malformed reply degrades to a safe ``smooth``/``none`` verdict
-rather than raising.
+dependency). Deterministic by construction (``temperature=0, top_k=1, top_p=1, seed=0``), so a
+re-review of the same frames yields the same verdict; the model's content digest pins the cache
+identity (spec §3/§4.5). The model is asked for JSON in the prompt (NOT grammar-constrained — that
+degrades these quantized VLMs); the JSON→verdict parse is pure and defensively coerces the output to
+Laura's enums, so a malformed reply degrades to a safe ``smooth``/``none`` verdict, never raising.
 """
 
 from __future__ import annotations
@@ -39,15 +39,20 @@ _STYLES: tuple[TransitionStyle, ...] = ("crossfade", "fade")
 
 _REVIEW_PROMPT = (
     "You are a film editor. These frames span ONE cut: the first half are the LAST frames of clip "
-    "A, the second half are the FIRST frames of clip B. Judge how fluid the cut feels. "
-    "smoothness: 1.0 = seamless, 0.0 = jarring. "
-    "label: 'jump_cut' if A and B are the SAME shot/scene with a small time jump; "
-    "'smooth' if it is a clean cut between clearly DIFFERENT shots; "
-    "'hard_jolt' or 'motion_break' for an abrupt visual or motion break. "
-    "For a jump_cut, suggest a short crossfade. Keep 'reason' under 12 words. Reply ONLY JSON."
+    "A, the second half are the FIRST frames of clip B. Judge how fluid the cut feels and reply "
+    "with ONE JSON object and nothing else:\n"
+    '{"smoothness": <0.0-1.0, 1=seamless 0=jarring>, '
+    '"label": "smooth" | "jump_cut" | "hard_jolt" | "motion_break", '
+    '"reason": "<max 12 words>", '
+    '"suggested_fix": {"kind": "none" | "resnap" | "transition", '
+    '"transition_style": "crossfade", "transition_frames": 6}}\n'
+    "Use label 'jump_cut' if A and B are the SAME shot/scene with a small time jump (then "
+    "suggested_fix.kind='transition'); 'smooth' for a clean cut between clearly DIFFERENT shots "
+    "(kind='none')."
 )
 
-# JSON schema handed to Ollama's `format` so the reply is structured + deterministic.
+# Reference shape of the verdict JSON (the prompt asks for this; kept for documentation/validation,
+# not grammar-enforced — see the note in OllamaVlmBackend.review).
 _VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -81,6 +86,26 @@ def _as_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _extract_json(text: str) -> dict[str, Any]:
+    """First balanced ``{…}`` object parsed from free-text; ``{}`` on miss."""
+    start = text.find("{")
+    if start < 0:
+        return {}
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(text[start : i + 1])
+                except ValueError:
+                    return {}
+                return obj if isinstance(obj, dict) else {}
+    return {}
 
 
 def _parse_verdict(obj: dict[str, Any]) -> TransitionVerdict:
@@ -152,18 +177,26 @@ class OllamaVlmBackend:
             "model": self.model,
             "messages": [{"role": "user", "content": _REVIEW_PROMPT, "images": images}],
             "stream": False,
-            "format": _VERDICT_SCHEMA,
+            # NB: no grammar-constrained `format` — these quantized VLMs degenerate in the
+            # free-text `reason` field under it; we ask for JSON in the prompt and extract it.
             "keep_alive": "10m",  # keep the model resident between boundaries
-            # num_predict must be high enough for the full JSON object or the reply gets truncated
-            # mid-string (invalid JSON); deterministic sampling otherwise.
-            "options": {"temperature": 0, "top_k": 1, "top_p": 1.0, "seed": 0, "num_predict": 512},
+            # num_ctx must hold the image tokens + the reply, or the model returns an EMPTY
+            # message (a few frames overflow the 4096 default). num_predict caps the reply.
+            "options": {
+                "temperature": 0,
+                "top_k": 1,
+                "top_p": 1.0,
+                "seed": 0,
+                "num_predict": 512,
+                "num_ctx": 8192,
+            },
         }
         try:
             # Vision inference over ~12 frames (plus a cold model load on the first call) easily
             # exceeds a short timeout, so allow generously.
             data = _http_json(f"{self.host}/api/chat", payload, timeout=600.0)
             content = data.get("message", {}).get("content", "{}")
-            return _parse_verdict(json.loads(content))
+            return _parse_verdict(_extract_json(content))
         except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
             logger.warning("ollama review failed: %s", exc)
             # Safe degraded verdict — never block the pipeline on a model hiccup.
