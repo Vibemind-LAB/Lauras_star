@@ -317,17 +317,16 @@ def test_voiceover_api_returns_422_for_disabled_runtime(
     assert "runtime is disabled" in accepted.text
 
 
-def test_voiceover_runtime_id_routes_to_legacy_backend_name(
+def test_voiceover_runtime_id_routes_to_runtime_endpoint(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    captured: list[str | None] = []
-    original_resolver = ai_handlers.resolve_voiceover_backend
+    captured: list[tuple[str | None, str | None]] = []
 
-    def capture_resolver(name: str | None) -> object:
-        captured.append(name)
-        return original_resolver(name)
+    def capture_resolver(name: str | None, *, base_url: str | None = None) -> object:
+        captured.append((name, base_url))
+        return StubVoiceoverBackend()
 
     monkeypatch.setattr(ai_handlers, "resolve_voiceover_backend", capture_resolver)
 
@@ -339,7 +338,7 @@ def test_voiceover_runtime_id_routes_to_legacy_backend_name(
         kind="external_http",
         effect="voice",
         display_name="Voice HTTP",
-        base_url="http://127.0.0.1:8898",
+        base_url="http://127.0.0.1:9910/",
     )
 
     accepted = client.post(
@@ -354,4 +353,4 @@ def test_voiceover_runtime_id_routes_to_legacy_backend_name(
     assert accepted.status_code == 202, accepted.text
 
     assert app.state.runner.run_once() is True
-    assert captured == ["sidecar"]
+    assert captured == [("sidecar", "http://127.0.0.1:9910")]

@@ -219,12 +219,16 @@ class UnavailableLipsyncBackend:
         raise RuntimeError(f"lipsync backend '{self.name}' is not installed")
 
 
-def resolve_lipsync_backend(name: str | None = None) -> LipsyncBackend:
-    chosen = (os.environ.get("LAURA_LIPSYNC_BACKEND") or name or "stub").strip().lower()
+def resolve_lipsync_backend(
+    name: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> LipsyncBackend:
+    chosen = (name or os.environ.get("LAURA_LIPSYNC_BACKEND") or "stub").strip().lower()
     if chosen == "stub":
         return StubLipsyncBackend()
     if chosen in {"vibevideo", "sidecar", "wav2lip", "musetalk"}:
-        return VibeVideoLipsyncBackend()
+        return VibeVideoLipsyncBackend(base_url=base_url)
     return UnavailableLipsyncBackend(chosen)
 
 

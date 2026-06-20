@@ -111,6 +111,7 @@ def _enqueue_lipsync(
     consent_id: str | None,
     license_accepted: bool | None,
     quality_threshold: float = 0.6,
+    runtime_id: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "timeline_id": timeline_id,
@@ -124,6 +125,8 @@ def _enqueue_lipsync(
         payload["consent_id"] = consent_id
     if license_accepted is not None:
         payload["license_accepted"] = license_accepted
+    if runtime_id is not None:
+        payload["runtime_id"] = runtime_id
     return enqueue(db, queue="analysis.gpu", kind="ai.lipsync", payload=payload, max_attempts=1)
 
 
@@ -290,7 +293,11 @@ def test_lipsync_probe_failure_creates_no_synthetic_asset(
         ) -> _Quality:
             raise AssertionError("lipsync must not run after a failed probe")
 
-    monkeypatch.setattr(ai_handlers, "resolve_lipsync_backend", lambda _name: BadProbeBackend())
+    monkeypatch.setattr(
+        ai_handlers,
+        "resolve_lipsync_backend",
+        lambda _name, **_kwargs: BadProbeBackend(),
+    )
     db, project, _, audio_asset, tl = _setup_scene(tmp_path)
     consent = repos.create_consent_record(
         db, project_id=project["id"], subject_label="Person A", confirmed_by="test",
@@ -343,7 +350,11 @@ def test_lipsync_quality_gate_failure_creates_no_synthetic_asset(
                 passed=False,
             )
 
-    monkeypatch.setattr(ai_handlers, "resolve_lipsync_backend", lambda _name: LowQualityBackend())
+    monkeypatch.setattr(
+        ai_handlers,
+        "resolve_lipsync_backend",
+        lambda _name, **_kwargs: LowQualityBackend(),
+    )
     db, project, _, audio_asset, tl = _setup_scene(tmp_path)
     consent = repos.create_consent_record(
         db, project_id=project["id"], subject_label="Person A", confirmed_by="test",
@@ -365,3 +376,65 @@ def test_lipsync_quality_gate_failure_creates_no_synthetic_asset(
     assert job["status"] == "failed"
     assert "quality gate failed" in job["error_json"]
     assert _synthetic_lipsync_assets(db, project["id"]) == []
+
+
+def test_lipsync_runtime_id_routes_to_runtime_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: list[tuple[str | None, str | None]] = []
+
+    class CapturingBackend:
+        name = "vibevideo"
+
+        def available(self) -> bool:
+            return True
+
+        def probe(self, *, video_path: Path, audio_path: Path) -> _Probe:
+            return _Probe(face_detected=True, mouth_visible=True, audio_present=True)
+
+        def lipsync(
+            self,
+            *,
+            video_path: Path,
+            audio_path: Path,
+            out_path: Path,
+            fps_num: int,
+            fps_den: int,
+        ) -> _Quality:
+            out_path.write_bytes(video_path.read_bytes())
+            return _Quality(sync_score=0.9, mouth_score=0.9, temporal_score=0.9, passed=True)
+
+    def capture_resolver(name: str | None, *, base_url: str | None = None) -> object:
+        captured.append((name, base_url))
+        return CapturingBackend()
+
+    monkeypatch.setattr(ai_handlers, "resolve_lipsync_backend", capture_resolver)
+
+    db, project, _, audio_asset, tl = _setup_scene(tmp_path)
+    consent = repos.create_consent_record(
+        db, project_id=project["id"], subject_label="Person A", confirmed_by="test",
+    )
+    runtime = repos.create_ai_runtime(
+        db,
+        kind="external_http",
+        effect="lipsync",
+        display_name="Lipsync HTTP",
+        base_url="http://127.0.0.1:9912/",
+    )
+    runner = JobRunner(db, _registry())
+
+    job_id = _enqueue_lipsync(
+        db,
+        timeline_id=tl["id"],
+        audio_asset_id=audio_asset["id"],
+        consent_id=consent["id"],
+        license_accepted=True,
+        runtime_id=runtime["id"],
+    )
+    _drain(runner)
+
+    job = repos.get_job(db, job_id)
+    assert job is not None
+    assert job["status"] == "succeeded", job["error_json"]
+    assert captured == [("vibevideo", "http://127.0.0.1:9912")]

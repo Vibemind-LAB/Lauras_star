@@ -197,12 +197,16 @@ class UnavailableVoiceoverBackend:
         raise RuntimeError(f"voiceover backend '{self.name}' is not installed")
 
 
-def resolve_voiceover_backend(name: str | None = None) -> VoiceoverBackend:
-    chosen = (os.environ.get("LAURA_VOICEOVER_BACKEND") or name or "stub").strip().lower()
+def resolve_voiceover_backend(
+    name: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> VoiceoverBackend:
+    chosen = (name or os.environ.get("LAURA_VOICEOVER_BACKEND") or "stub").strip().lower()
     if chosen == "stub":
         return StubVoiceoverBackend()
     if chosen in {"sidecar", "vibevideo"}:
-        return SidecarVoiceoverBackend()
+        return SidecarVoiceoverBackend(base_url=base_url)
     return UnavailableVoiceoverBackend(chosen)
 
 

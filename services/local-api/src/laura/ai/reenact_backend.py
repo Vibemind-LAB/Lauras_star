@@ -232,12 +232,16 @@ class UnavailableBackend:
         raise RuntimeError(f"reenact backend '{self.name}' is not installed")
 
 
-def resolve_reenact_backend(name: str | None = None) -> ReenactBackend:
+def resolve_reenact_backend(
+    name: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> ReenactBackend:
     """Return the best available ``ReenactBackend`` for *name*.
 
     Resolution order:
-    1. ``LAURA_REENACT_BACKEND`` environment variable.
-    2. The *name* argument.
+    1. The *name* argument.
+    2. ``LAURA_REENACT_BACKEND`` environment variable.
     3. ``"stub"`` (safe fallback).
 
     Returns:
@@ -246,11 +250,11 @@ def resolve_reenact_backend(name: str | None = None) -> ReenactBackend:
         ``UnavailableBackend(chosen)`` for any other identifier (real backends
         are registered here once their optional extra exists).
     """
-    chosen: str = (os.environ.get("LAURA_REENACT_BACKEND") or name or "stub").strip().lower()
+    chosen: str = (name or os.environ.get("LAURA_REENACT_BACKEND") or "stub").strip().lower()
     if chosen == "stub":
         return StubReenactBackend()
     if chosen == "liveportrait":
-        return LivePortraitBackend()
+        return LivePortraitBackend(base_url=base_url)
     return UnavailableBackend(chosen)
 
 

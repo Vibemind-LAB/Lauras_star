@@ -283,6 +283,7 @@ describe("LauraClient sequence transcript methods", () => {
       text: "Better line",
       seqIn: 10,
       seqOut: 40,
+      runtimeId: "rt-voice",
       gainPercent: 90,
       fadeInFrames: 3,
       fadeOutFrames: 4,
@@ -297,6 +298,7 @@ describe("LauraClient sequence transcript methods", () => {
       text: "Better line",
       seq_in_frame: 10,
       seq_out_frame_exclusive: 40,
+      runtime_id: "rt-voice",
       gain_percent: 90,
       fade_in_frames: 3,
       fade_out_frames: 4,
@@ -409,6 +411,7 @@ describe("LauraClient sequence transcript methods", () => {
       consentId: "consent-1",
       licenseAccepted: true,
       backend: "vibevideo",
+      runtimeId: "rt-lip",
       qualityThreshold: 0.72,
     });
     const [, init] = fn.mock.calls[0] as [string, RequestInit];
@@ -423,7 +426,34 @@ describe("LauraClient sequence transcript methods", () => {
       consent_id: "consent-1",
       license_accepted: true,
       backend: "vibevideo",
+      runtime_id: "rt-lip",
       quality_threshold: 0.72,
+    });
+  });
+
+  it("POSTs reenact with a runtime id", async () => {
+    const fn = mockFetch({ job_id: "reenact-job-1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.reenact("tl-1", {
+      seqIn: 5,
+      seqOut: 30,
+      portraitAssetId: "portrait-1",
+      consentId: "consent-1",
+      backend: "liveportrait",
+      runtimeId: "rt-reenact",
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/timelines/tl-1/reenact",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      seq_in_frame: 5,
+      seq_out_frame_exclusive: 30,
+      portrait_asset_id: "portrait-1",
+      consent_id: "consent-1",
+      backend: "liveportrait",
+      runtime_id: "rt-reenact",
     });
   });
 });

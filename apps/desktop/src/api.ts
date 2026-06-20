@@ -413,6 +413,7 @@ export interface VoiceoverOptions {
   seqOut: number;
   language?: string;
   backend?: string;
+  runtimeId?: string;
   gainPercent?: number;
   fadeInFrames?: number;
   fadeOutFrames?: number;
@@ -429,6 +430,7 @@ export interface LipsyncOptions {
   consentId: string;
   licenseAccepted: boolean;
   backend?: string;
+  runtimeId?: string;
   qualityThreshold?: number;
 }
 
@@ -981,6 +983,7 @@ export class LauraClient {
     if (opts.text !== undefined) body.text = opts.text;
     if (opts.language !== undefined) body.language = opts.language;
     if (opts.backend !== undefined) body.backend = opts.backend;
+    if (opts.runtimeId !== undefined) body.runtime_id = opts.runtimeId;
     if (opts.gainPercent !== undefined) body.gain_percent = opts.gainPercent;
     if (opts.fadeInFrames !== undefined) body.fade_in_frames = opts.fadeInFrames;
     if (opts.fadeOutFrames !== undefined) body.fade_out_frames = opts.fadeOutFrames;
@@ -999,6 +1002,7 @@ export class LauraClient {
       license_accepted: opts.licenseAccepted,
     };
     if (opts.backend !== undefined) body.backend = opts.backend;
+    if (opts.runtimeId !== undefined) body.runtime_id = opts.runtimeId;
     if (opts.qualityThreshold !== undefined) body.quality_threshold = opts.qualityThreshold;
     return this.request<LipsyncAccepted>(`/timelines/${timelineId}/lipsync`, {
       method: "POST",
@@ -1346,6 +1350,7 @@ export class LauraClient {
       portraitAssetId: string;
       consentId: string;
       backend?: string;
+      runtimeId?: string;
     },
   ): Promise<{ job_id: string }> {
     return this.request<{ job_id: string }>(`/timelines/${timelineId}/reenact`, {
@@ -1356,6 +1361,7 @@ export class LauraClient {
         portrait_asset_id: opts.portraitAssetId,
         consent_id: opts.consentId,
         backend: opts.backend,
+        runtime_id: opts.runtimeId,
       }),
     });
   }

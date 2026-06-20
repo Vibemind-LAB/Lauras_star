@@ -453,10 +453,12 @@ def test_reenact_sync_guard_failure_creates_no_synthetic_asset(
     assert synthetic == []
 
 
-def test_reenact_runtime_id_routes_to_legacy_backend_name(
+def test_reenact_runtime_id_routes_to_runtime_endpoint(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from laura.ai.reenact_backend import StubReenactBackend
+
     db, project, base_asset, tl = _setup_scene(tmp_path)
     portrait = repos.create_asset(
         db,
@@ -477,13 +479,13 @@ def test_reenact_runtime_id_routes_to_legacy_backend_name(
         effect="reenact",
         display_name="LivePortrait",
         container_image="laura-runtime-liveportrait:local",
+        port=9911,
     )
-    captured: list[str | None] = []
-    original_resolver = ai_handlers.resolve_reenact_backend
+    captured: list[tuple[str | None, str | None]] = []
 
-    def capture_resolver(name: str | None) -> object:
-        captured.append(name)
-        return original_resolver(name)
+    def capture_resolver(name: str | None, *, base_url: str | None = None) -> object:
+        captured.append((name, base_url))
+        return StubReenactBackend()
 
     monkeypatch.setattr(ai_handlers, "resolve_reenact_backend", capture_resolver)
     runner = JobRunner(db, _make_registry())
@@ -504,4 +506,4 @@ def test_reenact_runtime_id_routes_to_legacy_backend_name(
     )
     _drain(runner)
 
-    assert captured == ["liveportrait"]
+    assert captured == [("liveportrait", "http://127.0.0.1:9911")]
