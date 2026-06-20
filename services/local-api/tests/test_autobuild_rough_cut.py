@@ -29,9 +29,7 @@ def _seed(db: Database) -> tuple[str, str, str]:
         display_name="a",
         source_path="/tmp/a.mp4",
     )
-    run = repos.create_analysis_run(
-        db, asset_id=asset["id"], pipeline_version="t", config={}
-    )
+    run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="t", config={})
     return str(project["id"]), str(asset["id"]), str(run["id"])
 
 
@@ -67,9 +65,7 @@ def test_autobuild_builds_rough_cut_and_scenes_from_kept_shots(db: Database) -> 
         ],
     )
 
-    count = autobuild_asset_edit_ready(
-        db, project_id=project_id, asset_id=asset_id, run_id=run_id
-    )
+    count = autobuild_asset_edit_ready(db, project_id=project_id, asset_id=asset_id, run_id=run_id)
 
     assert count > 0
     timeline = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
@@ -98,15 +94,11 @@ def test_autobuild_is_idempotent(db: Database) -> None:
         shots=[_shot(0, 100), _shot(100, 250)],
     )
 
-    first = autobuild_asset_edit_ready(
-        db, project_id=project_id, asset_id=asset_id, run_id=run_id
-    )
+    first = autobuild_asset_edit_ready(db, project_id=project_id, asset_id=asset_id, run_id=run_id)
     timeline = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
     clips_after_first = repos.list_timeline_clips(db, timeline["id"])
 
-    second = autobuild_asset_edit_ready(
-        db, project_id=project_id, asset_id=asset_id, run_id=run_id
-    )
+    second = autobuild_asset_edit_ready(db, project_id=project_id, asset_id=asset_id, run_id=run_id)
     clips_after_second = repos.list_timeline_clips(db, timeline["id"])
 
     # No duplicate clips, same scene count.
@@ -132,9 +124,7 @@ def test_autobuild_preserves_existing_scene_edits(db: Database) -> None:
     before = repos.list_scenes(db, timeline["id"])
     assert len(before) == 1
 
-    count = autobuild_asset_edit_ready(
-        db, project_id=project_id, asset_id=asset_id, run_id=run_id
-    )
+    count = autobuild_asset_edit_ready(db, project_id=project_id, asset_id=asset_id, run_id=run_id)
 
     after = repos.list_scenes(db, timeline["id"])
     # Existing scenes are NOT re-grouped: same ids, same ranges, same count returned.
@@ -152,9 +142,7 @@ def test_autobuild_returns_zero_when_no_kept_shots(db: Database) -> None:
         shots=[_shot(0, 100, keep=False), _shot(100, 250, keep=False)],
     )
 
-    count = autobuild_asset_edit_ready(
-        db, project_id=project_id, asset_id=asset_id, run_id=run_id
-    )
+    count = autobuild_asset_edit_ready(db, project_id=project_id, asset_id=asset_id, run_id=run_id)
 
     assert count == 0
     timeline = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
@@ -171,3 +159,89 @@ def test_auto_rough_cut_enabled_default_and_opt_out(
     assert _auto_rough_cut_enabled() is False
     monkeypatch.setenv("LAURA_AUTO_ROUGH_CUT", "off")
     assert _auto_rough_cut_enabled() is False
+
+
+def test_autobuild_applies_editorial_placement_to_auto_cut(db: Database) -> None:
+    """The zero-click auto-build refines a raw shot cut onto a transcript seam (the SAME joint
+    placement the from-shots endpoint runs), not just the bare shot boundary. A word straddling the
+    cut pulls it to the clean gap edge — proving the unified placement reaches the default path."""
+    from laura.scenes.build import populate_rough_cut_from_shots
+
+    project_id, asset_id, run_id = _seed(db)
+    # Two source-contiguous shots sharing a cut at frame 50.
+    repos.insert_shots(db, asset_id=asset_id, run_id=run_id, shots=[_shot(0, 50), _shot(50, 120)])
+    # A word [48,60) straddles the cut at 50 -> editorial placement pulls the cut to the edge 48.
+    repos.insert_segment_with_words(
+        db,
+        asset_id=asset_id,
+        run_id=run_id,
+        speaker_id=None,
+        segment={
+            "start_sample": 0,
+            "end_sample": 1,
+            "start_frame": 48,
+            "end_frame": 60,
+            "text": "straddle",
+        },
+        words=[
+            {
+                "idx": 0,
+                "start_sample": 0,
+                "end_sample": 1,
+                "start_frame": 48,
+                "end_frame": 60,
+                "text": "straddle",
+            }
+        ],
+    )
+    timeline = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
+    clips = populate_rough_cut_from_shots(db, timeline["id"], asset_id, run_id)
+    # The shared cut moved off frame 50 (mid-word) onto the edge 48; first clip's start untouched.
+    assert [(c["src_in_frame"], c["src_out_frame_exclusive"]) for c in clips] == [
+        (0, 48),
+        (48, 120),
+    ]
+    assert [(c["seq_in_frame"], c["seq_out_frame_exclusive"]) for c in clips] == [
+        (0, 48),
+        (48, 120),
+    ]
+
+
+def test_autobuild_editorial_placement_opt_out(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``LAURA_EDITORIAL_AUTOCUT=0`` lands the raw shot boundaries (pre-unification behaviour)."""
+    from laura.scenes.build import populate_rough_cut_from_shots
+
+    monkeypatch.setenv("LAURA_EDITORIAL_AUTOCUT", "0")
+    project_id, asset_id, run_id = _seed(db)
+    repos.insert_shots(db, asset_id=asset_id, run_id=run_id, shots=[_shot(0, 50), _shot(50, 120)])
+    repos.insert_segment_with_words(
+        db,
+        asset_id=asset_id,
+        run_id=run_id,
+        speaker_id=None,
+        segment={
+            "start_sample": 0,
+            "end_sample": 1,
+            "start_frame": 48,
+            "end_frame": 60,
+            "text": "straddle",
+        },
+        words=[
+            {
+                "idx": 0,
+                "start_sample": 0,
+                "end_sample": 1,
+                "start_frame": 48,
+                "end_frame": 60,
+                "text": "straddle",
+            }
+        ],
+    )
+    timeline = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
+    clips = populate_rough_cut_from_shots(db, timeline["id"], asset_id, run_id)
+    assert [(c["src_in_frame"], c["src_out_frame_exclusive"]) for c in clips] == [
+        (0, 50),
+        (50, 120),
+    ]

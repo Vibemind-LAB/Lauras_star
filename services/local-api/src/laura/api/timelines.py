@@ -11,13 +11,12 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .. import audit
-from ..analysis import transition_review
+from ..analysis import cutplace, transition_review
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.eval_quality import evaluate_rough_cut
-from ..analysis.joint import bias_to_weights, joint_place
+from ..analysis.joint import bias_to_weights
 from ..analysis.semantic import sentence_end_frames, speaker_turn_frames
-from ..analysis.silence import detect_silence
 from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
 from ..db import repos
@@ -248,42 +247,17 @@ def import_timeline(
 def _resolve_video_path(
     db: Database, asset_id: str, asset: dict[str, Any]
 ) -> str | None:
-    """The readable video for the joint visual signal — proxy preferred, else original/source.
-
-    Mirrors ``eval_cut_cli.resolve_video``: the CFR editorial proxy is the right surface for the
-    diff signal (it is what the shot detector ran on), falling back to an ``original`` derived
-    file and finally the asset's ``source_path``. Returns ``None`` when nothing on disk is
-    readable, in which case joint placement degrades to the editorial-only choice.
-    """
-    by_kind = {f["kind"]: f["path"] for f in repos.list_asset_files(db, asset_id)}
-    for kind in ("proxy", "original"):
-        path = by_kind.get(kind)
-        if path and Path(path).is_file():
-            return str(path)
-    src = asset.get("source_path")
-    if src and Path(src).is_file():
-        return str(src)
-    return None
+    """Module seam over :func:`laura.analysis.cutplace.resolve_video_path` (kept here so endpoint
+    tests can monkeypatch the resolver on this module)."""
+    return cutplace.resolve_video_path(db, asset_id, asset)
 
 
 def _detect_asset_silence(
     video_path: Path | str | None, asset: dict[str, Any]
 ) -> list[tuple[int, int]]:
-    """Real audio silences of the asset as source-frame ranges, or ``[]`` when unavailable.
-
-    Runs :func:`laura.analysis.silence.detect_silence` on the resolved editorial video and maps
-    the seconds-based ``silencedetect`` output into the asset's source-frame space via its frame
-    rate (``rate_num / rate_den``). Returns ``[]`` when there is no readable video or the asset
-    rate is unknown — silence is purely additive, so its absence just leaves placement to the
-    word-gap proxy.
-    """
-    if video_path is None:
-        return []
-    rate_num = asset.get("rate_num")
-    rate_den = asset.get("rate_den")
-    if not rate_num or not rate_den:
-        return []
-    return detect_silence(video_path, rate_num=rate_num, rate_den=rate_den)
+    """Module seam over :func:`laura.analysis.cutplace.detect_asset_silence` (kept here so endpoint
+    tests can monkeypatch silence detection on this module)."""
+    return cutplace.detect_asset_silence(video_path, asset)
 
 
 def _align_rows_editorial(
@@ -331,44 +305,19 @@ def _align_rows_editorial(
     contiguous and end-exclusive on the timeline. Empty ``words`` (and no readable video) leaves
     each cut exactly where the visual stage put it — placement only ever refines.
     """
-    if window <= 0:
-        return
-    if not words and not silence and video_path is None:
-        return
-    for i in range(1, len(rows)):
-        cur = rows[i]
-        prev = rows[i - 1]
-        cut = cur["src_in_frame"]
-        aligned, _score = joint_place(
-            cut,
-            words,
-            window=window,
-            w_visual=w_visual,
-            w_editorial=w_editorial,
-            silence=silence,
-            sentence_frames=sentence_frames,
-            speaker_frames=speaker_frames,
-            video_path=video_path,
-            total_frames=total_frames,
-            frame_loader=frame_loader,
-        )
-        if aligned == cut:
-            continue
-        # Keep both source ranges non-empty; skip a move that would collapse a clip.
-        if aligned <= prev["src_in_frame"] or aligned >= cur["src_out_frame_exclusive"]:
-            continue
-        contiguous = prev["src_out_frame_exclusive"] == cut
-        cur["src_in_frame"] = aligned
-        if contiguous:
-            prev["src_out_frame_exclusive"] = aligned
-
-    # Repack the sequence from the (possibly changed) source lengths: contiguous, end-exclusive.
-    offset = rows[0]["seq_in_frame"] if rows else 0
-    for row in rows:
-        length = row["src_out_frame_exclusive"] - row["src_in_frame"]
-        row["seq_in_frame"] = offset
-        row["seq_out_frame_exclusive"] = offset + length
-        offset += length
+    cutplace.place_editorial_cuts(
+        rows,
+        words,
+        window=window,
+        w_visual=w_visual,
+        w_editorial=w_editorial,
+        silence=silence,
+        sentence_frames=sentence_frames,
+        speaker_frames=speaker_frames,
+        video_path=video_path,
+        total_frames=total_frames,
+        frame_loader=frame_loader,
+    )
 
 
 def _plan_split_cuts(

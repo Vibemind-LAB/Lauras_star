@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ..analysis import cutplace
 from ..db import repos
 from ..db.database import Database
 from .grouping import group_into_scenes
@@ -122,17 +123,22 @@ def tighten_rough_cut(
         full = clip["src_out_frame_exclusive"] - clip["src_in_frame"]
         kept = 0
         for a, b in speech_keep_ranges(
-            clip["src_in_frame"], clip["src_out_frame_exclusive"], clip_words,
-            pad=pad, min_gap=min_gap,
+            clip["src_in_frame"],
+            clip["src_out_frame_exclusive"],
+            clip_words,
+            pad=pad,
+            min_gap=min_gap,
         ):
             length = b - a
-            rows.append({
-                "asset_id": clip["asset_id"],
-                "src_in_frame": a,
-                "src_out_frame_exclusive": b,
-                "seq_in_frame": offset,
-                "seq_out_frame_exclusive": offset + length,
-            })
+            rows.append(
+                {
+                    "asset_id": clip["asset_id"],
+                    "src_in_frame": a,
+                    "src_out_frame_exclusive": b,
+                    "seq_in_frame": offset,
+                    "seq_out_frame_exclusive": offset + length,
+                }
+            )
             offset += length
             kept += length
         removed += full - kept
@@ -150,21 +156,40 @@ def populate_rough_cut_from_shots(
     clips = repos.list_timeline_clips(db, timeline_id)
     if clips:
         return clips
+    rows: list[dict[str, Any]] = []
     offset = 0
     for shot in repos.list_shots(db, asset_id, run_id):
         if not shot.get("keep", True):
             continue
         length = shot["src_out_frame_exclusive"] - shot["src_in_frame"]
+        rows.append(
+            {
+                "src_in_frame": shot["src_in_frame"],
+                "src_out_frame_exclusive": shot["src_out_frame_exclusive"],
+                "seq_in_frame": offset,
+                "seq_out_frame_exclusive": offset + length,
+            }
+        )
+        offset += length
+    # Unified editorial placement: refine the raw shot cuts onto transcript/audio seams using the
+    # SAME joint_place logic the from-shots endpoint runs, so the zero-click import lands a clean,
+    # frame-accurate cut instead of the bare shot boundary. A pure refinement — a no-op without a
+    # transcript / readable video, so non-speech footage keeps its raw cut. Opt out with
+    # LAURA_EDITORIAL_AUTOCUT=0.
+    if len(rows) >= 2 and cutplace.editorial_autocut_enabled():
+        asset = repos.get_asset(db, asset_id)
+        if asset is not None:
+            cutplace.apply_editorial_placement(db, asset=asset, run_id=run_id, rows=rows)
+    for row in rows:
         repos.add_timeline_clip(
             db,
             timeline_id=timeline_id,
             asset_id=asset_id,
-            src_in_frame=shot["src_in_frame"],
-            src_out_frame_exclusive=shot["src_out_frame_exclusive"],
-            seq_in_frame=offset,
-            seq_out_frame_exclusive=offset + length,
+            src_in_frame=row["src_in_frame"],
+            src_out_frame_exclusive=row["src_out_frame_exclusive"],
+            seq_in_frame=row["seq_in_frame"],
+            seq_out_frame_exclusive=row["seq_out_frame_exclusive"],
         )
-        offset += length
     return repos.list_timeline_clips(db, timeline_id)
 
 
@@ -186,9 +211,7 @@ def group_timeline_scenes(
     repos.replace_scenes(db, project_id, timeline_id, ranges)
 
 
-def autobuild_asset_edit_ready(
-    db: Database, *, project_id: str, asset_id: str, run_id: str
-) -> int:
+def autobuild_asset_edit_ready(db: Database, *, project_id: str, asset_id: str, run_id: str) -> int:
     """Idempotently make an asset edit-ready: ensure its rough-cut timeline exists, fill it
     from kept shots, group into scenes. Returns the scene count.
 
