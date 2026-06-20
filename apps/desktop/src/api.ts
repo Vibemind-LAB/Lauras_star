@@ -416,6 +416,10 @@ export interface VoiceoverOptions {
   gainPercent?: number;
   fadeInFrames?: number;
   fadeOutFrames?: number;
+  /** How the voice-over treats the original audio under its span (default 'mix'). */
+  mixMode?: AudioMixMode;
+  /** In 'mix' mode, duck the original to this percent under the voice-over (0–100). */
+  duckingPercent?: number;
 }
 
 export interface VoiceoverAccepted {
@@ -959,6 +963,8 @@ export class LauraClient {
     if (opts.gainPercent !== undefined) body.gain_percent = opts.gainPercent;
     if (opts.fadeInFrames !== undefined) body.fade_in_frames = opts.fadeInFrames;
     if (opts.fadeOutFrames !== undefined) body.fade_out_frames = opts.fadeOutFrames;
+    if (opts.mixMode !== undefined) body.mix_mode = opts.mixMode;
+    if (opts.duckingPercent !== undefined) body.ducking_percent = opts.duckingPercent;
     return this.request<VoiceoverAccepted>(`/timelines/${timelineId}/voiceover`, {
       method: "POST",
       body: JSON.stringify(body),

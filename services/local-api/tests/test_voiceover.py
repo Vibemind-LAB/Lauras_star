@@ -147,6 +147,62 @@ def test_voiceover_api_enqueues_job_and_places_synthetic_audio_clip(
     assert clips[0]["label"] == "Voiceover"
 
 
+def test_voiceover_honors_requested_mix_mode_and_ducking(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """A voice-over carries the caller's mix treatment onto its A2 clip instead of the old
+    hardcoded full-volume 'mix' — so the original audio can be ducked or replaced under it."""
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 12,
+            "seq_out_frame_exclusive": 72,
+            "backend": "stub",
+            "mix_mode": "replace_original",
+            "ducking_percent": 20,
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert app.state.runner.run_once() is True
+
+    clips = repos.list_timeline_audio_clips(db, timeline["id"])
+    assert len(clips) == 1
+    assert clips[0]["mix_mode"] == "replace_original"
+    assert clips[0]["ducking_percent"] == 20
+
+
+def test_voiceover_defaults_to_mix_when_unspecified(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Omitting the mix treatment keeps the backward-compatible default (mix, no ducking)."""
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 12,
+            "seq_out_frame_exclusive": 72,
+            "backend": "stub",
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert app.state.runner.run_once() is True
+
+    clips = repos.list_timeline_audio_clips(db, timeline["id"])
+    assert clips[0]["mix_mode"] == "mix"
+    assert clips[0]["ducking_percent"] == 100
+
+
 def test_voiceover_job_writes_provenance_manifest(
     client: TestClient,
     tmp_path: Path,

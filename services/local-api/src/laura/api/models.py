@@ -529,6 +529,11 @@ class VoiceoverRequest(BaseModel):
     gain_percent: int = Field(default=100, ge=0, le=400)
     fade_in_frames: int = Field(default=0, ge=0)
     fade_out_frames: int = Field(default=0, ge=0)
+    # How the voice-over treats the original audio under its span: 'mix' keeps the original (ducked
+    # to ``ducking_percent``), 'replace_original'/'mute_original' silence it. Defaults are
+    # backward-compatible (full-volume mix); the UI picks an audible default (duck the original).
+    mix_mode: Literal["mix", "replace_original", "mute_original"] = "mix"
+    ducking_percent: int = Field(default=100, ge=0, le=100)
 
     @model_validator(mode="after")
     def _valid_voiceover_range(self) -> VoiceoverRequest:

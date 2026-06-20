@@ -135,6 +135,10 @@ function TranscriptBlockEditor({
   const [text, setText] = useState(block.text);
   const [busy, setBusy] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
+  // How a generated voice-over treats the original audio under its span. Default ducks the
+  // original so the narration is audible — the old behaviour mixed at full volume, so you only
+  // heard the original. "replace" silences the original under the voice-over.
+  const [voMode, setVoMode] = useState<"duck" | "replace" | "mix">("duck");
   const [error, setError] = useState<string | null>(null);
 
   // One active job at a time: realign job id or voiceover job id.
@@ -202,11 +206,16 @@ function TranscriptBlockEditor({
     setActiveJobId(null);
     onSuccessFiredRef.current = null;
     try {
+      const mix =
+        voMode === "replace"
+          ? { mixMode: "replace_original" as const }
+          : { mixMode: "mix" as const, duckingPercent: voMode === "duck" ? 30 : 100 };
       const accepted = await client.createVoiceover(timelineId, {
         segmentId: block.segment_id,
         text,
         seqIn: block.seq_in_frame,
         seqOut: block.seq_out_frame_exclusive,
+        ...mix,
       });
       activeJobKindRef.current = "voiceover";
       setActiveJobId(accepted.job_id);
@@ -314,6 +323,18 @@ function TranscriptBlockEditor({
         >
           {busy ? "Speichert..." : "Speichern + neu ausrichten"}
         </button>
+        <select
+          aria-label="Originalton unter der Stimme"
+          value={voMode}
+          onChange={(e) => setVoMode(e.target.value as "duck" | "replace" | "mix")}
+          disabled={busy || voiceBusy || jobRunning}
+          title="Wie die erzeugte Stimme den Originalton behandelt"
+          className="rounded border border-edge bg-panel px-1 py-1 text-[11px] text-slate-200 disabled:opacity-40"
+        >
+          <option value="duck">Original absenken</option>
+          <option value="replace">Original ersetzen</option>
+          <option value="mix">Mischen (kein Absenken)</option>
+        </select>
         <button
           type="button"
           onClick={() => void generateVoiceover()}

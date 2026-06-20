@@ -61,6 +61,8 @@ def create_voiceover(
         "gain_percent": body.gain_percent,
         "fade_in_frames": body.fade_in_frames,
         "fade_out_frames": body.fade_out_frames,
+        "mix_mode": body.mix_mode,
+        "ducking_percent": body.ducking_percent,
     }
     job_id = enqueue(
         db,

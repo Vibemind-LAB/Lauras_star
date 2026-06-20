@@ -200,6 +200,9 @@ describe("AssembleView", () => {
         text: "Original line",
         seqIn: 0,
         seqOut: 30,
+        // Default "Original absenken" ducks the original so the voice-over is audible.
+        mixMode: "mix",
+        duckingPercent: 30,
       }));
     expect(await findByText("Voiceover erzeugt und auf A2 platziert.")).toBeTruthy();
     expect(c.listTimelineAudioClips).toHaveBeenCalledTimes(2);

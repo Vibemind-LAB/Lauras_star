@@ -336,7 +336,10 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         gain_percent=int(payload.get("gain_percent") or 100),
         fade_in_frames=int(payload.get("fade_in_frames") or 0),
         fade_out_frames=int(payload.get("fade_out_frames") or 0),
-        mix_mode="mix",
+        mix_mode=str(payload.get("mix_mode") or "mix"),
+        ducking_percent=(
+            int(payload["ducking_percent"]) if payload.get("ducking_percent") is not None else 100
+        ),
         label="Voiceover",
     )
 
