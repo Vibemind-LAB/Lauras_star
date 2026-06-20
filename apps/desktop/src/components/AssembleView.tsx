@@ -15,6 +15,7 @@ import {
   type Scene,
   type SequenceTransitionKind,
   type SequenceTranscriptBlock,
+  type VoiceoverVoice,
   type Timeline,
   type TimelineAudioClip,
   type TimelineClip,
@@ -124,6 +125,7 @@ function TranscriptBlockEditor({
   timelineId,
   onSaved,
   onVoiceoverCreated,
+  voices,
 }: {
   client: LauraClient;
   block: SequenceTranscriptBlock;
@@ -131,6 +133,7 @@ function TranscriptBlockEditor({
   timelineId: string | null;
   onSaved: () => void;
   onVoiceoverCreated: () => void;
+  voices: VoiceoverVoice[];
 }): ReactElement {
   const [text, setText] = useState(block.text);
   const [busy, setBusy] = useState(false);
@@ -139,6 +142,8 @@ function TranscriptBlockEditor({
   // original so the narration is audible — the old behaviour mixed at full volume, so you only
   // heard the original. "replace" silences the original under the voice-over.
   const [voMode, setVoMode] = useState<"duck" | "replace" | "mix">("duck");
+  // Empty = let the backend pick by language / system default; otherwise an explicit TTS voice.
+  const [voiceId, setVoiceId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   // One active job at a time: realign job id or voiceover job id.
@@ -217,6 +222,7 @@ function TranscriptBlockEditor({
         seqOut: block.seq_out_frame_exclusive,
         // Prefer a real local voice (Windows SAPI) when available, else the placeholder tone.
         backend: "auto",
+        ...(voiceId ? { voiceId } : {}),
         ...mix,
       });
       activeJobKindRef.current = "voiceover";
@@ -325,6 +331,21 @@ function TranscriptBlockEditor({
         >
           {busy ? "Speichert..." : "Speichern + neu ausrichten"}
         </button>
+        {voices.length > 0 && (
+          <select
+            aria-label="Stimme"
+            value={voiceId}
+            onChange={(e) => setVoiceId(e.target.value)}
+            disabled={busy || voiceBusy || jobRunning}
+            title="TTS-Stimme (leer = automatisch nach Sprache)"
+            className="rounded border border-edge bg-panel px-1 py-1 text-[11px] text-slate-200 disabled:opacity-40"
+          >
+            <option value="">Stimme: Auto</option>
+            {voices.map((v) => (
+              <option key={v.name} value={v.name}>{`${v.name} (${v.culture})`}</option>
+            ))}
+          </select>
+        )}
         <select
           aria-label="Originalton unter der Stimme"
           value={voMode}
@@ -358,6 +379,7 @@ function SequenceTranscriptPanel({
   timelineId,
   onSaved,
   onVoiceoverCreated,
+  voices,
 }: {
   client: LauraClient;
   blocks: SequenceTranscriptBlock[];
@@ -366,6 +388,7 @@ function SequenceTranscriptPanel({
   timelineId: string | null;
   onSaved: () => void;
   onVoiceoverCreated: () => void;
+  voices: VoiceoverVoice[];
 }): ReactElement {
   const friendlyError = transcriptErrorMessage(error);
   if (friendlyError !== null) {
@@ -393,6 +416,7 @@ function SequenceTranscriptPanel({
           timelineId={timelineId}
           onSaved={onSaved}
           onVoiceoverCreated={onVoiceoverCreated}
+          voices={voices}
         />
       ))}
     </div>
@@ -437,6 +461,21 @@ export function AssembleView({
   const [seqFrame, setSeqFrame] = useState(0);
   const [captionPreview, setCaptionPreview] = useState(true);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
+
+  // Installed local TTS voices for the voice-over picker, fetched once per client.
+  useEffect(() => {
+    let alive = true;
+    client
+      .listVoiceoverVoices()
+      .then((v) => {
+        if (alive) setVoices(v);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [client]);
 
   useEffect(() => {
     if (projectId === null) {
@@ -868,6 +907,7 @@ export function AssembleView({
             activeSegmentId={activeCaption?.segment_id ?? null}
             timelineId={sequence?.timeline_id ?? null}
             onSaved={reloadTranscript}
+            voices={voices}
             onVoiceoverCreated={() => {
               reloadAudioClips();
               reloadSeqClips();

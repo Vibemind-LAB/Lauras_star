@@ -526,6 +526,9 @@ class VoiceoverRequest(BaseModel):
     seq_out_frame_exclusive: int = Field(gt=0)
     language: str | None = None
     backend: str | None = None
+    # Explicit TTS voice name (e.g. a Windows SAPI voice like "Microsoft Katja"); None picks a
+    # voice by ``language`` when the backend supports it, else the system default.
+    voice_id: str | None = Field(default=None, max_length=200)
     gain_percent: int = Field(default=100, ge=0, le=400)
     fade_in_frames: int = Field(default=0, ge=0)
     fade_out_frames: int = Field(default=0, ge=0)

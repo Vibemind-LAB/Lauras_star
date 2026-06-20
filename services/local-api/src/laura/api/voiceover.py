@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from ..ai.voiceover_backend import list_sapi_voices
 from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
@@ -61,6 +62,7 @@ def create_voiceover(
         "gain_percent": body.gain_percent,
         "fade_in_frames": body.fade_in_frames,
         "fade_out_frames": body.fade_out_frames,
+        "voice_id": body.voice_id,
         "mix_mode": body.mix_mode,
         "ducking_percent": body.ducking_percent,
     }
@@ -72,3 +74,13 @@ def create_voiceover(
         max_attempts=1,
     )
     return VoiceoverAccepted(job_id=job_id)
+
+
+@router.get("/voiceover/voices", response_model=list[dict[str, str]])
+def list_voiceover_voices() -> list[dict[str, str]]:
+    """Installed local TTS voices (Windows SAPI) as ``[{name, culture, gender}]``.
+
+    Empty when no local voices are available — the UI then hides the picker and the backend
+    uses the system default voice (or the dependency-free stub tone).
+    """
+    return list_sapi_voices()

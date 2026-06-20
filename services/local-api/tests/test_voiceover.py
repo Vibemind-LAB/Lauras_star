@@ -13,6 +13,8 @@ from laura.ai import voiceover_backend as vo_backend
 from laura.ai.voiceover_backend import (
     StubVoiceoverBackend,
     WindowsSapiVoiceoverBackend,
+    _sapi_voice_select_script,
+    list_sapi_voices,
     resolve_voiceover_backend,
 )
 from laura.db import repos
@@ -121,6 +123,29 @@ def test_resolve_backend_sapi_and_auto(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(resolve_voiceover_backend("auto"), StubVoiceoverBackend)
     # Default (no name, no env) stays the safe stub.
     assert isinstance(resolve_voiceover_backend(), StubVoiceoverBackend)
+
+
+def test_sapi_voice_select_script() -> None:
+    # Explicit voice -> SelectVoice with a single-quote-escaped name.
+    assert "SelectVoice('Microsoft Katja')" in _sapi_voice_select_script("Microsoft Katja", None)
+    assert "O''Brien" in _sapi_voice_select_script("O'Brien", None)
+    # Language only -> culture-prefix match over installed voices.
+    by_lang = _sapi_voice_select_script(None, "de-DE")
+    assert "GetInstalledVoices" in by_lang and "de-DE*" in by_lang
+    # Explicit voice wins over language; nothing requested -> no selection (system default).
+    assert "SelectVoice('Microsoft Stefan')" in _sapi_voice_select_script("Microsoft Stefan", "en-US")
+    assert _sapi_voice_select_script(None, None) == ""
+
+
+@pytest.mark.skipif(
+    not WindowsSapiVoiceoverBackend().available(),
+    reason="Windows System.Speech (SAPI) not available on this host",
+)
+def test_list_sapi_voices_returns_installed_voices() -> None:
+    voices = list_sapi_voices()
+    assert voices, "expected at least one installed SAPI voice"
+    assert all({"name", "culture", "gender"} <= set(v) for v in voices)
+    assert all(v["name"] for v in voices)
 
 
 @pytest.mark.skipif(

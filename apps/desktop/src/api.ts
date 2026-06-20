@@ -420,10 +420,18 @@ export interface VoiceoverOptions {
   mixMode?: AudioMixMode;
   /** In 'mix' mode, duck the original to this percent under the voice-over (0–100). */
   duckingPercent?: number;
+  /** Explicit TTS voice name; omitted picks a voice by language, else the system default. */
+  voiceId?: string;
 }
 
 export interface VoiceoverAccepted {
   job_id: string;
+}
+
+export interface VoiceoverVoice {
+  name: string;
+  culture: string;
+  gender: string;
 }
 
 export interface LipsyncOptions {
@@ -965,10 +973,16 @@ export class LauraClient {
     if (opts.fadeOutFrames !== undefined) body.fade_out_frames = opts.fadeOutFrames;
     if (opts.mixMode !== undefined) body.mix_mode = opts.mixMode;
     if (opts.duckingPercent !== undefined) body.ducking_percent = opts.duckingPercent;
+    if (opts.voiceId !== undefined) body.voice_id = opts.voiceId;
     return this.request<VoiceoverAccepted>(`/timelines/${timelineId}/voiceover`, {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  /** Installed local TTS voices for the voice-over picker (empty when none are available). */
+  listVoiceoverVoices(): Promise<VoiceoverVoice[]> {
+    return this.request<VoiceoverVoice[]>("/voiceover/voices");
   }
 
   lipsync(timelineId: string, opts: LipsyncOptions): Promise<LipsyncAccepted> {

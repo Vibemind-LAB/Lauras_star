@@ -44,6 +44,7 @@ class VoiceoverBackend(Protocol):
         fps_den: int,
         sample_rate: int,
         language: str | None = None,
+        voice_id: str | None = None,
     ) -> None:
         """Write a WAV voiceover to *out_path*."""
         ...
@@ -73,6 +74,7 @@ class StubVoiceoverBackend:
         fps_den: int,
         sample_rate: int,
         language: str | None = None,  # noqa: ARG002 - stub is language-independent
+        voice_id: str | None = None,  # noqa: ARG002 - stub has a single tone
     ) -> None:
         if duration_frames <= 0:
             raise ValueError("voiceover duration must be positive")
@@ -122,7 +124,8 @@ class WindowsSapiVoiceoverBackend:
         fps_num: int,
         fps_den: int,
         sample_rate: int,
-        language: str | None = None,  # noqa: ARG002 - voice/culture selection is a follow-up
+        language: str | None = None,
+        voice_id: str | None = None,
     ) -> None:
         if duration_frames <= 0:
             raise ValueError("voiceover duration must be positive")
@@ -145,7 +148,8 @@ class WindowsSapiVoiceoverBackend:
                 "$ErrorActionPreference='Stop'; "
                 "Add-Type -AssemblyName System.Speech; "
                 "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                f"$s.SetOutputToWaveFile('{raw_wav}'); "
+                + _sapi_voice_select_script(voice_id, language)
+                + f"$s.SetOutputToWaveFile('{raw_wav}'); "
                 f"$t = [System.IO.File]::ReadAllText('{text_file}', "
                 "[System.Text.Encoding]::UTF8); "
                 "$s.Speak($t); $s.Dispose()"
@@ -222,6 +226,7 @@ class SidecarVoiceoverBackend:
         fps_den: int,
         sample_rate: int,
         language: str | None = None,
+        voice_id: str | None = None,
     ) -> None:
         payload = {
             "text": text,
@@ -230,6 +235,7 @@ class SidecarVoiceoverBackend:
             "fps_den": fps_den,
             "sample_rate": sample_rate,
             "language": language,
+            "voice_id": voice_id,
         }
         data = json.dumps(payload).encode("utf-8")
         request = Request(
@@ -276,6 +282,7 @@ class UnavailableVoiceoverBackend:
         fps_den: int,  # noqa: ARG002
         sample_rate: int,  # noqa: ARG002
         language: str | None = None,  # noqa: ARG002
+        voice_id: str | None = None,  # noqa: ARG002
     ) -> None:
         raise RuntimeError(f"voiceover backend '{self.name}' is not installed")
 
@@ -298,6 +305,66 @@ def _sapi_available() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0 and "ok" in (proc.stdout or "")
+
+
+def _ps_quote(value: str) -> str:
+    """Escape a value for a single-quoted PowerShell string literal."""
+    return value.replace("'", "''")
+
+
+def _sapi_voice_select_script(voice_id: str | None, language: str | None) -> str:
+    """PowerShell that best-effort selects a SAPI voice by explicit name or by language culture,
+    silently keeping the default voice when the requested one is absent (never breaks synthesis)."""
+    if voice_id:
+        return f"try {{ $s.SelectVoice('{_ps_quote(voice_id)}') }} catch {{}}; "
+    if language:
+        lang = _ps_quote(language)
+        return (
+            "try { $m = $s.GetInstalledVoices() | "
+            f"Where-Object {{ $_.Enabled -and $_.VoiceInfo.Culture.Name -like '{lang}*' }} | "
+            "Select-Object -First 1; if ($m) { $s.SelectVoice($m.VoiceInfo.Name) } } catch {}; "
+        )
+    return ""
+
+
+@lru_cache(maxsize=1)
+def list_sapi_voices() -> list[dict[str, str]]:
+    """Installed Windows SAPI voices as ``[{name, culture, gender}]`` (empty list off Windows)."""
+    if not _sapi_available():
+        return []
+    script = (
+        "Add-Type -AssemblyName System.Speech; "
+        "(New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | "
+        "Where-Object { $_.Enabled } | ForEach-Object { $i = $_.VoiceInfo; "
+        '[pscustomobject]@{ name=$i.Name; culture=$i.Culture.Name; gender="$($i.Gender)" } } | '
+        "ConvertTo-Json -Compress"
+    )
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return []
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    return [
+        {
+            "name": str(v.get("name", "")),
+            "culture": str(v.get("culture", "")),
+            "gender": str(v.get("gender", "")),
+        }
+        for v in data
+        if isinstance(v, dict) and v.get("name")
+    ]
 
 
 def resolve_voiceover_backend(name: str | None = None) -> VoiceoverBackend:

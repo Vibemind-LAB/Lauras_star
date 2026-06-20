@@ -273,6 +273,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
             fps_den=rate_den,
             sample_rate=sample_rate,
             language=payload.get("language"),
+            voice_id=payload.get("voice_id"),
         )
         assert_or_fix_media_sync(
             out_path,
@@ -304,6 +305,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
             "timeline_id": timeline["id"],
             "segment_id": segment_id,
             "backend": backend.name,
+            "voice_id": payload.get("voice_id"),
             "language": payload.get("language"),
             "seq_in_frame": seq_in,
             "seq_out_frame_exclusive": seq_out,

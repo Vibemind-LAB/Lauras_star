@@ -58,6 +58,7 @@ function client(over: Partial<LauraClient>): LauraClient {
     deleteTimelineAudioClip: vi.fn().mockResolvedValue(undefined),
     getSequenceTranscript: vi.fn().mockResolvedValue([]),
     getJob: vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" }),
+    listVoiceoverVoices: vi.fn().mockResolvedValue([]),
     createVoiceover: vi.fn().mockResolvedValue({ job_id: "voice-job-1" }),
     updateSequenceTransition: vi.fn().mockResolvedValue(seq),
     updateTranscriptSegment: vi.fn().mockResolvedValue({}),
