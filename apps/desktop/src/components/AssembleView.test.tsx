@@ -200,6 +200,8 @@ describe("AssembleView", () => {
         text: "Original line",
         seqIn: 0,
         seqOut: 30,
+        // Prefer a real local voice when available, else fall back to the placeholder tone.
+        backend: "auto",
         // Default "Original absenken" ducks the original so the voice-over is audible.
         mixMode: "mix",
         duckingPercent: 30,

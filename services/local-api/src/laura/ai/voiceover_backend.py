@@ -11,7 +11,11 @@ import json
 import math
 import os
 import struct
+import subprocess
+import sys
+import tempfile
 import wave
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.error import HTTPError, URLError
@@ -93,6 +97,85 @@ class StubVoiceoverBackend:
                 value = int(amplitude * envelope * math.sin(2.0 * math.pi * base_freq * t))
                 frames.extend(struct.pack("<h", value))
             wav.writeframes(bytes(frames))
+
+
+class WindowsSapiVoiceoverBackend:
+    """Real offline speech via the built-in Windows ``System.Speech`` engine (SAPI 5).
+
+    Zero extra Python dependencies: it shells out to PowerShell to render the text to a WAV with
+    the system TTS voice, then uses ffmpeg to resample to the canonical mono rate and fit the clip
+    slot (pad short speech with silence, trim overly long speech). Robotic but immediate and fully
+    local; a neural sidecar (:class:`SidecarVoiceoverBackend`) remains the quality upgrade path.
+    """
+
+    name = "sapi"
+
+    def available(self) -> bool:
+        return _sapi_available()
+
+    def synthesize(
+        self,
+        *,
+        text: str,
+        out_path: Path,
+        duration_frames: int,
+        fps_num: int,
+        fps_den: int,
+        sample_rate: int,
+        language: str | None = None,  # noqa: ARG002 - voice/culture selection is a follow-up
+    ) -> None:
+        if duration_frames <= 0:
+            raise ValueError("voiceover duration must be positive")
+        if fps_num <= 0 or fps_den <= 0:
+            raise ValueError("voiceover fps must be positive")
+        if sample_rate <= 0:
+            raise ValueError("voiceover sample rate must be positive")
+
+        # Lazy import keeps the module light for the dependency-free stub path.
+        from ..ingest.ffmpeg import run_ffmpeg
+
+        spoken = text.strip() or "."  # System.Speech rejects an empty utterance
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            text_file = tmp_dir / "voiceover.txt"
+            text_file.write_text(spoken, encoding="utf-8")
+            raw_wav = tmp_dir / "voiceover_raw.wav"
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.SetOutputToWaveFile('{raw_wav}'); "
+                f"$t = [System.IO.File]::ReadAllText('{text_file}', "
+                "[System.Text.Encoding]::UTF8); "
+                "$s.Speak($t); $s.Dispose()"
+            )
+            try:
+                proc = subprocess.run(  # noqa: S603
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(f"windows SAPI synthesis failed to launch: {exc}") from exc
+            if proc.returncode != 0 or not raw_wav.is_file():
+                detail = (proc.stderr or proc.stdout or "").strip()[:300]
+                raise RuntimeError(f"windows SAPI synthesis failed: {detail}")
+
+            # Canonical mono rate + fit the slot: ``apad`` pads short speech, ``-t`` trims long.
+            seconds = duration_frames * fps_den / fps_num
+            run_ffmpeg(
+                [
+                    "-i", str(raw_wav),
+                    "-ac", "1",
+                    "-ar", str(sample_rate),
+                    "-af", "apad",
+                    "-t", f"{seconds:.6f}",
+                    "-c:a", "pcm_s16le",
+                    str(out_path),
+                ]
+            )
 
 
 class SidecarVoiceoverBackend:
@@ -197,10 +280,36 @@ class UnavailableVoiceoverBackend:
         raise RuntimeError(f"voiceover backend '{self.name}' is not installed")
 
 
+@lru_cache(maxsize=1)
+def _sapi_available() -> bool:
+    """True iff Windows ``System.Speech`` can be loaded (cached; one cheap probe per process)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "Add-Type -AssemblyName System.Speech; 'ok'",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and "ok" in (proc.stdout or "")
+
+
 def resolve_voiceover_backend(name: str | None = None) -> VoiceoverBackend:
     chosen = (os.environ.get("LAURA_VOICEOVER_BACKEND") or name or "stub").strip().lower()
+    if chosen == "auto":
+        # Prefer a real local voice (Windows SAPI) when present, else the dependency-free tone.
+        sapi = WindowsSapiVoiceoverBackend()
+        return sapi if sapi.available() else StubVoiceoverBackend()
     if chosen == "stub":
         return StubVoiceoverBackend()
+    if chosen in {"sapi", "windows", "windows_sapi"}:
+        return WindowsSapiVoiceoverBackend()
     if chosen in {"sidecar", "vibevideo"}:
         return SidecarVoiceoverBackend()
     return UnavailableVoiceoverBackend(chosen)

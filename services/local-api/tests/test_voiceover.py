@@ -9,7 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from laura.ai import handlers as ai_handlers
-from laura.ai.voiceover_backend import StubVoiceoverBackend, resolve_voiceover_backend
+from laura.ai import voiceover_backend as vo_backend
+from laura.ai.voiceover_backend import (
+    StubVoiceoverBackend,
+    WindowsSapiVoiceoverBackend,
+    resolve_voiceover_backend,
+)
 from laura.db import repos
 from laura.db.database import Database
 
@@ -102,6 +107,45 @@ def test_stub_voiceover_backend_writes_exact_duration_wav(tmp_path: Path) -> Non
         assert wav.getnchannels() == 1
         assert wav.getframerate() == 48_000
         assert wav.getnframes() == 72_000
+
+
+def test_resolve_backend_sapi_and_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LAURA_VOICEOVER_BACKEND", raising=False)
+    # Explicit names route to the right backend.
+    assert isinstance(resolve_voiceover_backend("sapi"), WindowsSapiVoiceoverBackend)
+    assert isinstance(resolve_voiceover_backend("stub"), StubVoiceoverBackend)
+    # "auto" prefers SAPI when available, else the dependency-free stub.
+    monkeypatch.setattr(vo_backend, "_sapi_available", lambda: True)
+    assert isinstance(resolve_voiceover_backend("auto"), WindowsSapiVoiceoverBackend)
+    monkeypatch.setattr(vo_backend, "_sapi_available", lambda: False)
+    assert isinstance(resolve_voiceover_backend("auto"), StubVoiceoverBackend)
+    # Default (no name, no env) stays the safe stub.
+    assert isinstance(resolve_voiceover_backend(), StubVoiceoverBackend)
+
+
+@pytest.mark.skipif(
+    not WindowsSapiVoiceoverBackend().available(),
+    reason="Windows System.Speech (SAPI) not available on this host",
+)
+def test_sapi_backend_synthesizes_real_speech_wav(tmp_path: Path) -> None:
+    """On a Windows host, the SAPI backend renders real speech and fits the requested slot."""
+    out = tmp_path / "sapi.wav"
+    WindowsSapiVoiceoverBackend().synthesize(
+        text="Hello students, this is a Laura voiceover test.",
+        out_path=out,
+        duration_frames=90,
+        fps_num=30,
+        fps_den=1,
+        sample_rate=48_000,
+    )
+    with wave.open(str(out), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getframerate() == 48_000
+        assert wav.getnframes() > 0
+        # Real speech is broadband, not the stub's constant tone: a chunk near the start should
+        # contain meaningful (non-silent) signal.
+        frames = wav.readframes(min(wav.getnframes(), 48_000))
+    assert any(b != 0 for b in frames)
 
 
 def test_voiceover_api_enqueues_job_and_places_synthetic_audio_clip(

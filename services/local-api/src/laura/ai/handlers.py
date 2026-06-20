@@ -303,7 +303,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         source={
             "timeline_id": timeline["id"],
             "segment_id": segment_id,
-            "backend": payload.get("backend") or "stub",
+            "backend": backend.name,
             "language": payload.get("language"),
             "seq_in_frame": seq_in,
             "seq_out_frame_exclusive": seq_out,

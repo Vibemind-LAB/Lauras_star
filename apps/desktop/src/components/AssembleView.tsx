@@ -215,6 +215,8 @@ function TranscriptBlockEditor({
         text,
         seqIn: block.seq_in_frame,
         seqOut: block.seq_out_frame_exclusive,
+        // Prefer a real local voice (Windows SAPI) when available, else the placeholder tone.
+        backend: "auto",
         ...mix,
       });
       activeJobKindRef.current = "voiceover";
