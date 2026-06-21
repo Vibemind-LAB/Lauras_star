@@ -78,6 +78,9 @@ function Add-ModelEnv {
     }
 }
 
+$livePortraitImage = if ($Mode -eq "model") { "laura-runtime-liveportrait-model:local" } else { "laura-runtime-liveportrait:local" }
+$vibeVideoImage = if ($Mode -eq "model") { "laura-runtime-musetalk-model:local" } else { "laura-runtime-vibevideo:local" }
+
 $definitions = @(
     @{
         kind = "container"
@@ -101,7 +104,7 @@ $definitions = @(
         kind = "container"
         effect = "reenact"
         display_name = "LivePortrait Sidecar"
-        container_image = "laura-runtime-liveportrait:local"
+        container_image = $livePortraitImage
         container_name = "laura-runtime-liveportrait"
         port = 8899
         requires_gpu = $true
@@ -112,14 +115,14 @@ $definitions = @(
             LAURA_RUNTIME_PROVIDER = "liveportrait"
             LAURA_MODEL_ROOT = "/models"
             LAURA_LIVEPORTRAIT_REPO = "/models/LivePortrait"
-            LAURA_LIVEPORTRAIT_OUTPUT_GLOB = "animations/*.mp4"
+            LAURA_LIVEPORTRAIT_OUTPUT_GLOB = "*.mp4"
         }
     },
     @{
         kind = "container"
         effect = "lipsync"
         display_name = "VibeVideo Sidecar"
-        container_image = "laura-runtime-vibevideo:local"
+        container_image = $vibeVideoImage
         container_name = "laura-runtime-vibevideo"
         port = 8901
         requires_gpu = $true
@@ -131,6 +134,9 @@ $definitions = @(
             LAURA_MODEL_ROOT = "/models"
             LAURA_MUSETALK_REPO = "/models/MuseTalk"
             LAURA_MUSETALK_RESULT_DIR = "/workspace/musetalk-results"
+            LAURA_MUSETALK_VERSION = "v15"
+            LAURA_MUSETALK_OUTPUT_GLOB = "**/*.mp4"
+            LAURA_MUSETALK_EXTRA_ARGS = "--use_float16"
         }
     }
 )

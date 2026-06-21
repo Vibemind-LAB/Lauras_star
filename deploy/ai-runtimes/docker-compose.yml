@@ -48,7 +48,7 @@ services:
       LAURA_MODEL_ROOT: /models
       LAURA_LIVEPORTRAIT_COMMAND: ${LAURA_LIVEPORTRAIT_COMMAND:-python -m providers.liveportrait_runner --portrait {portrait} --driving {driving} --output {output} --model-root {model_root}}
       LAURA_LIVEPORTRAIT_REPO: ${LAURA_LIVEPORTRAIT_REPO:-/models/LivePortrait}
-      LAURA_LIVEPORTRAIT_OUTPUT_GLOB: ${LAURA_LIVEPORTRAIT_OUTPUT_GLOB:-animations/*.mp4}
+      LAURA_LIVEPORTRAIT_OUTPUT_GLOB: ${LAURA_LIVEPORTRAIT_OUTPUT_GLOB:-*.mp4}
     ports:
       - "8899:8899"
     volumes:

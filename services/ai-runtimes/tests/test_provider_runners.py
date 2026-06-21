@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,24 +27,29 @@ def test_liveportrait_runner_copies_newest_animation_output(
     driving.write_bytes(b"driving")
     calls: list[tuple[list[str], Path]] = []
 
+    output_dir = tmp_path / "missing"
+
     def fake_run(
         args: list[str],
         *,
         cwd: Path,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
+        nonlocal output_dir
         calls.append((args, cwd))
-        old = repo / "animations" / "old.mp4"
-        new = repo / "animations" / "new.mp4"
+        output_dir = Path(args[args.index("-o") + 1])
+        old = output_dir / "old.mp4"
+        new = output_dir / "new.mp4"
+        output_dir.mkdir(parents=True, exist_ok=True)
         old.write_bytes(b"old")
         new.write_bytes(b"liveportrait")
-        old.touch()
-        new.touch()
+        os.utime(old, (1.0, 1.0))
+        os.utime(new, (2.0, 2.0))
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setenv("LAURA_LIVEPORTRAIT_REPO", str(repo))
     monkeypatch.setenv("LAURA_LIVEPORTRAIT_EXTRA_ARGS", "--flag_crop_driving_video")
-    monkeypatch.setenv("LAURA_LIVEPORTRAIT_OUTPUT_GLOB", "animations/*.mp4")
+    monkeypatch.setenv("LAURA_LIVEPORTRAIT_OUTPUT_GLOB", "*.mp4")
     monkeypatch.setattr(liveportrait_runner.subprocess, "run", fake_run)
 
     assert (
@@ -66,6 +72,7 @@ def test_liveportrait_runner_copies_newest_animation_output(
     assert cwd == repo
     assert args[:4] == [sys.executable, "inference.py", "-s", str(portrait)]
     assert args[4:6] == ["-d", str(driving)]
+    assert args[6:8] == ["-o", str(output_dir)]
     assert "--flag_crop_driving_video" in args
     assert output.read_bytes() == b"liveportrait"
 

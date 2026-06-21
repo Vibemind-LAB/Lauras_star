@@ -9,6 +9,8 @@ sondern spricht nur den HTTP-Vertrag dieser Sidecars.
 - `laura-runtime-liveportrait:local` auf Port `8899`, Effekt `reenact`
 - `laura-runtime-vibevideo:local` auf Port `8901`, Effekt `lipsync`
 - `laura-runtime-voice:local` auf Port `8898`, Effekt `voice`
+- `laura-runtime-liveportrait-model:local` optionales CUDA-Image fuer echte LivePortrait-Ausgabe
+- `laura-runtime-musetalk-model:local` optionales CUDA-Image fuer echte MuseTalk-Ausgabe
 
 Alle drei Images nutzen denselben stdlib-Server in `runtime_server.py`. Die
 eigentlichen Modell-Bruecken liegen in `providers/` und importieren keine
@@ -51,9 +53,14 @@ workspace/models/
     MuseTalk/
       scripts/
       models/
+        dwpose/
+        face-parse-bisent/
         musetalkV15/
           unet.pth
           musetalk.json
+        sd-vae/
+        syncnet/
+        whisper/
 ```
 
 Alternativ kann `LAURA_MODELS_ROOT` auf einen externen Modellordner zeigen.
@@ -80,12 +87,12 @@ Provider-Env:
 
 ```text
 LAURA_LIVEPORTRAIT_REPO=/models/LivePortrait
-LAURA_LIVEPORTRAIT_OUTPUT_GLOB=animations/*.mp4
+LAURA_LIVEPORTRAIT_OUTPUT_GLOB=*.mp4
 LAURA_LIVEPORTRAIT_EXTRA_ARGS=--flag_crop_driving_video
 ```
 
-Der Runner ruft im Repo `python inference.py -s <portrait> -d <driving>` auf
-und kopiert das neueste MP4 aus `animations/*.mp4` nach Lauras `{output}`.
+Der Runner ruft im Repo `python inference.py -s <portrait> -d <driving> -o <tmp>/animations`
+auf und kopiert das neueste MP4 aus dieser temporaren Output-Dir nach Lauras `{output}`.
 Das entspricht dem offiziellen LivePortrait-CLI-Vertrag; die Quelle bleibt ein
 lokaler Clone/Gewichtsordner.
 
@@ -117,7 +124,7 @@ LAURA_MUSETALK_REPO=/models/MuseTalk
 LAURA_MUSETALK_RESULT_DIR=/workspace/musetalk-results
 LAURA_MUSETALK_VERSION=v15
 LAURA_MUSETALK_OUTPUT_GLOB=**/*.mp4
-LAURA_MUSETALK_EXTRA_ARGS=--skip_save_images
+LAURA_MUSETALK_EXTRA_ARGS=--use_float16
 ```
 
 Der Runner schreibt eine temporare MuseTalk-Inferenz-YAML mit `video_path` und
@@ -169,6 +176,17 @@ Mit GPU-Override:
 ```powershell
 docker compose -f deploy/ai-runtimes/docker-compose.yml -f deploy/ai-runtimes/docker-compose.gpu.yml up -d --build
 ```
+
+Mit echten Modell-Images:
+
+```powershell
+.\scripts\setup-ai-runtime-models.ps1 -Runtime all
+docker compose -f deploy/ai-runtimes/docker-compose.yml -f deploy/ai-runtimes/docker-compose.models.yml up -d --build
+```
+
+`setup-ai-runtime-models.ps1` laedt Modellgewichte unter `workspace/models/<runtime>`
+und setzt die Dateien nach Docker-Downloads auf `a+rX`, damit die nicht-root
+Sidecar-User die Read-only-Mounts lesen koennen.
 
 Health:
 

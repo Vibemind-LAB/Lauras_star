@@ -391,6 +391,18 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
   `laura-runtime-vibevideo`. **Follow-up:** lokale Modell-Repos/Gewichte tatsaechlich nach
   `workspace/models/<runtime>` legen oder extern mounten; dann `LAURA_RUNTIME_MODE=model` gegen
   echte Modelloutputs laufen lassen.
+- [x] **APF4 Echte Modell-Sidecars 1-3** - Voice, LivePortrait und MuseTalk laufen lokal im
+  `model` mode mit echten Outputs statt Smoke: Piper wird im Voice-Image installiert und
+  `setup-ai-runtime-models.ps1 -Runtime voice` laedt `en_US-lessac-medium`; LivePortrait hat ein
+  eigenes CUDA-Image (`Dockerfile.liveportrait`), nutzt eine temporaere Output-Dir statt in den
+  Read-only-Model-Mount zu schreiben und erzeugte ein echtes MP4 aus offiziellen Beispielassets;
+  MuseTalk/VibeVideo hat ein eigenes CUDA-11.8-Image (`Dockerfile.musetalk`) mit Torch 2.0.1,
+  MMLab-Stack und Chumpy-Build-Isolation-Fix, laedt alle MuseTalk-/DWPose-/SyncNet-/Face-Parse-
+  Gewichte, setzt Download-Dateien auf lesbare Mount-Permissions und erzeugte ein echtes 8s
+  H.264/AAC-Lipsync-MP4. `docker-compose.models.yml` startet die echten Model-Images,
+  `register-ai-sidecars.ps1 -Mode model` registriert diese Images. Verifiziert: Sidecar-Provider-
+  Tests, PowerShell-Syntax, Compose-Config, echte `/healthz`, `/voiceover`, `/reenact`, `/probe`
+  und `/lipsync` Calls; Artefakte liegen gitignored unter `workspace/ai-runtime/`.
 
 ---
 

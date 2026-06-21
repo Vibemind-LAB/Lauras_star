@@ -87,7 +87,9 @@ def test_model_health_exposes_command_and_model_root_diagnostics(tmp_path: Path)
     assert health["command_configured"] is True
     assert health["model_root_exists"] is False
     assert caps["provider"] == "piper"
-    assert "LAURA_VOICE_COMMAND" in caps["command_env"]
+    command_env = caps["command_env"]
+    assert isinstance(command_env, list)
+    assert "LAURA_VOICE_COMMAND" in command_env
 
 
 def test_lipsync_smoke_probe_and_lipsync_contract(tmp_path: Path) -> None:

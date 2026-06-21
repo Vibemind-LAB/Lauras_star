@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -21,19 +22,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     model_root = Path(args.model_root)
     repo = Path(os.environ.get("LAURA_LIVEPORTRAIT_REPO", str(model_root / "LivePortrait")))
     output = Path(args.output)
-    command = [
-        sys.executable,
-        "inference.py",
-        "-s",
-        str(Path(args.portrait)),
-        "-d",
-        str(Path(args.driving)),
-    ]
-    command.extend(shlex.split(os.environ.get("LAURA_LIVEPORTRAIT_EXTRA_ARGS", "")))
-    subprocess.run(command, cwd=repo, check=True)
+    with tempfile.TemporaryDirectory(prefix="laura-liveportrait-out-") as tmp:
+        output_dir = Path(tmp) / "animations"
+        command = [
+            sys.executable,
+            "inference.py",
+            "-s",
+            str(Path(args.portrait)),
+            "-d",
+            str(Path(args.driving)),
+            "-o",
+            str(output_dir),
+        ]
+        command.extend(shlex.split(os.environ.get("LAURA_LIVEPORTRAIT_EXTRA_ARGS", "")))
+        subprocess.run(command, cwd=repo, check=True)
 
-    pattern = os.environ.get("LAURA_LIVEPORTRAIT_OUTPUT_GLOB", "animations/*.mp4")
-    _copy_newest(repo, pattern, output)
+        pattern = os.environ.get("LAURA_LIVEPORTRAIT_OUTPUT_GLOB", "*.mp4")
+        _copy_newest(output_dir, pattern, output)
     return 0
 
 
