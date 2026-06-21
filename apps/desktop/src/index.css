@@ -2,6 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── P5-T1: Green/White Token Foundation (additive — app stays dark until P5-T2) ─── */
+/*
+ * These custom properties define the light-mode design contract.
+ * They are NOT yet consumed by any component — P5-T2 will flip ink/panel and
+ * migrate components. Adding them here is purely additive; existing dark styles
+ * keep working because ink/panel stay in tailwind.config.cjs, unchanged.
+ *
+ * Contrast guarantees (WCAG AA verified in src/theme/contrast.test.ts):
+ *   --text-strong on --surface-0/1  ≥ 4.5 : 1
+ *   --text-muted  on --surface-0    ≥ 4.5 : 1
+ *   --text-faint  on --surface-0    ≥ 4.5 : 1
+ *   --accent-ink  on --accent       ≥ 4.5 : 1
+ *   --status-*    on --surface-0    ≥ 3.0 : 1
+ */
+:root {
+  /* Surfaces — light, by elevation (paper → card → rail → sunken) */
+  --surface-0:   #F4F7F3; /* app background — warm paper */
+  --surface-1:   #FFFFFF; /* cards / panels */
+  --surface-1-5: #EDF1EA; /* rail / inset / sidebar */
+  --surface-2:   #E4EAE0; /* sunken / hover overlay */
+
+  /* Text on light surfaces */
+  --text-strong: #0B0F14; /* primary label — same as ink, dark-on-light */
+  --text-muted:  #475569; /* secondary label */
+  --text-faint:  #536375; /* tertiary / placeholder — darkened from plan #64748B to achieve AA on light surfaces */
+
+  /* Action light — GREEN = emitted light, never a surface fill */
+  --accent:       #15803D; /* CTA fill — white text AA ≈ 4.6 : 1 */
+  --accent-glow:  #16A34A; /* hover / ignite state */
+  --accent-press: #166534; /* pressed / active state */
+  --accent-ink:   #FFFFFF; /* text ON accent surface */
+
+  /* Status — deliberately un-booked from green */
+  --status-ok:   #0D9488; /* teal (ex-emerald dot)  */
+  --status-warn: #B45309; /* amber — darkened from plan #D97706 to achieve ≥ 3:1 on light surfaces */
+  --status-err:  #DC2626; /* red                    */
+
+  /* Structure */
+  --bezel:     #CBD5C7; /* toned hairline / border */
+  --playhead:  #334155; /* timeline playhead — neutral, own token */
+}
+
+/* ─── Reduced-motion: disable decorative animations & transitions ─── */
+@media (prefers-reduced-motion: reduce) {
+  /* Target the animation utility classes added by P5-T1 keyframes */
+  .animate-shimmer,
+  .animate-fill-in,
+  .animate-breathe,
+  .animate-sweep,
+  .animate-latch-snap {
+    animation: none !important;
+  }
+
+  /* Belt-and-suspenders: mute all transitions/animations site-wide so that
+     any component that hasn't been explicitly migrated yet also respects the
+     user preference. This is the recommended approach for reduced-motion. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 html,
 body,
 #root {
