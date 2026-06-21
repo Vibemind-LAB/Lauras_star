@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -73,6 +75,7 @@ from .models import (
     TimelineImportOut,
     TimelineImportRequest,
     TimelineOut,
+    TimelineQualityOut,
     TransitionReviewOut,
     TransitionVerdictOut,
     ValidateOut,
@@ -81,6 +84,8 @@ from .models import (
 from .otio_split import AcceptedSplit, accepted_offsets_from_otio
 from .pagination import PageParams
 from .security import require_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
 
@@ -591,6 +596,28 @@ def timeline_from_shots(
     fresh = repos.get_timeline(db, target["id"])
     assert fresh is not None
     repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
+
+    # Persist quality verdict — MUST NOT break the build; wrap in try/except.
+    if body.align_editorial:
+        try:
+            if quality is not None:
+                repos.set_timeline_quality(
+                    db,
+                    fresh["id"],
+                    status="computed",
+                    overall=quality.overall,
+                    visual_exactness=quality.visual_exactness,
+                    editorial_cleanliness=quality.editorial_cleanliness,
+                    n_cuts=quality.n_cuts,
+                    n_split_cuts=quality.n_split_cuts,
+                )
+            else:
+                repos.set_timeline_quality(db, fresh["id"], status="no_video")
+        except Exception:  # noqa: BLE001 - quality persistence must never break the build
+            logger.warning("quality persistence failed for timeline %s", fresh["id"], exc_info=True)
+            with contextlib.suppress(Exception):
+                repos.set_timeline_quality(db, fresh["id"], status="error")
+
     return FromShotsOut(
         timeline=_timeline_out(db, fresh), dropped=dropped, split_cuts=split_cuts,
         quality=quality,
@@ -614,6 +641,33 @@ def get_timeline(timeline_id: str, request: Request) -> TimelineOut:
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     return _timeline_out(db, row)
+
+
+@router.get("/timelines/{timeline_id}/quality", response_model=TimelineQualityOut)
+def get_timeline_quality(timeline_id: str, request: Request) -> TimelineQualityOut:
+    """Persisted rough-cut quality for a timeline.
+
+    Returns 404 when the timeline does not exist. Returns 200 with ``status='pending'``
+    when the timeline exists but quality has not been computed yet (no row in table).
+    ``status='computed'`` carries all score fields; ``status='no_video'`` and
+    ``status='error'`` have null scores.
+    """
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    row = repos.get_timeline_quality(db, timeline_id)
+    if row is None:
+        return TimelineQualityOut(timeline_id=timeline_id, status="pending")
+    return TimelineQualityOut(
+        timeline_id=timeline_id,
+        status=row["status"],
+        overall=row["overall"],
+        visual_exactness=row["visual_exactness"],
+        editorial_cleanliness=row["editorial_cleanliness"],
+        n_cuts=row["n_cuts"],
+        n_split_cuts=row["n_split_cuts"],
+        created_at=row["created_at"],
+    )
 
 
 @router.get(

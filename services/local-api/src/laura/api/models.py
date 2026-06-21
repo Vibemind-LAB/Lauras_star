@@ -247,6 +247,28 @@ class RoughCutQualityOut(BaseModel):
     n_split_cuts: int
 
 
+class TimelineQualityOut(BaseModel):
+    """Persisted quality verdict for a timeline, returned by GET /timelines/{id}/quality.
+
+    ``status`` is one of:
+    - ``'computed'``: scores are available (scored at build time).
+    - ``'no_video'``: the build had no readable video so the visual half could not be scored.
+    - ``'error'``: an unexpected exception during persistence.
+    - ``'pending'``: sentinel (NOT stored) — timeline exists but no quality row yet.
+
+    All score fields are ``None`` when status is not ``'computed'``.
+    """
+
+    timeline_id: str
+    status: str
+    overall: float | None = None
+    visual_exactness: float | None = None
+    editorial_cleanliness: float | None = None
+    n_cuts: int | None = None
+    n_split_cuts: int | None = None
+    created_at: str | None = None
+
+
 class ClipOut(BaseModel):
     id: str
     asset_id: str
