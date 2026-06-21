@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -66,12 +68,31 @@ def create_voiceover(
         "mix_mode": body.mix_mode,
         "ducking_percent": body.ducking_percent,
     }
+    # Deterministic dedup key so identical re-enqueues resolve to the same job.
+    # segment_id is preferred over text when present (text is the segment's content
+    # and may drift); voice_id / mix_mode / ducking_percent are part of the rendered
+    # output, so they must be included in the key.
+    _key_parts = json.dumps(
+        {
+            "timeline_id": timeline_id,
+            "seq_in_frame": body.seq_in_frame,
+            "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
+            "segment_id": body.segment_id,
+            "text": body.text if body.segment_id is None else None,
+            "voice_id": body.voice_id,
+            "mix_mode": body.mix_mode,
+            "ducking_percent": body.ducking_percent,
+        },
+        sort_keys=True,
+    )
+    idempotency_key = f"ai.voiceover:{hashlib.sha256(_key_parts.encode()).hexdigest()}"
     job_id = enqueue(
         db,
         queue=queue_for("ai.voiceover", default="ai"),
         kind="ai.voiceover",
         payload=payload,
-        max_attempts=1,
+        max_attempts=2,
+        idempotency_key=idempotency_key,
     )
     return VoiceoverAccepted(job_id=job_id)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -74,11 +76,26 @@ def create_lipsync(
         "backend": body.backend,
         "quality_threshold": body.quality_threshold,
     }
+    # Build a deterministic dedup key from the salient inputs so that an identical
+    # re-enqueue (e.g. after a UI retry) resolves to the same job rather than
+    # spawning a duplicate.  Stable sort of keys guarantees consistent hashing.
+    _key_parts = json.dumps(
+        {
+            "timeline_id": timeline_id,
+            "seq_in_frame": body.seq_in_frame,
+            "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
+            "audio_asset_id": body.audio_asset_id,
+            "consent_id": body.consent_id,
+        },
+        sort_keys=True,
+    )
+    idempotency_key = f"ai.lipsync:{hashlib.sha256(_key_parts.encode()).hexdigest()}"
     job_id = enqueue(
         db,
         queue=queue_for("ai.lipsync", default="ai"),
         kind="ai.lipsync",
         payload=payload,
-        max_attempts=1,
+        max_attempts=2,
+        idempotency_key=idempotency_key,
     )
     return LipsyncAccepted(job_id=job_id)

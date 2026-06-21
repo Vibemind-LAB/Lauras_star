@@ -8,6 +8,9 @@ POST /timelines/{timeline_id}/reenact        — enqueue ai.reenact job (consent
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
@@ -116,6 +119,19 @@ def reenact(
     if portrait is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "portrait asset not found")
 
+    # Deterministic dedup key — includes consent_id so a re-enqueue with a
+    # different consent (e.g. after revoke + re-consent) is treated as a new job.
+    _key_parts = json.dumps(
+        {
+            "timeline_id": timeline_id,
+            "seq_in_frame": body.seq_in_frame,
+            "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
+            "portrait_asset_id": body.portrait_asset_id,
+            "consent_id": body.consent_id,
+        },
+        sort_keys=True,
+    )
+    idempotency_key = f"ai.reenact:{hashlib.sha256(_key_parts.encode()).hexdigest()}"
     job_id = enqueue(
         db,
         queue=queue_for("ai.reenact", default="ai"),
@@ -128,9 +144,7 @@ def reenact(
             "consent_id": body.consent_id,
             "backend": body.backend,
         },
-        idempotency_key=(
-            f"reenact:{timeline_id}:{body.seq_in_frame}:{body.seq_out_frame_exclusive}"
-            f":{body.portrait_asset_id}"
-        ),
+        max_attempts=2,
+        idempotency_key=idempotency_key,
     )
     return {"job_id": job_id}
