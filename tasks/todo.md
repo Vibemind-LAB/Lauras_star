@@ -376,6 +376,21 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
   `pnpm --dir apps/desktop run build:renderer`, PowerShell/Bash-Syntaxchecks und
   `git diff --check`. **Follow-up:** echte lokale Modell-Repos/Gewichte mounten und
   `LAURA_*_COMMAND` je Runtime fuer produktive Modelloutputs setzen.
+- [x] **APF3 AI Runtime Model Connectors** - Die Sidecars haben jetzt echte Provider-Bruecken
+  fuer LivePortrait, MuseTalk/VibeVideo und Piper: `providers.liveportrait_runner` uebersetzt
+  LivePortraits `inference.py -s/-d` auf Lauras expliziten Output-Pfad; `providers.musetalk_runner`
+  schreibt eine temporaere Inferenz-YAML und kopiert das neueste MuseTalk-MP4; `providers.piper_voice_runner`
+  liest Lauras Voice-Request und ruft Pipers CLI. `/healthz` und `/capabilities` zeigen Provider,
+  Command-Status und Model-Root-Diagnosen; VibeVideo kann optional ein echtes Probe-Command per
+  `LAURA_VIBEVIDEO_PROBE_COMMAND` ausfuehren. Compose und Registrierung setzen die Default-Commands
+  fuer `model` mode, Smoke bleibt unveraendert verfuegbar. Verifiziert: TDD rot->gruen fuer
+  `test_runtime_server.py` und `test_provider_runners.py`, Sidecar `ruff`/`mypy`, PowerShell-/Bash-
+  Syntaxchecks, `docker compose ... config --quiet`, Docker-Build aller drei Images, Provider-Import
+  im gebauten Image, `docker compose ... up -d`, frische `/healthz`-Checks auf 8898/8899/8901 und
+  Docker-Health `healthy` fuer `laura-runtime-voice`, `laura-runtime-liveportrait`,
+  `laura-runtime-vibevideo`. **Follow-up:** lokale Modell-Repos/Gewichte tatsaechlich nach
+  `workspace/models/<runtime>` legen oder extern mounten; dann `LAURA_RUNTIME_MODE=model` gegen
+  echte Modelloutputs laufen lassen.
 
 ---
 

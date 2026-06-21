@@ -15,6 +15,7 @@ RUN useradd --create-home --uid 10001 laura \
     && chown -R laura:laura /models /workspace /opt/laura-runtime
 
 COPY runtime_server.py /opt/laura-runtime/runtime_server.py
+COPY providers /opt/laura-runtime/providers
 
 USER laura
 

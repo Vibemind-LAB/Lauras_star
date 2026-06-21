@@ -40,6 +40,8 @@ class RuntimeConfig:
     port: int = 0
     model_root: Path | None = None
     command: str | None = None
+    provider: str | None = None
+    probe_command: str | None = None
     timeout_seconds: float = 3600.0
     version: str = VERSION
 
@@ -57,6 +59,8 @@ class RuntimeConfig:
             port=port,
             model_root=Path(os.environ.get("LAURA_MODEL_ROOT", "/models")),
             command=command,
+            provider=os.environ.get("LAURA_RUNTIME_PROVIDER"),
+            probe_command=os.environ.get("LAURA_VIBEVIDEO_PROBE_COMMAND"),
             timeout_seconds=timeout,
         )
 
@@ -238,9 +242,31 @@ def build_handler(config: RuntimeConfig) -> type[BaseHTTPRequestHandler]:
                 self._send_model_output(output, "video/mp4")
 
         def _handle_probe(self) -> None:
-            files, _fields = self._read_multipart()
+            files, fields = self._read_multipart()
             video = files.get("video")
             audio = files.get("audio")
+            if _mode(config) == "model" and config.probe_command:
+                if video is None or audio is None:
+                    raise ValueError("probe requires video and audio files")
+                with tempfile.TemporaryDirectory(prefix="laura-vibevideo-probe-") as tmp:
+                    tmp_dir = Path(tmp)
+                    video_path = _write_upload(tmp_dir, "video", video)
+                    audio_path = _write_upload(tmp_dir, "audio", audio)
+                    probe_json = tmp_dir / "probe.json"
+                    _run_shell_command(
+                        config.probe_command,
+                        config.timeout_seconds,
+                        {
+                            "video": video_path,
+                            "audio": audio_path,
+                            "probe_json": probe_json,
+                            "model_root": _model_root(config),
+                            "fps_num": fields.get("fps_num", "30"),
+                            "fps_den": fields.get("fps_den", "1"),
+                        },
+                    )
+                    self._send_json(_read_probe_json(probe_json))
+                    return
             self._send_json(
                 {
                     "face_detected": bool(video and video.data),
@@ -407,6 +433,10 @@ def synthesize_smoke_wav(
 
 def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, object]:
     mode = _mode(config)
+    provider = _provider(config, spec)
+    model_root = _model_root(config)
+    command_configured = bool(config.command)
+    root_exists = model_root.exists()
     if mode == "smoke":
         return {
             "ok": True,
@@ -414,6 +444,9 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "state": "ready",
             "runtime": spec.runtime,
             "mode": mode,
+            "provider": provider,
+            "command_configured": command_configured,
+            "model_root_exists": root_exists,
             "message": "smoke mode ready; no model weights loaded",
         }
     if mode != "model":
@@ -423,6 +456,9 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "state": "error",
             "runtime": spec.runtime,
             "mode": mode,
+            "provider": provider,
+            "command_configured": command_configured,
+            "model_root_exists": root_exists,
             "message": "LAURA_RUNTIME_MODE must be 'model' or 'smoke'",
         }
     if not config.command:
@@ -432,9 +468,11 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "state": "not_ready",
             "runtime": spec.runtime,
             "mode": mode,
+            "provider": provider,
+            "command_configured": False,
+            "model_root_exists": root_exists,
             "message": f"{spec.runtime} model command is not configured",
         }
-    model_root = _model_root(config)
     if not model_root.exists():
         return {
             "ok": False,
@@ -442,6 +480,9 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "state": "not_ready",
             "runtime": spec.runtime,
             "mode": mode,
+            "provider": provider,
+            "command_configured": True,
+            "model_root_exists": False,
             "message": f"model root does not exist: {model_root}",
         }
     return {
@@ -450,6 +491,9 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
         "state": "ready",
         "runtime": spec.runtime,
         "mode": mode,
+        "provider": provider,
+        "command_configured": True,
+        "model_root_exists": True,
         "message": "model command configured",
     }
 
@@ -460,10 +504,14 @@ def _capabilities_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str,
         "version": config.version,
         "effects": [spec.effect],
         "mode": _mode(config),
+        "provider": _provider(config, spec),
         "smoke": _mode(config) == "smoke",
         "endpoints": list(spec.endpoints),
         "requires_gpu": spec.requires_gpu,
         "requires_model_command": _mode(config) == "model",
+        "command_env": list(spec.command_env),
+        "command_configured": bool(config.command),
+        "probe_command_configured": bool(config.probe_command),
         "model_root": str(_model_root(config)),
     }
 
@@ -471,20 +519,53 @@ def _capabilities_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str,
 def _run_model_command(config: RuntimeConfig, replacements: dict[str, object]) -> None:
     if not config.command:
         raise RuntimeError("model command is not configured")
-    command = config.command
+    _run_shell_command(config.command, config.timeout_seconds, replacements)
+
+
+def _run_shell_command(
+    command_template: str,
+    timeout_seconds: float,
+    replacements: dict[str, object],
+) -> None:
+    command = command_template
     for key, value in replacements.items():
-        command = command.replace("{" + key + "}", shlex.quote(str(value)))
+        command = command.replace("{" + key + "}", _quote_command_value(value))
     result = subprocess.run(
         command,
         shell=True,
         capture_output=True,
         text=True,
-        timeout=config.timeout_seconds,
+        timeout=timeout_seconds,
         check=False,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "model command failed").strip()
         raise RuntimeError(detail)
+
+
+def _read_probe_json(path: Path) -> dict[str, object]:
+    if not path.exists():
+        raise RuntimeError(f"probe command did not create output: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"probe command wrote invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("probe command output must be a JSON object")
+    return {str(key): value for key, value in data.items()}
+
+
+def _quote_command_value(value: object) -> str:
+    text = str(value)
+    if os.name == "nt":
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
+
+
+def _provider(config: RuntimeConfig, spec: RuntimeSpec) -> str:
+    if config.provider and config.provider.strip():
+        return config.provider.strip()
+    return spec.runtime
 
 
 def _required_file(files: dict[str, UploadedFile], name: str) -> UploadedFile:

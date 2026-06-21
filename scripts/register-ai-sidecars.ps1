@@ -5,6 +5,10 @@ param(
     [string] $Mode = "smoke",
     [string] $WorkspaceMount = "",
     [string] $ModelRoot = "",
+    [string] $VoiceCommand = "python -m providers.piper_voice_runner --request {request_json} --output {output} --model-root {model_root}",
+    [string] $LivePortraitCommand = "python -m providers.liveportrait_runner --portrait {portrait} --driving {driving} --output {output} --model-root {model_root}",
+    [string] $VibeVideoCommand = "python -m providers.musetalk_runner --video {video} --audio {audio} --output {output} --model-root {model_root}",
+    [string] $VibeVideoProbeCommand = "",
     [ValidateSet("unknown", "accepted", "rejected", "not_required")]
     [string] $LicenseStatus = "unknown"
 )
@@ -58,6 +62,22 @@ function Add-OptionalMounts {
     }
 }
 
+function Add-ModelEnv {
+    param(
+        [hashtable] $Runtime,
+        [hashtable] $Env
+    )
+    if ($Mode -ne "model") {
+        return
+    }
+    foreach ($key in $Env.Keys) {
+        $value = [string] $Env[$key]
+        if ($value -ne "") {
+            $Runtime["container_env"][$key] = $value
+        }
+    }
+}
+
 $definitions = @(
     @{
         kind = "container"
@@ -71,7 +91,10 @@ $definitions = @(
         license_status = $LicenseStatus
         container_env = @{
             LAURA_RUNTIME_MODE = $Mode
+            LAURA_RUNTIME_PROVIDER = "piper"
             LAURA_MODEL_ROOT = "/models"
+            LAURA_PIPER_VOICE = "en_US-lessac-medium"
+            LAURA_PIPER_DATA_DIR = "/models/piper"
         }
     },
     @{
@@ -86,7 +109,10 @@ $definitions = @(
         license_status = $LicenseStatus
         container_env = @{
             LAURA_RUNTIME_MODE = $Mode
+            LAURA_RUNTIME_PROVIDER = "liveportrait"
             LAURA_MODEL_ROOT = "/models"
+            LAURA_LIVEPORTRAIT_REPO = "/models/LivePortrait"
+            LAURA_LIVEPORTRAIT_OUTPUT_GLOB = "animations/*.mp4"
         }
     },
     @{
@@ -101,7 +127,10 @@ $definitions = @(
         license_status = $LicenseStatus
         container_env = @{
             LAURA_RUNTIME_MODE = $Mode
+            LAURA_RUNTIME_PROVIDER = "musetalk"
             LAURA_MODEL_ROOT = "/models"
+            LAURA_MUSETALK_REPO = "/models/MuseTalk"
+            LAURA_MUSETALK_RESULT_DIR = "/workspace/musetalk-results"
         }
     }
 )
@@ -109,6 +138,12 @@ $definitions = @(
 Add-OptionalMounts $definitions[0] "voice"
 Add-OptionalMounts $definitions[1] "liveportrait"
 Add-OptionalMounts $definitions[2] "vibevideo"
+Add-ModelEnv $definitions[0] @{ LAURA_VOICE_COMMAND = $VoiceCommand }
+Add-ModelEnv $definitions[1] @{ LAURA_LIVEPORTRAIT_COMMAND = $LivePortraitCommand }
+Add-ModelEnv $definitions[2] @{
+    LAURA_VIBEVIDEO_COMMAND = $VibeVideoCommand
+    LAURA_VIBEVIDEO_PROBE_COMMAND = $VibeVideoProbeCommand
+}
 
 $existing = @(Invoke-Laura -Method GET -Path "/ai/runtimes")
 foreach ($definition in $definitions) {

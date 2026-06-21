@@ -68,6 +68,28 @@ def test_liveportrait_model_mode_not_ready_without_command(tmp_path: Path) -> No
     assert caps["runtime"] == "liveportrait"
 
 
+def test_model_health_exposes_command_and_model_root_diagnostics(tmp_path: Path) -> None:
+    missing_root = tmp_path / "missing"
+    config = RuntimeConfig(
+        kind="voice",
+        mode="model",
+        port=0,
+        model_root=missing_root,
+        command="python -m providers.piper_voice_runner --request {request_json} --output {output}",
+        provider="piper",
+    )
+    with running_runtime(config) as port:
+        health = _json_request(port, "GET", "/healthz")
+        caps = _json_request(port, "GET", "/capabilities")
+
+    assert health["ready"] is False
+    assert health["provider"] == "piper"
+    assert health["command_configured"] is True
+    assert health["model_root_exists"] is False
+    assert caps["provider"] == "piper"
+    assert "LAURA_VOICE_COMMAND" in caps["command_env"]
+
+
 def test_lipsync_smoke_probe_and_lipsync_contract(tmp_path: Path) -> None:
     config = RuntimeConfig(kind="vibevideo", mode="smoke", port=0, model_root=tmp_path)
     multipart, content_type = _multipart(
@@ -98,6 +120,50 @@ def test_lipsync_smoke_probe_and_lipsync_contract(tmp_path: Path) -> None:
     assert response.body == b"fake video bytes"
     assert quality["passed"] is True
     assert quality["sync_score"] >= 0.8
+
+
+def test_vibevideo_model_probe_uses_probe_command(tmp_path: Path) -> None:
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import json\n"
+        "import pathlib\n"
+        "import sys\n"
+        "pathlib.Path(sys.argv[-1]).write_text(json.dumps({"
+        "'face_detected': True, 'mouth_visible': False, 'audio_present': True"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = RuntimeConfig(
+        kind="vibevideo",
+        mode="model",
+        port=0,
+        model_root=tmp_path,
+        command=f"{sys.executable} -c \"from pathlib import Path\"",
+        probe_command=(
+            f"{sys.executable} {probe} --video {{video}} "
+            "--audio {audio} --output {probe_json}"
+        ),
+    )
+    multipart, content_type = _multipart(
+        files={
+            "video": ("driving.mp4", b"fake video bytes", "video/mp4"),
+            "audio": ("voice.wav", b"RIFFfake audio bytes", "audio/wav"),
+        }
+    )
+    with running_runtime(config) as port:
+        probe_result = _json_request(
+            port,
+            "POST",
+            "/probe",
+            body=multipart,
+            headers={"Content-Type": content_type},
+        )
+
+    assert probe_result == {
+        "face_detected": True,
+        "mouth_visible": False,
+        "audio_present": True,
+    }
 
 
 class RawResponse:
