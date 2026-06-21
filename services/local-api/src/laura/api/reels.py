@@ -9,6 +9,7 @@ from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from .models import ReelRenderRequest
+from .quality_gate import evaluate_quality_gate
 from .security import require_token
 
 router = APIRouter(tags=["reels"], dependencies=[Depends(require_token)])
@@ -32,6 +33,7 @@ def render_reel(
     tl = repos.get_timeline(db, timeline_id)
     if tl is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    gate = evaluate_quality_gate(db, timeline_id, body.min_quality)
     exp = repos.create_export(
         db,
         project_id=tl["project_id"],
@@ -48,6 +50,7 @@ def render_reel(
             "caption_fontsize": body.caption_fontsize,
             "caption_safe_margin": body.caption_safe_margin,
             "max_duration_seconds": body.max_duration_seconds,
+            **gate,
         },
     )
     job_id = enqueue(

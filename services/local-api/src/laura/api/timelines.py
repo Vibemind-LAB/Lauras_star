@@ -83,6 +83,7 @@ from .models import (
 )
 from .otio_split import AcceptedSplit, accepted_offsets_from_otio
 from .pagination import PageParams
+from .quality_gate import evaluate_quality_gate
 from .security import require_token
 
 logger = logging.getLogger(__name__)
@@ -1177,8 +1178,13 @@ def render_timeline(
     tl = repos.get_timeline(db, timeline_id)
     if tl is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    gate = evaluate_quality_gate(db, timeline_id, body.min_quality)
     exp = repos.create_export(
-        db, project_id=tl["project_id"], timeline_id=timeline_id, format=body.format
+        db,
+        project_id=tl["project_id"],
+        timeline_id=timeline_id,
+        format=body.format,
+        options=gate,
     )
     job_id = enqueue(
         db,
@@ -1196,7 +1202,17 @@ def list_project_exports(
 ) -> list[RenderExportOut]:
     """List all render-pipeline exports for a project."""
     db = _db(request)
-    return [RenderExportOut(**e) for e in repos.list_exports(db, project_id)]
+    out: list[RenderExportOut] = []
+    for e in repos.list_exports(db, project_id):
+        opts: dict[str, object] = e.get("options") or {}
+        out.append(
+            RenderExportOut(
+                **{k: v for k, v in e.items() if k != "options"},
+                quality_status=opts.get("quality_status"),  # type: ignore[arg-type]
+                quality_verified=opts.get("quality_verified"),  # type: ignore[arg-type]
+            )
+        )
+    return out
 
 
 @router.post(

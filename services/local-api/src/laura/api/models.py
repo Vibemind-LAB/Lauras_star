@@ -705,6 +705,9 @@ class SetSceneMusicRequest(BaseModel):
 
 class RenderRequest(BaseModel):
     format: str = "mp4"
+    # Optional quality gate: 422 when persisted quality is computed and below this threshold.
+    # None means no gate (unverified stamp applied when quality is not computed).
+    min_quality: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class ReelRenderRequest(BaseModel):
@@ -720,6 +723,9 @@ class ReelRenderRequest(BaseModel):
     # Optional hard cap on the reel length (social platforms enforce max durations). When set,
     # the render keeps only the first N seconds of the cut (deterministic tail-trim). None = no cap.
     max_duration_seconds: int | None = Field(default=None, ge=1, le=86400)
+    # Optional quality gate: 422 when persisted quality is computed and below this threshold.
+    # None means no gate (unverified stamp applied when quality is not computed).
+    min_quality: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class RenderExportOut(BaseModel):
@@ -732,6 +738,9 @@ class RenderExportOut(BaseModel):
     size_bytes: int | None = None
     error: str | None = None
     created_at: str | None = None
+    # Machine-readable quality stamp (P1-T2b). Populated from export options.
+    quality_status: str | None = None
+    quality_verified: bool | None = None
 
 
 # --- sequence (stage 5) ------------------------------------------------------

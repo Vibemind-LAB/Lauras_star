@@ -53,6 +53,9 @@ def test_render_reel_creates_export_with_options(tmp_path: Path) -> None:
         "caption_fontsize": 72,
         "caption_safe_margin": 250,
         "max_duration_seconds": None,
+        # P1-T2b quality stamp (no quality row → pending, unverified)
+        "quality_status": "pending",
+        "quality_verified": False,
     }
 
 
@@ -107,6 +110,9 @@ def test_render_reel_caption_direction_stored_in_options(tmp_path: Path) -> None
         "caption_fontsize": 84,
         "caption_safe_margin": 180,
         "max_duration_seconds": None,
+        # P1-T2b quality stamp (no quality row → pending, unverified)
+        "quality_status": "pending",
+        "quality_verified": False,
     }
 
 
