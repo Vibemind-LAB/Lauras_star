@@ -80,6 +80,7 @@ def test_lipsync_api_enqueues_consent_and_license_gated_job(
         "consent_id": consent_id,
         "license_accepted": True,
         "backend": "stub",
+        "runtime_id": None,
         "quality_threshold": 0.7,
     }
 

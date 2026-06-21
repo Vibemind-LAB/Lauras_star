@@ -290,7 +290,9 @@ def test_lipsync_probe_failure_creates_no_synthetic_asset(
         ) -> _Quality:
             raise AssertionError("lipsync must not run after a failed probe")
 
-    monkeypatch.setattr(ai_handlers, "resolve_lipsync_backend", lambda _name: BadProbeBackend())
+    monkeypatch.setattr(
+        ai_handlers, "resolve_lipsync_backend", lambda _name, **_kw: BadProbeBackend()
+    )
     db, project, _, audio_asset, tl = _setup_scene(tmp_path)
     consent = repos.create_consent_record(
         db, project_id=project["id"], subject_label="Person A", confirmed_by="test",
@@ -343,7 +345,9 @@ def test_lipsync_quality_gate_failure_creates_no_synthetic_asset(
                 passed=False,
             )
 
-    monkeypatch.setattr(ai_handlers, "resolve_lipsync_backend", lambda _name: LowQualityBackend())
+    monkeypatch.setattr(
+        ai_handlers, "resolve_lipsync_backend", lambda _name, **_kw: LowQualityBackend()
+    )
     db, project, _, audio_asset, tl = _setup_scene(tmp_path)
     consent = repos.create_consent_record(
         db, project_id=project["id"], subject_label="Person A", confirmed_by="test",
