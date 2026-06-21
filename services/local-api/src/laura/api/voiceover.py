@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -11,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from ..ai.voiceover_backend import list_sapi_voices
 from ..db import repos
 from ..db.database import Database
+from ..jobs.keys import idempotency_key_for
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from .models import VoiceoverAccepted, VoiceoverRequest
@@ -72,20 +71,7 @@ def create_voiceover(
     # segment_id is preferred over text when present (text is the segment's content
     # and may drift); voice_id / mix_mode / ducking_percent are part of the rendered
     # output, so they must be included in the key.
-    _key_parts = json.dumps(
-        {
-            "timeline_id": timeline_id,
-            "seq_in_frame": body.seq_in_frame,
-            "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
-            "segment_id": body.segment_id,
-            "text": body.text if body.segment_id is None else None,
-            "voice_id": body.voice_id,
-            "mix_mode": body.mix_mode,
-            "ducking_percent": body.ducking_percent,
-        },
-        sort_keys=True,
-    )
-    idempotency_key = f"ai.voiceover:{hashlib.sha256(_key_parts.encode()).hexdigest()}"
+    idempotency_key = idempotency_key_for("ai.voiceover", payload)
     job_id = enqueue(
         db,
         queue=queue_for("ai.voiceover", default="ai"),

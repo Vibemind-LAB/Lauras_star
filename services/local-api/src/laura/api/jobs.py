@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
+from ..jobs.keys import idempotency_key_for
 from ..jobs.runner import enqueue
 from .models import JobAccepted, JobOut
 from .security import require_token
@@ -50,14 +51,20 @@ def retry_job(job_id: str, request: Request) -> JobAccepted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
     if job["status"] != "failed":
         raise HTTPException(status.HTTP_409_CONFLICT, "only failed jobs can be retried")
+    kind = str(job["kind"])
+    payload = payload_json_to_dict(job.get("payload_json"))
+    # Reconstruct the deterministic key (if any) so retrying a completed job
+    # dedupes back to that job rather than spawning duplicate work.
+    reconstructed_key = idempotency_key_for(kind, payload)
     new_job_id = enqueue(
         db,
         queue=str(job["queue"]),
-        kind=str(job["kind"]),
-        payload=payload_json_to_dict(job.get("payload_json")),
+        kind=kind,
+        payload=payload,
         priority=int(job["priority"]),
         max_attempts=int(job["max_attempts"]),
         caused_by_job_id=job_id,
+        idempotency_key=reconstructed_key,
     )
     return JobAccepted(job_id=new_job_id)
 
