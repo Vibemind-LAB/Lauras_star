@@ -23,6 +23,21 @@ def _db(request: Request) -> Database:
     return db
 
 
+def _validate_runtime(db: Database, runtime_id: str | None, effect: str) -> None:
+    if runtime_id is None:
+        return
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "runtime not found")
+    if runtime["effect"] != effect:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"runtime effect must be {effect}",
+        )
+    if not runtime["enabled"]:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "runtime is disabled")
+
+
 @router.post(
     "/timelines/{timeline_id}/voiceover",
     status_code=status.HTTP_202_ACCEPTED,
@@ -52,6 +67,8 @@ def create_voiceover(
                 "segment does not belong to this timeline project",
             )
 
+    _validate_runtime(db, body.runtime_id, "voice")
+
     payload: dict[str, Any] = {
         "timeline_id": timeline_id,
         "segment_id": body.segment_id,
@@ -60,6 +77,7 @@ def create_voiceover(
         "seq_out_frame_exclusive": body.seq_out_frame_exclusive,
         "language": body.language,
         "backend": body.backend,
+        "runtime_id": body.runtime_id,
         "gain_percent": body.gain_percent,
         "fade_in_frames": body.fade_in_frames,
         "fade_out_frames": body.fade_out_frames,

@@ -22,6 +22,21 @@ def _db(request: Request) -> Database:
     return db
 
 
+def _validate_runtime(db: Database, runtime_id: str | None, effect: str) -> None:
+    if runtime_id is None:
+        return
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "runtime not found")
+    if runtime["effect"] != effect:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"runtime effect must be {effect}",
+        )
+    if not runtime["enabled"]:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "runtime is disabled")
+
+
 @router.post(
     "/timelines/{timeline_id}/lipsync",
     status_code=status.HTTP_202_ACCEPTED,
@@ -65,6 +80,8 @@ def create_lipsync(
             "consent has been revoked; obtain fresh consent before lipsync",
         )
 
+    _validate_runtime(db, body.runtime_id, "lipsync")
+
     payload: dict[str, Any] = {
         "timeline_id": timeline_id,
         "seq_in_frame": body.seq_in_frame,
@@ -73,6 +90,7 @@ def create_lipsync(
         "consent_id": body.consent_id,
         "license_accepted": body.license_accepted,
         "backend": body.backend,
+        "runtime_id": body.runtime_id,
         "quality_threshold": body.quality_threshold,
     }
     # Build a deterministic dedup key from the salient inputs so that an identical

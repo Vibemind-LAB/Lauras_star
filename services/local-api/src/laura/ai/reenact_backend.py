@@ -232,7 +232,11 @@ class UnavailableBackend:
         raise RuntimeError(f"reenact backend '{self.name}' is not installed")
 
 
-def resolve_reenact_backend(name: str | None = None) -> ReenactBackend:
+def resolve_reenact_backend(
+    name: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> ReenactBackend:
     """Return the best available ``ReenactBackend`` for *name*.
 
     Resolution order:
@@ -250,7 +254,7 @@ def resolve_reenact_backend(name: str | None = None) -> ReenactBackend:
     if chosen == "stub":
         return StubReenactBackend()
     if chosen == "liveportrait":
-        return LivePortraitBackend()
+        return LivePortraitBackend(base_url=base_url)
     return UnavailableBackend(chosen)
 
 

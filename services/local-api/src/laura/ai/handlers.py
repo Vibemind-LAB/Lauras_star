@@ -7,10 +7,12 @@ handler raises immediately and creates nothing.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..db import repos
+from ..db.database import Database
 from ..jobs.runner import JobContext, JobHandler
 from ..render.mp4 import render_clips_mp4
 from ..render.sync import assert_or_fix_media_sync
@@ -20,6 +22,74 @@ from .lipsync_backend import resolve_lipsync_backend
 from .provenance import write_ai_provenance_manifest
 from .reenact_backend import resolve_reenact_backend
 from .voiceover_backend import DEFAULT_VOICEOVER_SAMPLE_RATE, resolve_voiceover_backend
+
+
+@dataclass(frozen=True)
+class RuntimeBackendConfig:
+    name: str | None
+    base_url: str | None
+    runtime_id: str | None = None
+
+
+_EFFECT_BACKENDS = {
+    "voice": "sidecar",
+    "reenact": "liveportrait",
+    "lipsync": "vibevideo",
+}
+
+
+def _runtime_base_url(runtime: dict[str, Any]) -> str | None:
+    raw = runtime.get("base_url")
+    if isinstance(raw, str) and raw.strip():
+        return raw.rstrip("/")
+    port = runtime.get("port")
+    if port is not None:
+        return f"http://127.0.0.1:{int(port)}"
+    return None
+
+
+def _backend_config_from_runtime(
+    db: Database,
+    runtime_id: str | None,
+    fallback: str | None,
+    effect: str,
+) -> RuntimeBackendConfig:
+    if runtime_id is None:
+        return RuntimeBackendConfig(fallback, None, None)
+
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise ValueError(f"runtime not found: {runtime_id!r}")
+    if not bool(runtime["enabled"]):
+        raise ValueError("runtime is disabled")
+    if str(runtime["effect"]) != effect:
+        raise ValueError(f"runtime effect must be {effect}")
+
+    kind = str(runtime["kind"])
+    if kind == "stub":
+        return RuntimeBackendConfig("stub", None, runtime_id)
+    if kind in {"external_http", "container"}:
+        base_url = _runtime_base_url(runtime)
+        if base_url is None:
+            raise ValueError("runtime has no base_url or port")
+        return RuntimeBackendConfig(_EFFECT_BACKENDS[effect], base_url, runtime_id)
+    raise ValueError(f"unsupported runtime kind: {kind!r}")
+
+
+def _backend_from_runtime(
+    db: Database,
+    runtime_id: str | None,
+    fallback: str | None,
+    effect: str | None = None,
+) -> str | None:
+    if effect is None:
+        if runtime_id is None:
+            return fallback
+        runtime = repos.get_ai_runtime(db, runtime_id)
+        if runtime is None:
+            raise ValueError(f"runtime not found: {runtime_id!r}")
+        effect = str(runtime["effect"])
+    return _backend_config_from_runtime(db, runtime_id, fallback, effect).name
 
 
 def handle_reenact(ctx: JobContext) -> dict[str, Any]:
@@ -128,7 +198,16 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
         )
 
         # ── 5. Resolve and validate backend ──────────────────────────────────
-        backend = resolve_reenact_backend(payload.get("backend"))
+        backend_config = _backend_config_from_runtime(
+            ctx.db,
+            payload.get("runtime_id"),
+            payload.get("backend"),
+            "reenact",
+        )
+        backend = resolve_reenact_backend(
+            backend_config.name,
+            base_url=backend_config.base_url,
+        )
         if not backend.available():
             raise RuntimeError(
                 f"ai.reenact: reenact backend '{backend.name}' is not installed"
@@ -256,7 +335,16 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
     rate_den = int(project["sequence_rate_den"])
     sample_rate = DEFAULT_VOICEOVER_SAMPLE_RATE
 
-    backend = resolve_voiceover_backend(payload.get("backend"))
+    backend_config = _backend_config_from_runtime(
+        ctx.db,
+        payload.get("runtime_id"),
+        payload.get("backend"),
+        "voice",
+    )
+    backend = resolve_voiceover_backend(
+        backend_config.name,
+        base_url=backend_config.base_url,
+    )
     if not backend.available():
         raise RuntimeError(f"ai.voiceover: voiceover backend '{backend.name}' is not installed")
 
@@ -473,7 +561,16 @@ def handle_lipsync(ctx: JobContext) -> dict[str, Any]:
 
     try:
         render_clips_mp4(driving_clips, driving_tmp, rate_num=rate_num, rate_den=rate_den)
-        backend = resolve_lipsync_backend(payload.get("backend"))
+        backend_config = _backend_config_from_runtime(
+            ctx.db,
+            payload.get("runtime_id"),
+            payload.get("backend"),
+            "lipsync",
+        )
+        backend = resolve_lipsync_backend(
+            backend_config.name,
+            base_url=backend_config.base_url,
+        )
         if not backend.available():
             raise RuntimeError(f"ai.lipsync: lipsync backend '{backend.name}' is not installed")
 

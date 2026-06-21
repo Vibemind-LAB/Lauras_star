@@ -26,6 +26,21 @@ def _db(request: Request) -> Database:
     return db
 
 
+def _validate_runtime(db: Database, runtime_id: str | None, effect: str) -> None:
+    if runtime_id is None:
+        return
+    runtime = repos.get_ai_runtime(db, runtime_id)
+    if runtime is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "runtime not found")
+    if runtime["effect"] != effect:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"runtime effect must be {effect}",
+        )
+    if not runtime["enabled"]:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "runtime is disabled")
+
+
 def _consent_out(rec: dict[str, object]) -> ConsentOut:
     return ConsentOut(**{k: rec.get(k) for k in ConsentOut.model_fields})  # type: ignore[arg-type]
 
@@ -117,6 +132,8 @@ def reenact(
     if portrait is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "portrait asset not found")
 
+    _validate_runtime(db, body.runtime_id, "reenact")
+
     # Deterministic dedup key — includes consent_id so a re-enqueue with a
     # different consent (e.g. after revoke + re-consent) is treated as a new job.
     job_payload = {
@@ -126,6 +143,7 @@ def reenact(
         "portrait_asset_id": body.portrait_asset_id,
         "consent_id": body.consent_id,
         "backend": body.backend,
+        "runtime_id": body.runtime_id,
     }
     idempotency_key = idempotency_key_for("ai.reenact", job_payload)
     job_id = enqueue(

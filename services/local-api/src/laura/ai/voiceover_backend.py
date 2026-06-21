@@ -367,7 +367,11 @@ def list_sapi_voices() -> list[dict[str, str]]:
     ]
 
 
-def resolve_voiceover_backend(name: str | None = None) -> VoiceoverBackend:
+def resolve_voiceover_backend(
+    name: str | None = None,
+    *,
+    base_url: str | None = None,
+) -> VoiceoverBackend:
     chosen = (os.environ.get("LAURA_VOICEOVER_BACKEND") or name or "stub").strip().lower()
     if chosen == "auto":
         # Prefer a real local voice (Windows SAPI) when present, else the dependency-free tone.
@@ -378,7 +382,7 @@ def resolve_voiceover_backend(name: str | None = None) -> VoiceoverBackend:
     if chosen in {"sapi", "windows", "windows_sapi"}:
         return WindowsSapiVoiceoverBackend()
     if chosen in {"sidecar", "vibevideo"}:
-        return SidecarVoiceoverBackend()
+        return SidecarVoiceoverBackend(base_url=base_url)
     return UnavailableVoiceoverBackend(chosen)
 
 
