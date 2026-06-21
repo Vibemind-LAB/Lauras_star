@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,14 @@ from ..db import repos
 from ..db.database import Database
 from ..ingest.proxy import build_thumbnail
 from ..jobs.runner import JobContext, JobHandler
+from ..policy import (
+    Policy,
+    ResolvedPolicy,
+    get_asset_policy,
+    policy_to_str,
+    resolve_policy,
+    set_asset_policy,
+)
 from ..semantic import get_index
 from ..util import utcnow_iso
 from .align import align_words, whisperx_available
@@ -29,6 +38,8 @@ from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
 from .transition_review import default_backend, run_transition_review
 from .types import SegmentResult, ShotResult, WordResult
+
+_log = logging.getLogger(__name__)
 
 
 def _auto_rough_cut_enabled() -> bool:
@@ -42,6 +53,38 @@ def _auto_rough_cut_enabled() -> bool:
         "no",
         "off",
     )
+
+
+def _resolve_and_persist_policy(db: Database, asset: dict[str, Any]) -> Policy:
+    """Resolve the per-input policy for *asset* and persist it to ``asset_policies``.
+
+    Precedence (P4-T1 seam, v1):
+    - ``LAURA_DEFAULT_POLICY`` env var, if set and non-empty.
+    - Otherwise falls back to the existing boolean gate:
+      ``"auto"`` when :func:`_auto_rough_cut_enabled` is ``True``, else ``"human"``.
+
+    On any ``resolve_policy``/persist error, logs a warning and returns
+    ``Policy("auto")`` so a bad env value never fails the analysis run.
+    """
+    env_policy_str: str | None = os.environ.get("LAURA_DEFAULT_POLICY") or None
+    if not env_policy_str:
+        # Derive from the legacy boolean gate for backward-compat.
+        env_policy_str = "auto" if _auto_rough_cut_enabled() else "human"
+
+    try:
+        rp: ResolvedPolicy = resolve_policy(
+            row=None, pattern=None, env=env_policy_str, default="auto"
+        )
+        set_asset_policy(db, asset["id"], policy=policy_to_str(rp.policy), source=rp.source)
+        return rp.policy
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "policy resolve/persist failed for asset %s (%s: %s); falling back to auto",
+            asset.get("id"),
+            type(exc).__name__,
+            exc,
+        )
+        return Policy(mode="auto")
 
 
 def _scene_detect_height() -> int:
@@ -313,19 +356,29 @@ def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:
     # Smart handling: land the asset edit-ready (rough cut + scenes) with zero clicks.
     # Best-effort and gated — a failure here must NEVER fail the analysis run. Only fires
     # when the scene stage produced shots; otherwise there is nothing to build from.
-    if _auto_rough_cut_enabled() and diagnostics.get("scene", {}).get("status") == "ok":
+    # Policy seam (P4-T2): resolve per-input policy, persist it, decide auto-build by mode.
+    policy = _resolve_and_persist_policy(ctx.db, asset)
+    if policy.mode in ("auto", "threshold") and diagnostics.get("scene", {}).get("status") == "ok":
         try:
             from ..scenes.build import autobuild_asset_edit_ready
 
             n = autobuild_asset_edit_ready(
                 ctx.db, project_id=asset["project_id"], asset_id=asset_id, run_id=run_id
             )
-            diagnostics["auto_rough_cut"] = {"status": "ok", "scenes": n}
+            persisted = get_asset_policy(ctx.db, asset_id)
+            diagnostics["auto_rough_cut"] = {
+                "status": "ok",
+                "scenes": n,
+                "policy": policy.mode,
+                "policy_source": persisted["policy_source"] if persisted else "default",
+            }
         except Exception as exc:  # noqa: BLE001 - auto-build must never fail the run
             diagnostics["auto_rough_cut"] = {
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+    elif policy.mode == "human":
+        diagnostics["auto_rough_cut"] = {"status": "skipped", "reason": "policy=human"}
 
     manifest_dest = Path(project["workspace_root"]) / "analysis" / asset_id / "manifest.json"
     write_manifest(
