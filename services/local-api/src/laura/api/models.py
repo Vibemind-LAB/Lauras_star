@@ -526,6 +526,7 @@ class VoiceoverRequest(BaseModel):
     seq_out_frame_exclusive: int = Field(gt=0)
     language: str | None = None
     backend: str | None = None
+    runtime_id: str | None = None
     # Explicit TTS voice name (e.g. a Windows SAPI voice like "Microsoft Katja"); None picks a
     # voice by ``language`` when the backend supports it, else the system default.
     voice_id: str | None = Field(default=None, max_length=200)
@@ -807,6 +808,7 @@ class ReenactRequest(BaseModel):
     portrait_asset_id: str
     consent_id: str  # MANDATORY — missing -> 422 automatically
     backend: str | None = None
+    runtime_id: str | None = None
 
 
 class LipsyncRequest(BaseModel):
@@ -816,6 +818,7 @@ class LipsyncRequest(BaseModel):
     consent_id: str
     license_accepted: bool
     backend: str | None = None
+    runtime_id: str | None = None
     quality_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -829,6 +832,64 @@ class LipsyncRequest(BaseModel):
 
 class LipsyncAccepted(BaseModel):
     job_id: str
+
+
+# --- ai runtimes / personas -------------------------------------------------
+RuntimeKind = Literal["stub", "external_http", "container"]
+RuntimeEffect = Literal["voice", "reenact", "lipsync", "faceswap", "restore"]
+LicenseStatus = Literal["unknown", "accepted", "rejected", "not_required"]
+
+
+class AiRuntimeCreate(BaseModel):
+    kind: RuntimeKind
+    effect: RuntimeEffect
+    display_name: str = Field(min_length=1, max_length=200)
+    base_url: str | None = None
+    container_image: str | None = None
+    container_name: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    workspace_mount: str | None = None
+    model_mount: str | None = None
+    container_env: dict[str, str] = Field(default_factory=dict)
+    requires_gpu: bool = False
+    enabled: bool = True
+    license_status: LicenseStatus = "unknown"
+
+
+class AiRuntimeOut(AiRuntimeCreate):
+    id: str
+    status: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    last_health_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiRuntimeEventOut(BaseModel):
+    id: str
+    runtime_id: str
+    event_type: str
+    level: str
+    message: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class AiPersonaCreate(BaseModel):
+    project_id: str | None = None
+    name: str = Field(min_length=1, max_length=200)
+    consent_id: str
+    face_reference_asset_id: str | None = None
+    voice_reference_asset_id: str | None = None
+    style: dict[str, Any] = Field(default_factory=dict)
+    allowed_effects: list[RuntimeEffect] = Field(default_factory=list)
+    preferred_runtimes: dict[str, str] = Field(default_factory=dict)
+
+
+class AiPersonaOut(AiPersonaCreate):
+    id: str
+    created_at: str
+    updated_at: str
 
 
 # --- overlays (replacement-lane) -------------------------------------------
@@ -850,3 +911,20 @@ class OverlayOut(BaseModel):
     src_out_frame_exclusive: int
     seq_in_frame: int
     seq_out_frame_exclusive: int
+
+
+# --- shorts / next-action read-model ----------------------------------------
+class NextActionOut(BaseModel):
+    """Pure read-model projection: the single next action to produce a finished reel.
+
+    ``tool`` is None when nothing can be done right now (blocked or done).
+    ``label_key`` is an i18n KEY string (not human prose) for the UI.
+    ``blocked_by`` carries typed blocker tokens, e.g. ``["PROXY_PENDING"]``.
+    """
+
+    short_id: str
+    tool: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    label_key: str
+    reason: str
+    blocked_by: list[str] = Field(default_factory=list)

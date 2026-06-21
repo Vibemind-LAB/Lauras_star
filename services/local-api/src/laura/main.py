@@ -17,6 +17,7 @@ from .ai.handlers import register_ai_handlers
 from .analysis.handlers import register_analysis_handlers
 from .api import (
     admin,
+    ai_runtimes,
     analysis,
     assets,
     audio,
@@ -30,6 +31,7 @@ from .api import (
     scenes,
     search,
     sequences,
+    shorts,
     timelines,
     voiceover,
 )
@@ -110,6 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return metrics_response()
 
     app.include_router(projects.router)
+    app.include_router(shorts.router)
     app.include_router(assets.router)
     app.include_router(jobs.router)
     app.include_router(analysis.router)
@@ -118,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reels.router)
     app.include_router(overlays.router)
     app.include_router(reenact.router)
+    app.include_router(ai_runtimes.router)
     app.include_router(admin.router)
     app.include_router(search.router)
     app.include_router(scenes.router)
