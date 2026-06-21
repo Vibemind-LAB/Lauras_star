@@ -22,6 +22,7 @@ from ..db.database import Database
 from ..metrics import JOBS
 from ..telemetry import span
 from ..util import new_id, utcnow_iso
+from .errors import trace_from_exception
 
 logger = logging.getLogger(__name__)
 
@@ -174,22 +175,37 @@ class JobRunner:
                 (json.dumps(result or {}), now, now, job_id),
             )
 
-    def _finish_fail(self, job: dict[str, Any], error: str) -> None:
+    def _finish_fail(self, job: dict[str, Any], error: BaseException | str) -> None:
         now = utcnow_iso()
         attempt = int(job["attempt"]) + 1  # already incremented at claim
-        retriable = attempt < int(job["max_attempts"])
+
+        # Build a structured trace from whatever error type we received.
+        if isinstance(error, str):
+            # Plain string path (reap_expired, "no handler registered") — wrap
+            # exactly as bare exceptions so requeue logic is unchanged.
+            trace: dict[str, Any] = {
+                "error": error, "code": "unknown", "retriable": True, "details": None
+            }
+        else:
+            trace = trace_from_exception(error)
+
+        # Requeue only when BOTH the attempt budget allows it AND the error
+        # is retriable.  A LauraJobError with retriable=False ends permanently
+        # even when attempts remain.
+        should_requeue = (attempt < int(job["max_attempts"])) and bool(trace["retriable"])
+
         with self.db.connection() as conn:
-            if retriable:
+            if should_requeue:
                 conn.execute(
                     "UPDATE jobs SET status='queued', worker_id=NULL, lease_expires_at=NULL, "
                     "error_json=?, updated_at=? WHERE id=?",
-                    (json.dumps({"error": error}), now, job["id"]),
+                    (json.dumps(trace), now, job["id"]),
                 )
             else:
                 conn.execute(
                     "UPDATE jobs SET status='failed', error_json=?, finished_at=?, "
                     "updated_at=? WHERE id=?",
-                    (json.dumps({"error": error}), now, now, job["id"]),
+                    (json.dumps(trace), now, now, job["id"]),
                 )
 
     def _execute(self, job: dict[str, Any]) -> None:
@@ -242,7 +258,7 @@ class JobRunner:
                 JOBS.labels(kind, "succeeded").inc()
             except Exception as exc:  # noqa: BLE001 - we record any handler failure
                 sp.set_attribute("job.status", "failed")
-                self._finish_fail(job, f"{type(exc).__name__}: {exc}")
+                self._finish_fail(job, exc)
                 JOBS.labels(kind, "failed").inc()
             finally:
                 stop_hb.set()
