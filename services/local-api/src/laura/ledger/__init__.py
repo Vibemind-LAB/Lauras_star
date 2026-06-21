@@ -7,10 +7,24 @@ the concrete class returned by ``get_ledger_store`` without touching callers.
 from __future__ import annotations
 
 from ..db.database import Database
+from .recipe import (
+    canonical_json,
+    compute_recipe_hash,
+    compute_short_id,
+    mint_short_run,
+)
 from .sqlite_store import SQLiteLedgerStore
 from .store import LedgerStore
 
-__all__ = ["LedgerStore", "SQLiteLedgerStore", "get_ledger_store"]
+__all__ = [
+    "LedgerStore",
+    "SQLiteLedgerStore",
+    "canonical_json",
+    "compute_recipe_hash",
+    "compute_short_id",
+    "get_ledger_store",
+    "mint_short_run",
+]
 
 
 def get_ledger_store(db: Database) -> LedgerStore:
