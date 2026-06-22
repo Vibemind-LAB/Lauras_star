@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { type Asset, type DemoDraft, type LauraClient, type Sequence } from "../api";
@@ -80,6 +80,7 @@ describe("DemoAssistantPanel", () => {
 
     fireEvent.click(getByRole("button", { name: "Demo-Draft erzeugen" }));
 
+    // useJobStatus polls getJob and on "succeeded" triggers getDemoDraft
     await findByDisplayValue("Intro");
     expect(c.createDemoDraft).toHaveBeenCalledWith("video-1");
     expect(c.getJob).toHaveBeenCalledWith("job-1");
@@ -124,5 +125,45 @@ describe("DemoAssistantPanel", () => {
     );
     expect(applyDemoDraft).toHaveBeenCalledWith("draft-1");
     expect(onApplied).toHaveBeenCalledOnce();
+  });
+
+  it("waits for the draft job to reach a terminal status before loading the draft", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    const getJob = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "job-1", status: "running" })
+      .mockResolvedValue({ id: "job-1", status: "succeeded" });
+    const getDemoDraft = vi.fn().mockResolvedValue(draft);
+    const c = client({ getJob, getDemoDraft });
+    const { getByRole } = render(
+      <DemoAssistantPanel client={c} assets={[asset("video-1", "video", "screen.mp4")]} onApplied={vi.fn()} />,
+    );
+
+    // createDraft: flush the createDemoDraft promise and let draftJobId be set.
+    await act(async () => {
+      fireEvent.click(getByRole("button", { name: "Demo-Draft erzeugen" }));
+    });
+
+    // First poll fires immediately in useJobStatus (returns "running"); flush it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // After "running" resolves, getDemoDraft must NOT have been called yet.
+    expect(getDemoDraft).not.toHaveBeenCalled();
+
+    // Advance past the 1500ms interval to trigger the second poll (returns "succeeded").
+    // Then flush multiple microtask rounds: getJob promise, useEffect reaction, getDemoDraft promise.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+      // Drain microtasks from getJob resolution and the effect's getDemoDraft call.
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    });
+
+    // State should now be updated with draft items.
+    expect(getDemoDraft).toHaveBeenCalledWith("draft-1");
+    const introInput = document.querySelector<HTMLInputElement>('input[value="Intro"]');
+    expect(introInput).not.toBeNull();
+    vi.useRealTimers();
   });
 });

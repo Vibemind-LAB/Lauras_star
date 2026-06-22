@@ -1,6 +1,7 @@
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 
 import { type Asset, type DemoDraft, type DemoDraftItem, type LauraClient } from "../api";
+import { useJobStatus } from "../hooks/useJobStatus";
 import { log } from "../shared/log";
 
 function jobStatusText(status: string): string {
@@ -30,10 +31,33 @@ export function DemoAssistantPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [draftJobId, setDraftJobId] = useState<string | null>(null);
+  const pendingDraftIdRef = useRef<string | null>(null);
+  const loadedJobRef = useRef<string | null>(null);
+  const { jobStatus, error: jobError } = useJobStatus(client, draftJobId);
 
   useEffect(() => {
     if (!assetId && videoAssets.length > 0) setAssetId(videoAssets[0].id);
   }, [assetId, videoAssets]);
+
+  useEffect(() => {
+    if (jobStatus === null || draftJobId === null || loadedJobRef.current === jobStatus.id) return;
+    if (jobStatus.status === "succeeded") {
+      loadedJobRef.current = jobStatus.id;
+      const draftId = pendingDraftIdRef.current;
+      if (draftId === null) { setBusy(false); return; }
+      client
+        .getDemoDraft(draftId)
+        .then((loaded) => { setDraft(loaded); setItems(loaded.items); setStatus(jobStatusText("succeeded")); })
+        .catch((e: unknown) => { setError(e instanceof Error ? e.message : String(e)); })
+        .finally(() => setBusy(false));
+    } else if (jobStatus.status === "failed" || jobStatus.status === "cancelled") {
+      loadedJobRef.current = jobStatus.id;
+      setStatus(jobStatusText(jobStatus.status));
+      if (jobError !== null) setError(jobError);
+      setBusy(false);
+    }
+  }, [jobStatus, jobError, draftJobId, client]);
 
   function updateItem(index: number, patch: Partial<DemoDraftItem>): void {
     setItems((current) =>
@@ -42,26 +66,21 @@ export function DemoAssistantPanel({
   }
 
   async function createDraft(): Promise<void> {
-    if (!assetId) {
-      setError("Kein Video-Asset verfügbar.");
-      return;
-    }
+    if (!assetId) { setError("Kein Video-Asset verfügbar."); return; }
     setBusy(true);
     setError(null);
     setStatus(null);
+    setDraftJobId(null);
+    loadedJobRef.current = null;
     try {
       const accepted = await client.createDemoDraft(assetId);
-      setStatus(`Draft-Analyse läuft: ${accepted.job_id}`);
-      const job = await client.getJob(accepted.job_id);
-      setStatus(jobStatusText(job.status));
-      const loaded = await client.getDemoDraft(accepted.draft_id);
-      setDraft(loaded);
-      setItems(loaded.items);
+      pendingDraftIdRef.current = accepted.draft_id;
+      setDraftJobId(accepted.job_id);
+      setStatus(jobStatusText("running"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("createDemoDraft failed:", msg);
       setError(msg);
-    } finally {
       setBusy(false);
     }
   }
@@ -108,7 +127,7 @@ export function DemoAssistantPanel({
           {error}
         </div>
       )}
-      {status !== null && <div className="text-xs text-sky-400">{status}</div>}
+      {status !== null && <div className="text-xs text-content-muted">{status}</div>}
 
       <label className="flex flex-col gap-1 text-xs text-content-muted">
         Video
@@ -201,5 +220,3 @@ export function DemoAssistantPanel({
     </section>
   );
 }
-
-
