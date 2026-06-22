@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProjectCreate(BaseModel):
@@ -723,7 +723,7 @@ class RenderRequest(BaseModel):
 
 class ReelRenderRequest(BaseModel):
     hook_text: str | None = None
-    disclosure_text: str | None = "KI · synthetisch"
+    disclosure_text: str = "KI · synthetisch"
     vertical: bool = True
     captions: bool = False
     caption_preset: str = "reels"
@@ -737,6 +737,13 @@ class ReelRenderRequest(BaseModel):
     # Optional quality gate: 422 when persisted quality is computed and below this threshold.
     # None means no gate (unverified stamp applied when quality is not computed).
     min_quality: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @field_validator("disclosure_text", mode="before")
+    @classmethod
+    def _disclosure_required(cls, v: str | None) -> str:
+        """EU AI Act: disclosure presence is mandatory; blank → default label."""
+        text = (v or "").strip()
+        return text or "KI · synthetisch"
 
 
 class RenderExportOut(BaseModel):
