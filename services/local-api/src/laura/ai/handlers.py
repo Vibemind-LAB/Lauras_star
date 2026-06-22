@@ -13,11 +13,14 @@ from typing import Any
 
 from ..db import repos
 from ..db.database import Database
-from ..jobs.runner import JobContext, JobHandler
+from ..jobs.keys import idempotency_key_for
+from ..jobs.queues import queue_for
+from ..jobs.runner import JobContext, JobHandler, enqueue
 from ..render.mp4 import render_clips_mp4
 from ..render.sync import assert_or_fix_media_sync
 from ..sequences.flatten import flatten_sequence
 from ..util import new_id
+from .auto_pipeline import plan_lipsync_after_voiceover
 from .lipsync_backend import resolve_lipsync_backend
 from .provenance import write_ai_provenance_manifest
 from .reenact_backend import resolve_reenact_backend
@@ -297,6 +300,89 @@ def register_ai_handlers(registry: dict[str, JobHandler]) -> None:
     registry["ai.lipsync"] = handle_lipsync
 
 
+def _maybe_enqueue_lipsync_after_vo(
+    ctx: JobContext,
+    *,
+    timeline: dict[str, Any],
+    project: dict[str, Any],
+    vo_asset_id: str,
+    seq_in: int,
+    seq_out: int,
+) -> tuple[str | None, str | None]:
+    """Probe the VO span for a face and, if consent exists, enqueue ai.lipsync (spec §5).
+
+    No face / sidecar absent / no consent -> (None, reason); never raises into the VO
+    success path (a lipsync hiccup must not fail the VO that already rendered).
+    """
+    try:
+        backend = resolve_lipsync_backend(None)
+        if not backend.available():
+            return None, "no_backend"
+        rate_num = int(project["sequence_rate_num"])
+        rate_den = int(project["sequence_rate_den"])
+        if timeline.get("kind") == "sequence":
+            base_rows = flatten_sequence(ctx.db, timeline["id"])
+        else:
+            base_rows = [
+                r for r in repos.list_timeline_clips(ctx.db, timeline["id"])
+                if r.get("role", "base") != "replace" and int(r.get("lane") or 0) == 0
+            ]
+        clips: list[tuple[Path, int, int]] = []
+        for row in base_rows:
+            r_in, r_out = int(row["seq_in_frame"]), int(row["seq_out_frame_exclusive"])
+            o_in, o_out = max(r_in, seq_in), min(r_out, seq_out)
+            if o_in >= o_out:
+                continue
+            asset = repos.get_asset(ctx.db, row["asset_id"])
+            if asset is None:
+                continue
+            base = int(row["src_in_frame"])
+            clips.append((Path(asset["source_path"]), base + (o_in - r_in), base + (o_out - r_in)))
+        if not clips:
+            return None, "no_face"
+        tmp_dir = Path(project["workspace_root"]) / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        driving = tmp_dir / f"{new_id()}.vo-probe.mp4"
+        vo_asset = repos.get_asset(ctx.db, vo_asset_id)
+        audio_path = Path(vo_asset["source_path"]) if vo_asset else None
+        try:
+            render_clips_mp4(clips, driving, rate_num=rate_num, rate_den=rate_den)
+            probe = backend.probe(video_path=driving, audio_path=audio_path or driving)
+        finally:
+            driving.unlink(missing_ok=True)
+        consent_id = repos.get_active_consent_id(ctx.db, project["id"])
+        plan = plan_lipsync_after_voiceover(
+            probe_face_detected=bool(probe.face_detected),
+            probe_mouth_visible=bool(probe.mouth_visible),
+            consent_id=consent_id,
+            audio_asset_id=vo_asset_id,
+            seq_in_frame=seq_in,
+            seq_out_frame_exclusive=seq_out,
+        )
+        if not plan.should_enqueue:
+            return None, plan.reason
+        payload: dict[str, Any] = {
+            "timeline_id": timeline["id"],
+            "seq_in_frame": plan.seq_in_frame,
+            "seq_out_frame_exclusive": plan.seq_out_frame_exclusive,
+            "audio_asset_id": plan.audio_asset_id,
+            "consent_id": plan.consent_id,
+            "license_accepted": True,
+        }
+        job_id = enqueue(
+            ctx.db,
+            queue=queue_for("ai.lipsync", default="ai"),
+            kind="ai.lipsync",
+            payload=payload,
+            max_attempts=2,
+            idempotency_key=idempotency_key_for("ai.lipsync", payload),
+            caused_by_job_id=ctx.job_id,
+        )
+        return job_id, "ok"
+    except Exception:  # noqa: BLE001 - VO already succeeded; lipsync is best-effort
+        return None, "probe_error"
+
+
 def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
     """Generate a synthetic voiceover WAV and place it on the timeline's A2 lane."""
     payload = ctx.payload
@@ -441,12 +527,22 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         label="Voiceover",
     )
 
+    lipsync_job_id, lipsync_skip_reason = _maybe_enqueue_lipsync_after_vo(
+        ctx,
+        timeline=timeline,
+        project=project,
+        vo_asset_id=asset["id"],
+        seq_in=seq_in,
+        seq_out=seq_out,
+    )
     return {
         "asset_id": asset["id"],
         "audio_clip_id": clip["id"],
         "out_path": str(out_path),
         "seq_in_frame": seq_in,
         "seq_out_frame_exclusive": seq_out,
+        "lipsync_job_id": lipsync_job_id,
+        "lipsync_skip_reason": lipsync_skip_reason,
     }
 
 
