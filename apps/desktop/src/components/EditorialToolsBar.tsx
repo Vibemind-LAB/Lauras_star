@@ -52,7 +52,7 @@ export function EditorialToolsBar({
           onClick={onSmooth}
           disabled={busy || pendingEdge === null}
           title="Markierte Schnittkante mit einer kurzen Blende glätten"
-          className="rounded bg-sky-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-sky-500 disabled:opacity-40"
+          className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
         >
           Übergang glätten
         </button>
@@ -60,7 +60,7 @@ export function EditorialToolsBar({
           type="button"
           onClick={onReenact}
           disabled={busy}
-          className="rounded border border-bezel bg-surface-1 px-3 py-1 text-[11px] text-content-strong hover:border-sky-600 disabled:opacity-40"
+          className="rounded border border-bezel bg-surface-1 px-3 py-1 text-[11px] text-content-strong hover:border-accent disabled:opacity-40"
         >
           Reenact
         </button>
