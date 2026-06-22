@@ -1,7 +1,25 @@
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 
 import { type Asset, type LauraClient } from "../api";
+import { useJobStatus } from "../hooks/useJobStatus";
 import { log } from "../shared/log";
+
+function jobChipClass(status: string): string {
+  if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
+  if (status === "succeeded") return "border-status-ok bg-status-ok/20 text-status-ok";
+  if (status === "running" || status === "leased" || status === "queued")
+    return "border-sky-800 bg-sky-950/30 text-sky-200";
+  return "border-bezel bg-surface-1 text-content-muted";
+}
+
+function jobChipLabel(status: string): string {
+  if (status === "succeeded") return "Fertig ✓";
+  if (status === "failed") return "Fehlgeschlagen";
+  if (status === "cancelled") return "Abgebrochen";
+  if (status === "queued") return "In Warteschlange";
+  if (status === "running" || status === "leased") return "Läuft…";
+  return "Läuft…";
+}
 
 export function LipsyncPanel({
   client,
@@ -31,6 +49,22 @@ export function LipsyncPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+
+  const { jobStatus, error: jobError, isRunning } = useJobStatus(client, jobId);
+
+  // Guard: fire onChange exactly once per succeeded job.
+  const onChangeFiredRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      jobStatus !== null &&
+      jobStatus.status === "succeeded" &&
+      onChangeFiredRef.current !== jobStatus.id
+    ) {
+      onChangeFiredRef.current = jobStatus.id;
+      onChange();
+    }
+  }, [jobStatus, onChange]);
 
   useEffect(() => {
     if (!audioAssetId && audioAssets.length > 0) setAudioAssetId(audioAssets[0].id);
@@ -75,6 +109,7 @@ export function LipsyncPanel({
     setBusy(true);
     setError(null);
     setJobId(null);
+    onChangeFiredRef.current = null;
     try {
       const accepted = await client.lipsync(timelineId, {
         seqIn,
@@ -86,7 +121,6 @@ export function LipsyncPanel({
         qualityThreshold: 0.6,
       });
       setJobId(accepted.job_id);
-      onChange();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       log.error("lipsync failed:", msg);
@@ -98,6 +132,7 @@ export function LipsyncPanel({
 
   const disabled =
     busy ||
+    isRunning ||
     timelineId === null ||
     consentId === null ||
     !licenseAccepted ||
@@ -111,7 +146,25 @@ export function LipsyncPanel({
       </span>
 
       {error !== null && <div className="text-xs text-status-err">{error}</div>}
-      {jobId !== null && <div className="text-xs text-sky-400">Job gestartet: {jobId}</div>}
+
+      {/* Live job status chip */}
+      {jobId !== null && jobStatus !== null && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <span
+              className={`rounded border px-2 py-0.5 text-[11px] ${jobChipClass(jobStatus.status)}`}
+            >
+              {jobChipLabel(jobStatus.status)}
+            </span>
+            <span className="truncate text-[10px] text-content-faint">{jobId}</span>
+          </div>
+          {jobStatus.status === "failed" && jobError !== null && (
+            <div className="rounded border border-status-err/40 bg-status-err/10 p-2 text-xs text-status-err">
+              {jobError}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <span className="text-[10px] font-medium uppercase tracking-wide text-content-faint">
@@ -230,5 +283,3 @@ export function LipsyncPanel({
     </section>
   );
 }
-
-

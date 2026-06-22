@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { type Asset, type LauraClient } from "../api";
@@ -42,6 +42,7 @@ function client(overrides: Partial<LauraClient> = {}): LauraClient {
       revoked_at: null,
     }),
     lipsync: vi.fn().mockResolvedValue({ job_id: "lip-job-1" }),
+    getJob: vi.fn().mockResolvedValue({ id: "lip-job-1", status: "succeeded" }),
     ...overrides,
   } as unknown as LauraClient;
 }
@@ -113,6 +114,65 @@ describe("LipsyncPanel", () => {
         backend: "vibevideo",
         qualityThreshold: 0.6,
       }));
+    // onChange fires on job success (via useJobStatus polling), not at submit time.
+    await waitFor(() => expect(onChange).toHaveBeenCalledOnce());
+  });
+
+  it("polls the lipsync job to a terminal status and fires onChange once on success", async () => {
+    // Use real timers: the getJob mock resolves immediately on each poll.
+    // First call returns running, all subsequent calls return succeeded.
+    // We rely on the 1500ms setInterval in useJobStatus; to avoid waiting 1.5s
+    // in the test we instead use vitest fake timers but wrap all async work in act().
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    const getJob = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "lip-job-1", status: "running" })
+      .mockResolvedValue({ id: "lip-job-1", status: "succeeded" });
+    const onChange = vi.fn();
+    const c = client({ getJob });
+    const { getByLabelText, getByRole } = render(
+      <LipsyncPanel
+        client={c}
+        projectId="p"
+        timelineId="tl-1"
+        assets={[asset("audio-1", "audio", "voice.wav")]}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(getByLabelText("Subjekt-Label für Lipsync-Consent"), { target: { value: "Person A" } });
+
+    // confirmConsent: let all microtasks (the Promise from createConsent) resolve.
+    await act(async () => {
+      fireEvent.click(getByRole("button", { name: "Consent bestätigen" }));
+    });
+
+    fireEvent.click(getByLabelText("Lizenz und Nutzung bestätigt"));
+    fireEvent.change(getByLabelText("Lipsync seq out"), { target: { value: "30" } });
+
+    // submit: let the lipsync() promise resolve and setJobId fire.
+    await act(async () => {
+      fireEvent.click(getByRole("button", { name: "Lipsync (stub)" }));
+    });
+
+    expect(c.lipsync).toHaveBeenCalled();
+
+    // First poll fires immediately (poll() called right away in useJobStatus).
+    // Flush it: advance 0ms to let the synchronous setInterval setup run,
+    // then let the promise from getJob(..) (running) resolve.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // After the first immediate poll resolves with "running", the chip shows "Läuft…".
+    expect(document.body.textContent).toContain("Läuft…");
+
+    // Advance past the 1500ms interval to trigger the second poll (succeeded).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+
+    expect(document.body.textContent).toContain("Fertig ✓");
     expect(onChange).toHaveBeenCalledOnce();
+    vi.useRealTimers();
   });
 });
