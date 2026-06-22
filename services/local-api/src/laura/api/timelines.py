@@ -43,6 +43,7 @@ from ..editing.otio_sync import (
     timeline_audio_sample_rate,
 )
 from ..editing.word_cut import map_asset_range_to_seq
+from ..scenes.reconcile import reconcile_after_delete
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
@@ -68,6 +69,7 @@ from .models import (
     RenderExportOut,
     RenderRequest,
     RoughCutQualityOut,
+    SceneOut,
     SequenceTransitionRequest,
     SetClipsRequest,
     SplitCutOut,
@@ -76,6 +78,7 @@ from .models import (
     TimelineImportRequest,
     TimelineOut,
     TimelineQualityOut,
+    TimelineWithScenesOut,
     TransitionReviewOut,
     TransitionVerdictOut,
     ValidateOut,
@@ -803,6 +806,33 @@ def _require(value: Any, message: str) -> Any:
     return value
 
 
+def _delete_words_span(
+    db: Database, current: list[EditClip], body: OperationRequest
+) -> tuple[int, int]:
+    """Return the sequence-space span ``(del_in, del_out_excl)`` that the selected words occupy.
+
+    Shared by both the ``_apply`` branch (to compute new clips) and ``apply_operation`` (to
+    reconcile scene markers) so we avoid threading the span through the broad ``_apply`` dispatch.
+    """
+    w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
+    w1 = repos.get_word(db, _require(body.word_end_id, "word_end_id required"))
+    if w0 is None or w1 is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "word not found")
+    if w0["asset_id"] != w1["asset_id"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "words must be from the same asset"
+        )
+    lo = min(w0["start_frame"], w1["start_frame"])
+    hi = max(w0["end_frame"], w1["end_frame"])
+    span = map_asset_range_to_seq(current, asset_id=w0["asset_id"], src_lo=lo, src_hi=hi)
+    if span is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "selected words are not present in this timeline",
+        )
+    return span
+
+
 def _apply(
     db: Database,
     current: list[EditClip],
@@ -905,35 +935,29 @@ def _apply(
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     if op == "delete_words":
-        w0 = repos.get_word(db, _require(body.word_start_id, "word_start_id required"))
-        w1 = repos.get_word(db, _require(body.word_end_id, "word_end_id required"))
-        if w0 is None or w1 is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "word not found")
-        if w0["asset_id"] != w1["asset_id"]:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, "words must be from the same asset"
-            )
-        lo = min(w0["start_frame"], w1["start_frame"])
-        hi = max(w0["end_frame"], w1["end_frame"])
-        span = map_asset_range_to_seq(current, asset_id=w0["asset_id"], src_lo=lo, src_hi=hi)
-        if span is None:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "selected words are not present in this timeline",
-            )
+        span = _delete_words_span(db, current, body)
         return delete_range(current, span[0], span[1])
 
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 
 
-@router.post("/timelines/{timeline_id}/operations", response_model=TimelineOut)
-def apply_operation(timeline_id: str, body: OperationRequest, request: Request) -> TimelineOut:
+@router.post("/timelines/{timeline_id}/operations", response_model=None)
+def apply_operation(
+    timeline_id: str, body: OperationRequest, request: Request
+) -> TimelineOut | TimelineWithScenesOut:
     db = _db(request)
     row = repos.get_timeline(db, timeline_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
 
     current = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
+
+    # For delete_words we need the sequence-space span *before* the delete so we can
+    # reconcile scene markers after the ripple.  Compute it here against `current`.
+    delete_words_span: tuple[int, int] | None = None
+    if body.op == "delete_words":
+        delete_words_span = _delete_words_span(db, current, body)
+
     new_clips = _apply(db, current, body, row)
 
     repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
@@ -943,6 +967,20 @@ def apply_operation(timeline_id: str, body: OperationRequest, request: Request) 
     # blob so an edit never clobbers a split back to a hard cut (migration-free; offsets persist
     # in the OTIO metadata itself — see editing.otio_sync.serialize_timeline_otio).
     repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
+
+    if delete_words_span is not None:
+        old_bounds = [
+            (s["seq_in_frame"], s["seq_out_frame_exclusive"])
+            for s in repos.list_scenes(db, timeline_id)
+        ]
+        new_bounds = reconcile_after_delete(old_bounds, delete_words_span[0], delete_words_span[1])
+        repos.replace_scenes(db, row["project_id"], timeline_id, new_bounds)
+        base = _timeline_out(db, fresh)
+        return TimelineWithScenesOut(
+            **base.model_dump(),
+            scenes=[SceneOut(**s) for s in repos.list_scenes(db, timeline_id)],
+        )
+
     return _timeline_out(db, fresh)
 
 
