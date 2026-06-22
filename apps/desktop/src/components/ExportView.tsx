@@ -107,7 +107,7 @@ export function ExportView({
   /** Re-render trigger for the job-status cache — incremented after each poll batch. */
   const [jobPollTick, setJobPollTick] = useState<number>(0);
   const [reelHook, setReelHook] = useState<string>("");
-  const [reelDisclosure, setReelDisclosure] = useState<boolean>(true);
+  // reelDisclosure removed — KI disclosure is mandatory (D5 / EU AI Act).
   const [reelCaptions, setReelCaptions] = useState<boolean>(true);
   const [captionPreset, setCaptionPreset] = useState<CaptionPreset>("reels");
   const [captionMode, setCaptionMode] = useState<CaptionMode>("karaoke");
@@ -247,7 +247,7 @@ export function ExportView({
     try {
       const result = await client.renderReel(timelineId, {
         hookText: reelHook.trim() || null,
-        disclosureText: reelDisclosure ? "KI · synthetisch" : "",
+        disclosureText: "KI · synthetisch",
         vertical: true,
         captions: reelCaptions,
         captionPreset,
@@ -269,7 +269,6 @@ export function ExportView({
     client,
     timelineId,
     reelHook,
-    reelDisclosure,
     reelCaptions,
     captionPreset,
     captionMode,
@@ -434,7 +433,6 @@ export function ExportView({
               setCaptionPreset(preset);
               setCaptionPosition("bottom");
               setReelCaptions(true);
-              setReelDisclosure(true);
               // Fire render with the override values directly — avoids stale-closure issue.
               setReelBusy(true);
               void client.renderReel(timelineId, {
@@ -488,16 +486,13 @@ export function ExportView({
             className="w-28 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-40"
           />
         </label>
-        <label className="flex items-center gap-2 text-xs text-content-muted">
-          <input
-            type="checkbox"
-            checked={reelDisclosure}
-            onChange={(e) => setReelDisclosure(e.target.checked)}
-            disabled={!timelineId}
-            className="disabled:opacity-40"
-          />
-          KI-Kennzeichnung einblenden
-        </label>
+        <div
+          className="flex items-center gap-2 text-xs text-content-muted"
+          aria-label="KI-Kennzeichnung verpflichtend"
+        >
+          <span aria-hidden className="text-content-strong">●</span>
+          KI-Kennzeichnung wird immer eingeblendet (EU AI Act)
+        </div>
         <label className="flex items-center gap-2 text-xs text-content-muted">
           <input
             type="checkbox"
@@ -515,7 +510,7 @@ export function ExportView({
           posterAssetId={posterAssetId}
           posterFrame={0}
           hook={reelHook}
-          disclosure={reelDisclosure}
+          disclosure={true}
           captionsOn={reelCaptions}
           mode={captionMode}
           position={captionPosition}
