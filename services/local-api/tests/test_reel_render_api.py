@@ -42,7 +42,9 @@ def test_render_reel_creates_export_with_options(tmp_path: Path) -> None:
     export_id = body["export_id"]
     export = repos.get_export(db, export_id)
     assert export is not None
-    assert export["options"] == {
+    opts = dict(export["options"])
+    assert opts.pop("short_run_id", None) is not None  # P7-T3: ledger run id must be present
+    assert opts == {
         "vertical": True,
         "hook_text": "H",
         "disclosure_text": "KI",
@@ -99,7 +101,9 @@ def test_render_reel_caption_direction_stored_in_options(tmp_path: Path) -> None
 
     export = repos.get_export(db, r.json()["export_id"])
     assert export is not None
-    assert export["options"] == {
+    opts = dict(export["options"])
+    assert opts.pop("short_run_id", None) is not None  # P7-T3: ledger run id must be present
+    assert opts == {
         "vertical": True,
         "hook_text": None,
         "disclosure_text": "KI · synthetisch",

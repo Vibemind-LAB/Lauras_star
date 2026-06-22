@@ -2,19 +2,53 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from ..db import repos
+from ..db.database import Database
 from ..editing.otio_sync import resolve_clip_rows
 from ..jobs.runner import JobContext, JobHandler
+from ..ledger import get_ledger_store
 from ..sequences.music import sequence_music_tracks
 from .audio import AudioOverlay
 from .captions import build_ass, group_caption_lines
 from .captions_source import timeline_caption_words
 from .mp4 import VideoTransition, render_clips_mp4
 from .sync import assert_or_fix_media_sync
+
+_log = logging.getLogger(__name__)
+
+
+def record_short_run_result(
+    db: Database,
+    options: dict[str, Any],
+    *,
+    status: str,
+    trace: dict[str, Any] | None,
+) -> None:
+    """Update the short_run identified by ``options["short_run_id"]`` with *status* and *trace*.
+
+    This is a fire-and-forget helper: if *short_run_id* is absent from *options* the call is a
+    silent no-op; if ``update_run`` finds no matching row it returns ``None`` (also a no-op).
+    All exceptions are caught and logged so a ledger hiccup NEVER converts a successful render
+    into a failure, and NEVER masks the original error on the failure path.
+    """
+    run_id = options.get("short_run_id")
+    if not run_id:
+        return
+    try:
+        trace_json = json.dumps(trace) if trace is not None else None
+        get_ledger_store(db).update_run(
+            str(run_id),
+            status=status,
+            trace_json=trace_json,
+        )
+    except Exception:  # noqa: BLE001
+        _log.exception("ledger update_run failed for run_id=%s (ignored)", run_id)
 
 _CAPTION_PRESETS: dict[str, tuple[int, int]] = {
     "reels": (1080, 1920),
@@ -301,9 +335,21 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         repos.set_export_error(ctx.db, export_id, str(e)[-500:])
         if dest.exists():
             dest.unlink(missing_ok=True)
+        record_short_run_result(
+            ctx.db,
+            exp["options"],
+            status="failed",
+            trace={"error": str(e)[-500:]},
+        )
         raise
 
     repos.set_export_done(ctx.db, export_id, path=str(dest), size_bytes=size_bytes)
+    record_short_run_result(
+        ctx.db,
+        exp["options"],
+        status="succeeded",
+        trace={"export_id": export_id, "output": str(dest)},
+    )
     return {"export_id": export_id, "path": str(dest)}
 
 

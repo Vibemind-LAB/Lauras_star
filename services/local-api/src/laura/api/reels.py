@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..ledger import get_ledger_store, mint_short_run
 from .models import ReelRenderRequest
 from .quality_gate import evaluate_quality_gate
 from .security import require_token
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["reels"], dependencies=[Depends(require_token)])
 
@@ -34,24 +39,42 @@ def render_reel(
     if tl is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     gate = evaluate_quality_gate(db, timeline_id, body.min_quality)
+
+    # Build the options dict WITHOUT short_run_id first — it becomes the recipe so that the
+    # content-addressed short_id is independent of the run row id (avoids circular derivation).
+    options: dict[str, object] = {
+        "vertical": body.vertical,
+        "hook_text": body.hook_text,
+        "disclosure_text": body.disclosure_text,
+        "captions": body.captions,
+        "caption_preset": body.caption_preset,
+        "caption_mode": body.caption_mode,
+        "caption_position": body.caption_position,
+        "caption_fontsize": body.caption_fontsize,
+        "caption_safe_margin": body.caption_safe_margin,
+        "max_duration_seconds": body.max_duration_seconds,
+        **gate,
+    }
+
+    # Mint a short_run so the ledger tracks this build attempt from the moment it is enqueued.
+    # Resolve the source asset for content-addressing (may be None for non-asset timelines).
+    asset_id = tl.get("created_from")
+    asset = repos.get_asset(db, str(asset_id)) if asset_id else None
+    input_sha256: str | None = asset.get("sha256") if asset else None
+    try:
+        store = get_ledger_store(db)
+        run = mint_short_run(store, recipe=options, input_sha256=input_sha256)
+        options["short_run_id"] = run["id"]
+    except Exception:  # noqa: BLE001
+        # A ledger hiccup must NEVER block the render enqueue.
+        _log.exception("mint_short_run failed for timeline %s (ledger skipped)", timeline_id)
+
     exp = repos.create_export(
         db,
         project_id=tl["project_id"],
         timeline_id=timeline_id,
         format="mp4",
-        options={
-            "vertical": body.vertical,
-            "hook_text": body.hook_text,
-            "disclosure_text": body.disclosure_text,
-            "captions": body.captions,
-            "caption_preset": body.caption_preset,
-            "caption_mode": body.caption_mode,
-            "caption_position": body.caption_position,
-            "caption_fontsize": body.caption_fontsize,
-            "caption_safe_margin": body.caption_safe_margin,
-            "max_duration_seconds": body.max_duration_seconds,
-            **gate,
-        },
+        options=options,
     )
     job_id = enqueue(
         db,
