@@ -94,6 +94,8 @@ function makeClient(over: Partial<LauraClient> = {}): LauraClient {
     getTranscript: vi.fn().mockResolvedValue([]),
     openScene: vi.fn(), // must NOT be called in the new edit path
     listTimelineAudioClips: vi.fn().mockResolvedValue([]),
+    listVoiceoverVoices: vi.fn().mockResolvedValue([]),
+    listConsent: vi.fn().mockResolvedValue([]),
     ...over,
   } as unknown as LauraClient;
 }
@@ -234,5 +236,22 @@ describe("FineCutView", () => {
     await waitFor(() => expect(Array.isArray(fcSeqPlayerProps.audioClips)).toBe(true));
     expect((fcSeqPlayerProps.audioClips as unknown[]).length).toBe(1);
     expect(listTimelineAudioClips).toHaveBeenCalledWith("rc1");
+  });
+
+  it("renders the EditorialToolsBar with a voice picker under the player", async () => {
+    const c = makeClient();
+    const { findByLabelText } = render(
+      <FineCutView
+        client={c}
+        asset={asset}
+        roughCutId="rc1"
+        segments={segments}
+        currentFrame={0}
+        seek={null}
+        onSeek={vi.fn()}
+        onFrame={vi.fn()}
+      />,
+    );
+    expect(await findByLabelText("Stimme")).not.toBeNull();
   });
 });

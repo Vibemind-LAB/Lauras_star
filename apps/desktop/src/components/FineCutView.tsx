@@ -1,9 +1,11 @@
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 
-import { type Asset, type LauraClient, type Segment, type Timeline, type TimelineAudioClip } from "../api";
+import { type Asset, type BoundaryIdentity, type LauraClient, type Segment, type Timeline, type TimelineAudioClip, type VoiceoverVoice } from "../api";
 import { useScenes } from "../hooks/useScenes";
 import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
+import { crossfadeFix, findSameSourceEdge } from "../shared/smoothEdge";
 import { ContinuousTranscript } from "./ContinuousTranscript";
+import { EditorialToolsBar } from "./EditorialToolsBar";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
 
@@ -47,6 +49,42 @@ export function FineCutView({
 }): ReactElement {
   const rc = useRoughCutTranscript(client, roughCutId, segments, asset?.id);
 
+  // Voice picker state — selection is the only explicit editorial choice (spec §10).
+  const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
+  const [voiceId, setVoiceId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .listVoiceoverVoices()
+      .then((vs) => {
+        if (!cancelled) setVoices(vs);
+      })
+      .catch(() => {
+        if (!cancelled) setVoices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Pending same-source edge: recomputed after each clips update so the smooth
+  // button lights up automatically after a delete that creates a jump-cut (spec §8).
+  const pendingEdge = useMemo<BoundaryIdentity | null>(
+    () => findSameSourceEdge(rc.clips, currentFrame),
+    [rc.clips, currentFrame],
+  );
+
+  // One-tap smooth: apply a 6-frame crossfade then reload.
+  const { reload: reloadRc } = rc;
+  const handleSmooth = useCallback(() => {
+    if (!roughCutId || !pendingEdge) return;
+    void client
+      .applyTransitionFix(roughCutId, pendingEdge, crossfadeFix())
+      .then(() => reloadRc())
+      .catch(() => undefined);
+  }, [client, roughCutId, pendingEdge, reloadRc]);
+
   // Load audio clips from the rough-cut timeline so VO + music play in preview.
   const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
   useEffect(() => {
@@ -73,6 +111,32 @@ export function FineCutView({
   const jumpScenes = rc.scenes.length > 0 ? rc.scenes : scenesFromHook;
 
   const clips = useMemo(() => rc.clips, [rc.clips]);
+
+  // Derive synthetic-effect labels from audio clips in the timeline.
+  // replace_original → a VO/lipsync clip replaced the original audio; mute_original → VO on top.
+  // These labels appear in the always-on disclosure strip (spec §7).
+  const syntheticEffects = useMemo<string[]>(() => {
+    const effects: string[] = [];
+    if (audioClips.some((c) => c.mix_mode === "replace_original")) effects.push("VO");
+    if (audioClips.some((c) => c.mix_mode === "mute_original")) effects.push("Lipsync");
+    return effects;
+  }, [audioClips]);
+
+  // Asset list for the embedded ReenactPanel: unique asset ids from lane-0 clips.
+  const toolbarAssets = useMemo<{ id: string; display_name: string }[]>(() => {
+    const seen = new Set<string>();
+    const result: { id: string; display_name: string }[] = [];
+    for (const cl of clips) {
+      if (!seen.has(cl.asset_id)) {
+        seen.add(cl.asset_id);
+        result.push({
+          id: cl.asset_id,
+          display_name: asset?.display_name ?? cl.asset_id,
+        });
+      }
+    }
+    return result;
+  }, [clips, asset?.display_name]);
 
   // Build a minimal Timeline shape so TimelineBar (which expects Timeline | null) gets a typed
   // value instead of an unsafe cast. The fields TimelineBar actually reads are id + clips;
@@ -127,6 +191,23 @@ export function FineCutView({
             audioClips={audioClips}
           />
         </div>
+
+        <EditorialToolsBar
+          client={client}
+          projectId={asset?.project_id ?? null}
+          timelineId={roughCutId}
+          assets={toolbarAssets}
+          voices={voices}
+          voiceId={voiceId}
+          onVoiceChange={setVoiceId}
+          pendingEdge={pendingEdge}
+          onSmooth={handleSmooth}
+          syntheticEffects={syntheticEffects}
+          currentSeqFrame={currentFrame}
+          rateNum={asset?.rate_num ?? 30}
+          rateDen={asset?.rate_den ?? 1}
+          onChange={() => void rc.reload()}
+        />
 
         <TimelineBar
           client={client}
