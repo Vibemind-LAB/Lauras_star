@@ -64,13 +64,13 @@ describe("AudioMixer sync", () => {
   it("creates one audio element per clip pointing at the asset proxy", () => {
     const { mixer, els } = makeMixer();
     mixer.setClips([clip({ id: "a1", asset_id: "vo1" })]);
-    expect(els.has("laura-media://media/vo1/proxy")).toBe(true);
+    expect(els.has("laura-media://media/vo1/original")).toBe(true);
   });
 
   it("plays a clip only while inside its span and seeks to source time", () => {
     const { mixer, els } = makeMixer();
     mixer.setClips([clip()]);
-    const el = els.get("laura-media://media/vo1/proxy")!;
+    const el = els.get("laura-media://media/vo1/original")!;
 
     mixer.syncTo(10, true); // before span
     expect(el.paused).toBe(true);
@@ -87,7 +87,7 @@ describe("AudioMixer sync", () => {
   it("re-seeks only when drift exceeds the threshold (avoids stutter)", () => {
     const { mixer, els } = makeMixer();
     mixer.setClips([clip()]);
-    const el = els.get("laura-media://media/vo1/proxy")!;
+    const el = els.get("laura-media://media/vo1/original")!;
     mixer.syncTo(60, true);
     el.currentTime = 1.02; // tiny drift, within threshold
     mixer.syncTo(60, true);
@@ -102,6 +102,6 @@ describe("AudioMixer sync", () => {
     mixer.setClips([clip()]);
     mixer.syncTo(60, true);
     mixer.pauseAll();
-    expect(els.get("laura-media://media/vo1/proxy")!.paused).toBe(true);
+    expect(els.get("laura-media://media/vo1/original")!.paused).toBe(true);
   });
 });
