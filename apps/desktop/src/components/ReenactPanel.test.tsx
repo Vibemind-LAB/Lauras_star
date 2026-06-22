@@ -18,6 +18,7 @@ function client(overrides: Partial<LauraClient>): LauraClient {
   return {
     createConsent: vi.fn().mockResolvedValue(consent),
     reenact: vi.fn().mockResolvedValue({ job_id: "job-1" }),
+    getJob: vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" }),
     ...overrides,
   } as unknown as LauraClient;
 }
