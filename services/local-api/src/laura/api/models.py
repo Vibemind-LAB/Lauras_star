@@ -959,3 +959,42 @@ class NextActionOut(BaseModel):
     label_key: str
     reason: str
     blocked_by: list[str] = Field(default_factory=list)
+
+
+# --- batch-plan (P7-T1) ------------------------------------------------------
+
+class BatchPlanIn(BaseModel):
+    """Request body for POST /shorts/batch-plan.
+
+    ``short_ids`` must be non-empty (max 1000); empty list → 422.
+    Note: recipe_id is deferred to v2 (no recipe store in v1).
+    """
+
+    short_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+class BatchShortPlanOut(BaseModel):
+    """Per-short entry in a batch plan response.
+
+    ``found`` is False when the asset/short does not exist (action is None but
+    the batch continues).  ``hash`` is the per-short sha256 leaf hash used to
+    build the ``batch_hash``.
+    """
+
+    short_id: str
+    found: bool
+    action: NextActionOut | None = None
+    hash: str
+
+
+class BatchPlanOut(BaseModel):
+    """Response for POST /shorts/batch-plan.
+
+    ``plans`` are in the same order as the request's ``short_ids``.
+    ``batch_hash`` is sha256(canonical_json([leaf_hash_0, ...])) — a flat
+    deterministic root over the ordered per-short hashes (v1; a real binary
+    merkle tree is not required and is deferred to v2).
+    """
+
+    plans: list[BatchShortPlanOut]
+    batch_hash: str

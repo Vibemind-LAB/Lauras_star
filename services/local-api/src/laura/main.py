@@ -21,6 +21,7 @@ from .api import (
     analysis,
     assets,
     audio,
+    batch,
     demo,
     jobs,
     lipsync,
@@ -113,6 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(projects.router)
     app.include_router(shorts.router)
+    app.include_router(batch.router)
     app.include_router(assets.router)
     app.include_router(jobs.router)
     app.include_router(analysis.router)
