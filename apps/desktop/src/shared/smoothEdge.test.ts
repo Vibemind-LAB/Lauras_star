@@ -1,6 +1,6 @@
 // apps/desktop/src/shared/smoothEdge.test.ts
 import { describe, expect, it } from "vitest";
-import { crossfadeFix, findSameSourceEdge } from "./smoothEdge";
+import { crossfadeFix, findFirstSameSourceEdge, findSameSourceEdge } from "./smoothEdge";
 
 const clip = (o: Partial<Record<string, unknown>>) => ({
   id: "x", asset_id: "A", lane: 0,
@@ -40,5 +40,47 @@ describe("crossfadeFix", () => {
     expect(crossfadeFix()).toEqual({
       kind: "transition", transition_style: "crossfade", transition_frames: 6,
     });
+  });
+});
+
+describe("findFirstSameSourceEdge (Fix 3 — frame-independent scan)", () => {
+  it("returns the first contiguous same-source boundary regardless of playhead frame", () => {
+    const clips = [
+      clip({ id: "a", asset_id: "A", src_in_frame: 0, src_out_frame_exclusive: 10,
+             seq_in_frame: 0, seq_out_frame_exclusive: 10 }),
+      clip({ id: "b", asset_id: "A", src_in_frame: 10, src_out_frame_exclusive: 25,
+             seq_in_frame: 10, seq_out_frame_exclusive: 25 }),
+    ];
+    // playhead is at 0, nowhere near the boundary at frame 10 — must still find it
+    const id = findFirstSameSourceEdge(clips);
+    expect(id).toEqual({ asset_a: "A", asset_b: "A", src_out_a: 10, src_in_b: 10 });
+  });
+
+  it("returns null when no contiguous same-source boundary exists", () => {
+    const clips = [
+      clip({ id: "a", asset_id: "A", src_out_frame_exclusive: 10, seq_out_frame_exclusive: 10 }),
+      clip({ id: "b", asset_id: "B", src_in_frame: 0, src_out_frame_exclusive: 15,
+             seq_in_frame: 10, seq_out_frame_exclusive: 25 }),
+    ];
+    expect(findFirstSameSourceEdge(clips)).toBeNull();
+  });
+
+  it("returns null for a single clip (no boundaries)", () => {
+    expect(findFirstSameSourceEdge([clip({ id: "a", asset_id: "A" })])).toBeNull();
+  });
+
+  it("returns null for empty clip list", () => {
+    expect(findFirstSameSourceEdge([])).toBeNull();
+  });
+
+  it("returns null for same-asset but non-contiguous src frames", () => {
+    // asset_id matches but src_in_b !== src_out_a → not a jump-cut delete artefact
+    const clips = [
+      clip({ id: "a", asset_id: "A", src_in_frame: 0, src_out_frame_exclusive: 10,
+             seq_in_frame: 0, seq_out_frame_exclusive: 10 }),
+      clip({ id: "b", asset_id: "A", src_in_frame: 20, src_out_frame_exclusive: 30,
+             seq_in_frame: 10, seq_out_frame_exclusive: 20 }),
+    ];
+    expect(findFirstSameSourceEdge(clips)).toBeNull();
   });
 });

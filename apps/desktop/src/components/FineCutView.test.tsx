@@ -3,15 +3,27 @@ import { describe, expect, it, vi } from "vitest";
 import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineAudioClip, type TimelineClip } from "../api";
 import { FineCutView } from "./FineCutView";
 
-// Capture the audioClips prop forwarded from FineCutView to SequencePlayer.
-export const fcSeqPlayerProps: { audioClips?: unknown } = {};
+// Capture the props forwarded from FineCutView to SequencePlayer.
+export const fcSeqPlayerProps: { audioClips?: unknown; rateNum?: unknown; rateDen?: unknown } = {};
 vi.mock("./SequencePlayer", () => ({
-  SequencePlayer: (props: { audioClips?: unknown }) => {
+  SequencePlayer: (props: { audioClips?: unknown; rateNum?: unknown; rateDen?: unknown }) => {
     fcSeqPlayerProps.audioClips = props.audioClips;
+    fcSeqPlayerProps.rateNum = props.rateNum;
+    fcSeqPlayerProps.rateDen = props.rateDen;
     return <div data-testid="player" />;
   },
 }));
 vi.mock("./TimelineBar", () => ({ TimelineBar: () => <div data-testid="timeline" /> }));
+
+// Mock useJobStatus so tests can control the returned job state without real
+// polling intervals. Default: not running, no status.
+type JobStatusResult = { jobStatus: { id: string; status: string; error_json: string | null } | null; error: string | null; isRunning: boolean };
+const mockJobStatusResult: { current: JobStatusResult } = {
+  current: { jobStatus: null, error: null, isRunning: false },
+};
+vi.mock("../hooks/useJobStatus", () => ({
+  useJobStatus: () => mockJobStatusResult.current,
+}));
 interface MockTranscriptProps {
   onDeleteSelection?: (a: string, b: string) => void;
   onReplaceText?: (s: string, e: string, t: string) => void;
@@ -109,7 +121,9 @@ function makeClient(over: Partial<LauraClient> = {}): LauraClient {
     listTimelineAudioClips: vi.fn().mockResolvedValue([]),
     listVoiceoverVoices: vi.fn().mockResolvedValue([{ id: "v1", name: "Laura" }]),
     listConsent: vi.fn().mockResolvedValue([]),
-    createVoiceover: vi.fn().mockResolvedValue({}),
+    createVoiceover: vi.fn().mockResolvedValue({ job_id: "j1" }),
+    // getJob needed by useJobStatus; returns terminal state by default so no polling loop lingers.
+    getJob: vi.fn().mockResolvedValue({ id: "j1", status: "succeeded", error_json: null }),
     ...over,
   } as unknown as LauraClient;
 }
@@ -267,6 +281,90 @@ describe("FineCutView", () => {
       />,
     );
     expect(await findByLabelText("Stimme")).not.toBeNull();
+  });
+
+  it("Fix 2 — forwards asset rateNum/rateDen to SequencePlayer", async () => {
+    const assetWith25fps: Asset = {
+      id: "a",
+      rate_num: 25,
+      rate_den: 1,
+      display_name: "a",
+    } as unknown as Asset;
+    const c = makeClient();
+
+    render(
+      <FineCutView
+        client={c}
+        asset={assetWith25fps}
+        roughCutId="rc1"
+        segments={segments}
+        currentFrame={0}
+        seek={null}
+        onSeek={vi.fn()}
+        onFrame={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Szene 1");
+    expect(fcSeqPlayerProps.rateNum).toBe(25);
+    expect(fcSeqPlayerProps.rateDen).toBe(1);
+  });
+
+  it("Fix 1 — re-fetches audio clips (listTimelineAudioClips) after VO job reaches succeeded", async () => {
+    // The mock for useJobStatus starts with isRunning=false / jobStatus=null.
+    // We render the component, wait for mount, then simulate the job succeeding
+    // by updating the mock result to status="succeeded" and re-rendering.
+    // FineCutView's useEffect([voJobStatus]) fires reloadAudioClips when status==="succeeded".
+    mockJobStatusResult.current = { jobStatus: null, error: null, isRunning: false };
+
+    const listTimelineAudioClips = vi.fn().mockResolvedValue([]);
+    const c = makeClient({ listTimelineAudioClips });
+
+    const { rerender } = render(
+      <FineCutView
+        client={c}
+        asset={asset}
+        roughCutId="rc1"
+        segments={segments}
+        currentFrame={0}
+        seek={null}
+        onSeek={vi.fn()}
+        onFrame={vi.fn()}
+      />,
+    );
+
+    // Wait for the initial load to complete.
+    await screen.findByText("Szene 1");
+    const callsAfterMount = (listTimelineAudioClips as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Simulate the VO job completing: set mock to "succeeded" then force a re-render.
+    mockJobStatusResult.current = {
+      jobStatus: { id: "vo-1", status: "succeeded", error_json: null },
+      error: null,
+      isRunning: false,
+    };
+    rerender(
+      <FineCutView
+        client={c}
+        asset={asset}
+        roughCutId="rc1"
+        segments={segments}
+        currentFrame={0}
+        seek={null}
+        onSeek={vi.fn()}
+        onFrame={vi.fn()}
+      />,
+    );
+
+    // After voJobStatus.status === "succeeded", reloadAudioClips must be called again.
+    await waitFor(() => {
+      expect(
+        (listTimelineAudioClips as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBeGreaterThan(callsAfterMount);
+    });
+
+    // Reset mock for other tests.
+    mockJobStatusResult.current = { jobStatus: null, error: null, isRunning: false };
   });
 
   it("ContinuousTranscript receives onReplaceText prop that calls replaceSpanText with the toolbar voiceId", async () => {
