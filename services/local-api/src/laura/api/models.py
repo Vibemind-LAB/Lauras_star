@@ -697,6 +697,10 @@ class SplitSceneRequest(BaseModel):
     at_seq_frame: int = Field(ge=0)
 
 
+class CutAtFrameRequest(BaseModel):
+    at_seq_frame: int = Field(ge=1)
+
+
 class MergeScenesRequest(BaseModel):
     scene_id: str
 

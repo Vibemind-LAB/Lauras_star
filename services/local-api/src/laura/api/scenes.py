@@ -18,8 +18,11 @@ from ..scenes.build import (
     populate_rough_cut_from_shots,
 )
 from ..scenes.materialize import materialize_scene
+from ..editing.operations import EditClip, ordered, split_clip
+from ..editing.otio_sync import serialize_timeline_otio
 from .models import (
     ClipOut,
+    CutAtFrameRequest,
     GenerateScenesRequest,
     MergeScenesRequest,
     RenameSceneRequest,
@@ -107,6 +110,66 @@ def split_scene(
             ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
     repos.replace_scenes(db, scene["project_id"], timeline_id, ranges)
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
+
+
+@router.post("/timelines/{timeline_id}/cut-at-frame")
+def cut_at_frame(
+    timeline_id: str, body: CutAtFrameRequest, request: Request
+) -> dict[str, Any]:
+    """Composite cut: split the lane-0 clip at ``at_seq_frame`` (if mid-clip), then split
+    the scene that strictly contains that frame at the resulting boundary.
+
+    Guarantees a valid clip boundary before the scene split so the result is always
+    consistent (Laura invariant: scene boundaries must land on clip edges).
+    Idempotent: if ``at_seq_frame`` is already a clip+scene boundary this is a no-op.
+    """
+    db = _db(request)
+    tl = repos.get_timeline(db, timeline_id)
+    if tl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    at = body.at_seq_frame
+
+    # --- Phase 1: ensure a clip boundary exists at `at` ----------------------------
+    clips = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
+    boundaries = {c.seq_in_frame for c in clips} | {c.seq_out_frame_exclusive for c in clips}
+    if at not in boundaries:
+        # Frame is inside a clip — split it to create the boundary (integer frames, invariant #1).
+        try:
+            clips = split_clip(clips, at)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(clips)])
+        fresh = repos.get_timeline(db, timeline_id)
+        assert fresh is not None
+        repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
+
+    # --- Phase 2: split the scene that strictly contains `at` ----------------------
+    # A frame on a scene edge → no-op for the scene (idempotent).
+    scene = next(
+        (
+            s
+            for s in repos.list_scenes(db, timeline_id)
+            if s["seq_in_frame"] < at < s["seq_out_frame_exclusive"]
+        ),
+        None,
+    )
+    if scene is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "cut point is not inside a scene"
+        )
+    ranges: list[tuple[int, int]] = []
+    for s in repos.list_scenes(db, timeline_id):
+        if s["id"] == scene["id"]:
+            ranges.append((s["seq_in_frame"], at))
+            ranges.append((at, s["seq_out_frame_exclusive"]))
+        else:
+            ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
+    repos.replace_scenes(db, tl["project_id"], timeline_id, ranges)
+
+    return {
+        "clips": [ClipOut(**c).model_dump() for c in repos.list_timeline_clips(db, timeline_id)],
+        "scenes": [SceneOut(**s).model_dump() for s in repos.list_scenes(db, timeline_id)],
+    }
 
 
 @router.post("/timelines/{timeline_id}/scenes/merge", response_model=list[SceneOut])
