@@ -124,6 +124,8 @@ def _row_counts(db: SqliteDatabase) -> dict[str, int]:
         "timeline_clips",
         "exports",
         "jobs",
+        "short_runs",
+        "asset_policies",
     ]
     counts: dict[str, int] = {}
     with db.connection() as conn:

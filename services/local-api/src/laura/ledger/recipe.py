@@ -22,6 +22,12 @@ from laura import PIPELINE_VERSION
 
 from .store import LedgerStore
 
+#: Keys present in export-options that carry runtime observations, NOT user build params.
+#: These must be excluded from the recipe hash to preserve idempotency (Invariant 7).
+RECIPE_EXCLUDED_KEYS: frozenset[str] = frozenset(
+    {"short_run_id", "quality_status", "quality_verified"}
+)
+
 
 def canonical_json(obj: Any) -> str:
     """Return a compact, key-sorted JSON string for *obj*.

@@ -159,15 +159,7 @@ def _pick_timeline(db: Database, project_id: str, asset_id: str) -> dict[str, An
         ).fetchone()
     if rc_row is not None:
         return dict(rc_row)
-
-    # Also try any rough_cut for the project (in case created_from is not set)
-    with db.connection() as conn:
-        any_rc = conn.execute(
-            "SELECT * FROM timelines WHERE project_id=? AND kind='rough_cut' "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (project_id,),
-        ).fetchone()
-    return dict(any_rc) if any_rc is not None else None
+    return None
 
 
 def _latest_succeeded_export(

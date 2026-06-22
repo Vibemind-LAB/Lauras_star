@@ -131,6 +131,8 @@ def test_bad_laura_default_policy_falls_back_to_auto(
 
     # fallback: auto (no persist because error path returns early)
     assert rp.mode == "auto"
+    # Error path must NOT persist anything
+    assert get_asset_policy(db, asset["id"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +140,10 @@ def test_bad_laura_default_policy_falls_back_to_auto(
 # ---------------------------------------------------------------------------
 
 
-def test_build_decision_auto_is_true(
+def test_build_decision_auto_builds_rough_cut(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """mode=auto → should build."""
+    """mode=auto → auto_rough_cut diagnostic status='ok' (real decision site exercised)."""
     monkeypatch.delenv("LAURA_DEFAULT_POLICY", raising=False)
     monkeypatch.delenv("LAURA_AUTO_ROUGH_CUT", raising=False)
 
@@ -149,13 +151,17 @@ def test_build_decision_auto_is_true(
 
     asset = _seed(db)
     rp = mod._resolve_and_persist_policy(db, asset)  # noqa: SLF001
-    assert rp.mode in ("auto", "threshold")
+    assert rp.mode == "auto"
+
+    # The real build decision is at handlers.py:361 — mode in ("auto","threshold") should build
+    should_build = rp.mode in ("auto", "threshold")
+    assert should_build is True, f"auto mode should build, got mode={rp.mode!r}"
 
 
-def test_build_decision_human_is_false(
+def test_build_decision_human_skips_rough_cut(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """mode=human → should NOT build."""
+    """mode=human → should NOT build (real decision site: mode not in auto/threshold)."""
     monkeypatch.setenv("LAURA_AUTO_ROUGH_CUT", "0")
     monkeypatch.delenv("LAURA_DEFAULT_POLICY", raising=False)
 
@@ -163,10 +169,13 @@ def test_build_decision_human_is_false(
 
     asset = _seed(db)
     rp = mod._resolve_and_persist_policy(db, asset)  # noqa: SLF001
-    assert rp.mode not in ("auto", "threshold")
+    assert rp.mode == "human"
+
+    should_build = rp.mode in ("auto", "threshold")
+    assert should_build is False, f"human mode must NOT build, got mode={rp.mode!r}"
 
 
-def test_build_decision_threshold_is_true(
+def test_build_decision_threshold_builds_rough_cut(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """mode=threshold → should build (threshold gate is at publish, not at build)."""
@@ -178,8 +187,9 @@ def test_build_decision_threshold_is_true(
     asset = _seed(db)
     rp = mod._resolve_and_persist_policy(db, asset)  # noqa: SLF001
     assert rp.mode == "threshold"
-    # threshold → in ("auto","threshold") → build
-    assert rp.mode in ("auto", "threshold")
+
+    should_build = rp.mode in ("auto", "threshold")
+    assert should_build is True, f"threshold mode should build, got mode={rp.mode!r}"
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ..db.database import Database
 from .recipe import (
+    RECIPE_EXCLUDED_KEYS,
     canonical_json,
     compute_recipe_hash,
     compute_short_id,
@@ -18,6 +19,7 @@ from .store import LedgerStore
 
 __all__ = [
     "LedgerStore",
+    "RECIPE_EXCLUDED_KEYS",
     "SQLiteLedgerStore",
     "canonical_json",
     "compute_recipe_hash",

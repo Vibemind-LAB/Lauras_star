@@ -108,7 +108,7 @@ def _row_counts(db: SqliteDatabase) -> dict[str, int]:
     """Snapshot row counts for no-writes assertion."""
     tables = [
         "projects", "media_assets", "asset_files", "analysis_runs",
-        "timelines", "timeline_clips", "exports", "jobs",
+        "timelines", "timeline_clips", "exports", "jobs", "short_runs", "asset_policies",
     ]
     counts: dict[str, int] = {}
     with db.connection() as conn:
@@ -397,5 +397,89 @@ def test_endpoint_performs_no_writes(tmp_path: Path) -> None:
         after = _row_counts(db)
 
         assert before == after, f"Endpoint mutated DB: {before} -> {after}"
+    finally:
+        client.__exit__(None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# I1 regression — multi-asset project: _pick_timeline must not cross-pollinate
+# ---------------------------------------------------------------------------
+
+def test_multi_asset_no_cross_pollination(tmp_path: Path) -> None:
+    """Asset A with no rough_cut must NOT get asset B's rough_cut timeline.
+
+    Regression for I1: the third fallback in _pick_timeline used to return any
+    project-level rough_cut, which could be another asset's cut.
+    """
+    client, db = _make_client(tmp_path)
+    try:
+        # Both assets in the SAME project
+        project = client.post(
+            "/projects", json={"name": "multi", "sequence_rate_num": 30, "sequence_rate_den": 1}
+        ).json()
+        pid = project["id"]
+
+        # Asset A: proxy + succeeded analysis, NO rough_cut
+        asset_a = repos.create_asset(db, project_id=pid, type="video",
+                                      display_name="a.mp4", source_path="/a.mp4")
+        repos.add_asset_file(db, asset_id=asset_a["id"], kind="proxy",
+                              path="/proxy_a.mp4", is_proxy=True)
+        run_a = repos.create_analysis_run(db, asset_id=asset_a["id"],
+                                           pipeline_version="1", config={"stages": {}})
+        repos.start_analysis_run(db, run_a["id"])
+        repos.finish_analysis_run(db, run_a["id"], status="succeeded", diagnostics={})
+        repos.insert_shots(db, asset_id=asset_a["id"], run_id=run_a["id"],
+                           shots=[{"src_in_frame": 0, "src_out_frame_exclusive": 100, "method": "t"}])
+
+        # Asset B: has a rough_cut WITH clips
+        asset_b = repos.create_asset(db, project_id=pid, type="video",
+                                      display_name="b.mp4", source_path="/b.mp4")
+        tl_b = repos.create_timeline(db, project_id=pid, name="B Cut",
+                                      kind="rough_cut", created_from=asset_b["id"])
+        repos.add_timeline_clip(db, timeline_id=tl_b["id"], asset_id=asset_b["id"],
+                                src_in_frame=0, src_out_frame_exclusive=100,
+                                seq_in_frame=0, seq_out_frame_exclusive=100)
+
+        # Also create an empty kind=sequence timeline for the project
+        repos.create_timeline(db, project_id=pid, name="Seq", kind="sequence")
+
+        # resolve_next_action for asset A must suggest roughcut_from_shots (state 4)
+        # NOT render_reel with B's timeline
+        resp = client.get(f"/shorts/{asset_a['id']}/next-action")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        assert body["tool"] == "roughcut_from_shots", (
+            f"Expected roughcut_from_shots but got tool={body['tool']!r}, "
+            f"args={body.get('args')!r} — likely returned asset B's timeline"
+        )
+        assert body["args"] == {"asset_id": asset_a["id"]}
+
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_same_asset_rough_cut_still_works(tmp_path: Path) -> None:
+    """After the I1 fix, an empty sequence + same-asset rough_cut still returns render_reel."""
+    client, db = _make_client(tmp_path)
+    try:
+        project, asset = _create_project_and_asset(client, db)
+        _add_proxy_file(db, asset["id"])
+        _add_succeeded_analysis(db, asset["id"])
+
+        # Create an empty kind=sequence timeline (no clips)
+        repos.create_timeline(db, project_id=project["id"], name="Seq", kind="sequence")
+
+        # Create a rough_cut FOR THIS ASSET with clips
+        tl = _add_rough_cut_with_clips(db, project["id"], asset["id"])
+
+        resp = client.get(f"/shorts/{asset['id']}/next-action")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # Should still return render_reel with the correct asset's rough_cut
+        assert body["tool"] == "render_reel"
+        assert body["args"]["timeline_id"] == tl["id"]
+
     finally:
         client.__exit__(None, None, None)

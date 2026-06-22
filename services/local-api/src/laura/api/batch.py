@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ..db import repos
 from ..db.database import Database
 from ..ledger import get_ledger_store
-from ..ledger.recipe import canonical_json, compute_recipe_hash
+from ..ledger.recipe import RECIPE_EXCLUDED_KEYS, canonical_json, compute_recipe_hash
 from ..policy import get_asset_policy, parse_policy
 from .models import (
     BatchPlanIn,
@@ -348,9 +348,10 @@ def recipe_from_trace(db: Database, run_id: str) -> dict[str, Any]:
             "available": False,
         }
 
-    # Reconstruct recipe: export options minus short_run_id (P7-T3 stores it there)
+    # Reconstruct recipe: export options minus runtime-observation keys (short_run_id,
+    # quality_status, quality_verified) — these are excluded from the hash (Invariant 7).
     options: dict[str, Any] = exp.get("options") or {}
-    recipe: dict[str, Any] = {k: v for k, v in options.items() if k != "short_run_id"}
+    recipe: dict[str, Any] = {k: v for k, v in options.items() if k not in RECIPE_EXCLUDED_KEYS}
 
     # Verify recipe_hash
     computed = compute_recipe_hash(recipe)

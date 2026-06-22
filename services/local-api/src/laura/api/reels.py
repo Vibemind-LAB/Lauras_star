@@ -11,6 +11,7 @@ from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from ..ledger import get_ledger_store, mint_short_run
+from ..ledger.recipe import RECIPE_EXCLUDED_KEYS
 from .models import ReelRenderRequest
 from .quality_gate import evaluate_quality_gate
 from .security import require_token
@@ -63,7 +64,9 @@ def render_reel(
     input_sha256: str | None = asset.get("sha256") if asset else None
     try:
         store = get_ledger_store(db)
-        run = mint_short_run(store, recipe=options, input_sha256=input_sha256)
+        # Exclude runtime-observation keys so the recipe hash is stable across quality states.
+        recipe = {k: v for k, v in options.items() if k not in RECIPE_EXCLUDED_KEYS}
+        run = mint_short_run(store, recipe=recipe, input_sha256=input_sha256)
         options["short_run_id"] = run["id"]
     except Exception:  # noqa: BLE001
         # A ledger hiccup must NEVER block the render enqueue.

@@ -259,3 +259,101 @@ def test_render_reel_mint_failure_does_not_break_enqueue(tmp_path: Path) -> None
     exp = repos.get_export(db, body["export_id"])
     assert exp is not None
     assert "short_run_id" not in exp["options"]
+
+
+# ---------------------------------------------------------------------------
+# C1 regression — quality state must NOT contaminate the recipe hash
+# ---------------------------------------------------------------------------
+
+def test_same_short_id_across_quality_states(tmp_path: Path) -> None:
+    """Identical render params must yield the same short_id regardless of quality_status.
+
+    Regression for C1: quality_status/quality_verified are runtime observations and
+    must be excluded from the recipe hash.
+    """
+    client, db = _make_client_db(tmp_path)
+    pid = _project(client)
+    _, tl_id = _asset_timeline(client, db, pid)
+
+    # First call: no timeline_quality row → quality_status='pending', quality_verified=False
+    r1 = client.post(f"/timelines/{tl_id}/render-reel", json={"hook_text": "Hello"})
+    assert r1.status_code == 202, r1.text
+
+    # Insert a computed quality row for the timeline
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO timeline_quality (timeline_id, status, overall, created_at) "
+            "VALUES (?, 'computed', 0.95, datetime('now'))",
+            (tl_id,),
+        )
+
+    # Second call: quality_status='computed', quality_verified=True
+    r2 = client.post(f"/timelines/{tl_id}/render-reel", json={"hook_text": "Hello"})
+    assert r2.status_code == 202, r2.text
+
+    store = get_ledger_store(db)
+    id1 = repos.get_export(db, r1.json()["export_id"])["options"].get("short_run_id")
+    id2 = repos.get_export(db, r2.json()["export_id"])["options"].get("short_run_id")
+    assert id1 is not None and id2 is not None
+
+    run1 = store.get_run(id1)
+    run2 = store.get_run(id2)
+    assert run1 is not None and run2 is not None
+
+    # CRITICAL: same user params + same asset → same short_id regardless of quality state
+    assert run1["short_id"] == run2["short_id"], (
+        f"short_id changed across quality states: {run1['short_id']} vs {run2['short_id']}"
+    )
+    assert run1["recipe_hash"] == run2["recipe_hash"], (
+        "recipe_hash changed across quality states"
+    )
+    # But two distinct run rows
+    assert run1["id"] != run2["id"]
+
+
+def test_recipe_from_trace_excludes_quality_keys(tmp_path: Path) -> None:
+    """recipe_from_trace must reconstruct a recipe that matches stored recipe_hash.
+
+    Regression for C1: if quality keys contaminate the recipe, verified=False even
+    for legitimate runs.
+    """
+    from laura.api.batch import recipe_from_trace
+    from laura.ledger import mint_short_run
+    from laura.ledger.recipe import RECIPE_EXCLUDED_KEYS, compute_recipe_hash
+
+    settings = Settings(workspace_root=tmp_path, token=None, start_runner=False)
+    db = SqliteDatabase(settings.db_path)
+    db.migrate()
+
+    # Simulate what render_reel does: build recipe excluding quality keys
+    options: dict[str, object] = {
+        "vertical": False,
+        "hook_text": "Test",
+        "quality_status": "computed",
+        "quality_verified": True,
+    }
+    recipe = {k: v for k, v in options.items() if k not in RECIPE_EXCLUDED_KEYS}
+
+    # Mint using the clean recipe
+    store = get_ledger_store(db)
+    run = mint_short_run(store, recipe=recipe, input_sha256=None)
+    run_id = run["id"]
+
+    # Store the export with ALL options (including quality keys + short_run_id)
+    options_with_run_id = dict(options)
+    options_with_run_id["short_run_id"] = run_id
+    import json as _json
+    exp = repos.create_export(db, project_id="p1", timeline_id="tl1", format="mp4", options=options_with_run_id)
+    store.update_run(run_id, status="succeeded", trace_json=_json.dumps({"export_id": exp["id"]}))
+
+    result = recipe_from_trace(db, run_id)
+
+    assert result["available"] is True
+    # CRITICAL: verified must be True — recipe reconstruction must exclude quality keys
+    assert result["verified"] is True, (
+        f"verified=False: computed={compute_recipe_hash(result['recipe'] or {})!r} "
+        f"stored={result['recipe_hash']!r}"
+    )
+    # Recipe must not contain excluded keys
+    for key in RECIPE_EXCLUDED_KEYS:
+        assert key not in (result["recipe"] or {}), f"recipe contains excluded key: {key}"

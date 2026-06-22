@@ -106,7 +106,7 @@ def _row_counts(db: SqliteDatabase) -> dict[str, int]:
     """Snapshot row counts for no-writes assertion."""
     tables = [
         "projects", "media_assets", "asset_files", "analysis_runs",
-        "timelines", "timeline_clips", "exports", "jobs",
+        "timelines", "timeline_clips", "exports", "jobs", "short_runs", "asset_policies",
     ]
     counts: dict[str, int] = {}
     with db.connection() as conn:
