@@ -1050,3 +1050,30 @@ class BatchStatusOut(BaseModel):
     total: int
     by_stage: BatchStageCounts
     needs_human: int
+
+
+# --- recipe-from-trace (P7-T4) ----------------------------------------------
+
+
+class RecipeFromTraceOut(BaseModel):
+    """Response for GET /short-runs/{run_id}/recipe.
+
+    Reconstructs a short_run's build recipe from the export it produced and
+    verifies it against the stored ``recipe_hash``.  PURE READ — no writes.
+
+    ``available``: False when the run has no trace (queued/failed with no export)
+    or the linked export has since been deleted.
+    ``verified``: True when ``compute_recipe_hash(recipe) == recipe_hash`` stored
+    in the short_run row.  Always False when ``available`` is False.
+    ``recipe``: the reconstructed render options (export options minus
+    ``short_run_id``); None when not available.
+    ``recipe_hash``: the hash stored in the short_run row (may differ from a
+    freshly computed hash if the row was tampered or the record predates hashing).
+    """
+
+    short_id: str
+    status: str
+    recipe: dict[str, Any] | None
+    recipe_hash: str | None
+    verified: bool
+    available: bool

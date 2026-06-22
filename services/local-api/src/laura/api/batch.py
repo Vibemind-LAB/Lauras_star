@@ -20,12 +20,15 @@ computes hashes).  Accept short_ids only.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..db import repos
 from ..db.database import Database
-from ..ledger.recipe import canonical_json
+from ..ledger import get_ledger_store
+from ..ledger.recipe import canonical_json, compute_recipe_hash
 from ..policy import get_asset_policy, parse_policy
 from .models import (
     BatchPlanIn,
@@ -35,6 +38,7 @@ from .models import (
     BatchStatusIn,
     BatchStatusOut,
     NextActionOut,
+    RecipeFromTraceOut,
 )
 from .security import require_token
 from .shorts import resolve_next_action
@@ -253,3 +257,127 @@ def post_batch_status(body: BatchStatusIn, request: Request) -> BatchStatusOut:
         by_stage=BatchStageCounts(**result["by_stage"]),
         needs_human=result["needs_human"],
     )
+
+
+# ---------------------------------------------------------------------------
+# recipe-from-trace (P7-T4)
+# ---------------------------------------------------------------------------
+
+
+def recipe_from_trace(db: Database, run_id: str) -> dict[str, Any]:
+    """Reconstruct and verify a short_run's recipe from the export it produced.
+
+    PURE READ — no writes.
+
+    Parameters
+    ----------
+    db:
+        Active database connection.
+    run_id:
+        The ``short_run.id`` to look up.  Callers should 404 when this returns
+        ``None``; here the function returns a plain dict so it stays testable
+        without HTTP context.
+
+    Returns
+    -------
+    dict with keys:
+        short_id, status, recipe (dict | None), recipe_hash (str | None),
+        verified (bool), available (bool).
+
+    ``available`` is False when:
+    - The run has no ``trace_json`` (queued / failed without a trace), OR
+    - The ``trace_json`` carries no ``export_id``, OR
+    - The linked export no longer exists in the database.
+
+    ``verified`` is True only when ``available`` is True AND
+    ``compute_recipe_hash(recipe) == run["recipe_hash"]``.
+    """
+    store = get_ledger_store(db)
+    run = store.get_run(run_id)
+    if run is None:
+        return {}  # sentinel — callers check for empty dict and raise 404
+
+    short_id: str = run["short_id"]
+    status: str = run["status"]
+    recipe_hash: str | None = run.get("recipe_hash")
+
+    # Parse trace_json (may be None for queued/failed runs without an export)
+    trace_raw: str | None = run.get("trace_json")
+    if not trace_raw:
+        return {
+            "short_id": short_id,
+            "status": status,
+            "recipe": None,
+            "recipe_hash": recipe_hash,
+            "verified": False,
+            "available": False,
+        }
+
+    try:
+        trace: dict[str, Any] = json.loads(trace_raw)
+    except (json.JSONDecodeError, ValueError):
+        return {
+            "short_id": short_id,
+            "status": status,
+            "recipe": None,
+            "recipe_hash": recipe_hash,
+            "verified": False,
+            "available": False,
+        }
+
+    export_id: str | None = trace.get("export_id")
+    if not export_id:
+        return {
+            "short_id": short_id,
+            "status": status,
+            "recipe": None,
+            "recipe_hash": recipe_hash,
+            "verified": False,
+            "available": False,
+        }
+
+    # Fetch the export — it may have been deleted since the run completed
+    exp = repos.get_export(db, export_id)
+    if exp is None:
+        return {
+            "short_id": short_id,
+            "status": status,
+            "recipe": None,
+            "recipe_hash": recipe_hash,
+            "verified": False,
+            "available": False,
+        }
+
+    # Reconstruct recipe: export options minus short_run_id (P7-T3 stores it there)
+    options: dict[str, Any] = exp.get("options") or {}
+    recipe: dict[str, Any] = {k: v for k, v in options.items() if k != "short_run_id"}
+
+    # Verify recipe_hash
+    computed = compute_recipe_hash(recipe)
+    verified = recipe_hash is not None and computed == recipe_hash
+
+    return {
+        "short_id": short_id,
+        "status": status,
+        "recipe": recipe,
+        "recipe_hash": recipe_hash,
+        "verified": verified,
+        "available": True,
+    }
+
+
+@router.get("/short-runs/{run_id}/recipe", response_model=RecipeFromTraceOut)
+def get_short_run_recipe(run_id: str, request: Request) -> RecipeFromTraceOut:
+    """Reconstruct and verify the build recipe for a short_run from its export trace.
+
+    PURE READ — no writes.
+
+    Returns the render options used to produce the reel (export options minus
+    ``short_run_id``) together with a hash-verification result.  404 when the
+    ``run_id`` does not exist in the ledger.
+    """
+    db = _db(request)
+    result = recipe_from_trace(db, run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"short_run {run_id!r} not found")
+    return RecipeFromTraceOut(**result)
