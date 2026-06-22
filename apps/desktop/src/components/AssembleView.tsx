@@ -15,7 +15,6 @@ import {
   type Scene,
   type SequenceTransitionKind,
   type SequenceTranscriptBlock,
-  type VoiceoverVoice,
   type Timeline,
   type TimelineAudioClip,
   type TimelineClip,
@@ -25,11 +24,8 @@ import { useSequence } from "../hooks/useSequence";
 import { log } from "../shared/log";
 import { AudioLaneControls } from "./AudioLaneControls";
 import { DemoAssistantPanel } from "./DemoAssistantPanel";
-import { LipsyncPanel } from "./LipsyncPanel";
 import { OverlayControls } from "./OverlayControls";
-import { ReenactPanel } from "./ReenactPanel";
 import { SequencePlayer } from "./SequencePlayer";
-import { TransitionReviewPanel } from "./TransitionReviewPanel";
 import { TimelineBar } from "./TimelineBar";
 
 /** A small source-frame thumbnail, fetched as a token-authed JPEG object URL. */
@@ -97,13 +93,6 @@ function jobStatusLabel(status: string): string {
   return "Re-Alignment läuft.";
 }
 
-function voiceoverJobStatusLabel(status: string): string {
-  if (status === "succeeded") return "Voiceover erzeugt und auf A2 platziert.";
-  if (status === "failed") return "Voiceover fehlgeschlagen.";
-  if (status === "cancelled") return "Voiceover abgebrochen.";
-  return "Voiceover läuft.";
-}
-
 function alignmentStatusLabel(status: string | undefined): string | null {
   if (status === "stale") return "Nicht neu aligned";
   if (status === "aligning") return "Alignment läuft";
@@ -122,34 +111,19 @@ function TranscriptBlockEditor({
   client,
   block,
   active,
-  timelineId,
   onSaved,
-  onVoiceoverCreated,
-  voices,
 }: {
   client: LauraClient;
   block: SequenceTranscriptBlock;
   active: boolean;
-  timelineId: string | null;
   onSaved: () => void;
-  onVoiceoverCreated: () => void;
-  voices: VoiceoverVoice[];
 }): ReactElement {
   const [text, setText] = useState(block.text);
   const [busy, setBusy] = useState(false);
-  const [voiceBusy, setVoiceBusy] = useState(false);
-  // How a generated voice-over treats the original audio under its span. Default ducks the
-  // original so the narration is audible — the old behaviour mixed at full volume, so you only
-  // heard the original. "replace" silences the original under the voice-over.
-  const [voMode, setVoMode] = useState<"duck" | "replace" | "mix">("duck");
-  // Empty = let the backend pick by language / system default; otherwise an explicit TTS voice.
-  const [voiceId, setVoiceId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
-  // One active job at a time: realign job id or voiceover job id.
+  // One active job at a time: realign job id.
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  // Tracks which kind of job is active so we know which callback to fire on success.
-  const activeJobKindRef = useRef<"realign" | "voiceover" | null>(null);
   // Guard: fire callbacks exactly once per succeeded job.
   const onSuccessFiredRef = useRef<string | null>(null);
 
@@ -158,12 +132,11 @@ function TranscriptBlockEditor({
   useEffect(() => {
     setText(block.text);
     setActiveJobId(null);
-    activeJobKindRef.current = null;
     onSuccessFiredRef.current = null;
     setError(null);
   }, [block.segment_id, block.text]);
 
-  // Fire the appropriate callback exactly once when the active job succeeds.
+  // Fire the onSaved callback exactly once when the realign job succeeds.
   useEffect(() => {
     if (
       jobStatus === null ||
@@ -173,12 +146,8 @@ function TranscriptBlockEditor({
       return;
     }
     onSuccessFiredRef.current = jobStatus.id;
-    if (activeJobKindRef.current === "realign") {
-      onSaved();
-    } else if (activeJobKindRef.current === "voiceover") {
-      onVoiceoverCreated();
-    }
-  }, [jobStatus, onSaved, onVoiceoverCreated]);
+    onSaved();
+  }, [jobStatus, onSaved]);
 
   async function saveAndRealign(): Promise<void> {
     setBusy(true);
@@ -190,7 +159,6 @@ function TranscriptBlockEditor({
       const accepted = await client.realignTranscript(block.asset_id, {
         segmentIds: [block.segment_id],
       });
-      activeJobKindRef.current = "realign";
       setActiveJobId(accepted.job_id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -198,41 +166,6 @@ function TranscriptBlockEditor({
       log.error("transcript edit failed:", msg);
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function generateVoiceover(): Promise<void> {
-    if (timelineId === null) {
-      setError("Keine Sequenz ausgewählt.");
-      return;
-    }
-    setVoiceBusy(true);
-    setError(null);
-    setActiveJobId(null);
-    onSuccessFiredRef.current = null;
-    try {
-      const mix =
-        voMode === "replace"
-          ? { mixMode: "replace_original" as const }
-          : { mixMode: "mix" as const, duckingPercent: voMode === "duck" ? 30 : 100 };
-      const accepted = await client.createVoiceover(timelineId, {
-        segmentId: block.segment_id,
-        text,
-        seqIn: block.seq_in_frame,
-        seqOut: block.seq_out_frame_exclusive,
-        // Prefer a real local voice (Windows SAPI) when available, else the placeholder tone.
-        backend: "auto",
-        ...(voiceId ? { voiceId } : {}),
-        ...mix,
-      });
-      activeJobKindRef.current = "voiceover";
-      setActiveJobId(accepted.job_id);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      log.error("voiceover generation failed:", msg);
-    } finally {
-      setVoiceBusy(false);
     }
   }
 
@@ -310,9 +243,7 @@ function TranscriptBlockEditor({
                     : "border-sky-800 bg-sky-950/30 text-sky-200"
               }`}
             >
-              {activeJobKindRef.current === "realign"
-                ? jobStatusLabel(jobStatus.status)
-                : voiceoverJobStatusLabel(jobStatus.status)}
+              {jobStatusLabel(jobStatus.status)}
             </span>
           </div>
           {jobStatus.status === "failed" && jobError !== null && (
@@ -326,45 +257,10 @@ function TranscriptBlockEditor({
         <button
           type="button"
           onClick={() => void saveAndRealign()}
-          disabled={busy || voiceBusy || jobRunning || text.trim() === ""}
+          disabled={busy || jobRunning || text.trim() === ""}
           className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
         >
           {busy ? "Speichert..." : "Speichern + neu ausrichten"}
-        </button>
-        {voices.length > 0 && (
-          <select
-            aria-label="Stimme"
-            value={voiceId}
-            onChange={(e) => setVoiceId(e.target.value)}
-            disabled={busy || voiceBusy || jobRunning}
-            title="TTS-Stimme (leer = automatisch nach Sprache)"
-            className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong disabled:opacity-40"
-          >
-            <option value="">Stimme: Auto</option>
-            {voices.map((v) => (
-              <option key={v.name} value={v.name}>{`${v.name} (${v.culture})`}</option>
-            ))}
-          </select>
-        )}
-        <select
-          aria-label="Originalton unter der Stimme"
-          value={voMode}
-          onChange={(e) => setVoMode(e.target.value as "duck" | "replace" | "mix")}
-          disabled={busy || voiceBusy || jobRunning}
-          title="Wie die erzeugte Stimme den Originalton behandelt"
-          className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong disabled:opacity-40"
-        >
-          <option value="duck">Original absenken</option>
-          <option value="replace">Original ersetzen</option>
-          <option value="mix">Mischen (kein Absenken)</option>
-        </select>
-        <button
-          type="button"
-          onClick={() => void generateVoiceover()}
-          disabled={busy || voiceBusy || jobRunning || text.trim() === "" || timelineId === null}
-          className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent disabled:opacity-40"
-        >
-          {voiceBusy ? "Erzeugt..." : "Stimme erzeugen"}
         </button>
       </div>
     </article>
@@ -376,19 +272,13 @@ function SequenceTranscriptPanel({
   blocks,
   error,
   activeSegmentId,
-  timelineId,
   onSaved,
-  onVoiceoverCreated,
-  voices,
 }: {
   client: LauraClient;
   blocks: SequenceTranscriptBlock[];
   error: string | null;
   activeSegmentId: string | null;
-  timelineId: string | null;
   onSaved: () => void;
-  onVoiceoverCreated: () => void;
-  voices: VoiceoverVoice[];
 }): ReactElement {
   const friendlyError = transcriptErrorMessage(error);
   if (friendlyError !== null) {
@@ -413,10 +303,7 @@ function SequenceTranscriptPanel({
           client={client}
           block={block}
           active={block.segment_id === activeSegmentId}
-          timelineId={timelineId}
           onSaved={onSaved}
-          onVoiceoverCreated={onVoiceoverCreated}
-          voices={voices}
         />
       ))}
     </div>
@@ -461,21 +348,6 @@ export function AssembleView({
   const [seqFrame, setSeqFrame] = useState(0);
   const [captionPreview, setCaptionPreview] = useState(true);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
-
-  // Installed local TTS voices for the voice-over picker, fetched once per client.
-  useEffect(() => {
-    let alive = true;
-    client
-      .listVoiceoverVoices()
-      .then((v) => {
-        if (alive) setVoices(v);
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [client]);
 
   useEffect(() => {
     if (projectId === null) {
@@ -908,29 +780,10 @@ export function AssembleView({
             blocks={transcript}
             error={transcriptError}
             activeSegmentId={activeCaption?.segment_id ?? null}
-            timelineId={sequence?.timeline_id ?? null}
             onSaved={reloadTranscript}
-            voices={voices}
-            onVoiceoverCreated={() => {
-              reloadAudioClips();
-              reloadSeqClips();
-            }}
           />
         ) : (
           <div className="flex flex-col gap-3">
-            <section className="rounded border border-bezel bg-surface-1/50 p-3">
-              <div className="mb-1 text-xs font-semibold text-content-strong">KI-Status</div>
-              <p className="text-xs leading-relaxed text-content-faint">
-                Stub-Reenact ist lokal verfügbar. LivePortrait Sidecar bleibt optional und wird erst
-                genutzt, wenn der lokale Sidecar samt Modellgewichten läuft.
-              </p>
-            </section>
-            <section className="overflow-hidden rounded border border-bezel bg-surface-1/50">
-              <TransitionReviewPanel
-                client={client}
-                timelineId={sequence?.timeline_id ?? null}
-              />
-            </section>
             <AudioLaneControls
               client={client}
               timelineId={sequence?.timeline_id ?? null}
@@ -964,32 +817,6 @@ export function AssembleView({
               currentSeqFrame={seqFrame}
               rateNum={rateNum}
               rateDen={rateDen}
-            />
-            <ReenactPanel
-              client={client}
-              projectId={projectId}
-              timelineId={sequence?.timeline_id ?? null}
-              assets={assetOptions}
-              onChange={() => {
-                reloadSeqClips();
-                void reloadSequence();
-                reloadTranscript();
-              }}
-              currentSeqFrame={seqFrame}
-              rateNum={rateNum}
-              rateDen={rateDen}
-            />
-            <LipsyncPanel
-              client={client}
-              projectId={projectId}
-              timelineId={sequence?.timeline_id ?? null}
-              assets={assets}
-              onChange={() => {
-                reloadSeqClips();
-                reloadAudioClips();
-                void reloadSequence();
-                reloadTranscript();
-              }}
             />
           </div>
         )}

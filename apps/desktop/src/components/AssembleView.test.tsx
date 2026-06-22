@@ -189,32 +189,25 @@ describe("AssembleView", () => {
     expect(c.getJob).toHaveBeenCalledWith("job-1");
   });
 
-  it("generates a voiceover from a transcript block and refreshes the audio lane", async () => {
-    const c = client({
-      getSequenceTranscript: vi.fn().mockResolvedValue(transcript),
-      createVoiceover: vi.fn().mockResolvedValue({ job_id: "voice-job-1" }),
-      getJob: vi.fn().mockResolvedValue({ id: "voice-job-1", status: "succeeded" }),
-    });
-    const { findByLabelText, findByText, getByRole } = render(
-      <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
+  it("keeps only sequence tools in Zusammenfügen — no VO/Lipsync/Reenact", async () => {
+    const c = client({});
+    const { queryByText, findByRole } = render(
+      <AssembleView client={c} projectId="p" roughCutId={null} onSeekScene={vi.fn()} />,
+    );
+    fireEvent.click(await findByRole("button", { name: "Tools" }));
+    expect(queryByText("Reenact (Identitäts-Ebene)")).toBeNull();
+    expect(queryByText("Lipsync (Deepfake)")).toBeNull();
+    // Sequenz-Tools bleiben:
+    expect(queryByText("Demo-Draft")).not.toBeNull();
+  });
 
-    await findByLabelText("Sequenz-Transcript-Text");
-    fireEvent.click(getByRole("button", { name: "Stimme erzeugen" }));
-
-    await waitFor(() =>
-      expect(c.createVoiceover).toHaveBeenCalledWith("seq", {
-        segmentId: "seg-1",
-        text: "Original line",
-        seqIn: 0,
-        seqOut: 30,
-        // Prefer a real local voice when available, else fall back to the placeholder tone.
-        backend: "auto",
-        // Default "Original absenken" ducks the original so the voice-over is audible.
-        mixMode: "mix",
-        duckingPercent: 30,
-      }));
-    expect(await findByText("Voiceover erzeugt und auf A2 platziert.")).toBeTruthy();
-    expect(c.listTimelineAudioClips).toHaveBeenCalledTimes(2);
+  it("transcript rail in Zusammenfügen has no voiceover button", async () => {
+    const c = client({});
+    const { queryByRole, findByText } = render(
+      <AssembleView client={c} projectId="p" roughCutId={null} onSeekScene={vi.fn()} />,
+    );
+    await findByText(/Szenen-Bin/);
+    expect(queryByRole("button", { name: "Stimme erzeugen" })).toBeNull();
   });
 
   it("lets editors hide the caption preview overlay without disabling transcript editing", async () => {
@@ -244,7 +237,7 @@ describe("AssembleView", () => {
     expect(seqPlayerProps.rateNum).toBe(30);
   });
 
-  it("surfaces AI readiness in the tools rail and sequence duration in the work area", async () => {
+  it("shows sequence duration in work area and sequence tools (not KI-Status) in tools tab", async () => {
     const c = client({
       getSequenceFlattened: vi.fn().mockResolvedValue([
         { id: "c1", asset_id: "a1", src_in_frame: 0, src_out_frame_exclusive: 30,
@@ -257,13 +250,15 @@ describe("AssembleView", () => {
           speed_den: 1, audio_offset_samples: 0 },
       ]),
     });
-    const { findByText, getByRole } = render(
+    const { findByText, getByRole, queryByText } = render(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByText("Gesamtdauer 75 f")).toBeTruthy();
     fireEvent.click(getByRole("button", { name: "Tools" }));
 
-    expect(await findByText("KI-Status")).toBeTruthy();
-    expect(await findByText(/bleibt optional/)).toBeTruthy();
+    // KI-Status section was removed in E4
+    expect(queryByText("KI-Status")).toBeNull();
+    // Sequence tools remain
+    expect(queryByText("Demo-Draft")).not.toBeNull();
   });
 });
