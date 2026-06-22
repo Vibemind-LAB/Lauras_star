@@ -139,7 +139,14 @@ app
       } catch {
         return new Response("media missing on disk", { status: 404 });
       }
-      const base = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes" };
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType =
+        ext === ".wav" ? "audio/wav" :
+        ext === ".mp3" ? "audio/mpeg" :
+        ext === ".m4a" || ext === ".aac" ? "audio/aac" :
+        ext === ".flac" ? "audio/flac" :
+        "video/mp4";
+      const base = { "Content-Type": contentType, "Accept-Ranges": "bytes" };
       const m = /bytes=(\d+)-(\d*)/.exec(request.headers.get("Range") ?? "");
       if (m) {
         const start = Number(m[1]);

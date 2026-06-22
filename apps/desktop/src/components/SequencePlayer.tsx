@@ -5,8 +5,10 @@ import {
   useState,
 } from "react";
 
-import { type Asset, type TimelineClip, hasFile } from "../api";
+import { type Asset, type TimelineAudioClip, type TimelineClip, hasFile } from "../api";
 import type { LauraClient } from "../api";
+import { AudioMixer } from "../shared/AudioMixer";
+import { videoDuckGainAt } from "../shared/audioMix";
 
 /** Frame-rate of an asset — matches the same helper in Player.tsx. */
 function fps(asset: Asset): number {
@@ -47,6 +49,17 @@ export function clipIndexAtSeqFrame(clips: TimelineClip[], frame: number): numbe
   return clips.length - 1;
 }
 
+/**
+ * Video-track volume (0..1) at `frame` given the A2 overlay clips. Pure wrapper over
+ * videoDuckGainAt so the ducking rule is unit-testable without mounting the player.
+ */
+export function videoVolumeForFrame(
+  audioClips: TimelineAudioClip[] | undefined,
+  frame: number,
+): number {
+  return videoDuckGainAt(audioClips ?? [], frame);
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -72,6 +85,15 @@ export interface SequencePlayerProps {
    * would show no video. AssembleView omits it and keeps fetching the flattened sequence.
    */
   clipsOverride?: TimelineClip[];
+  /**
+   * VO + music timeline audio clips to play synced to the video playhead (Phase B).
+   * When omitted the player is video-only (unchanged). Mirrors the export mix:
+   * gain/fades per clip, the video track ducks under overlapping VO spans.
+   */
+  audioClips?: TimelineAudioClip[];
+  /** Sequence frame rate for frame->time mapping (defaults 30/1, matching AssembleView). */
+  rateNum?: number;
+  rateDen?: number;
 }
 
 export function SequencePlayer({
@@ -82,6 +104,9 @@ export function SequencePlayer({
   seekTo,
   onFrame,
   clipsOverride,
+  audioClips,
+  rateNum = 30,
+  rateDen = 1,
 }: SequencePlayerProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -93,6 +118,25 @@ export function SequencePlayer({
   // Playback state.
   const [playing, setPlaying] = useState(false);
   const [seqFrame, setSeqFrame] = useState(0);
+
+  // ---------------------------------------------------------------------------
+  // AudioMixer — created once per mount; clips and rate stay stable.
+  // ---------------------------------------------------------------------------
+  const mixerRef = useRef<AudioMixer | null>(null);
+  if (mixerRef.current === null) {
+    mixerRef.current = new AudioMixer({ rateNum, rateDen });
+  }
+  // Keep the mixer's clip set in sync with the prop.
+  useEffect(() => {
+    mixerRef.current?.setClips(audioClips ?? []);
+  }, [audioClips]);
+  // Pause + tear down on unmount.
+  useEffect(() => {
+    return () => {
+      mixerRef.current?.dispose();
+      mixerRef.current = null;
+    };
+  }, []);
 
   // The index of the clip currently loaded in the <video>.
   const clipIndexRef = useRef<number>(0);
@@ -166,6 +210,15 @@ export function SequencePlayer({
   }
 
   // ---------------------------------------------------------------------------
+  // Audio sync helper
+  // ---------------------------------------------------------------------------
+  function applyAudio(frame: number, isPlaying: boolean): void {
+    const v = videoRef.current;
+    if (v) v.volume = videoVolumeForFrame(audioClips, frame);
+    mixerRef.current?.syncTo(frame, isPlaying);
+  }
+
+  // ---------------------------------------------------------------------------
   // Controls
   // ---------------------------------------------------------------------------
   function toggle(): void {
@@ -210,10 +263,12 @@ export function SequencePlayer({
       pendingSrcTime.current = null;
       v.currentTime = srcTime;
       setSeqFrame(target);
+      applyAudio(target, false);
     } else {
       // Different asset — load and seek.
       loadClip(i, srcTime, false);
       setSeqFrame(target);
+      applyAudio(target, false);
     }
   }
 
@@ -271,6 +326,7 @@ export function SequencePlayer({
         // End of sequence.
         v.pause();
         setPlaying(false);
+        mixerRef.current?.pauseAll();
         const finalFrame = total > 0 ? total - 1 : 0;
         setSeqFrame(finalFrame);
         onFrame?.(finalFrame);
@@ -288,6 +344,7 @@ export function SequencePlayer({
     const sf = clip.seq_in_frame + Math.max(0, intraSrc);
     setSeqFrame(sf);
     onFrame?.(sf);
+    applyAudio(sf, !v.paused);
   }
 
   // ---------------------------------------------------------------------------
@@ -318,8 +375,8 @@ export function SequencePlayer({
           <video
             ref={videoRef}
             className="aspect-video w-full"
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
+            onPlay={() => { setPlaying(true); applyAudio(seqFrame, true); }}
+            onPause={() => { setPlaying(false); mixerRef.current?.pauseAll(); }}
             onLoadedData={handleLoadedData}
             onTimeUpdate={handleTimeUpdate}
             onError={() => {

@@ -1,8 +1,8 @@
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { type Asset, type LauraClient, type TimelineClip } from "../api";
-import { SequencePlayer, clipIndexAtSeqFrame, totalFrames } from "./SequencePlayer";
+import { type Asset, type LauraClient, type TimelineAudioClip, type TimelineClip } from "../api";
+import { SequencePlayer, clipIndexAtSeqFrame, totalFrames, videoVolumeForFrame } from "./SequencePlayer";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -85,6 +85,42 @@ const asset2: Asset = {
   created_at: "2025-01-01T00:00:00Z",
   files: [{ id: "f2", asset_id: "a2", kind: "proxy", path: "/p2.mp4", size_bytes: null, is_proxy: true, is_waveform: false, is_audio_extract: false, checksum: null }],
 };
+
+// ---------------------------------------------------------------------------
+// Pure helper: videoVolumeForFrame (ducking adapter)
+// ---------------------------------------------------------------------------
+
+function audioClip(over: Partial<TimelineAudioClip> = {}): TimelineAudioClip {
+  return {
+    id: "a1",
+    timeline_id: "t1",
+    asset_id: "vo1",
+    seq_in_frame: 30,
+    seq_out_frame_exclusive: 90,
+    asset_in_frame: 0,
+    gain_percent: 100,
+    fade_in_frames: 0,
+    fade_out_frames: 0,
+    mix_mode: "mix",
+    ducking_percent: 30,
+    label: null,
+    created_at: "",
+    ...over,
+  };
+}
+
+describe("SequencePlayer video ducking adapter", () => {
+  it("ducks the video to ducking_percent under an active VO span", () => {
+    expect(videoVolumeForFrame([audioClip()], 60)).toBeCloseTo(0.3, 6);
+  });
+  it("is full volume outside any VO span", () => {
+    expect(videoVolumeForFrame([audioClip()], 200)).toBe(1);
+    expect(videoVolumeForFrame(undefined, 60)).toBe(1);
+  });
+  it("replace_original mutes the video under the span", () => {
+    expect(videoVolumeForFrame([audioClip({ mix_mode: "replace_original" })], 60)).toBe(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure helper: totalFrames

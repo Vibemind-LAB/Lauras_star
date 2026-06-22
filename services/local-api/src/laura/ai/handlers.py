@@ -384,6 +384,14 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         synthetic=True,
         ai_effect="voiceover",
     )
+    repos.add_asset_file(
+        ctx.db,
+        asset_id=asset["id"],
+        kind="original",
+        path=str(out_path),
+        size_bytes=out_path.stat().st_size,
+        is_proxy=False,
+    )
     write_ai_provenance_manifest(
         media_path=out_path,
         asset_id=asset["id"],

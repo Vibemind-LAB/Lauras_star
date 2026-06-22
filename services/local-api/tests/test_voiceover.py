@@ -383,3 +383,33 @@ def test_voiceover_rejects_segment_from_other_project(client: TestClient, tmp_pa
 
     assert response.status_code == 422
     assert "segment does not belong to this timeline project" in response.text
+
+
+def test_voiceover_asset_exposes_original_file(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """The VO asset must have an `original` asset_file row so the Electron
+    laura-media protocol can serve it to the AudioMixer."""
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 0,
+            "seq_out_frame_exclusive": 30,
+            "backend": "stub",
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert app.state.runner.run_once() is True
+
+    result = json.loads(repos.get_job(db, accepted.json()["job_id"])["result_json"])  # type: ignore[index]
+    files = repos.list_asset_files(db, result["asset_id"])
+    kinds = {f["kind"] for f in files}
+    assert "original" in kinds, f"expected 'original' in asset_files, got: {kinds}"
+    original = next(f for f in files if f["kind"] == "original")
+    assert Path(original["path"]).exists(), "original file must exist on disk"

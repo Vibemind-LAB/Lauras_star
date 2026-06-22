@@ -15,9 +15,9 @@ export interface MixerAudioEl {
 export type AudioElementFactory = (src: string) => MixerAudioEl;
 
 function mediaUrl(assetId: string): string {
-  // Audio assets are streamed via the same laura-media scheme as video proxies
-  // (main.ts resolveMediaPath resolves any asset file by kind).
-  return `laura-media://media/${assetId}/proxy`;
+  // Audio assets (VO + imported music) expose an `original` file row, not `proxy`.
+  // Video assets use `proxy`; the <video> src is set separately in SequencePlayer.
+  return `laura-media://media/${assetId}/original`;
 }
 
 function defaultFactory(src: string): MixerAudioEl {
