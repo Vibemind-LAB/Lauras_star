@@ -198,7 +198,7 @@ def test_per_short_hash_determinism(tmp_path: Path) -> None:
                 json={"short_ids": [asset_a["id"], asset_b["id"]]},
             )
             assert resp.status_code == 200
-            return resp.json()["plans"]
+            return resp.json()["plans"]  # type: ignore[no-any-return]
 
         plans1 = call()
         plans2 = call()

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
+from typing import Any
 from unittest.mock import patch
 
 from laura.ai.docker_runtime import DockerAdapter
@@ -10,17 +12,17 @@ from laura.ai.runtime_manager import refresh_runtime, start_runtime, stop_runtim
 from laura.ai.runtime_types import RuntimeHealth
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import create_database
+from laura.db.database import Database, create_database
 
 
-def _db(tmp_path):
+def _db(tmp_path: Path) -> Database:
     db = create_database(Settings(workspace_root=tmp_path, start_runner=False))
     db.migrate()
     return db
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def do_GET(self):  # noqa: N802
+    def do_GET(self) -> None:  # noqa: N802
         if self.path == "/healthz":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -37,11 +39,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
-    def log_message(self, *args):  # noqa: ANN002
+    def log_message(self, *args: Any) -> None:  # noqa: ANN002
         return
 
 
-def test_refresh_external_http_runtime_reads_health_and_capabilities(tmp_path):
+def test_refresh_external_http_runtime_reads_health_and_capabilities(tmp_path: Path) -> None:
     db = _db(tmp_path)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -62,24 +64,24 @@ def test_refresh_external_http_runtime_reads_health_and_capabilities(tmp_path):
         server.shutdown()
 
 
-class FakeDocker:
-    def __init__(self):
+class FakeDocker(DockerAdapter):
+    def __init__(self) -> None:
         self.started = False
         self.stopped = False
 
-    def start(self, runtime):
+    def start(self, runtime: dict[str, Any]) -> RuntimeHealth:
         self.started = True
         return RuntimeHealth(state="starting", ready=False, message="container started")
 
-    def stop(self, runtime):
+    def stop(self, runtime: dict[str, Any]) -> RuntimeHealth:
         self.stopped = True
         return RuntimeHealth(state="stopped", ready=False, message="container stopped")
 
-    def logs(self, runtime, tail=100):  # noqa: ARG002
+    def logs(self, runtime: dict[str, Any], tail: int = 100) -> str:  # noqa: ARG002
         return "log line"
 
 
-def test_start_and_stop_container_runtime_are_evented(tmp_path):
+def test_start_and_stop_container_runtime_are_evented(tmp_path: Path) -> None:
     db = _db(tmp_path)
     docker = FakeDocker()
     rt = repos.create_ai_runtime(
@@ -104,7 +106,7 @@ def test_start_and_stop_container_runtime_are_evented(tmp_path):
     assert [e["event_type"] for e in events[:2]] == ["stop", "start"]
 
 
-def test_docker_adapter_handles_missing_cli_without_crashing():
+def test_docker_adapter_handles_missing_cli_without_crashing() -> None:
     runtime = {
         "container_name": "laura-voice",
         "container_image": "laura-runtime-voice:local",
@@ -122,7 +124,7 @@ def test_docker_adapter_handles_missing_cli_without_crashing():
     assert logs == "docker CLI not available"
 
 
-def test_refresh_container_runtime_without_http_metadata_is_safe(tmp_path):
+def test_refresh_container_runtime_without_http_metadata_is_safe(tmp_path: Path) -> None:
     db = _db(tmp_path)
     rt = repos.create_ai_runtime(
         db,

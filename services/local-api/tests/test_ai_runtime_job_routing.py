@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from laura.ai.handlers import _backend_config_from_runtime, _backend_from_runtime
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import create_database
+from laura.db.database import Database, create_database
 
 
-def _db(tmp_path):
+def _db(tmp_path: Path) -> Database:
     db = create_database(Settings(workspace_root=tmp_path, start_runner=False))
     db.migrate()
     return db
 
 
-def test_backend_from_runtime_maps_stub_to_stub(tmp_path):
+def test_backend_from_runtime_maps_stub_to_stub(tmp_path: Path) -> None:
     db = _db(tmp_path)
     runtime = repos.create_ai_runtime(
         db,
@@ -26,7 +28,7 @@ def test_backend_from_runtime_maps_stub_to_stub(tmp_path):
     assert _backend_from_runtime(db, runtime["id"], "vibevideo") == "stub"
 
 
-def test_backend_from_runtime_maps_external_and_container_to_legacy_backend(tmp_path):
+def test_backend_from_runtime_maps_external_and_container_to_legacy_backend(tmp_path: Path) -> None:
     db = _db(tmp_path)
     external = repos.create_ai_runtime(
         db,
@@ -55,13 +57,13 @@ def test_backend_from_runtime_maps_external_and_container_to_legacy_backend(tmp_
     assert container_config.base_url == "http://127.0.0.1:8899"
 
 
-def test_backend_from_runtime_keeps_legacy_fallback_without_runtime(tmp_path):
+def test_backend_from_runtime_keeps_legacy_fallback_without_runtime(tmp_path: Path) -> None:
     db = _db(tmp_path)
 
     assert _backend_from_runtime(db, None, "stub") == "stub"
 
 
-def test_backend_config_rejects_wrong_effect_runtime(tmp_path):
+def test_backend_config_rejects_wrong_effect_runtime(tmp_path: Path) -> None:
     db = _db(tmp_path)
     runtime = repos.create_ai_runtime(
         db,
@@ -74,7 +76,7 @@ def test_backend_config_rejects_wrong_effect_runtime(tmp_path):
         _backend_config_from_runtime(db, runtime["id"], None, "lipsync")
 
 
-def test_backend_config_rejects_external_runtime_without_endpoint(tmp_path):
+def test_backend_config_rejects_external_runtime_without_endpoint(tmp_path: Path) -> None:
     db = _db(tmp_path)
     runtime = repos.create_ai_runtime(
         db,

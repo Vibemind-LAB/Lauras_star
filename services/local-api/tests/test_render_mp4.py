@@ -1,5 +1,6 @@
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _clip(tmp_path, name, secs):
+def _clip(tmp_path: Path, name: str, secs: int) -> Path:
     p = tmp_path / name
     run_ffmpeg([
         "-f", "lavfi",
@@ -24,7 +25,7 @@ def _clip(tmp_path, name, secs):
     return p
 
 
-def test_render_concats_clips(tmp_path):
+def test_render_concats_clips(tmp_path: Path) -> None:
     a = _clip(tmp_path, "a.mp4", 1)
     b = _clip(tmp_path, "b.mp4", 1)
     out = tmp_path / "seq.mp4"
@@ -33,7 +34,7 @@ def test_render_concats_clips(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
-def test_render_single_clip_subrange(tmp_path):
+def test_render_single_clip_subrange(tmp_path: Path) -> None:
     a = _clip(tmp_path, "a.mp4", 2)
     out = tmp_path / "one.mp4"
     render_clips_mp4([(a, 15, 45)], out, rate_num=30, rate_den=1)  # 0.5s..1.5s

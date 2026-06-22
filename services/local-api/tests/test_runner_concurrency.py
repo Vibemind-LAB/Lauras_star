@@ -1,15 +1,17 @@
 import threading
 import time
+from typing import Any
 
-from laura.jobs.runner import JobRunner, enqueue
+from laura.db.database import Database
+from laura.jobs.runner import JobContext, JobRunner, enqueue
 
 # Uses the shared `db` fixture from tests/conftest.py (a migrated temp SqliteDatabase).
 
 
-def test_long_job_is_not_reaped_thanks_to_auto_heartbeat(db):
+def test_long_job_is_not_reaped_thanks_to_auto_heartbeat(db: Database) -> None:
     ran = {"done": False}
 
-    def slow(ctx):
+    def slow(ctx: JobContext) -> dict[str, Any]:
         time.sleep(2.5)  # longer than lease_seconds below
         ran["done"] = True
         return {"ok": True}
@@ -31,11 +33,11 @@ def test_long_job_is_not_reaped_thanks_to_auto_heartbeat(db):
     assert reaped == 0  # the running job's lease was kept fresh
 
 
-def test_pool_runs_each_job_once_with_overlap(db):
+def test_pool_runs_each_job_once_with_overlap(db: Database) -> None:
     lock = threading.Lock()
-    state = {"live": 0, "peak": 0, "ran": []}
+    state: dict[str, Any] = {"live": 0, "peak": 0, "ran": []}
 
-    def work(ctx):
+    def work(ctx: JobContext) -> dict[str, Any]:
         with lock:
             state["live"] += 1
             state["peak"] = max(state["peak"], state["live"])
@@ -63,10 +65,10 @@ def test_pool_runs_each_job_once_with_overlap(db):
     assert state["peak"] >= 2                    # genuine concurrency
 
 
-def test_heartbeat_stops_after_max_runtime_so_wedged_job_is_reapable(db):
+def test_heartbeat_stops_after_max_runtime_so_wedged_job_is_reapable(db: Database) -> None:
     # A handler that blocks far longer than the max runtime: once the cap passes, the
     # auto-heartbeat must stop refreshing the lease so the reaper can reap it.
-    def wedged(ctx):
+    def wedged(ctx: JobContext) -> dict[str, Any]:
         time.sleep(6)
         return {"ok": True}
 

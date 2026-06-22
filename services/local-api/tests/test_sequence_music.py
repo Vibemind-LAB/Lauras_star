@@ -7,6 +7,7 @@ scene 1's length), with the expected path and gain.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from laura.config import Settings
 from laura.db import repos
@@ -20,7 +21,9 @@ def _db(tmp_path: Path) -> SqliteDatabase:
     return db
 
 
-def _scene_timeline(db: SqliteDatabase, project_id: str, asset_id: str, scene_len: int) -> dict:
+def _scene_timeline(
+    db: SqliteDatabase, project_id: str, asset_id: str, scene_len: int
+) -> dict[str, Any]:
     """Create a materialised scene timeline with one clip of *scene_len* frames."""
     tl = repos.create_timeline(db, project_id=project_id, name="s", kind="scene")
     repos.replace_timeline_clips(db, tl["id"], [{

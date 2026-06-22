@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from laura.render.audio import AudioOverlay
 from laura.render.mp4 import render_clips_mp4
 
@@ -13,7 +15,7 @@ def _filter_complex(args: list[str]) -> str:
 
 def test_render_audio_overlay_filter_includes_offset_gain_and_fades(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
 
@@ -57,7 +59,7 @@ def test_render_audio_overlay_filter_includes_offset_gain_and_fades(
 
 def test_render_legacy_music_tracks_still_build_audio_filter(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
 

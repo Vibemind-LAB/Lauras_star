@@ -8,13 +8,15 @@ from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
+from laura.db.database import Database
 from laura.main import create_app
 
 
-def _client_db(tmp_path: Path) -> tuple[TestClient, object]:
+def _client_db(tmp_path: Path) -> tuple[TestClient, Database]:
     settings = Settings(workspace_root=tmp_path, token=None, start_runner=False)
     app = create_app(settings)
-    return TestClient(app), app.state.db
+    from typing import cast
+    return TestClient(app), cast(Database, app.state.db)
 
 
 def _project(client: TestClient) -> str:
@@ -24,7 +26,7 @@ def _project(client: TestClient) -> str:
     return str(resp.json()["id"])
 
 
-def _setup(tmp_path: Path) -> tuple[TestClient, object, str, str, str]:
+def _setup(tmp_path: Path) -> tuple[TestClient, Database, str, str, str]:
     """Return (client, db, project_id, timeline_id, portrait_asset_id)."""
     client, db = _client_db(tmp_path)
     pid = _project(client)

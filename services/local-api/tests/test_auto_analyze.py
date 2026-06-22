@@ -8,6 +8,7 @@ After the import chain finishes (proxy + audio + waveform), ``handle_waveform`` 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -38,7 +39,7 @@ def _ctx(db: Database) -> JobContext:
     )
 
 
-def _analysis_jobs(db: Database) -> list[dict[str, object]]:
+def _analysis_jobs(db: Database) -> list[dict[str, Any]]:
     with db.connection() as conn:
         rows = conn.execute(
             "SELECT * FROM jobs WHERE kind='analysis.run'"

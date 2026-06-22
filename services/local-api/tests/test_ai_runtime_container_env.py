@@ -3,13 +3,15 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from laura.ai.docker_runtime import DockerAdapter
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import create_database
+from laura.db.database import Database, create_database
 
 
-def _db(tmp_path: Path):
+def _db(tmp_path: Path) -> Database:
     db = create_database(Settings(workspace_root=tmp_path, start_runner=False))
     db.migrate()
     return db
@@ -41,7 +43,7 @@ def test_ai_runtime_round_trips_container_env(tmp_path: Path) -> None:
 
 
 def test_docker_adapter_passes_container_env_and_normalizes_mounts(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
 

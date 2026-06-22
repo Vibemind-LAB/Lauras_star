@@ -37,4 +37,6 @@ def test_update_scene_name(tmp_path: Path) -> None:
     repos.replace_scenes(db, "p1", "tl1", [(0, 30)])
     sid = repos.list_scenes(db, "tl1")[0]["id"]
     repos.update_scene_name(db, sid, "Intro")
-    assert repos.get_scene(db, sid)["name"] == "Intro"
+    scene = repos.get_scene(db, sid)
+    assert scene is not None
+    assert scene["name"] == "Intro"

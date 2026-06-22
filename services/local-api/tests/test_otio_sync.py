@@ -40,4 +40,5 @@ def test_rebuild_otio_writes_nonempty_otio(tmp_path: Path) -> None:
     )
     rebuild_otio(db, tl["id"])
     fresh = repos.get_timeline(db, tl["id"])
+    assert fresh is not None
     assert fresh["otio_json"] and fresh["otio_json"] != "{}"

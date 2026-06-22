@@ -74,7 +74,7 @@ def _seed_quality(
 def _export_options(db: SqliteDatabase, export_id: str) -> dict[str, Any]:
     exp = repos.get_export(db, export_id)
     assert exp is not None
-    return exp["options"]
+    return exp["options"]  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------

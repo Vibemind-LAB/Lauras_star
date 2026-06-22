@@ -1,17 +1,22 @@
 """Round-trip tests for the exports.options JSON column (migration 0013)."""
 
+from pathlib import Path
+from typing import Any
+
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
 
 
-def _db(tmp_path):
+def _db(tmp_path: Path) -> SqliteDatabase:
     db = SqliteDatabase(Settings(workspace_root=tmp_path).db_path)
     db.migrate()
     return db
 
 
-def _project_and_timeline(db):
+def _project_and_timeline(
+    db: SqliteDatabase,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     project = repos.create_project(
         db,
         name="Test",
@@ -24,7 +29,7 @@ def _project_and_timeline(db):
     return project, timeline
 
 
-def test_create_export_with_options_round_trips(tmp_path):
+def test_create_export_with_options_round_trips(tmp_path: Path) -> None:
     db = _db(tmp_path)
     project, timeline = _project_and_timeline(db)
 
@@ -43,7 +48,7 @@ def test_create_export_with_options_round_trips(tmp_path):
     assert fetched["options"] == opts
 
 
-def test_create_export_without_options_returns_empty_dict(tmp_path):
+def test_create_export_without_options_returns_empty_dict(tmp_path: Path) -> None:
     db = _db(tmp_path)
     project, timeline = _project_and_timeline(db)
 
@@ -60,7 +65,7 @@ def test_create_export_without_options_returns_empty_dict(tmp_path):
     assert fetched["options"] == {}
 
 
-def test_list_exports_includes_options(tmp_path):
+def test_list_exports_includes_options(tmp_path: Path) -> None:
     db = _db(tmp_path)
     project, timeline = _project_and_timeline(db)
 

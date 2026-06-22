@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _video(tmp_path, secs):
+def _video(tmp_path: Path, secs: int) -> Path:
     p = tmp_path / "v.mp4"
     run_ffmpeg([
         "-f", "lavfi",
@@ -27,7 +28,7 @@ def _video(tmp_path, secs):
     return p
 
 
-def _video_with_audio(tmp_path, secs):
+def _video_with_audio(tmp_path: Path, secs: int) -> Path:
     p = tmp_path / "va.mp4"
     run_ffmpeg([
         "-f", "lavfi",
@@ -43,7 +44,7 @@ def _video_with_audio(tmp_path, secs):
     return p
 
 
-def _audio(tmp_path, name, secs):
+def _audio(tmp_path: Path, name: str, secs: int) -> Path:
     p = tmp_path / name
     run_ffmpeg([
         "-f", "lavfi",
@@ -54,7 +55,7 @@ def _audio(tmp_path, name, secs):
     return p
 
 
-def _has_audio(path) -> bool:
+def _has_audio(path: Path) -> bool:
     ffprobe = os.environ.get("LAURA_FFPROBE", "ffprobe")
     out = subprocess.run(
         [ffprobe, "-v", "error", "-select_streams", "a",
@@ -65,7 +66,7 @@ def _has_audio(path) -> bool:
     return "audio" in out.stdout
 
 
-def test_render_with_music_has_audio_stream(tmp_path):
+def test_render_with_music_has_audio_stream(tmp_path: Path) -> None:
     v = _video(tmp_path, 2)
     m = _audio(tmp_path, "m.m4a", 5)
     out = tmp_path / "out.mp4"
@@ -74,21 +75,21 @@ def test_render_with_music_has_audio_stream(tmp_path):
     assert out.exists() and _has_audio(out)
 
 
-def test_render_without_music_has_no_audio(tmp_path):
+def test_render_without_music_has_no_audio(tmp_path: Path) -> None:
     v = _video(tmp_path, 1)
     out = tmp_path / "out2.mp4"
     render_clips_mp4([(v, 0, 30)], out, rate_num=30, rate_den=1)
     assert out.exists() and not _has_audio(out)
 
 
-def test_render_preserves_source_audio_when_present(tmp_path):
+def test_render_preserves_source_audio_when_present(tmp_path: Path) -> None:
     v = _video_with_audio(tmp_path, 1)
     out = tmp_path / "out_source_audio.mp4"
     render_clips_mp4([(v, 0, 30)], out, rate_num=30, rate_den=1)
     assert out.exists() and _has_audio(out)
 
 
-def test_render_music_at_nonzero_offset_has_audio(tmp_path):
+def test_render_music_at_nonzero_offset_has_audio(tmp_path: Path) -> None:
     """A music track with a non-zero seq_in_frame (offset scene) still produces audio."""
     v = _video(tmp_path, 3)
     m = _audio(tmp_path, "m2.m4a", 5)

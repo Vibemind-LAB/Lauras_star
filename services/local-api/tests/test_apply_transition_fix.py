@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,7 +14,7 @@ from laura.db.database import SqliteDatabase
 from laura.editing.operations import EditClip, roll_boundary
 
 
-def _ec(asset: str, si: int, so: int, qi: int, qo: int, **kw: int) -> EditClip:
+def _ec(asset: str, si: int, so: int, qi: int, qo: int, **kw: Any) -> EditClip:
     return EditClip(
         asset_id=asset,
         src_in_frame=si,

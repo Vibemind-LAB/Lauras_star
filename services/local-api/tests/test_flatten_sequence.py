@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from laura.config import Settings
 from laura.db import repos
@@ -9,7 +10,13 @@ from laura.db.database import SqliteDatabase
 from laura.sequences.flatten import flatten_sequence
 
 
-def _scene_timeline(db, project_id, asset_id, src_in, src_out):
+def _scene_timeline(
+    db: SqliteDatabase,
+    project_id: str,
+    asset_id: str,
+    src_in: int,
+    src_out: int,
+) -> dict[str, Any]:
     """A materialized scene timeline with one clip, rebased to seq 0."""
     tl = repos.create_timeline(db, project_id=project_id, name="s", kind="scene")
     repos.replace_timeline_clips(

@@ -75,7 +75,7 @@ def test_crossfade_durations_only_marks_matching_boundary() -> None:
 
 # --- render wiring (mocked ffmpeg) ------------------------------------------
 
-def _patch(monkeypatch, *, nb_frames: str = "1000") -> list[list[str]]:
+def _patch(monkeypatch: pytest.MonkeyPatch, *, nb_frames: str = "1000") -> list[list[str]]:
     calls: list[list[str]] = []
     monkeypatch.setattr(mp4mod, "run_ffmpeg", lambda args, **kw: calls.append(list(args)))
     monkeypatch.setattr(
@@ -93,7 +93,9 @@ def _fc(args: list[str]) -> str:
     return args[args.index("-filter_complex") + 1]
 
 
-def test_render_hard_only_is_concat_no_xfade(monkeypatch, tmp_path: Path) -> None:
+def test_render_hard_only_is_concat_no_xfade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls = _patch(monkeypatch)
     render_clips_mp4(
         [(tmp_path / "a.mp4", 0, 30), (tmp_path / "b.mp4", 0, 30)],
@@ -103,7 +105,7 @@ def test_render_hard_only_is_concat_no_xfade(monkeypatch, tmp_path: Path) -> Non
     assert "concat=n=2:v=1" in fc and "xfade" not in fc
 
 
-def test_render_crossfade_builds_xfade(monkeypatch, tmp_path: Path) -> None:
+def test_render_crossfade_builds_xfade(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls = _patch(monkeypatch)
     tr = [VideoTransition(kind="crossfade", boundary_frame=30, duration_frames=6)]
     render_clips_mp4(
@@ -115,7 +117,9 @@ def test_render_crossfade_builds_xfade(monkeypatch, tmp_path: Path) -> None:
     assert "end_frame=36" in fc
 
 
-def test_render_crossfade_without_reserve_falls_back_to_hard(monkeypatch, tmp_path: Path) -> None:
+def test_render_crossfade_without_reserve_falls_back_to_hard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls = _patch(monkeypatch, nb_frames="30")  # clip ends at 30, source has 30 -> no reserve
     tr = [VideoTransition(kind="crossfade", boundary_frame=30, duration_frames=6)]
     render_clips_mp4(

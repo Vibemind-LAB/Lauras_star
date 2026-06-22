@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from laura.config import Settings
 from laura.db import repos
@@ -27,8 +28,8 @@ def _project(db: SqliteDatabase) -> str:
     return str(p["id"])
 
 
-def _asset(db: SqliteDatabase, project_id: str, **kwargs: object) -> dict:
-    return repos.create_asset(  # type: ignore[return-value]
+def _asset(db: SqliteDatabase, project_id: str, **kwargs: object) -> dict[str, Any]:
+    return repos.create_asset(
         db,
         project_id=project_id,
         type="video",

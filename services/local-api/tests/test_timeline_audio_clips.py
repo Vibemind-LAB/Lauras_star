@@ -46,9 +46,9 @@ def _seed(db: Database) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
         is_vfr=False,
         sha256=None,
     )
-    asset = repos.get_asset(db, asset["id"])
-    assert asset is not None
-    return project, timeline, asset
+    refreshed = repos.get_asset(db, asset["id"])
+    assert refreshed is not None
+    return project, timeline, refreshed
 
 
 def test_timeline_audio_clip_migration(db: Database) -> None:

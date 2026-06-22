@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from laura.analysis.transition_review import StubVlmBackend, run_transition_review
+from laura.analysis.transition_review import (
+    StubVlmBackend,
+    TransitionVerdict,
+    run_transition_review,
+)
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
@@ -57,7 +61,7 @@ class _CountingStub(StubVlmBackend):
     def __init__(self) -> None:
         self.calls = 0
 
-    def review(self, frames: list[bytes], meta: dict[str, object]):  # type: ignore[override]
+    def review(self, frames: list[bytes], meta: dict[str, object]) -> TransitionVerdict:
         self.calls += 1
         return StubVlmBackend.review(self, frames, meta)
 

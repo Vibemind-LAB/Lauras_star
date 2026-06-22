@@ -1,23 +1,26 @@
 import sys
 import types
+from typing import Any
+
+import pytest
 
 import laura.analysis.transnet as tn
 
 
-def _install_fake_pkg(monkeypatch, model_cls):
+def _install_fake_pkg(monkeypatch: pytest.MonkeyPatch, model_cls: Any) -> None:
     mod = types.ModuleType("transnetv2_pytorch")
-    mod.TransNetV2 = model_cls
+    mod.TransNetV2 = model_cls  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "transnetv2_pytorch", mod)
 
 
-def test_load_model_moves_to_cuda_when_available(monkeypatch):
-    moved = {}
+def test_load_model_moves_to_cuda_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    moved: dict[str, Any] = {}
 
     class FakeModel:
-        def eval(self):
+        def eval(self) -> "FakeModel":
             return self
 
-        def to(self, dev):
+        def to(self, dev: str) -> "FakeModel":
             moved["dev"] = dev
             return self
 
@@ -28,14 +31,14 @@ def test_load_model_moves_to_cuda_when_available(monkeypatch):
     assert moved.get("dev") == "cuda"
 
 
-def test_load_model_stays_cpu_without_cuda(monkeypatch):
-    moved = {}
+def test_load_model_stays_cpu_without_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    moved: dict[str, Any] = {}
 
     class FakeModel:
-        def eval(self):
+        def eval(self) -> "FakeModel":
             return self
 
-        def to(self, dev):
+        def to(self, dev: str) -> "FakeModel":
             moved["dev"] = dev
             return self
 

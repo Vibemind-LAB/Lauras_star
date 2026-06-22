@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from laura.config import Settings
 from laura.db import repos
-from laura.db.database import create_database
+from laura.db.database import Database, create_database
 
 
-def _db(tmp_path):
+def _db(tmp_path: Path) -> Database:
     db = create_database(Settings(workspace_root=tmp_path, start_runner=False))
     db.migrate()
     return db
 
 
-def test_ai_runtime_round_trips_json_fields(tmp_path):
+def test_ai_runtime_round_trips_json_fields(tmp_path: Path) -> None:
     db = _db(tmp_path)
     rt = repos.create_ai_runtime(
         db,
@@ -47,7 +49,7 @@ def test_ai_runtime_round_trips_json_fields(tmp_path):
     assert repos.list_ai_runtimes(db, effect="lipsync")[0]["id"] == rt["id"]
 
 
-def test_runtime_events_are_ordered_newest_first(tmp_path):
+def test_runtime_events_are_ordered_newest_first(tmp_path: Path) -> None:
     db = _db(tmp_path)
     rt = repos.create_ai_runtime(db, kind="stub", effect="voice", display_name="Stub Voice")
     repos.create_ai_runtime_event(
@@ -72,7 +74,7 @@ def test_runtime_events_are_ordered_newest_first(tmp_path):
     assert events[0]["payload"] == {"code": "test"}
 
 
-def test_ai_persona_round_trips_policy_fields(tmp_path):
+def test_ai_persona_round_trips_policy_fields(tmp_path: Path) -> None:
     db = _db(tmp_path)
     project = repos.create_project(
         db,

@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -66,7 +67,7 @@ def _avg_rgb(path: Path, ss_seconds: float) -> tuple[int, int, int]:
     return r, g, b
 
 
-def _make_db(tmp_path: Path) -> tuple[SqliteDatabase, dict]:
+def _make_db(tmp_path: Path) -> tuple[SqliteDatabase, dict[str, Any]]:
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
     db = SqliteDatabase(settings.db_path)
     db.migrate()

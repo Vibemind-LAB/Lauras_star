@@ -108,8 +108,11 @@ def test_render_reel_short_run_id_not_in_recipe(tmp_path: Path) -> None:
     assert r1.status_code == r2.status_code == 202
 
     store = get_ledger_store(db)
-    id1 = repos.get_export(db, r1.json()["export_id"])["options"]["short_run_id"]
-    id2 = repos.get_export(db, r2.json()["export_id"])["options"]["short_run_id"]
+    exp1 = repos.get_export(db, r1.json()["export_id"])
+    exp2 = repos.get_export(db, r2.json()["export_id"])
+    assert exp1 is not None and exp2 is not None
+    id1 = exp1["options"]["short_run_id"]
+    id2 = exp2["options"]["short_run_id"]
 
     run1 = store.get_run(id1)
     run2 = store.get_run(id2)
@@ -291,8 +294,11 @@ def test_same_short_id_across_quality_states(tmp_path: Path) -> None:
     assert r2.status_code == 202, r2.text
 
     store = get_ledger_store(db)
-    id1 = repos.get_export(db, r1.json()["export_id"])["options"].get("short_run_id")
-    id2 = repos.get_export(db, r2.json()["export_id"])["options"].get("short_run_id")
+    xp1 = repos.get_export(db, r1.json()["export_id"])
+    xp2 = repos.get_export(db, r2.json()["export_id"])
+    assert xp1 is not None and xp2 is not None
+    id1 = xp1["options"].get("short_run_id")
+    id2 = xp2["options"].get("short_run_id")
     assert id1 is not None and id2 is not None
 
     run1 = store.get_run(id1)
