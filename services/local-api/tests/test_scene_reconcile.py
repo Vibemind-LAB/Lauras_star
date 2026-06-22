@@ -35,6 +35,6 @@ def test_output_is_contiguous_and_ordered() -> None:
     out = reconcile_after_delete([(0, 50), (50, 60), (60, 200)], 45, 120)
     # span [45,120) len 75; scene2 [50,60) inside -> drop; bounds clamp+shift.
     assert out == [(0, 45), (45, 125)]
-    for (a_in, a_out), (b_in, b_out) in zip(out, out[1:]):
+    for (a_in, a_out), (b_in, _b_out) in zip(out, out[1:], strict=False):
         assert a_out == b_in  # contiguous
         assert a_in < a_out   # no zero-length survives

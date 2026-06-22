@@ -301,7 +301,7 @@ class TimelineWithScenesOut(TimelineOut):
     """A timeline response that also carries the scene markers reconciled by the same edit
     (used by delete_words / cut-at-frame so the UI updates clips and markers in one round-trip)."""
 
-    scenes: list["SceneOut"] = Field(default_factory=list)
+    scenes: list[SceneOut] = Field(default_factory=list)
 
 
 class TimelineAudioClipBase(BaseModel):

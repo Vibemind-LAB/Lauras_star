@@ -131,7 +131,9 @@ def test_cut_at_frame_splits_clip_then_scene(
     s0 = scenes[0]
     mid = (s0["seq_in_frame"] + s0["seq_out_frame_exclusive"]) // 2
     assert mid == 30, f"fixture assumption: mid={mid}"
-    resp = api.post(f"/timelines/{timeline_id}/cut-at-frame", json={"at_seq_frame": mid}, headers=_H)
+    resp = api.post(
+        f"/timelines/{timeline_id}/cut-at-frame", json={"at_seq_frame": mid}, headers=_H
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body["clips"]) == len(clips) + 1, "clip was not split"

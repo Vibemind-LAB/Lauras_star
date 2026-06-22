@@ -43,7 +43,6 @@ from ..editing.otio_sync import (
     timeline_audio_sample_rate,
 )
 from ..editing.word_cut import map_asset_range_to_seq
-from ..scenes.reconcile import reconcile_after_delete
 from ..interchange.captions import join_words, segments_to_srt, segments_to_vtt
 from ..interchange.edl import timeline_to_edl
 from ..interchange.fcp7_xml import timeline_to_fcp7_xml
@@ -53,6 +52,7 @@ from ..interchange.timeline import Timeline
 from ..interchange.validate import validate_export
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..scenes.reconcile import reconcile_after_delete
 from ..timebase.sampling import frame_to_sample
 from .models import (
     ApplyFixOut,

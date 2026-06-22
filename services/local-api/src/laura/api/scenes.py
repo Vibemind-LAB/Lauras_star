@@ -12,14 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
+from ..editing.operations import EditClip, ordered, split_clip
+from ..editing.otio_sync import serialize_timeline_otio
 from ..scenes.build import (
     default_gap_frames,
     group_timeline_scenes,
     populate_rough_cut_from_shots,
 )
 from ..scenes.materialize import materialize_scene
-from ..editing.operations import EditClip, ordered, split_clip
-from ..editing.otio_sync import serialize_timeline_otio
 from .models import (
     ClipOut,
     CutAtFrameRequest,
