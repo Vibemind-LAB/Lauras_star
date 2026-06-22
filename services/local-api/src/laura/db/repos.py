@@ -1877,6 +1877,21 @@ def list_consent_records(db: Database, project_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def get_active_consent_id(db: Database, project_id: str) -> str | None:
+    """Newest non-revoked consent id for a project, or None.
+
+    Single-subject MVP for the auto-pipeline (spec §5 "consent once per subject"):
+    the most recent confirmed-and-not-revoked record is reused by auto-lipsync jobs.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM consent_records WHERE project_id=? AND revoked_at IS NULL "
+            "ORDER BY confirmed_at DESC LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        return str(row["id"]) if row is not None else None
+
+
 def revoke_consent_record(db: Database, consent_id: str) -> bool:
     """Mark a consent record as revoked. The reenact gate then refuses it.
 
