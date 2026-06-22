@@ -141,6 +141,11 @@ describe("FineCutView", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Szene 2" }));
     expect(onSeek).toHaveBeenCalledWith(sceneB.seq_in_frame);
+    // The seek object emitted by onSeek is forwarded to App.tsx which converts it
+    // to a new { frame } object (setSeek) that is then passed back as `seek` prop
+    // → SequencePlayer seekTo={seek} triggers the seek effect.
+    // Full player-seek (video scrub) is manuell zu prüfen (live CDP 9222) — jsdom cannot
+    // assert HTMLVideoElement.currentTime changes.
   });
 
   it("routes a transcript delete selection to deleteWords on the rough-cut", async () => {

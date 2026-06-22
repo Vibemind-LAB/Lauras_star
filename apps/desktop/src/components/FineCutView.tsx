@@ -26,6 +26,7 @@ export function FineCutView({
   roughCutId,
   segments,
   currentFrame,
+  seek,
   onSeek,
   onFrame,
 }: {
@@ -34,7 +35,12 @@ export function FineCutView({
   roughCutId: string | null;
   segments: Segment[];
   currentFrame: number;
-  /** Kept for App.tsx prop-type compatibility; unused — seek is driven by ContinuousTranscript. */
+  /**
+   * External seek in SEQUENCE frames. A new `{ frame }` object is passed by App.tsx each time the
+   * user clicks a transcript word or scene jump button (via onSeek → App.setSeek). Object-identity
+   * change triggers SequencePlayer's seekTo effect — the player scrubs to that frame.
+   * Flow: onSeek → App.setSeek({frame}) → new `seek` object → SequencePlayer re-seeks.
+   */
   seek: { frame: number } | null;
   onSeek: (f: number) => void;
   onFrame: (f: number) => void;
@@ -95,7 +101,7 @@ export function FineCutView({
             sequenceId={roughCutId}
             reloadKey={`${roughCutId}:${clips.length}`}
             clipsOverride={clips}
-            seekTo={null}
+            seekTo={seek}
             onFrame={onFrame}
           />
         </div>
