@@ -409,10 +409,10 @@ export function App(): ReactElement {
           listener otherwise pops the full-screen import overlay during clip/scene
           drags in Rough Cut / Feinschnitt / Zusammenfügen. */}
       {(stage === "import" || stage === "download") && <DropZone onImport={onDropImport} />}
-      <header className="flex items-center justify-between border-b border-edge bg-panel px-5 py-3">
+      <header className="flex items-center justify-between border-b border-bezel bg-surface-1 px-5 py-3">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-lg font-semibold tracking-tight text-white">Laura</h1>
-          <span className="text-xs text-slate-400">frame-genauer KI-Filmschnitt · local-first</span>
+          <h1 className="text-lg font-semibold tracking-tight text-content-strong">Laura</h1>
+          <span className="text-xs text-content-muted">frame-genauer KI-Filmschnitt · local-first</span>
         </div>
         {client && (
           <div className="flex items-center gap-2">
@@ -423,7 +423,7 @@ export function App(): ReactElement {
               }}
               disabled={projects.length === 0}
               aria-label="Projekt wählen"
-              className="max-w-[12rem] rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+              className="max-w-[12rem] rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             >
               <option value="">{projects.length ? "— Projekt wählen —" : "Kein Projekt"}</option>
               {projects.map((p) => (
@@ -446,7 +446,7 @@ export function App(): ReactElement {
                     void onDeleteProject(selectedProjectId);
                   }
                 }}
-                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-red-600/40 hover:text-red-200"
+                className="rounded bg-surface-2 px-2 py-1 text-xs text-content-muted hover:bg-red-600/40 hover:text-red-200"
               >
                 🗑
               </button>
@@ -457,13 +457,13 @@ export function App(): ReactElement {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Neues Projekt…"
                 aria-label="Neuer Projektname"
-                className="w-36 rounded bg-slate-800 px-2 py-1 text-xs text-slate-100"
+                className="w-36 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong"
               />
               <select
                 value={presetIdx}
                 onChange={(e) => setPresetIdx(Number(e.target.value))}
                 aria-label="Framerate"
-                className="rounded bg-slate-800 px-1 py-1 text-xs text-slate-100"
+                className="rounded bg-surface-2 px-1 py-1 text-xs text-content-strong"
               >
                 {FPS_PRESETS.map((p) => (
                   <option key={`${p.num}-${p.den}-${String(p.drop)}`} value={FPS_PRESETS.indexOf(p)}>
@@ -482,7 +482,7 @@ export function App(): ReactElement {
                 type="button"
                 onClick={() => void onCreateDemoProject()}
                 disabled={busy}
-                className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
               >
                 Demo
               </button>
@@ -494,7 +494,7 @@ export function App(): ReactElement {
       </header>
 
       {error && (
-        <div className="border-b border-red-900 bg-red-950/60 px-5 py-2 text-sm text-red-300">
+        <div className="border-b border-status-err/50 bg-status-err/10 px-5 py-2 text-sm text-status-err">
           {error}
         </div>
       )}
@@ -521,7 +521,7 @@ export function App(): ReactElement {
               onUrl={(u) => void runImport([], [u])}
             />
           ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-slate-600">Service offline — starte den lokalen Server.</div>
+            <div className="flex flex-1 items-center justify-center text-sm text-content-faint">Service offline — starte den lokalen Server.</div>
           ))}
 
           {stage === "import" && (client ? (
@@ -559,7 +559,7 @@ export function App(): ReactElement {
               }}
             />
           ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-slate-600">Service offline — starte den lokalen Server.</div>
+            <div className="flex flex-1 items-center justify-center text-sm text-content-faint">Service offline — starte den lokalen Server.</div>
           ))}
 
           {stage === "roughcut" && client && (
@@ -607,12 +607,11 @@ export function App(): ReactElement {
           {/* TODO(zusammenfuegen): dead legacy 4-zone layout — remove once unused handlers are pruned */}
           {(false as boolean) && (
             <>
-              <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-edge">
+              <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr_340px] gap-px overflow-hidden bg-bezel">
                 {/* Library: projects + media */}
-                <section className="flex flex-col overflow-hidden bg-ink">
-                  <div className="flex min-h-0 flex-1 flex-col border-b border-edge">
-                    <h2 className="px-4 pb-2 pt-4 text-xs font-medium uppercase tracking-wide text-slate-500">
-                      Projekte
+                <section className="flex flex-col overflow-hidden bg-surface-0">
+                  <div className="flex min-h-0 flex-1 flex-col border-b border-bezel">
+                    <h2 className="px-4 pb-2 pt-4 text-xs font-medium uppercase tracking-wide text-content-faint">                       Projekte
                     </h2>
                     <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3">
                       {projects.map((p) => (
@@ -623,17 +622,17 @@ export function App(): ReactElement {
                             className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm transition ${
                               p.id === selectedProjectId
                                 ? "bg-sky-600/20 text-sky-200"
-                                : "text-slate-200 hover:bg-panel"
+                                : "text-content-strong hover:bg-surface-2"
                             }`}
                           >
                             <div className="truncate font-medium">{p.name}</div>
-                            <div className="text-xs text-slate-500">{fpsLabel(p)} fps</div>
+                            <div className="text-xs text-content-faint">{fpsLabel(p)} fps</div>
                           </button>
                           <button
                             type="button"
                             onClick={() => void onDeleteProject(p.id)}
                             title="Projekt löschen"
-                            className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                            className="shrink-0 rounded px-2 py-1 text-content-faint hover:text-status-err"
                           >
                             ×
                           </button>
@@ -645,12 +644,12 @@ export function App(): ReactElement {
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         placeholder="Neues Projekt…"
-                        className="w-full rounded-md border border-edge bg-panel px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-500"
+                        className="w-full rounded-md border border-bezel bg-surface-1 px-3 py-2 text-sm text-content-strong outline-none focus:border-bezel"
                       />
                       <select
                         value={presetIdx}
                         onChange={(e) => setPresetIdx(Number(e.target.value))}
-                        className="w-full rounded-md border border-edge bg-panel px-2 py-2 text-xs text-slate-100 outline-none focus:border-slate-500"
+                        className="w-full rounded-md border border-bezel bg-surface-1 px-2 py-2 text-xs text-content-strong outline-none focus:border-bezel"
                       >
                         {FPS_PRESETS.map((p, i) => (
                           <option key={p.label} value={i}>
@@ -670,7 +669,7 @@ export function App(): ReactElement {
 
                   <div className="flex min-h-0 flex-1 flex-col">
                     <div className="flex items-center justify-between px-4 pb-2 pt-3">
-                      <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Medien</h2>
+                      <h2 className="text-xs font-medium uppercase tracking-wide text-content-faint">Medien</h2>
                     </div>
                     <div className="px-3 pb-2">
                       <ImportBar
@@ -709,7 +708,7 @@ export function App(): ReactElement {
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
                         disabled={!selectedProjectId}
-                        className="w-full rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-100 outline-none focus:border-slate-500 disabled:opacity-40"
+                        className="w-full rounded-md border border-bezel bg-surface-1 px-3 py-1.5 text-xs text-content-strong outline-none focus:border-bezel disabled:opacity-40"
                       />
                       <button
                         type="button"
@@ -717,25 +716,25 @@ export function App(): ReactElement {
                         disabled={!selectedProjectId}
                         title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
                         className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
-                          semantic ? "bg-sky-600/30 text-sky-200" : "bg-panel text-slate-400 hover:bg-edge"
+                          semantic ? "bg-sky-600/30 text-sky-200" : "bg-surface-1 text-content-muted hover:bg-surface-2"
                         }`}
                       >
                         {semantic ? "● semantisch" : "○ lexikalisch"}
                       </button>
                     </form>
                     {searchResults.length > 0 && (
-                      <ul className="max-h-40 space-y-1 overflow-auto border-b border-edge px-3 pb-2">
+                      <ul className="max-h-40 space-y-1 overflow-auto border-b border-bezel px-3 pb-2">
                         {searchResults.map((r) => (
                           <li key={r.segment_id}>
                             <button
                               type="button"
                               onClick={() => setSelectedAssetId(r.asset_id)}
-                              className="w-full truncate rounded bg-panel px-2 py-1 text-left text-xs text-slate-300 hover:bg-edge"
+                              className="w-full truncate rounded bg-surface-1 px-2 py-1 text-left text-xs text-content-strong hover:bg-surface-2"
                             >
                               {r.score != null && (
-                                <span className="mr-1 text-emerald-400">{Math.round(r.score * 100)}%</span>
+                                <span className="mr-1 text-status-ok">{Math.round(r.score * 100)}%</span>
                               )}
-                              <span className="text-slate-500">{r.asset_name}:</span> {r.text.slice(0, 60)}
+                              <span className="text-content-faint">{r.asset_name}:</span> {r.text.slice(0, 60)}
                             </button>
                           </li>
                         ))}
@@ -743,10 +742,10 @@ export function App(): ReactElement {
                     )}
                     <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-3">
                       {!selectedProjectId && (
-                        <li className="px-1 py-2 text-xs text-slate-600">Wähle ein Projekt.</li>
+                        <li className="px-1 py-2 text-xs text-content-faint">Wähle ein Projekt.</li>
                       )}
                       {selectedProjectId && assets.length === 0 && (
-                        <li className="px-1 py-2 text-xs text-slate-600">Noch keine Medien importiert.</li>
+                        <li className="px-1 py-2 text-xs text-content-faint">Noch keine Medien importiert.</li>
                       )}
                       {assets.map((a) => (
                         <li key={a.id} className="flex flex-col gap-0.5">
@@ -757,7 +756,7 @@ export function App(): ReactElement {
                               className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
                                 a.id === selectedAssetId
                                   ? "bg-sky-600/20 text-sky-200"
-                                  : "text-slate-200 hover:bg-panel"
+                                  : "text-content-strong hover:bg-surface-2"
                               }`}
                             >
                               {a.display_name}
@@ -766,7 +765,7 @@ export function App(): ReactElement {
                               type="button"
                               onClick={() => void onDeleteAsset(a.id)}
                               title="Medium löschen"
-                              className="shrink-0 rounded px-2 py-1 text-slate-600 hover:text-red-400"
+                              className="shrink-0 rounded px-2 py-1 text-content-faint hover:text-status-err"
                             >
                               ×
                             </button>
@@ -781,19 +780,18 @@ export function App(): ReactElement {
                 </section>
 
                 {/* Preview: the source player */}
-                <section className="flex flex-col overflow-auto bg-ink p-4">
+                <section className="flex flex-col overflow-auto bg-surface-0 p-4">
                   {client && detailAsset ? (
                     <Player asset={detailAsset} seekTo={seek} onFrame={setCurrentFrame} />
                   ) : (
-                    <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
-                      Wähle ein Medium oder importiere eines.
+                    <div className="flex flex-1 items-center justify-center text-sm text-content-faint">                       Wähle ein Medium oder importiere eines.
                     </div>
                   )}
                 </section>
 
                 {/* Inspector: frame-accurate scene editor when a clip is selected, else
                     analysis + metadata for the previewed asset. */}
-                <section className="flex flex-col overflow-hidden bg-ink">
+                <section className="flex flex-col overflow-hidden bg-surface-0">
                   {client && selectedClip && selectedClipAsset ? (
                     <SceneInspector
                       client={client}
@@ -814,8 +812,7 @@ export function App(): ReactElement {
                       buildResult={buildResult}
                     />
                   ) : (
-                    <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-slate-600">
-                      Inspector — wähle ein Medium.
+                    <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-content-faint">                       Inspector — wähle ein Medium.
                     </div>
                   )}
                 </section>
@@ -866,7 +863,7 @@ export function App(): ReactElement {
                 ]}
               />
             ) : (
-              <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+              <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
                 Service offline — starte den lokalen Server.
               </div>
             ))}
@@ -920,11 +917,15 @@ export function HealthBadge({ health, offline }: { health: Health | null; offlin
 
 function Badge({ color, text }: { color: "green" | "amber" | "red"; text: string }): ReactElement {
   const dot =
-    color === "green" ? "bg-emerald-400" : color === "amber" ? "bg-amber-400" : "bg-red-400";
+    color === "green" ? "bg-status-ok" : color === "amber" ? "bg-status-warn" : "bg-status-err";
   return (
-    <span className="flex items-center gap-2 rounded-full border border-edge bg-ink px-3 py-1 text-xs text-slate-300">
+    <span className="flex items-center gap-2 rounded-full border border-bezel bg-surface-0 px-3 py-1 text-xs text-content-muted">
       <span className={`h-2 w-2 rounded-full ${dot}`} />
       {text}
     </span>
   );
 }
+
+
+
+

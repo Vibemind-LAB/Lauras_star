@@ -30,14 +30,14 @@ export function SceneMusicControls({
   };
 
   return (
-    <div className="flex items-center gap-2 border-t border-edge px-3 py-2 text-xs">
-      <span className="text-slate-400">Musik</span>
+    <div className="flex items-center gap-2 border-t border-bezel px-3 py-2 text-xs">
+      <span className="text-content-muted">Musik</span>
       <select value={pick} onChange={(e) => setPick(e.target.value)}
-        className="rounded bg-slate-800 px-2 py-1 text-slate-100">
+        className="rounded bg-surface-2 px-2 py-1 text-content-strong">
         <option value="">— keine —</option>
         {assets.map((a) => <option key={a.id} value={a.id}>{a.display_name}</option>)}
       </select>
-      <label className="flex items-center gap-1 text-slate-400">
+      <label className="flex items-center gap-1 text-content-muted">
         Gain
         <input type="range" min={0} max={400} value={gain}
           onChange={(e) => setGain(Number(e.target.value))} />
@@ -47,8 +47,10 @@ export function SceneMusicControls({
         className="rounded bg-sky-600 px-2 py-1 text-white disabled:opacity-40">Musik setzen</button>
       {scene.music_asset_id && (
         <button type="button" onClick={() => void clear()}
-          className="rounded bg-slate-700 px-2 py-1 text-slate-200">entfernen</button>
+          className="rounded bg-surface-2 px-2 py-1 text-content-strong">entfernen</button>
       )}
     </div>
   );
 }
+
+

@@ -23,8 +23,8 @@ function fmtDuration(asset: Asset): string {
 function Row({ label, value }: { label: string; value: string }): ReactElement {
   return (
     <div className="flex justify-between gap-4 py-1 text-sm">
-      <span className="text-slate-500">{label}</span>
-      <span className="truncate text-right text-slate-200">{value}</span>
+      <span className="text-content-faint">{label}</span>
+      <span className="truncate text-right text-content-strong">{value}</span>
     </div>
   );
 }
@@ -95,10 +95,10 @@ export function InspectorPanel({
   return (
     <div className="space-y-4 overflow-auto p-4">
       <div className="flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wide text-slate-500">Analyse</span>
+        <span className="text-xs uppercase tracking-wide text-content-faint">Analyse</span>
         <div className="flex items-center gap-2">
           <label
-            className="flex items-center gap-1 text-[10px] text-slate-400"
+            className="flex items-center gap-1 text-[10px] text-content-muted"
             title="Sprecher-Diarisierung (pyannote)"
           >
             <input
@@ -111,7 +111,7 @@ export function InspectorPanel({
             Diarize
           </label>
           <label
-            className="flex items-center gap-1 text-[10px] text-slate-400"
+            className="flex items-center gap-1 text-[10px] text-content-muted"
             title="Wort-Alignment (WhisperX)"
           >
             <input
@@ -128,7 +128,7 @@ export function InspectorPanel({
             onChange={(e) => analysis.setDetector(e.target.value)}
             disabled={running}
             title="Szenen-Detektor (Hybrid fusioniert Adaptive + TransNetV2 mit Confidence; TransNetV2 nutzt das optionale ML-Modell, sonst Fallback auf Adaptive)"
-            className="rounded border border-edge bg-ink px-1 py-0.5 text-[10px] text-slate-400 disabled:opacity-40"
+            className="rounded border border-bezel bg-surface-0 px-1 py-0.5 text-[10px] text-content-muted disabled:opacity-40"
           >
             <option value="hybrid">Hybrid (Adaptive + TransNetV2) — empfohlen</option>
             <option value="adaptive">Adaptive</option>
@@ -140,21 +140,20 @@ export function InspectorPanel({
             type="button"
             onClick={() => void analysis.runAnalysis()}
             disabled={running}
-            className="rounded-md bg-ink px-2 py-1 text-xs text-slate-200 transition hover:bg-edge disabled:opacity-40"
+            className="rounded-md bg-surface-0 px-2 py-1 text-xs text-content-strong transition hover:bg-surface-2 disabled:opacity-40"
           >
             {running ? "Analysiere…" : "Analyse starten"}
           </button>
         </div>
       </div>
 
-      {analysis.error && <div className="text-xs text-red-400">{analysis.error}</div>}
+      {analysis.error && <div className="text-xs text-status-err">{analysis.error}</div>}
 
       <div>
         {(() => {
           const droppedCount = analysis.shots.filter((s) => s.keep === false).length;
           return (
-            <div className="mb-1 text-xs text-slate-500">
-              Shots ({analysis.shots.length}
+            <div className="mb-1 text-xs text-content-faint">`n              Shots ({analysis.shots.length}
               {droppedCount > 0 ? ` · ${droppedCount} verworfen` : ""})
             </div>
           );
@@ -174,8 +173,7 @@ export function InspectorPanel({
           Rough Cut aus Szenen bauen
         </button>
         {buildResult && (
-          <div className="mt-1 text-xs text-slate-400">
-            {buildResult.kept} Szenen übernommen · {buildResult.dropped} verworfen
+          <div className="mt-1 text-xs text-content-muted">`n            {buildResult.kept} Szenen übernommen · {buildResult.dropped} verworfen
           </div>
         )}
       </div>
@@ -185,20 +183,20 @@ export function InspectorPanel({
           <img
             src={posterUrl}
             alt="poster"
-            className="h-16 w-28 rounded-md border border-edge object-cover"
+            className="h-16 w-28 rounded-md border border-bezel object-cover"
           />
         ) : (
-          <div className="flex h-16 w-28 items-center justify-center rounded-md border border-edge bg-ink text-xs text-slate-600">
+          <div className="flex h-16 w-28 items-center justify-center rounded-md border border-bezel bg-surface-0 text-xs text-content-faint">
             {asset.type === "video" ? "kein Poster" : "Audio"}
           </div>
         )}
         <div className="min-w-0">
-          <div className="truncate font-medium text-slate-100">{asset.display_name}</div>
-          <div className="truncate text-xs text-slate-500">{asset.id}</div>
+          <div className="truncate font-medium text-content-strong">{asset.display_name}</div>
+          <div className="truncate text-xs text-content-faint">{asset.id}</div>
         </div>
       </div>
 
-      <div className="rounded-lg border border-edge bg-ink px-4 py-2">
+      <div className="rounded-lg border border-bezel bg-surface-0 px-4 py-2">
         <Row label="Typ" value={asset.type} />
         <Row
           label="Auflösung"
@@ -215,11 +213,11 @@ export function InspectorPanel({
       </div>
 
       <div>
-        <div className="mb-1 text-xs uppercase tracking-wide text-slate-500">Waveform</div>
+        <div className="mb-1 text-xs uppercase tracking-wide text-content-faint">Waveform</div>
         {peaks ? (
           <Waveform peaks={peaks} />
         ) : (
-          <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-edge text-xs text-slate-600">
+          <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-bezel text-xs text-content-faint">
             {waveformReady ? "lade…" : "wird analysiert…"}
           </div>
         )}
@@ -227,3 +225,4 @@ export function InspectorPanel({
     </div>
   );
 }
+

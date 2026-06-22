@@ -21,11 +21,11 @@ export interface ReenactPanelProps {
 }
 
 function jobChipClass(status: string): string {
-  if (status === "failed") return "border-red-800 bg-red-950/40 text-red-200";
-  if (status === "succeeded") return "border-emerald-800 bg-emerald-950/30 text-emerald-200";
+  if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
+  if (status === "succeeded") return "border-status-ok bg-status-ok/20 text-status-ok";
   if (status === "running" || status === "leased" || status === "queued")
     return "border-sky-800 bg-sky-950/30 text-sky-200";
-  return "border-edge bg-panel text-slate-300";
+  return "border-bezel bg-surface-1 text-content-muted";
 }
 
 function jobChipLabel(status: string): string {
@@ -173,7 +173,7 @@ export function ReenactPanel({
     !portraitAssetId;
 
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-edge bg-ink/60 p-3">
+    <div className="flex flex-col gap-3 rounded-md border border-bezel bg-surface-0/60 p-3">
       {/* Heading */}
       <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-300">
         Reenact (Identitäts-Ebene)
@@ -181,14 +181,14 @@ export function ReenactPanel({
 
       {/* ── Consent step ── */}
       <div className="flex flex-col gap-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-content-faint">
           Schritt 1 — Consent
         </span>
 
-        {consentError && <div className="text-xs text-red-400">{consentError}</div>}
+        {consentError && <div className="text-xs text-status-err">{consentError}</div>}
 
         {confirmedLabel !== null ? (
-          <div className="text-xs text-emerald-400">
+          <div className="text-xs text-status-ok">
             ✓ Consent für <span className="font-semibold">{confirmedLabel}</span>
           </div>
         ) : (
@@ -200,7 +200,7 @@ export function ReenactPanel({
               onChange={(e) => setSubjectLabel(e.target.value)}
               disabled={consentBusy}
               aria-label="Subjekt-Label für Consent"
-              className="min-w-0 flex-1 rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600 disabled:opacity-50"
+              className="min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-50"
             />
             <button
               type="button"
@@ -216,11 +216,11 @@ export function ReenactPanel({
 
       {/* ── Reenact step ── */}
       <div className="flex flex-col gap-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-content-faint">
           Schritt 2 — Reenact
         </span>
 
-        {reenactError !== null && <div className="text-xs text-red-400">{reenactError}</div>}
+        {reenactError !== null && <div className="text-xs text-status-err">{reenactError}</div>}
 
         {/* Live job status chip */}
         {lastJobId !== null && jobStatus !== null && (
@@ -231,12 +231,12 @@ export function ReenactPanel({
               >
                 {jobChipLabel(jobStatus.status)}
               </span>
-              <span className="truncate text-[10px] text-slate-600">{lastJobId}</span>
+              <span className="truncate text-[10px] text-content-faint">{lastJobId}</span>
             </div>
             {jobStatus.status === "failed" && (
               <>
                 {jobError !== null && (
-                  <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs text-red-200">
+                  <div className="rounded border border-status-err/40 bg-status-err/10 p-2 text-xs text-status-err">
                     {jobError}
                   </div>
                 )}
@@ -260,7 +260,7 @@ export function ReenactPanel({
             onChange={(e) => setPortraitAssetId(e.target.value)}
             disabled={reenactBusy || isRunning || assets.length === 0}
             aria-label="Portrait-Asset auswählen"
-            className="min-w-0 flex-1 truncate rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
+            className="min-w-0 flex-1 truncate rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
           >
             {assets.length === 0 ? (
               <option value="">— keine Assets —</option>
@@ -278,7 +278,7 @@ export function ReenactPanel({
             onChange={(e) => setBackend(e.target.value === "liveportrait" ? "liveportrait" : "stub")}
             disabled={reenactBusy || isRunning}
             aria-label="Reenact-Backend auswählen"
-            className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
           >
             <option value="stub">Stub</option>
             <option value="liveportrait">LivePortrait Sidecar</option>
@@ -286,7 +286,7 @@ export function ReenactPanel({
 
           {/* seq in */}
           <div className="flex flex-col gap-0.5">
-            <label className="flex items-center gap-1 text-xs text-slate-400">
+            <label className="flex items-center gap-1 text-xs text-content-muted">
               <span>seq in</span>
               <input
                 type="number"
@@ -296,9 +296,9 @@ export function ReenactPanel({
                 onChange={(e) => setSeqIn(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
                 disabled={reenactBusy || isRunning}
                 aria-label="Sequenz-Einpunkt (Frames)"
-                className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+                className="w-20 rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-xs tabular-nums text-content-strong disabled:opacity-50"
               />
-              <span className="text-[10px] text-slate-600 tabular-nums">
+              <span className="text-[10px] text-content-faint tabular-nums">
                 {framesToTimecode(seqIn, rateNum, rateDen)}
               </span>
             </label>
@@ -306,7 +306,7 @@ export function ReenactPanel({
               type="button"
               onClick={() => setSeqIn(Math.max(0, Math.trunc(currentSeqFrame)))}
               disabled={reenactBusy || isRunning || !Number.isFinite(currentSeqFrame)}
-              className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+              className="self-start rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-[10px] text-content-muted hover:bg-surface-2 hover:text-content-strong disabled:opacity-40"
             >
               In = Playhead
             </button>
@@ -314,7 +314,7 @@ export function ReenactPanel({
 
           {/* seq out */}
           <div className="flex flex-col gap-0.5">
-            <label className="flex items-center gap-1 text-xs text-slate-400">
+            <label className="flex items-center gap-1 text-xs text-content-muted">
               <span>seq out</span>
               <input
                 type="number"
@@ -324,9 +324,9 @@ export function ReenactPanel({
                 onChange={(e) => setSeqOut(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
                 disabled={reenactBusy || isRunning}
                 aria-label="Sequenz-Auspunkt exklusiv (Frames)"
-                className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+                className="w-20 rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-xs tabular-nums text-content-strong disabled:opacity-50"
               />
-              <span className="text-[10px] text-slate-600 tabular-nums">
+              <span className="text-[10px] text-content-faint tabular-nums">
                 {framesToTimecode(seqOut, rateNum, rateDen)}
               </span>
             </label>
@@ -334,7 +334,7 @@ export function ReenactPanel({
               type="button"
               onClick={() => setSeqOut(Math.max(0, Math.trunc(currentSeqFrame)))}
               disabled={reenactBusy || isRunning || !Number.isFinite(currentSeqFrame)}
-              className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+              className="self-start rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-[10px] text-content-muted hover:bg-surface-2 hover:text-content-strong disabled:opacity-40"
             >
               Out = Playhead
             </button>
@@ -354,10 +354,12 @@ export function ReenactPanel({
       </div>
 
       {/* Muted hint */}
-      <p className="text-[10px] leading-relaxed text-slate-600">
+      <p className="text-[10px] leading-relaxed text-content-faint">
         Stub erzeugt eine sichtbar markierte Platzhalter-Ausgabe. LivePortrait nutzt den lokalen Sidecar unter LAURA_LIVEPORTRAIT_URL.
         Die Ausgabe wird als <span className="italic">synthetic</span> gekennzeichnet.
       </p>
     </div>
   );
 }
+
+

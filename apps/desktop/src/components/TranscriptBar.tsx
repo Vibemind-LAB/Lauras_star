@@ -36,7 +36,7 @@ function SegmentText({
             <button
               type="button"
               onClick={() => onSeek(w.start_frame)}
-              className={`rounded px-0.5 hover:bg-edge ${active ? "bg-sky-600/50 text-white" : ""}`}
+              className={`rounded px-0.5 hover:bg-surface-2 ${active ? "bg-sky-600/50 text-white" : ""}`}
             >
               {w.text}
             </button>{" "}
@@ -153,19 +153,19 @@ export function TranscriptBar({
   if (cutWords !== undefined) {
     const hasWords = cutWords.length > 0;
     return (
-      <div className="flex h-32 flex-col border-t border-edge bg-panel">
+      <div className="flex h-32 flex-col border-t border-bezel bg-surface-1">
         <div className="flex items-center justify-between px-5 py-1.5">
-          <span className="text-xs uppercase tracking-wide text-slate-500">Transkript (Schnitt)</span>
+          <span className="text-xs uppercase tracking-wide text-content-faint">Transkript (Schnitt)</span>
           <span className="flex items-center gap-1">
-            {error && <span className="mr-2 text-xs text-red-400">{error}</span>}
+            {error && <span className="mr-2 text-xs text-status-err">{error}</span>}
           </span>
         </div>
         {!hasWords ? (
-          <div className="flex flex-1 items-center px-5 text-xs text-slate-600">
+          <div className="flex flex-1 items-center px-5 text-xs text-content-faint">
             {assetId ? "Keine Wörter im Schnitt." : "Wähle ein Medium."}
           </div>
         ) : (
-          <div className="flex-1 overflow-auto px-5 pb-2 text-sm leading-relaxed text-slate-200">
+          <div className="flex-1 overflow-auto px-5 pb-2 text-sm leading-relaxed text-content-strong">
             {cutWords.map((w) => {
               const active = currentFrame >= w.srcFrame && currentFrame < w.srcEndFrame;
               return (
@@ -173,7 +173,7 @@ export function TranscriptBar({
                   <button
                     type="button"
                     onClick={() => onSeek(w.srcFrame)}
-                    className={`rounded px-0.5 hover:bg-edge ${active ? "bg-sky-600/50 text-white" : ""}`}
+                    className={`rounded px-0.5 hover:bg-surface-2 ${active ? "bg-sky-600/50 text-white" : ""}`}
                   >
                     {w.text}
                   </button>{" "}
@@ -188,11 +188,11 @@ export function TranscriptBar({
 
   // Default (raw-segment) mode — used by App.tsx / ImportView / RoughCut etc.
   return (
-    <div className="flex h-32 flex-col border-t border-edge bg-panel">
+    <div className="flex h-32 flex-col border-t border-bezel bg-surface-1">
       <div className="flex items-center justify-between px-5 py-1.5">
-        <span className="text-xs uppercase tracking-wide text-slate-500">Transkript</span>
+        <span className="text-xs uppercase tracking-wide text-content-faint">Transkript</span>
         <span className="flex items-center gap-1">
-          {error && <span className="mr-2 text-xs text-red-400">{error}</span>}
+          {error && <span className="mr-2 text-xs text-status-err">{error}</span>}
           {segments.length > 0 && (
             <>
               <input
@@ -201,24 +201,24 @@ export function TranscriptBar({
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Im Transkript suchen"
                 aria-label="Im Transkript suchen"
-                className="w-40 rounded bg-ink px-2 py-0.5 text-xs text-slate-200 placeholder:text-slate-600"
+                className="w-40 rounded bg-surface-0 px-2 py-0.5 text-xs text-content-strong placeholder:text-content-faint"
               />
               {query && (
-                <span className="mr-1 text-[10px] tabular-nums text-slate-500">
+                <span className="mr-1 text-[10px] tabular-nums text-content-faint">
                   {matchCount} Treffer
                 </span>
               )}
               <button
                 type="button"
                 onClick={() => void exportCaptions("srt")}
-                className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge"
+                className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2"
               >
                 SRT
               </button>
               <button
                 type="button"
                 onClick={() => void exportCaptions("vtt")}
-                className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge"
+                className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2"
               >
                 VTT
               </button>
@@ -227,11 +227,11 @@ export function TranscriptBar({
         </span>
       </div>
       {segments.length === 0 ? (
-        <div className="flex flex-1 items-center px-5 text-xs text-slate-600">
+        <div className="flex flex-1 items-center px-5 text-xs text-content-faint">
           {note ?? (assetId ? "noch kein Transkript" : "Wähle ein Medium.")}
         </div>
       ) : (
-        <div className="flex-1 space-y-1 overflow-auto px-5 pb-2 text-sm text-slate-200">
+        <div className="flex-1 space-y-1 overflow-auto px-5 pb-2 text-sm text-content-strong">
           {segments.map((seg) => {
             const active =
               currentFrame >= seg.start_frame && currentFrame < seg.end_frame;
@@ -246,7 +246,7 @@ export function TranscriptBar({
                 } ${dimmed ? "opacity-40" : ""}`}
               >
                 {seg.speaker_label && (
-                  <span className="mr-1 rounded bg-ink px-1.5 py-0.5 text-xs text-sky-300">
+                  <span className="mr-1 rounded bg-surface-0 px-1.5 py-0.5 text-xs text-sky-300">
                     {seg.speaker_label}
                   </span>
                 )}
@@ -268,14 +268,14 @@ export function TranscriptBar({
                           cancelEdit();
                         }
                       }}
-                      className="w-64 max-w-full rounded bg-ink px-1 align-middle text-sm text-slate-100"
+                      className="w-64 max-w-full rounded bg-surface-0 px-1 align-middle text-sm text-content-strong"
                     />
                     <button
                       type="button"
                       onClick={() => void saveEdit(seg.id)}
                       disabled={saving}
                       title="Speichern"
-                      className="rounded bg-ink px-1 text-xs text-emerald-300 hover:bg-edge disabled:opacity-50"
+                      className="rounded bg-surface-0 px-1 text-xs text-status-ok hover:bg-surface-2 disabled:opacity-50"
                     >
                       ✓
                     </button>
@@ -284,7 +284,7 @@ export function TranscriptBar({
                       onClick={cancelEdit}
                       disabled={saving}
                       title="Abbrechen"
-                      className="rounded bg-ink px-1 text-xs text-slate-400 hover:bg-edge disabled:opacity-50"
+                      className="rounded bg-surface-0 px-1 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-50"
                     >
                       ✕
                     </button>
@@ -297,7 +297,7 @@ export function TranscriptBar({
                         type="button"
                         onClick={() => onAppendSegment(seg)}
                         title="an Rough Cut anhängen"
-                        className="ml-0.5 rounded bg-ink px-1 text-xs text-emerald-300 hover:bg-edge"
+                        className="ml-0.5 rounded bg-surface-0 px-1 text-xs text-status-ok hover:bg-surface-2"
                       >
                         →
                       </button>
@@ -309,7 +309,7 @@ export function TranscriptBar({
                           onDeleteWords(seg.words[0].id, seg.words[seg.words.length - 1].id)
                         }
                         title="Segment ripple-löschen"
-                        className="ml-0.5 rounded bg-ink px-1 text-xs text-red-400 hover:bg-red-600/40"
+                        className="ml-0.5 rounded bg-surface-0 px-1 text-xs text-red-400 hover:bg-red-600/40"
                       >
                         ✂
                       </button>
@@ -323,7 +323,7 @@ export function TranscriptBar({
                           setEditingId(seg.id);
                         }}
                         title="Transkript bearbeiten"
-                        className="ml-0.5 rounded bg-ink px-1 text-xs text-slate-300 hover:bg-edge"
+                        className="ml-0.5 rounded bg-surface-0 px-1 text-xs text-content-muted hover:bg-surface-2"
                       >
                         ✎
                       </button>
@@ -338,3 +338,5 @@ export function TranscriptBar({
     </div>
   );
 }
+
+

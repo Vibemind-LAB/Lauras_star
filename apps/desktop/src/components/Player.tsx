@@ -204,10 +204,9 @@ export function Player({
       onKeyDown={onKeyDown}
       className="flex min-h-0 flex-1 flex-col gap-2 rounded-md outline-none focus:ring-1 focus:ring-sky-600/50"
     >
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-edge bg-black">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-bezel bg-black">
         {loadError ? (
-          <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-red-400">
-            {loadError}
+          <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-status-err">`n            {loadError}
           </div>
         ) : url ? (
           <video
@@ -239,7 +238,7 @@ export function Player({
             }}
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex h-full w-full items-center justify-center text-xs text-content-faint">
             {proxyReady ? "lade Proxy…" : "Proxy wird erstellt…"}
           </div>
         )}
@@ -250,7 +249,7 @@ export function Player({
           type="button"
           onClick={() => step(-1)}
           disabled={!url}
-          className="rounded bg-panel px-2 py-1 text-xs text-slate-200 hover:bg-edge disabled:opacity-40"
+          className="rounded bg-surface-1 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
         >
           ◀ Frame
         </button>
@@ -266,7 +265,7 @@ export function Player({
           type="button"
           onClick={() => step(1)}
           disabled={!url}
-          className="rounded bg-panel px-2 py-1 text-xs text-slate-200 hover:bg-edge disabled:opacity-40"
+          className="rounded bg-surface-1 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
         >
           Frame ▶
         </button>
@@ -279,9 +278,9 @@ export function Player({
           disabled={!url || total === 0}
           className="flex-1 accent-sky-500"
         />
-        <span className="w-36 shrink-0 text-right text-xs tabular-nums text-slate-400">
+        <span className="w-36 shrink-0 text-right text-xs tabular-nums text-content-muted">
           {shuttle !== 0 && (
-            <span className="mr-1 text-amber-400">
+            <span className="mr-1 text-status-warn">
               {shuttle > 0 ? `▶▶${shuttle}×` : `◀◀${-shuttle}×`}
             </span>
           )}
@@ -289,9 +288,10 @@ export function Player({
           {total ? ` / ${total}` : ""} f
         </span>
       </div>
-      <div className="text-[10px] text-slate-600">
+      <div className="text-[10px] text-content-faint">
         J/K/L Shuttle · ←/→ Frame · Shift+←/→ Sekunde · Home/End · Leertaste
       </div>
     </div>
   );
 }
+

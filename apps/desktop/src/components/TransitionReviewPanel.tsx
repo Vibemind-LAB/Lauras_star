@@ -4,8 +4,8 @@ import { type LauraClient, type SmoothnessLabel } from "../api";
 import { useTransitionReview } from "../hooks/useTransitionReview";
 
 function scoreColor(smoothness: number): string {
-  if (smoothness >= 0.7) return "bg-emerald-600/30 text-emerald-300";
-  if (smoothness >= 0.4) return "bg-amber-600/30 text-amber-300";
+  if (smoothness >= 0.7) return "bg-status-ok/20 text-status-ok";
+  if (smoothness >= 0.4) return "bg-status-warn/20 text-status-warn";
   return "bg-red-600/30 text-red-300";
 }
 
@@ -32,9 +32,9 @@ export function TransitionReviewPanel({
   const hasTransitionFix = verdicts.some((v) => v.suggested_fix.kind === "transition");
 
   return (
-    <div className="border-t border-edge bg-panel px-3 py-2 text-xs">
+    <div className="border-t border-bezel bg-surface-1 px-3 py-2 text-xs">
       <div className="mb-2 flex items-center justify-between">
-        <span className="font-medium text-slate-300">Übergänge prüfen</span>
+        <span className="font-medium text-content-muted">Übergänge prüfen</span>
         <button
           type="button"
           disabled={loading || timelineId == null}
@@ -48,7 +48,7 @@ export function TransitionReviewPanel({
       {error && <p className="mb-1 text-red-400">{error}</p>}
 
       {verdicts.length === 0 && !loading && (
-        <p className="text-slate-500">
+        <p className="text-content-faint">
           Noch keine Bewertung. „Prüfen" startet das lokale Modell (einmaliger Download beim
           ersten Lauf).
         </p>
@@ -58,21 +58,21 @@ export function TransitionReviewPanel({
         {verdicts.map((v) => (
           <li
             key={`${v.boundary_seq_frame}-${v.src_out_a}`}
-            className="flex items-center justify-between gap-2 rounded bg-ink/60 px-2 py-1"
+            className="flex items-center justify-between gap-2 rounded bg-surface-0/60 px-2 py-1"
           >
             <span className={`rounded px-1 tabular-nums ${scoreColor(v.smoothness)}`}>
               {Math.round(v.smoothness * 100)}
             </span>
-            <span className="flex-1 truncate text-slate-300" title={v.reason}>
+            <span className="flex-1 truncate text-content-muted" title={v.reason}>
               {LABEL_DE[v.label] ?? v.label}
             </span>
             {v.suggested_fix.kind === "none" ? (
-              <span className="px-2 py-0.5 text-slate-600">ok</span>
+              <span className="px-2 py-0.5 text-content-faint">ok</span>
             ) : (
               <button
                 type="button"
                 onClick={() => void apply(v)}
-                className="rounded bg-emerald-600/20 px-2 py-0.5 text-emerald-300 hover:bg-emerald-600/30"
+                className="rounded bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
               >
                 {v.suggested_fix.kind === "transition" ? "Blende" : "Resnap"}
               </button>
@@ -82,10 +82,12 @@ export function TransitionReviewPanel({
       </ul>
 
       {hasTransitionFix && (
-        <p className="mt-1 text-[10px] text-slate-500">
+        <p className="mt-1 text-[10px] text-content-faint">
           Crossfade erscheint im Export/Render, nicht in der Live-Vorschau.
         </p>
       )}
     </div>
   );
 }
+
+

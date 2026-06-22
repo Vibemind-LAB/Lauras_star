@@ -97,20 +97,20 @@ export function DemoAssistantPanel({
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded border border-edge bg-panel/50 p-3">
+    <section className="flex flex-col gap-3 rounded border border-bezel bg-surface-1/50 p-3">
       <div>
-        <div className="text-xs font-semibold text-slate-200">Demo-Draft</div>
-        <div className="text-[11px] text-slate-600">Produktstory aus Shots und Transkript</div>
+        <div className="text-xs font-semibold text-content-strong">Demo-Draft</div>
+        <div className="text-[11px] text-content-faint">Produktstory aus Shots und Transkript</div>
       </div>
 
       {error !== null && (
-        <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs text-red-200">
+        <div className="rounded border border-status-err/40 bg-status-err/10 p-2 text-xs text-status-err">
           {error}
         </div>
       )}
       {status !== null && <div className="text-xs text-sky-400">{status}</div>}
 
-      <label className="flex flex-col gap-1 text-xs text-slate-400">
+      <label className="flex flex-col gap-1 text-xs text-content-muted">
         Video
         <select
           value={assetId}
@@ -121,7 +121,7 @@ export function DemoAssistantPanel({
             setStatus(null);
           }}
           disabled={busy || videoAssets.length === 0}
-          className="rounded border border-edge bg-ink px-2 py-1 text-slate-200 disabled:opacity-50"
+          className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
         >
           {videoAssets.length === 0 ? (
             <option value="">Keine Video-Assets</option>
@@ -149,10 +149,10 @@ export function DemoAssistantPanel({
           {items.map((item, index) => (
             <article
               key={`${item.src_in_frame}:${item.src_out_frame_exclusive}:${index}`}
-              className="rounded border border-edge bg-ink p-2 text-xs"
+              className="rounded border border-bezel bg-surface-0 p-2 text-xs"
             >
               <div className="mb-2 flex items-center justify-between gap-2">
-                <label className="flex items-center gap-2 font-medium text-slate-200">
+                <label className="flex items-center gap-2 font-medium text-content-strong">
                   <input
                     aria-label={`Demo-Item ${index + 1} aktiv`}
                     type="checkbox"
@@ -163,19 +163,19 @@ export function DemoAssistantPanel({
                   />
                   Shot {index + 1}
                 </label>
-                <span className="tabular-nums text-slate-600">{itemDuration(item)}</span>
+                <span className="tabular-nums text-content-faint">{itemDuration(item)}</span>
               </div>
-              <label className="mb-2 flex flex-col gap-1 text-slate-400">
+              <label className="mb-2 flex flex-col gap-1 text-content-muted">
                 Label
                 <input
                   aria-label={`Demo-Label ${index + 1}`}
                   value={item.label}
                   onChange={(e) => updateItem(index, { label: e.target.value })}
                   disabled={busy}
-                  className="rounded border border-edge bg-panel px-2 py-1 text-slate-200 disabled:opacity-50"
+                  className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-strong disabled:opacity-50"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-slate-400">
+              <label className="flex flex-col gap-1 text-content-muted">
                 Voiceover
                 <textarea
                   aria-label={`Demo-Voiceovertext ${index + 1}`}
@@ -183,7 +183,7 @@ export function DemoAssistantPanel({
                   onChange={(e) => updateItem(index, { voiceover_text: e.target.value })}
                   disabled={busy}
                   rows={3}
-                  className="resize-y rounded border border-edge bg-panel px-2 py-1 text-slate-200 disabled:opacity-50"
+                  className="resize-y rounded border border-bezel bg-surface-1 px-2 py-1 text-content-strong disabled:opacity-50"
                 />
               </label>
             </article>
@@ -192,7 +192,7 @@ export function DemoAssistantPanel({
             type="button"
             onClick={() => void applyDraft()}
             disabled={busy || draft === null || items.every((item) => !item.enabled)}
-            className="self-start rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+            className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent disabled:opacity-40"
           >
             In Sequenz übernehmen
           </button>
@@ -201,3 +201,5 @@ export function DemoAssistantPanel({
     </section>
   );
 }
+
+

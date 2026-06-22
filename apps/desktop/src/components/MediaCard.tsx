@@ -21,14 +21,14 @@ export function MediaCard({
     return () => { active = false; };
   }, [thumbnail]);
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-edge bg-panel">
-      <button type="button" onClick={onClick} className="flex aspect-video w-full items-center justify-center bg-black text-slate-700">
+    <div className="flex flex-col overflow-hidden rounded-lg border border-bezel bg-surface-1">
+      <button type="button" onClick={onClick} className="flex aspect-video w-full items-center justify-center bg-black text-content-faint">
         {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <span className="text-xs">kein Vorschaubild</span>}
       </button>
       <div className="flex items-start justify-between gap-2 p-2">
         <button type="button" onClick={onClick} className="min-w-0 text-left">
-          <div className="truncate text-sm text-slate-100">{title}</div>
-          {meta && <div className="truncate text-[11px] text-slate-500">{meta}</div>}
+          <div className="truncate text-sm text-content-strong">{title}</div>
+          {meta && <div className="truncate text-[11px] text-content-faint">{meta}</div>}
         </button>
         {menu}
       </div>

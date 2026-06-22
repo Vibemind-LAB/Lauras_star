@@ -124,24 +124,24 @@ export function AudioLaneControls({
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded border border-edge bg-panel/50 p-3">
+    <section className="flex flex-col gap-3 rounded border border-bezel bg-surface-1/50 p-3">
       <div>
-        <div className="text-xs font-semibold text-slate-200">Audio-Lane</div>
-        <div className="text-[11px] text-slate-600">Musik oder Voiceover auf A2 platzieren</div>
+        <div className="text-xs font-semibold text-content-strong">Audio-Lane</div>
+        <div className="text-[11px] text-content-faint">Musik oder Voiceover auf A2 platzieren</div>
       </div>
       {error !== null && (
-        <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs text-red-200">
+        <div className="rounded border border-status-err/40 bg-status-err/10 p-2 text-xs text-status-err">
           {error}
         </div>
       )}
       <div className="grid grid-cols-2 gap-2 text-xs">
-        <label className="col-span-2 flex flex-col gap-1 text-slate-400">
+        <label className="col-span-2 flex flex-col gap-1 text-content-muted">
           Audio
           <select
             value={assetId}
             onChange={(e) => setAssetId(e.target.value)}
             disabled={busy || audioAssets.length === 0}
-            className="rounded border border-edge bg-ink px-2 py-1 text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             {audioAssets.length === 0 ? (
               <option value="">Keine Audio-Assets</option>
@@ -154,16 +154,16 @@ export function AudioLaneControls({
             )}
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           Label
           <input
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           Audio gain
           <input
             aria-label="Audio gain"
@@ -174,23 +174,23 @@ export function AudioLaneControls({
             value={gain}
             onChange={(e) => setGain(Math.trunc(Number(e.target.value)) || 0)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           Modus
           <select
             value={mixMode}
             onChange={(e) => setMixMode(e.target.value as AudioMixMode)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             <option value="mix">Mix</option>
             <option value="replace_original">Original ersetzen</option>
             <option value="mute_original">Original muten</option>
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           Original ducking %
           <input
             aria-label="Original ducking"
@@ -201,10 +201,10 @@ export function AudioLaneControls({
             value={ducking}
             onChange={(e) => setDucking(Math.max(0, Math.min(100, Math.trunc(Number(e.target.value)) || 0)))}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           seq in
           <input
             aria-label="Audio seq in"
@@ -214,10 +214,10 @@ export function AudioLaneControls({
             value={seqIn}
             onChange={(e) => setSeqIn(Math.trunc(Number(e.target.value)) || 0)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           seq out
           <input
             aria-label="Audio seq out"
@@ -227,10 +227,10 @@ export function AudioLaneControls({
             value={seqOut}
             onChange={(e) => setSeqOut(Math.trunc(Number(e.target.value)) || 0)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           asset in
           <input
             type="number"
@@ -239,10 +239,10 @@ export function AudioLaneControls({
             value={assetIn}
             onChange={(e) => setAssetIn(Math.trunc(Number(e.target.value)) || 0)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           fade in
           <input
             type="number"
@@ -251,10 +251,10 @@ export function AudioLaneControls({
             value={fadeIn}
             onChange={(e) => setFadeIn(Math.trunc(Number(e.target.value)) || 0)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           fade out
           <input
             type="number"
@@ -263,7 +263,7 @@ export function AudioLaneControls({
             value={fadeOut}
             onChange={(e) => setFadeOut(Math.trunc(Number(e.target.value)) || 0)}
             disabled={busy}
-            className="rounded border border-edge bg-ink px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
       </div>
@@ -271,27 +271,27 @@ export function AudioLaneControls({
         type="button"
         onClick={() => void submit()}
         disabled={busy || !timelineId || audioAssets.length === 0}
-        className="self-start rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+        className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent disabled:opacity-40"
       >
         Audio einsetzen
       </button>
       <div className="flex flex-col gap-2">
         {clips.length === 0 ? (
-          <div className="text-xs text-slate-600">Noch keine A2-Clips.</div>
+          <div className="text-xs text-content-faint">Noch keine A2-Clips.</div>
         ) : (
           clips.map((clip) => (
             <div
               key={clip.id}
-              className="grid grid-cols-[1fr_auto] gap-2 rounded border border-edge bg-ink p-2 text-xs"
+              className="grid grid-cols-[1fr_auto] gap-2 rounded border border-bezel bg-surface-0 p-2 text-xs"
             >
               <div className="min-w-0">
-                <div className="truncate font-medium text-slate-200">
+                <div className="truncate font-medium text-content-strong">
                   {clip.label ?? assetName(clip.asset_id)}
                 </div>
-                <div className="tabular-nums text-slate-500">
+                <div className="tabular-nums text-content-faint">
                   {clip.seq_in_frame}-{clip.seq_out_frame_exclusive} f · {clip.gain_percent}%
                 </div>
-                <div className="tabular-nums text-slate-600">
+                <div className="tabular-nums text-content-faint">
                   {mixModeLabel(clip.mix_mode)} · Original {clip.ducking_percent}%
                 </div>
               </div>
@@ -299,7 +299,7 @@ export function AudioLaneControls({
                 type="button"
                 onClick={() => void remove(clip.id)}
                 disabled={busy}
-                className="self-center rounded bg-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-600 disabled:opacity-40"
+                className="self-center rounded bg-surface-2 px-2 py-1 text-[11px] text-content-strong hover:bg-surface-2 disabled:opacity-40"
               >
                 entfernen
               </button>
@@ -310,3 +310,5 @@ export function AudioLaneControls({
     </section>
   );
 }
+
+

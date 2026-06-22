@@ -15,10 +15,10 @@ function statusLabel(status: string): string {
 }
 
 function statusClass(status: string): string {
-  if (status === "failed") return "border-red-800 bg-red-950/40 text-red-200";
-  if (status === "succeeded") return "border-emerald-800 bg-emerald-950/30 text-emerald-200";
+  if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
+  if (status === "succeeded") return "border-status-ok bg-status-ok/20 text-status-ok";
   if (RUNNING.has(status)) return "border-sky-800 bg-sky-950/30 text-sky-200";
-  return "border-edge bg-panel text-slate-300";
+  return "border-bezel bg-surface-1 text-content-muted";
 }
 
 function errorText(job: JobStatus): string | null {
@@ -98,44 +98,44 @@ export function JobCenter({
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="rounded border border-edge bg-ink px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
+        className="rounded border border-bezel bg-surface-0 px-3 py-1 text-xs text-content-strong hover:bg-surface-2"
       >
         Jobs {counts.running > 0 ? `· ${counts.running}` : ""}{counts.failed > 0 ? ` · !${counts.failed}` : ""}
       </button>
       {open && (
-        <section className="absolute right-0 z-20 mt-2 flex max-h-[70vh] w-[28rem] flex-col overflow-hidden rounded border border-edge bg-ink shadow-2xl">
-          <div className="flex items-center justify-between border-b border-edge px-3 py-2">
-            <div className="text-xs font-semibold text-slate-200">Job-Zentrale</div>
+        <section className="absolute right-0 z-20 mt-2 flex max-h-[70vh] w-[28rem] flex-col overflow-hidden rounded border border-bezel bg-surface-0 shadow-2xl">
+          <div className="flex items-center justify-between border-b border-bezel px-3 py-2">
+            <div className="text-xs font-semibold text-content-strong">Job-Zentrale</div>
             <button
               type="button"
               onClick={() => void load()}
-              className="rounded bg-panel px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+              className="rounded bg-surface-1 px-2 py-1 text-[11px] text-content-muted hover:bg-surface-2"
             >
               aktualisieren
             </button>
           </div>
-          {error !== null && <div className="border-b border-red-900/70 p-2 text-xs text-red-300">{error}</div>}
+          {error !== null && <div className="border-b border-status-err/70 p-2 text-xs text-status-err">{error}</div>}
           <div className="min-h-0 overflow-y-auto">
             {jobs.length === 0 ? (
-              <div className="p-4 text-xs text-slate-500">Keine Jobs.</div>
+              <div className="p-4 text-xs text-content-faint">Keine Jobs.</div>
             ) : (
               jobs.map((job) => {
                 const err = errorText(job);
                 const canCancel = RUNNING.has(job.status);
                 const canRetry = job.status === "failed";
                 return (
-                  <article key={job.id} className="border-b border-edge p-3 last:border-b-0">
+                  <article key={job.id} className="border-b border-bezel p-3 last:border-b-0">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-xs font-medium text-slate-200">{job.kind}</div>
-                        <div className="truncate text-[11px] text-slate-500">{job.queue} · {job.id}</div>
+                        <div className="truncate text-xs font-medium text-content-strong">{job.kind}</div>
+                        <div className="truncate text-[11px] text-content-faint">{job.queue} · {job.id}</div>
                       </div>
                       <span className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${statusClass(job.status)}`}>
                         {statusLabel(job.status)}
                       </span>
                     </div>
                     {err !== null && (
-                      <div className="mt-2 rounded border border-red-900/70 bg-red-950/20 p-2 text-xs text-red-200">
+                      <div className="mt-2 rounded border border-status-err/40 bg-status-err/10 p-2 text-xs text-status-err">
                         {err}
                       </div>
                     )}
@@ -146,7 +146,7 @@ export function JobCenter({
                             type="button"
                             onClick={() => void cancel(job.id)}
                             disabled={busyId === job.id}
-                            className="rounded bg-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-600 disabled:opacity-40"
+                            className="rounded bg-surface-2 px-2 py-1 text-[11px] text-content-strong hover:bg-surface-2 disabled:opacity-40"
                           >
                             Cancel
                           </button>
@@ -173,3 +173,5 @@ export function JobCenter({
     </div>
   );
 }
+
+

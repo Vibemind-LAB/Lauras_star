@@ -30,5 +30,5 @@ export function Waveform({ peaks }: { peaks: number[] }): ReactElement {
     }
   }, [peaks]);
 
-  return <canvas ref={ref} className="h-24 w-full rounded-md bg-ink" />;
+  return <canvas ref={ref} className="h-24 w-full rounded-md bg-surface-0" />;
 }

@@ -337,8 +337,8 @@ export function ExportView({
       parts.push(sourceInfo.duration);
     }
     return (
-      <p className="mb-3 text-xs text-slate-300">
-        <span className="font-medium text-slate-100">Exportiere:</span>{" "}
+      <p className="mb-3 text-xs text-content-muted">
+        <span className="font-medium text-content-strong">Exportiere:</span>{" "}
         {parts.join(" · ")}
       </p>
     );
@@ -349,12 +349,12 @@ export function ExportView({
       {/* Source selector — only shown when there are multiple choices */}
       {exportTargets.length > 1 && (
         <div className="mb-3 flex max-w-md flex-col gap-1">
-          <span className="text-xs font-medium text-slate-400">Quelle</span>
+          <span className="text-xs font-medium text-content-muted">Quelle</span>
           <div className="flex flex-col gap-1">
             {exportTargets.map((t) => {
               const count = targetCounts[t.id];
               return (
-                <label key={t.id} className="flex cursor-pointer items-center gap-2 text-xs text-slate-200">
+                <label key={t.id} className="flex cursor-pointer items-center gap-2 text-xs text-content-strong">
                   <input
                     type="radio"
                     name="export-source"
@@ -368,7 +368,7 @@ export function ExportView({
                   />
                   {t.label}
                   {count != null && (
-                    <span className="text-slate-500">{count > 0 ? `· ${count} Clips` : "· leer"}</span>
+                    <span className="text-content-faint">{count > 0 ? `· ${count} Clips` : "· leer"}</span>
                   )}
                 </label>
               );
@@ -385,7 +385,7 @@ export function ExportView({
             value={format}
             onChange={(e) => setFormat(e.target.value)}
             disabled={!timelineId}
-            className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+            className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
           >
             <optgroup label="Fertiges Video">
               <option value="mp4">MP4</option>
@@ -409,7 +409,7 @@ export function ExportView({
           </button>
         </div>
         {format in FORMAT_HINT && (
-          <p className="text-[10px] text-slate-400">{FORMAT_HINT[format]}</p>
+          <p className="text-[10px] text-content-muted">{FORMAT_HINT[format]}</p>
         )}
       </div>
       {/* One-click platform presets — set caption state AND call renderReel with the correct
@@ -464,17 +464,17 @@ export function ExportView({
           </button>
         ))}
       </div>
-      <div className="mb-4 flex max-w-md flex-col gap-2 rounded border border-slate-700 p-3">
-        <span className="text-xs font-semibold text-slate-300">Reel 9:16</span>
+      <div className="mb-4 flex max-w-md flex-col gap-2 rounded border border-bezel p-3">
+        <span className="text-xs font-semibold text-content-muted">Reel 9:16</span>
         <input
           type="text"
           value={reelHook}
           onChange={(e) => setReelHook(e.target.value)}
           placeholder="Hook-Text (optional)"
           disabled={!timelineId}
-          className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 disabled:opacity-40"
+          className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-40"
         />
-        <label className="flex items-center gap-2 text-xs text-slate-300">
+        <label className="flex items-center gap-2 text-xs text-content-muted">
           Max. Dauer (Sek.)
           <input
             type="number"
@@ -485,10 +485,10 @@ export function ExportView({
               setReelMaxDuration(e.target.value === "" ? null : Math.max(1, Number(e.target.value)))}
             placeholder="kein Limit"
             disabled={!timelineId}
-            className="w-28 rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 disabled:opacity-40"
+            className="w-28 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-40"
           />
         </label>
-        <label className="flex items-center gap-2 text-xs text-slate-300">
+        <label className="flex items-center gap-2 text-xs text-content-muted">
           <input
             type="checkbox"
             checked={reelDisclosure}
@@ -498,7 +498,7 @@ export function ExportView({
           />
           KI-Kennzeichnung einblenden
         </label>
-        <label className="flex items-center gap-2 text-xs text-slate-300">
+        <label className="flex items-center gap-2 text-xs text-content-muted">
           <input
             type="checkbox"
             checked={reelCaptions}
@@ -508,7 +508,7 @@ export function ExportView({
           />
           Untertitel (Captions) einbrennen
         </label>
-        <span className="text-xs text-slate-400">Captions werden aus dem Transkript der Timeline generiert.</span>
+        <span className="text-xs text-content-muted">Captions werden aus dem Transkript der Timeline generiert.</span>
         {/* Live 9:16 caption preview — updates as controls change, no render needed. */}
         <CaptionPreview
           client={client}
@@ -523,14 +523,14 @@ export function ExportView({
           safeMargin={captionSafeMargin}
         />
         <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1 text-xs text-slate-300">
+          <label className="flex flex-col gap-1 text-xs text-content-muted">
             Caption-Preset
             <select
               aria-label="Caption-Preset"
               value={captionPreset}
               onChange={(e) => setCaptionPreset(e.target.value as CaptionPreset)}
               disabled={!timelineId || !reelCaptions}
-              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+              className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             >
               <option value="reels">Reels 9:16</option>
               <option value="tiktok">TikTok 9:16</option>
@@ -538,34 +538,34 @@ export function ExportView({
               <option value="wide">16:9</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-300">
+          <label className="flex flex-col gap-1 text-xs text-content-muted">
             Caption-Modus
             <select
               aria-label="Caption-Modus"
               value={captionMode}
               onChange={(e) => setCaptionMode(e.target.value as CaptionMode)}
               disabled={!timelineId || !reelCaptions}
-              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+              className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             >
               <option value="karaoke">Karaoke</option>
               <option value="normal">Normal</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-300">
+          <label className="flex flex-col gap-1 text-xs text-content-muted">
             Caption-Position
             <select
               aria-label="Caption-Position"
               value={captionPosition}
               onChange={(e) => setCaptionPosition(e.target.value as CaptionPosition)}
               disabled={!timelineId || !reelCaptions}
-              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+              className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             >
               <option value="bottom">Unten</option>
               <option value="middle">Mitte</option>
               <option value="top">Oben</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-300">
+          <label className="flex flex-col gap-1 text-xs text-content-muted">
             Caption-Groesse
             <input
               aria-label="Caption-Groesse"
@@ -575,10 +575,10 @@ export function ExportView({
               value={captionFontsize}
               onChange={(e) => setCaptionFontsize(Number(e.target.value))}
               disabled={!timelineId || !reelCaptions}
-              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+              className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-300">
+          <label className="flex flex-col gap-1 text-xs text-content-muted">
             Safe-Zone
             <input
               aria-label="Safe-Zone"
@@ -588,7 +588,7 @@ export function ExportView({
               value={captionSafeMargin}
               onChange={(e) => setCaptionSafeMargin(Number(e.target.value))}
               disabled={!timelineId || !reelCaptions}
-              className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 disabled:opacity-40"
+              className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             />
           </label>
         </div>
@@ -601,9 +601,9 @@ export function ExportView({
           {reelBusy ? "rendert…" : "Reel 9:16"}
         </button>
       </div>
-      {error && <div className="mb-2 text-xs text-red-400">{error}</div>}
+      {error && <div className="mb-2 text-xs text-status-err">{error}</div>}
       {exports.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+        <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
           Noch keine Exporte — wähle ein Format und exportiere die Sequenz.
         </div>
       ) : (
@@ -645,7 +645,7 @@ export function ExportView({
                       if (err) setError(err);
                     });
                   }}
-                  className="rounded bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200 hover:bg-slate-600"
+                  className="rounded bg-surface-2 px-2 py-0.5 text-[10px] text-content-strong hover:bg-surface-2"
                 >
                   Im Ordner zeigen
                 </button>
@@ -656,7 +656,7 @@ export function ExportView({
                       setError(String(err));
                     });
                   }}
-                  className="rounded bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200 hover:bg-slate-600"
+                  className="rounded bg-surface-2 px-2 py-0.5 text-[10px] text-content-strong hover:bg-surface-2"
                 >
                   Pfad kopieren
                 </button>
@@ -673,7 +673,7 @@ export function ExportView({
 
             // Progress bar node — shown below title/meta for in-flight renders this session.
             const progressBar = isRendering && typeof knownJobId === "string" ? (
-              <div className="mx-2 mb-2 h-1 overflow-hidden rounded-full bg-slate-700">
+              <div className="mx-2 mb-2 h-1 overflow-hidden rounded-full bg-surface-2">
                 {progress !== null ? (
                   <div
                     className="h-full rounded-full bg-sky-500 transition-all duration-500"
@@ -687,18 +687,18 @@ export function ExportView({
             ) : undefined;
 
             return (
-              <div key={e.id} className="flex flex-col overflow-hidden rounded-lg border border-edge bg-panel">
+              <div key={e.id} className="flex flex-col overflow-hidden rounded-lg border border-bezel bg-surface-1">
                 <button
                   type="button"
                   onClick={openExport}
-                  className="flex aspect-video w-full items-center justify-center bg-black text-slate-700"
+                  className="flex aspect-video w-full items-center justify-center bg-black text-content-faint"
                 >
                   <span className="text-xs">kein Vorschaubild</span>
                 </button>
                 <div className="flex items-start justify-between gap-2 p-2">
                   <button type="button" onClick={openExport} className="min-w-0 text-left">
-                    <div className="truncate text-sm text-slate-100">{e.format.toUpperCase()}</div>
-                    {metaText && <div className="truncate text-[11px] text-slate-500">{metaText}</div>}
+                    <div className="truncate text-sm text-content-strong">{e.format.toUpperCase()}</div>
+                    {metaText && <div className="truncate text-[11px] text-content-faint">{metaText}</div>}
                   </button>
                   {exportMenu}
                 </div>
@@ -711,3 +711,6 @@ export function ExportView({
     </div>
   );
 }
+
+
+

@@ -42,7 +42,7 @@ function AssetThumb({
 
   return (
     <span
-      className="h-9 w-16 shrink-0 overflow-hidden rounded border border-edge"
+      className="h-9 w-16 shrink-0 overflow-hidden rounded border border-bezel"
       aria-hidden="true"
     >
       {url ? (
@@ -220,7 +220,7 @@ function MediaSidebarItem({
   const rowBase =
     "flex items-center gap-2 rounded px-1 py-1 text-left transition cursor-pointer select-none";
   const rowActive = "bg-sky-600/20 ring-1 ring-sky-500/40";
-  const rowInactive = "hover:bg-edge";
+  const rowInactive = "hover:bg-surface-2";
 
   return (
     <div
@@ -236,7 +236,7 @@ function MediaSidebarItem({
       <AssetThumb client={client} assetId={asset.id} index={index} />
       <div className="min-w-0 flex-1">
         <div
-          className="truncate text-xs text-slate-200"
+          className="truncate text-xs text-content-strong"
           title={asset.display_name}
         >
           {asset.display_name}
@@ -248,7 +248,7 @@ function MediaSidebarItem({
             </span>
           )}
           {analysisState.kind === "loading" && (
-            <span className="text-[10px] text-slate-500">…</span>
+            <span className="text-[10px] text-content-faint">…</span>
           )}
           {analysisState.kind === "idle" && (
             <button
@@ -263,14 +263,14 @@ function MediaSidebarItem({
             </button>
           )}
           {analysisState.kind === "running" && (
-            <span className="text-[10px] text-slate-400">{analysisState.label}</span>
+            <span className="text-[10px] text-content-muted">{analysisState.label}</span>
           )}
           {analysisState.kind === "done" && (
-            <span className="text-[10px] text-emerald-400">✓ analysiert</span>
+            <span className="text-[10px] text-status-ok">✓ analysiert</span>
           )}
           {analysisState.kind === "failed" && (
             <>
-              <span className="mr-1 text-[10px] text-red-400">{analysisState.message}</span>
+              <span className="mr-1 text-[10px] text-status-err">{analysisState.message}</span>
               <button
                 type="button"
                 onClick={(e) => {
@@ -285,12 +285,12 @@ function MediaSidebarItem({
           )}
         </div>
         {provenanceState.kind !== "hidden" && (
-          <div className="mt-1 rounded border border-cyan-950 bg-slate-950/50 px-2 py-1 text-[10px] text-slate-400">
+          <div className="mt-1 rounded border border-cyan-950 bg-surface-0/50 px-2 py-1 text-[10px] text-content-muted">
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium text-cyan-200">Provenance</span>
               {provenanceState.kind === "loading" && <span>lädt…</span>}
               {provenanceState.kind === "missing" && (
-                <span className="text-amber-300">{provenanceState.message}</span>
+                <span className="text-status-warn">{provenanceState.message}</span>
               )}
             </div>
             {provenanceState.kind === "ready" && (
@@ -314,7 +314,7 @@ function MediaSidebarItem({
             e.stopPropagation();
             if (window.confirm(`Medium „${asset.display_name}" löschen?`)) onDelete(asset.id);
           }}
-          className="shrink-0 rounded px-1 text-sm text-slate-600 hover:bg-red-600/40 hover:text-red-200"
+          className="shrink-0 rounded px-1 text-sm text-content-faint hover:bg-red-600/40 hover:text-red-200"
         >
           ×
         </button>
@@ -344,13 +344,13 @@ export function MediaSidebar({
   onDelete,
 }: MediaSidebarProps): ReactElement {
   return (
-    <aside className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-edge bg-ink p-2">
+    <aside className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-bezel bg-surface-0 p-2">
       <div className="flex items-center justify-between pb-1">
-        <span className="text-xs font-semibold text-slate-300">Projekt-Medien</span>
-        <span className="text-[10px] text-slate-500">{assets.length}</span>
+        <span className="text-xs font-semibold text-content-muted">Projekt-Medien</span>
+        <span className="text-[10px] text-content-faint">{assets.length}</span>
       </div>
       {assets.length === 0 ? (
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[11px] text-content-faint">
           Keine Videos — in Download/Import hinzufügen.
         </p>
       ) : (

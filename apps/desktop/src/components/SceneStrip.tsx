@@ -60,7 +60,7 @@ function Thumb({
     };
   }, [client, assetId, frame]);
   return (
-    <span className="h-9 w-16 shrink-0 overflow-hidden rounded border border-edge">
+    <span className="h-9 w-16 shrink-0 overflow-hidden rounded border border-bezel">
       {url ? (
         <img src={url} alt="" className="h-full w-full object-cover" />
       ) : (
@@ -95,13 +95,13 @@ function SceneCard({
 }): ReactElement {
   const splitAt = midBoundary(inScene);
   return (
-    <div className="flex w-56 shrink-0 flex-col gap-1 rounded border border-edge p-2">
+    <div className="flex w-56 shrink-0 flex-col gap-1 rounded border border-bezel p-2">
       <div className="flex items-center gap-1">
         <button
           type="button"
           onClick={() => onSeek(scene.seq_in_frame)}
           title="Zur Szene springen"
-          className="truncate text-left text-xs font-medium text-slate-200 hover:underline"
+          className="truncate text-left text-xs font-medium text-content-strong hover:underline"
         >
           {scene.name}
         </button>
@@ -111,7 +111,7 @@ function SceneCard({
               type="button"
               title="Szene teilen"
               onClick={() => onSplit(scene.id, splitAt)}
-              className="rounded px-1 text-xs text-slate-300 hover:bg-slate-700"
+              className="rounded px-1 text-xs text-content-muted hover:bg-surface-2"
             >
               ✂
             </button>
@@ -121,7 +121,7 @@ function SceneCard({
               type="button"
               title="Mit nächster Szene zusammenführen"
               onClick={() => onMerge(scene.id)}
-              className="rounded px-1 text-xs text-slate-300 hover:bg-slate-700"
+              className="rounded px-1 text-xs text-content-muted hover:bg-surface-2"
             >
               ⇄
             </button>
@@ -138,10 +138,10 @@ function SceneCard({
         onBlur={(e) => {
           if (e.target.value && e.target.value !== scene.name) onRename(scene.id, e.target.value);
         }}
-        className="w-full rounded bg-slate-800 px-1 py-0.5 text-[11px] text-slate-200"
+        className="w-full rounded bg-surface-2 px-1 py-0.5 text-[11px] text-content-strong"
         aria-label="Szenenname"
       />
-      <p className="text-[11px] text-slate-500">{excerptText || "—"}</p>
+      <p className="text-[11px] text-content-faint">{excerptText || "—"}</p>
     </div>
   );
 }
@@ -183,7 +183,7 @@ export function SceneStrip({
 
   if (scenes.length === 0) {
     return (
-      <div className="flex h-24 items-center justify-center text-xs text-slate-600">
+      <div className="flex h-24 items-center justify-center text-xs text-content-faint">
         Noch keine Szenen — wähle ein Asset und erzeuge Szenen.
       </div>
     );

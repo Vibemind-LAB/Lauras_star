@@ -143,16 +143,16 @@ export function FineCutView({
 
   if (scenes.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+      <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
         Noch keine Szenen — erst Rough Cut ausführen.
       </div>
     );
   }
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr_340px] gap-px bg-edge">
+    <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr_340px] gap-px bg-bezel">
       {/* Left: scene list */}
-      <aside className="flex flex-col gap-1 overflow-auto bg-ink p-2">
+      <aside className="flex flex-col gap-1 overflow-auto bg-surface-0 p-2">
         {scenes.map((s) => (
           <button
             key={s.id}
@@ -164,7 +164,7 @@ export function FineCutView({
             className={`truncate rounded px-2 py-1 text-left text-xs ${
               s.id === selectedSceneId
                 ? "bg-sky-700 text-white"
-                : "text-slate-300 hover:bg-slate-700"
+                : "text-content-muted hover:bg-surface-2"
             }`}
           >
             {s.name}
@@ -174,7 +174,7 @@ export function FineCutView({
 
       {/* Center: player + timeline + transcript */}
       <section className="flex min-h-0 flex-col">
-        <div className="border-b border-edge bg-panel px-3 py-1 text-[11px] text-slate-400">
+        <div className="border-b border-bezel bg-surface-1 px-3 py-1 text-[11px] text-content-muted">
           Feinschnitt: Szene links wählen · Clip in der Timeline anklicken → rechts In/Out
           frame-genau trimmen · ✂ am Transkript schneidet Wörter (Ripple).
         </div>
@@ -190,7 +190,7 @@ export function FineCutView({
               onFrame={handleSeqFrame}
             />
           ) : (
-            <span className="text-xs text-slate-600">
+            <span className="text-xs text-content-faint">
               {asset ? "Szene wird geladen…" : "Kein Medium gewählt."}
             </span>
           )}
@@ -232,12 +232,12 @@ export function FineCutView({
         <TransitionReviewPanel client={client} timelineId={scene.timeline?.id ?? null} />
 
         {scene.error && (
-          <div className="px-3 py-1 text-xs text-red-400">{scene.error}</div>
+          <div className="px-3 py-1 text-xs text-status-err">{scene.error}</div>
         )}
       </section>
 
       {/* Right: frame-accurate In/Out cut editor for the selected clip */}
-      <aside className="flex min-h-0 flex-col overflow-auto bg-ink p-2">
+      <aside className="flex min-h-0 flex-col overflow-auto bg-surface-0 p-2">
         {asset && selectedClip && scene.timeline ? (
           <SceneInspector
             client={client}
@@ -248,7 +248,7 @@ export function FineCutView({
             onSeek={onSeek}
           />
         ) : (
-          <p className="p-2 text-[11px] text-slate-500">
+          <p className="p-2 text-[11px] text-content-faint">
             Clip in der Timeline wählen, um In/Out frame-genau zu schneiden.
           </p>
         )}
@@ -256,3 +256,5 @@ export function FineCutView({
     </div>
   );
 }
+
+

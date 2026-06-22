@@ -96,7 +96,7 @@ export function RoughCutView({
 
   if (!asset || !roughCut) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+      <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
         Wähle ein Asset (in Import), um Szenen zu erzeugen.
       </div>
     );
@@ -104,10 +104,10 @@ export function RoughCutView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 bg-black/40 p-2">
+      <div className="flex min-h-0 flex-1 bg-surface-2/20 p-2">
         <Player asset={asset} seekTo={seek} onFrame={onFrame} />
       </div>
-      <div className="flex items-start gap-3 border-t border-edge px-3 py-2">
+      <div className="flex items-start gap-3 border-t border-bezel px-3 py-2">
         <div className="flex flex-col gap-2">
           <button
             type="button"
@@ -120,9 +120,9 @@ export function RoughCutView({
           <div className="w-64">
             <BiasSlider value={cutBias} onChange={(b) => void onRebuildAtBias(b)} disabled={busy} />
           </div>
-          <span className="text-[11px] text-slate-500">Frame {currentFrame}</span>
+          <span className="text-[11px] text-content-faint">Frame {currentFrame}</span>
           {(error ?? scenes.error) && (
-            <span className="text-[11px] text-red-400">{error ?? scenes.error}</span>
+            <span className="text-[11px] text-status-err">{error ?? scenes.error}</span>
           )}
         </div>
         {build?.quality && (
@@ -137,7 +137,7 @@ export function RoughCutView({
           />
         )}
       </div>
-      <div className="border-t border-edge">
+      <div className="border-t border-bezel">
         <SceneStrip
           client={client}
           asset={asset}
@@ -153,3 +153,4 @@ export function RoughCutView({
     </div>
   );
 }
+

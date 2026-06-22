@@ -164,7 +164,7 @@ function ClipThumb({
       }`}
     >
       {url && <img src={url} alt="" className="absolute inset-0 h-full w-full object-cover" />}
-      <span className="relative rounded bg-ink/70 px-1 text-[10px] leading-tight text-slate-100">
+      <span className="relative rounded bg-surface-0/70 px-1 text-[10px] leading-tight text-content-strong">
         {index + 1}
         {retimed ? "⏩" : ""}
       </span>
@@ -246,7 +246,7 @@ function AudioBlock({
       }`}
       style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
       className={`absolute inset-y-0 flex items-center overflow-hidden rounded-sm ${
-        isSplit ? "bg-emerald-700/50 ring-1 ring-inset ring-emerald-400/60" : "bg-teal-800/40"
+        isSplit ? "bg-status-ok/30 ring-1 ring-inset ring-status-ok/60" : "bg-teal-800/40"
       }`}
     >
       <span className="pointer-events-none truncate px-1 text-[9px] leading-none text-teal-100/80">
@@ -267,7 +267,7 @@ function AudioBlock({
           }}
           style={{ width: `${HANDLE_PX}px` }}
           className={`absolute inset-y-0 left-0 z-20 cursor-ew-resize ${
-            isDragging ? "bg-amber-300" : "bg-emerald-400/80 hover:bg-emerald-300"
+            isDragging ? "bg-amber-300" : "bg-accent/80 hover:bg-accent-glow"
           }`}
         />
       )}
@@ -419,7 +419,7 @@ export function TimelineBar({
 
   if (!timeline) {
     return (
-      <div className="flex h-20 items-center border-t border-edge bg-panel px-5 text-xs text-slate-600">
+      <div className="flex h-20 items-center border-t border-bezel bg-surface-1 px-5 text-xs text-content-faint">
         Rough Cut — wähle ein Projekt.
       </div>
     );
@@ -734,10 +734,10 @@ export function TimelineBar({
   }
 
   return (
-    <div className="border-t border-edge bg-panel px-5 py-3">
+    <div className="border-t border-bezel bg-surface-1 px-5 py-3">
       <div className="mb-1 flex items-center justify-between">
         <span className="flex items-center gap-2">
-          <span className="text-xs uppercase tracking-wide text-slate-500">
+          <span className="text-xs uppercase tracking-wide text-content-faint">
             Rough Cut · {tl.name}
           </span>
           <button
@@ -745,7 +745,7 @@ export function TimelineBar({
             onClick={() => void undo()}
             disabled={history.length === 0}
             title="Rückgängig"
-            className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge disabled:opacity-30"
+            className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-30"
           >
             ↶ Undo
           </button>
@@ -754,7 +754,7 @@ export function TimelineBar({
             onClick={() => void redo()}
             disabled={future.length === 0}
             title="Wiederholen"
-            className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge disabled:opacity-30"
+            className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-30"
           >
             ↷ Redo
           </button>
@@ -766,12 +766,12 @@ export function TimelineBar({
                 key={f.fmt}
                 type="button"
                 onClick={() => void exportAs(f.fmt, f.ext)}
-                className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge"
+                className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2"
               >
                 {f.label}
               </button>
             ))}
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-content-faint">
             {baseClips.length} Clips · {total} frames
             {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""}` : ""}
           </span>
@@ -779,7 +779,7 @@ export function TimelineBar({
       </div>
       {error && <div className="mb-1 text-xs text-red-400">{error}</div>}
       {baseClips.length === 0 && overlayClips.length === 0 ? (
-        <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-edge text-xs text-slate-600">
+        <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-bezel text-xs text-content-faint">
           Klicke einen Shot oder Transkript-Satz an, um ihn anzuhängen.
         </div>
       ) : (
@@ -850,7 +850,7 @@ export function TimelineBar({
           )}
           {/* V1 — picture lane (reorder + edge-trim); shows only base clips (lane 0). */}
           <div className="flex items-center gap-2">
-            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">V1</span>
+            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">V1</span>
             <div
               ref={stripRef}
               className="flex h-12 min-w-0 flex-1 gap-px overflow-hidden rounded-md"
@@ -909,10 +909,10 @@ export function TimelineBar({
               cut by `audio_offset_samples` (projected to frames); the handle drags a J/L split.
               The lane shares the V1 timebase (same `total`), so the geometry lines up under V1. */}
           <div className="flex items-center gap-2">
-            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">A1</span>
+            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">A1</span>
             <div
               aria-label="Audio-Spur (A1)"
-              className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-ink/40"
+              className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-surface-0/40"
               onPointerMove={onAudioMove}
               onPointerUp={() => void onAudioUp()}
               onPointerCancel={() => void onAudioUp()}
@@ -943,7 +943,7 @@ export function TimelineBar({
             </div>
           </div>
           {audioDrag && (
-            <div className="pl-8 text-[10px] text-emerald-300" data-testid="audio-offset-readout">
+            <div className="pl-8 text-[10px] text-status-ok" data-testid="audio-offset-readout">
               {offsetLabel(audioDrag.offsetFrames)}
             </div>
           )}
@@ -964,10 +964,10 @@ export function TimelineBar({
           {/* TX — transcript lane: each spoken word placed at its position on the sequence. */}
           {transcriptWords.length > 0 && (
             <div className="flex items-center gap-2">
-              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">TX</span>
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">TX</span>
               <div
                 aria-label="Transkript-Spur"
-                className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-ink/40"
+                className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-surface-0/40"
               >
                 {transcriptWords.map((w) => (
                   <button
@@ -976,7 +976,7 @@ export function TimelineBar({
                     onClick={() => onScrub?.(w.assetId, w.srcFrame)}
                     title={w.text}
                     style={{ left: `${w.leftPct}%`, width: `${w.widthPct}%` }}
-                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-edge/60 px-0.5 text-left text-[10px] leading-7 text-slate-300 hover:bg-sky-600/40 hover:text-white"
+                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-bezel/60 px-0.5 text-left text-[10px] leading-7 text-content-muted hover:bg-sky-600/40 hover:text-white"
                   >
                     {w.text}
                   </button>
@@ -988,7 +988,7 @@ export function TimelineBar({
       )}
       {sel && (
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-slate-500">
+          <span className="text-content-faint">
             Clip src{" "}
             {edgeDrag && edgeDrag.clipId === sel.id ? edgeDrag.newSrcIn : sel.src_in_frame}–
             {edgeDrag && edgeDrag.clipId === sel.id ? edgeDrag.newSrcOut : sel.src_out_frame_exclusive}:
@@ -996,35 +996,35 @@ export function TimelineBar({
           <button
             type="button"
             onClick={() => void splitSelected()}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Split (Mitte)
           </button>
           <button
             type="button"
             onClick={() => void trimSelected(-TRIM_STEP)}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Trim −{TRIM_STEP}
           </button>
           <button
             type="button"
             onClick={() => void trimSelected(TRIM_STEP)}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Trim +{TRIM_STEP}
           </button>
           <button
             type="button"
             onClick={() => void duplicateSelected()}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Duplizieren
           </button>
           <button
             type="button"
             onClick={() => void deleteSelected()}
-            className="rounded bg-ink px-2 py-0.5 text-red-300 hover:bg-red-600/40"
+            className="rounded bg-surface-0 px-2 py-0.5 text-red-300 hover:bg-red-600/40"
           >
             Löschen
           </button>
@@ -1033,3 +1033,5 @@ export function TimelineBar({
     </div>
   );
 }
+
+

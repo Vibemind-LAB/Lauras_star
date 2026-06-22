@@ -105,20 +105,20 @@ export function LipsyncPanel({
     seqOut <= seqIn;
 
   return (
-    <section className="flex flex-col gap-3 rounded border border-edge bg-ink/60 p-3">
+    <section className="flex flex-col gap-3 rounded border border-bezel bg-surface-0/60 p-3">
       <span className="text-[10px] font-semibold uppercase tracking-wide text-cyan-300">
         Lipsync (Deepfake)
       </span>
 
-      {error !== null && <div className="text-xs text-red-400">{error}</div>}
+      {error !== null && <div className="text-xs text-status-err">{error}</div>}
       {jobId !== null && <div className="text-xs text-sky-400">Job gestartet: {jobId}</div>}
 
       <div className="flex flex-col gap-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-content-faint">
           Schritt 1 — Consent
         </span>
         {confirmedLabel !== null ? (
-          <div className="text-xs text-emerald-400">Consent für {confirmedLabel}</div>
+          <div className="text-xs text-status-ok">Consent für {confirmedLabel}</div>
         ) : (
           <div className="flex gap-2">
             <input
@@ -127,7 +127,7 @@ export function LipsyncPanel({
               onChange={(e) => setSubjectLabel(e.target.value)}
               disabled={busy}
               placeholder="Subjekt-Label"
-              className="min-w-0 flex-1 rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600 disabled:opacity-50"
+              className="min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-50"
             />
             <button
               type="button"
@@ -141,7 +141,7 @@ export function LipsyncPanel({
         )}
       </div>
 
-      <label className="flex items-center gap-2 text-xs text-slate-300">
+      <label className="flex items-center gap-2 text-xs text-content-muted">
         <input
           aria-label="Lizenz und Nutzung bestätigt"
           type="checkbox"
@@ -154,14 +154,14 @@ export function LipsyncPanel({
       </label>
 
       <div className="grid grid-cols-2 gap-2 text-xs">
-        <label className="col-span-2 flex flex-col gap-1 text-slate-400">
+        <label className="col-span-2 flex flex-col gap-1 text-content-muted">
           Audio
           <select
             aria-label="Lipsync-Audio auswählen"
             value={audioAssetId}
             onChange={(e) => setAudioAssetId(e.target.value)}
             disabled={busy || audioAssets.length === 0}
-            className="rounded border border-edge bg-panel px-2 py-1 text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             {audioAssets.length === 0 ? (
               <option value="">Keine Audio-Assets</option>
@@ -174,7 +174,7 @@ export function LipsyncPanel({
             )}
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           seq in
           <input
             aria-label="Lipsync seq in"
@@ -184,10 +184,10 @@ export function LipsyncPanel({
             value={seqIn}
             onChange={(e) => setSeqIn(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
             disabled={busy}
-            className="rounded border border-edge bg-panel px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-1 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="flex flex-col gap-1 text-slate-400">
+        <label className="flex flex-col gap-1 text-content-muted">
           seq out
           <input
             aria-label="Lipsync seq out"
@@ -197,17 +197,17 @@ export function LipsyncPanel({
             value={seqOut}
             onChange={(e) => setSeqOut(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
             disabled={busy}
-            className="rounded border border-edge bg-panel px-2 py-1 tabular-nums text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-1 px-2 py-1 tabular-nums text-content-strong disabled:opacity-50"
           />
         </label>
-        <label className="col-span-2 flex flex-col gap-1 text-slate-400">
+        <label className="col-span-2 flex flex-col gap-1 text-content-muted">
           Backend
           <select
             aria-label="Lipsync-Backend auswählen"
             value={backend}
             onChange={(e) => setBackend(e.target.value === "vibevideo" ? "vibevideo" : "stub")}
             disabled={busy}
-            className="rounded border border-edge bg-panel px-2 py-1 text-slate-200 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             <option value="stub">Stub</option>
             <option value="vibevideo">VibeVideo Sidecar</option>
@@ -223,10 +223,12 @@ export function LipsyncPanel({
       >
         {backend === "vibevideo" ? "Lipsync (VibeVideo)" : "Lipsync (stub)"}
       </button>
-      <p className="text-[10px] leading-relaxed text-slate-600">
+      <p className="text-[10px] leading-relaxed text-content-faint">
         Erzeugt ein synthetisch markiertes Replace-Overlay. Der echte VibeVideo-Pfad bleibt ein
         lokaler Sidecar; Laura lädt keine Deepfake-Modelle in den Kern.
       </p>
     </section>
   );
 }
+
+

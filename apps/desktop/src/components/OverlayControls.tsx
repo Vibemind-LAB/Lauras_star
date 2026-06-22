@@ -87,11 +87,11 @@ export function OverlayControls({
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-edge bg-ink/60 p-3">
+    <div className="flex flex-col gap-2 rounded-md border border-bezel bg-surface-0/60 p-3">
       <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-300">
         Replace-Overlay einsetzen
       </span>
-      {error && <div className="text-xs text-red-400">{error}</div>}
+      {error && <div className="text-xs text-status-err">{error}</div>}
       <div className="flex flex-wrap items-center gap-2">
         {/* Asset picker */}
         <select
@@ -99,7 +99,7 @@ export function OverlayControls({
           onChange={(e) => setAssetId(e.target.value)}
           disabled={busy || assets.length === 0}
           aria-label="Asset auswählen"
-          className="min-w-0 flex-1 truncate rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
+          className="min-w-0 flex-1 truncate rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
         >
           {assets.length === 0 ? (
             <option value="">— keine Assets —</option>
@@ -113,7 +113,7 @@ export function OverlayControls({
         </select>
         {/* Sequence IN */}
         <div className="flex flex-col gap-0.5">
-          <label className="flex items-center gap-1 text-xs text-slate-400">
+          <label className="flex items-center gap-1 text-xs text-content-muted">
             <span>seq in</span>
             <input
               type="number"
@@ -123,9 +123,9 @@ export function OverlayControls({
               onChange={(e) => setSeqIn(Math.trunc(Number(e.target.value)) || 0)}
               disabled={busy}
               aria-label="Sequenz-Einpunkt (Frames)"
-              className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+              className="w-20 rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-xs tabular-nums text-content-strong disabled:opacity-50"
             />
-            <span className="text-[10px] text-slate-600 tabular-nums">
+            <span className="text-[10px] text-content-faint tabular-nums">
               {framesToTimecode(seqIn, rateNum, rateDen)}
             </span>
           </label>
@@ -133,14 +133,14 @@ export function OverlayControls({
             type="button"
             onClick={() => setSeqIn(Math.max(0, Math.trunc(currentSeqFrame)))}
             disabled={busy || !Number.isFinite(currentSeqFrame)}
-            className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+            className="self-start rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-[10px] text-content-muted hover:bg-surface-2 hover:text-content-strong disabled:opacity-40"
           >
             In = Playhead
           </button>
         </div>
         {/* Sequence OUT (exclusive) */}
         <div className="flex flex-col gap-0.5">
-          <label className="flex items-center gap-1 text-xs text-slate-400">
+          <label className="flex items-center gap-1 text-xs text-content-muted">
             <span>seq out</span>
             <input
               type="number"
@@ -150,9 +150,9 @@ export function OverlayControls({
               onChange={(e) => setSeqOut(Math.trunc(Number(e.target.value)) || 0)}
               disabled={busy}
               aria-label="Sequenz-Auspunkt exklusiv (Frames)"
-              className="w-20 rounded border border-edge bg-panel px-1.5 py-0.5 text-xs tabular-nums text-slate-200 disabled:opacity-50"
+              className="w-20 rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-xs tabular-nums text-content-strong disabled:opacity-50"
             />
-            <span className="text-[10px] text-slate-600 tabular-nums">
+            <span className="text-[10px] text-content-faint tabular-nums">
               {framesToTimecode(seqOut, rateNum, rateDen)}
             </span>
           </label>
@@ -160,7 +160,7 @@ export function OverlayControls({
             type="button"
             onClick={() => setSeqOut(Math.max(0, Math.trunc(currentSeqFrame)))}
             disabled={busy || !Number.isFinite(currentSeqFrame)}
-            className="self-start rounded border border-edge bg-panel px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-40"
+            className="self-start rounded border border-bezel bg-surface-1 px-1.5 py-0.5 text-[10px] text-content-muted hover:bg-surface-2 hover:text-content-strong disabled:opacity-40"
           >
             Out = Playhead
           </button>
@@ -178,3 +178,5 @@ export function OverlayControls({
     </div>
   );
 }
+
+

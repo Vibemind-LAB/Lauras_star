@@ -112,10 +112,10 @@ function alignmentStatusLabel(status: string | undefined): string | null {
 }
 
 function alignmentStatusClass(status: string | undefined): string {
-  if (status === "failed") return "border-red-800/80 bg-red-950/40 text-red-200";
-  if (status === "stale") return "border-amber-800/80 bg-amber-950/40 text-amber-200";
+  if (status === "failed") return "border-status-err/80 bg-status-err/15 text-status-err";
+  if (status === "stale") return "border-status-warn/80 bg-status-warn/15 text-status-warn";
   if (status === "aligning") return "border-sky-800/80 bg-sky-950/40 text-sky-200";
-  return "border-edge bg-panel text-slate-400";
+  return "border-bezel bg-surface-1 text-content-muted";
 }
 
 function TranscriptBlockEditor({
@@ -241,12 +241,12 @@ function TranscriptBlockEditor({
 
   return (
     <article
-      className={`flex flex-col gap-2 border-b border-edge/80 py-3 last:border-b-0 ${
-        active ? "bg-sky-950/20 px-2" : ""
+      className={`flex flex-col gap-2 border-b border-bezel/80 py-3 last:border-b-0 ${
+        active ? "bg-sky-600/10 px-2" : ""
       }`}
     >
       <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide">
-        <span className="truncate font-semibold text-slate-400">
+        <span className="truncate font-semibold text-content-muted">
           {block.speaker_label ?? "Transcript"}
         </span>
         <span className="flex shrink-0 items-center gap-1">
@@ -259,7 +259,7 @@ function TranscriptBlockEditor({
               {alignmentLabel}
             </span>
           )}
-          <span className="tabular-nums text-slate-600">
+          <span className="tabular-nums text-content-faint">
             {frameLabel(block.seq_in_frame, block.seq_out_frame_exclusive)}
           </span>
         </span>
@@ -270,7 +270,7 @@ function TranscriptBlockEditor({
         </div>
       )}
       {alignmentLanguage !== null && alignmentLanguage !== undefined && (
-        <div className="text-[11px] text-slate-500">Sprache: {alignmentLanguage}</div>
+        <div className="text-[11px] text-content-faint">Sprache: {alignmentLanguage}</div>
       )}
       {block.alignment_status === "failed" && block.alignment_error ? (
         <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs leading-relaxed text-red-200">
@@ -283,30 +283,30 @@ function TranscriptBlockEditor({
         onChange={(e) => setText(e.target.value)}
         disabled={busy}
         rows={4}
-        className="min-h-24 resize-y rounded border border-edge bg-panel px-2 py-2 text-sm leading-relaxed text-slate-100 outline-none focus:border-sky-600 disabled:opacity-60"
+        className="min-h-24 resize-y rounded border border-bezel bg-surface-1 px-2 py-2 text-sm leading-relaxed text-content-strong outline-none focus:border-sky-600 disabled:opacity-60"
       />
       {block.words.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {block.words.map((word) => (
             <span
               key={word.id}
-              className="rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-400"
+              className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-content-muted"
             >
               {word.text}
             </span>
           ))}
         </div>
       )}
-      {error !== null && <div className="text-xs text-red-400">{error}</div>}
+      {error !== null && <div className="text-xs text-status-err">{error}</div>}
       {activeJobId !== null && jobStatus !== null && (
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
             <span
               className={`rounded border px-2 py-0.5 text-[11px] ${
                 jobStatus.status === "failed"
-                  ? "border-red-800 bg-red-950/40 text-red-200"
+                  ? "border-status-err bg-status-err/15 text-status-err"
                   : jobStatus.status === "succeeded"
-                    ? "border-emerald-800 bg-emerald-950/30 text-emerald-200"
+                    ? "border-status-ok bg-status-ok/20 text-status-ok"
                     : "border-sky-800 bg-sky-950/30 text-sky-200"
               }`}
             >
@@ -338,7 +338,7 @@ function TranscriptBlockEditor({
             onChange={(e) => setVoiceId(e.target.value)}
             disabled={busy || voiceBusy || jobRunning}
             title="TTS-Stimme (leer = automatisch nach Sprache)"
-            className="rounded border border-edge bg-panel px-1 py-1 text-[11px] text-slate-200 disabled:opacity-40"
+            className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong disabled:opacity-40"
           >
             <option value="">Stimme: Auto</option>
             {voices.map((v) => (
@@ -352,7 +352,7 @@ function TranscriptBlockEditor({
           onChange={(e) => setVoMode(e.target.value as "duck" | "replace" | "mix")}
           disabled={busy || voiceBusy || jobRunning}
           title="Wie die erzeugte Stimme den Originalton behandelt"
-          className="rounded border border-edge bg-panel px-1 py-1 text-[11px] text-slate-200 disabled:opacity-40"
+          className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong disabled:opacity-40"
         >
           <option value="duck">Original absenken</option>
           <option value="replace">Original ersetzen</option>
@@ -362,7 +362,7 @@ function TranscriptBlockEditor({
           type="button"
           onClick={() => void generateVoiceover()}
           disabled={busy || voiceBusy || jobRunning || text.trim() === "" || timelineId === null}
-          className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+          className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent disabled:opacity-40"
         >
           {voiceBusy ? "Erzeugt..." : "Stimme erzeugen"}
         </button>
@@ -400,7 +400,7 @@ function SequenceTranscriptPanel({
   }
   if (blocks.length === 0) {
     return (
-      <div className="rounded border border-edge bg-panel/50 p-3 text-xs leading-relaxed text-slate-500">
+      <div className="rounded border border-bezel bg-surface-1/50 p-3 text-xs leading-relaxed text-content-faint">
         Noch kein Sequenz-Transkript.
       </div>
     );
@@ -675,34 +675,34 @@ export function AssembleView({
   const assetOptions = assets.map((a) => ({ id: a.id, display_name: a.display_name }));
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)_360px] gap-px bg-edge">
+    <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)_360px] gap-px bg-surface-2">
       <aside
         aria-label="Szenen-Bin"
-        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-ink p-3"
+        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-surface-0 p-3"
       >
         <div>
-          <div className="text-xs font-semibold text-slate-200">Szenen-Bin</div>
-          <div className="text-[11px] text-slate-600">Klick hängt an die Sequenz an</div>
+          <div className="text-xs font-semibold text-content-strong">Szenen-Bin</div>
+          <div className="text-[11px] text-content-faint">Klick hängt an die Sequenz an</div>
         </div>
         <input
           value={sceneQuery}
           onChange={(e) => setSceneQuery(e.target.value)}
           placeholder="Szenen suchen"
-          className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-sky-600"
+          className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint outline-none focus:border-sky-600"
         />
-        {binError !== null && <div className="text-xs text-red-400">{binError}</div>}
-        {sequenceError !== null && <div className="text-xs text-red-400">{sequenceError}</div>}
+        {binError !== null && <div className="text-xs text-status-err">{binError}</div>}
+        {sequenceError !== null && <div className="text-xs text-status-err">{sequenceError}</div>}
         {scenes.length === 0 ? (
-          <div className="text-xs text-slate-600">
+          <div className="text-xs text-content-faint">
             Noch keine Szenen — erst im Rough Cut Szenen erzeugen.
           </div>
         ) : groups.length === 0 ? (
-          <div className="text-xs text-slate-600">Keine Szene passt zum Filter.</div>
+          <div className="text-xs text-content-faint">Keine Szene passt zum Filter.</div>
         ) : (
           groups.map((g) => (
             <div key={g.assetId} className="flex flex-col gap-1">
               <div className="flex items-center justify-between gap-1">
-                <div className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                <div className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wide text-content-faint">
                   {assetName(g.assetId)} · {g.scenes.length}
                 </div>
                 {g.scenes.length > 1 && (
@@ -722,10 +722,10 @@ export function AssembleView({
                   type="button"
                   title={`„${s.name}" an die Reihenfolge anhängen`}
                   onClick={() => void applySceneIds([...ids, s.id])}
-                  className="flex items-center gap-2 rounded border border-edge bg-slate-800/50 p-1 text-left text-xs hover:bg-slate-700"
+                  className="flex items-center gap-2 rounded border border-bezel bg-surface-2/50 p-1 text-left text-xs hover:bg-surface-2"
                 >
                   <Thumb client={client} assetId={s.asset_id ?? g.assetId} frame={s.thumb_frame ?? 0} />
-                  <span className="min-w-0 flex-1 truncate text-slate-200">{s.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-content-strong">{s.name}</span>
                   <span className="shrink-0 rounded bg-sky-600 px-1.5 py-0.5 font-medium text-white">
                     +
                   </span>
@@ -738,7 +738,7 @@ export function AssembleView({
 
       <section
         aria-label="Sequenz-Arbeitsfläche"
-        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-ink p-3"
+        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-surface-0 p-3"
       >
         <div className="relative w-full max-w-3xl">
           <SequencePlayer
@@ -791,14 +791,14 @@ export function AssembleView({
 
         <div className="flex items-center justify-between gap-2">
           <div>
-            <div className="text-xs font-semibold text-slate-200">Storyboard</div>
-            <div className="text-[11px] text-slate-600">Ziehen zum Umordnen, Klick springt zur Szene</div>
+            <div className="text-xs font-semibold text-content-strong">Storyboard</div>
+            <div className="text-[11px] text-content-faint">Ziehen zum Umordnen, Klick springt zur Szene</div>
           </div>
-          <div className="flex items-center gap-3 text-xs tabular-nums text-slate-500">
+          <div className="flex items-center gap-3 text-xs tabular-nums text-content-faint">
             <button
               type="button"
               onClick={() => setCaptionPreview((v) => !v)}
-              className="rounded border border-edge bg-panel px-2 py-1 text-slate-300 hover:bg-slate-800"
+              className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-muted hover:bg-surface-2"
             >
               {captionPreview ? "Caption-Preview aus" : "Caption-Preview ein"}
             </button>
@@ -808,7 +808,7 @@ export function AssembleView({
         </div>
         <div className="flex gap-2 overflow-x-auto pb-2">
           {items.length === 0 ? (
-            <div className="py-6 text-xs text-slate-600">
+            <div className="py-6 text-xs text-content-faint">
               Links eine Szene anklicken, um sie hier anzuhängen.
             </div>
           ) : (
@@ -823,8 +823,8 @@ export function AssembleView({
                     onDragOver={onDragOver}
                     onDrop={(e) => onDrop(e, i)}
                     onDragLeave={() => setDragOverIndex(null)}
-                    className={`flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border bg-slate-800 p-1 text-xs ${
-                      dragOverIndex === i ? "border-sky-400 shadow-[inset_3px_0_0_#38bdf8]" : "border-edge"
+                    className={`flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border bg-surface-2 p-1 text-xs ${
+                      dragOverIndex === i ? "border-sky-400 shadow-[inset_3px_0_0_#38bdf8]" : "border-bezel"
                     }`}
                   >
                     {dragOverIndex === i && (
@@ -839,27 +839,27 @@ export function AssembleView({
                     <button
                       type="button"
                       onClick={() => onSeekScene(it.scene_id)}
-                      className="truncate text-left text-slate-200 hover:text-white"
+                      className="truncate text-left text-content-strong hover:text-white"
                     >
                       {i + 1}. {it.scene_name}
                     </button>
                     <button
                       type="button"
                       onClick={() => void applySceneIds(ids.filter((_, j) => j !== i))}
-                      className="rounded bg-slate-700 px-1 py-0.5 text-[11px] text-slate-300 hover:bg-slate-600"
+                      className="rounded bg-surface-2 px-1 py-0.5 text-[11px] text-content-muted hover:bg-surface-2"
                     >
                       entfernen
                     </button>
                   </div>
                   {i < items.length - 1 && (
-                    <label className="flex w-20 shrink-0 flex-col justify-center gap-1 text-[10px] text-slate-500">
+                    <label className="flex w-20 shrink-0 flex-col justify-center gap-1 text-[10px] text-content-faint">
                       <span>Übergang</span>
                       <select
                         aria-label={`Transition nach Szene ${i + 1}`}
                         value={it.transition_after_kind}
                         onChange={(e) =>
                           updateTransition(it.id, e.target.value as SequenceTransitionKind)}
-                        className="rounded border border-edge bg-panel px-1 py-1 text-[11px] text-slate-200"
+                        className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong"
                       >
                         <option value="hard">Hard</option>
                         <option value="dip_black">Dip</option>
@@ -877,14 +877,14 @@ export function AssembleView({
 
       <aside
         aria-label="Transkript und Werkzeuge"
-        className="flex min-h-0 flex-col overflow-y-auto bg-ink p-3"
+        className="flex min-h-0 flex-col overflow-y-auto bg-surface-0 p-3"
       >
-        <div className="mb-3 flex rounded border border-edge bg-panel p-0.5">
+        <div className="mb-3 flex rounded border border-bezel bg-surface-1 p-0.5">
           <button
             type="button"
             onClick={() => setRailTab("transcript")}
             className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
-              railTab === "transcript" ? "bg-sky-700 text-white" : "text-slate-400 hover:text-slate-100"
+              railTab === "transcript" ? "bg-sky-700 text-white" : "text-content-muted hover:text-content-strong"
             }`}
           >
             Transkript
@@ -893,7 +893,7 @@ export function AssembleView({
             type="button"
             onClick={() => setRailTab("tools")}
             className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
-              railTab === "tools" ? "bg-sky-700 text-white" : "text-slate-400 hover:text-slate-100"
+              railTab === "tools" ? "bg-sky-700 text-white" : "text-content-muted hover:text-content-strong"
             }`}
           >
             Tools
@@ -915,14 +915,14 @@ export function AssembleView({
           />
         ) : (
           <div className="flex flex-col gap-3">
-            <section className="rounded border border-edge bg-panel/50 p-3">
-              <div className="mb-1 text-xs font-semibold text-slate-200">KI-Status</div>
-              <p className="text-xs leading-relaxed text-slate-500">
+            <section className="rounded border border-bezel bg-surface-1/50 p-3">
+              <div className="mb-1 text-xs font-semibold text-content-strong">KI-Status</div>
+              <p className="text-xs leading-relaxed text-content-faint">
                 Stub-Reenact ist lokal verfügbar. LivePortrait Sidecar bleibt optional und wird erst
                 genutzt, wenn der lokale Sidecar samt Modellgewichten läuft.
               </p>
             </section>
-            <section className="overflow-hidden rounded border border-edge bg-panel/50">
+            <section className="overflow-hidden rounded border border-bezel bg-surface-1/50">
               <TransitionReviewPanel
                 client={client}
                 timelineId={sequence?.timeline_id ?? null}
@@ -994,3 +994,6 @@ export function AssembleView({
     </div>
   );
 }
+
+
+

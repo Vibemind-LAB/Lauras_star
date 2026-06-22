@@ -71,7 +71,7 @@ function DuplicateBadge(): ReactElement {
   return (
     <span
       title="Diese Datei ist bereits im Projekt vorhanden"
-      className="shrink-0 rounded bg-amber-900/70 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-200"
+      className="shrink-0 rounded bg-status-warn/20 px-1.5 py-0.5 text-[10px] font-medium leading-none text-status-warn"
     >
       bereits importiert
     </span>
@@ -140,12 +140,12 @@ function ToolbarSelect({
   onChange: (v: string) => void;
 }): ReactElement {
   return (
-    <label className="flex items-center gap-1 text-xs text-slate-400">
+    <label className="flex items-center gap-1 text-xs text-content-muted">
       {label}
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+        className="rounded border border-bezel bg-surface-2 px-1.5 py-0.5 text-xs text-content-strong focus:outline-none focus:ring-1 focus:ring-sky-500"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -289,14 +289,14 @@ export function ImportView({
       {hasAssets && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {/* Search */}
-          <label className="flex items-center gap-1 text-xs text-slate-400">
+          <label className="flex items-center gap-1 text-xs text-content-muted">
             <span className="sr-only">Suche</span>
             <input
               type="search"
               placeholder="Suchen…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              className="w-40 rounded border border-bezel bg-surface-2 px-2 py-0.5 text-xs text-content-strong placeholder:text-content-faint focus:outline-none focus:ring-1 focus:ring-sky-500"
             />
           </label>
 
@@ -328,11 +328,11 @@ export function ImportView({
       )}
 
       {!hasAssets ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+        <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
           Dateien/Ordner/Links hier ablegen oder importieren.
         </div>
       ) : !hasVisible ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
+        <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
           Keine Treffer.
         </div>
       ) : (

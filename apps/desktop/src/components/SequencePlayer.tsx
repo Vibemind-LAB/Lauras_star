@@ -297,9 +297,9 @@ export function SequencePlayer({
 
   return (
     <div className="space-y-2 rounded-md">
-      <div className="overflow-hidden rounded-md border border-edge bg-black">
+      <div className="overflow-hidden rounded-md border border-bezel bg-black">
         {loading ? (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
             Lade Sequenz…
           </div>
         ) : error ? (
@@ -307,11 +307,11 @@ export function SequencePlayer({
             {error}
           </div>
         ) : clips.length === 0 ? (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
             Noch keine Sequenz — Szenen hinzufügen
           </div>
         ) : !firstClipHasProxy ? (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
             Proxy wird erstellt…
           </div>
         ) : (
@@ -348,10 +348,12 @@ export function SequencePlayer({
           disabled={clips.length === 0 || total === 0}
           className="flex-1 accent-sky-500"
         />
-        <span className="w-36 shrink-0 text-right text-xs tabular-nums text-slate-400">
+        <span className="w-36 shrink-0 text-right text-xs tabular-nums text-content-muted">
           {seqFrame} / {total} f
         </span>
       </div>
     </div>
   );
 }
+
+
