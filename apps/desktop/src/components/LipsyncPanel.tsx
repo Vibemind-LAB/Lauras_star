@@ -8,7 +8,7 @@ function jobChipClass(status: string): string {
   if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
   if (status === "succeeded") return "border-status-ok bg-status-ok/20 text-status-ok";
   if (status === "running" || status === "leased" || status === "queued")
-    return "border-sky-800 bg-sky-950/30 text-sky-200";
+    return "border-accent bg-accent/30 text-accent";
   return "border-bezel bg-surface-1 text-content-muted";
 }
 

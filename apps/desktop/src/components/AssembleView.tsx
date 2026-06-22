@@ -68,7 +68,7 @@ function Thumb({
   }, [client, assetId, frame]);
   return (
     <span
-      className={`block shrink-0 overflow-hidden rounded bg-sky-900/40 ${className ?? "h-9 w-16"}`}
+      className={`block shrink-0 overflow-hidden rounded bg-accent/40 ${className ?? "h-9 w-16"}`}
     >
       {url ? <img src={url} alt="" className="h-full w-full object-cover" /> : null}
     </span>
@@ -103,7 +103,7 @@ function alignmentStatusLabel(status: string | undefined): string | null {
 function alignmentStatusClass(status: string | undefined): string {
   if (status === "failed") return "border-status-err/80 bg-status-err/15 text-status-err";
   if (status === "stale") return "border-status-warn/80 bg-status-warn/15 text-status-warn";
-  if (status === "aligning") return "border-sky-800/80 bg-sky-950/40 text-sky-200";
+  if (status === "aligning") return "border-accent/80 bg-accent/40 text-accent";
   return "border-bezel bg-surface-1 text-content-muted";
 }
 
@@ -175,7 +175,7 @@ function TranscriptBlockEditor({
   return (
     <article
       className={`flex flex-col gap-2 border-b border-bezel/80 py-3 last:border-b-0 ${
-        active ? "bg-sky-600/10 px-2" : ""
+        active ? "bg-accent/10 px-2" : ""
       }`}
     >
       <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide">
@@ -216,7 +216,7 @@ function TranscriptBlockEditor({
         onChange={(e) => setText(e.target.value)}
         disabled={busy}
         rows={4}
-        className="min-h-24 resize-y rounded border border-bezel bg-surface-1 px-2 py-2 text-sm leading-relaxed text-content-strong outline-none focus:border-sky-600 disabled:opacity-60"
+        className="min-h-24 resize-y rounded border border-bezel bg-surface-1 px-2 py-2 text-sm leading-relaxed text-content-strong outline-none focus:border-accent disabled:opacity-60"
       />
       {block.words.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -240,7 +240,7 @@ function TranscriptBlockEditor({
                   ? "border-status-err bg-status-err/15 text-status-err"
                   : jobStatus.status === "succeeded"
                     ? "border-status-ok bg-status-ok/20 text-status-ok"
-                    : "border-sky-800 bg-sky-950/30 text-sky-200"
+                    : "border-accent bg-accent/30 text-accent"
               }`}
             >
               {jobStatusLabel(jobStatus.status)}
@@ -258,7 +258,7 @@ function TranscriptBlockEditor({
           type="button"
           onClick={() => void saveAndRealign()}
           disabled={busy || jobRunning || text.trim() === ""}
-          className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+          className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
         >
           {busy ? "Speichert..." : "Speichern + neu ausrichten"}
         </button>
@@ -560,7 +560,7 @@ export function AssembleView({
           value={sceneQuery}
           onChange={(e) => setSceneQuery(e.target.value)}
           placeholder="Szenen suchen"
-          className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint outline-none focus:border-sky-600"
+          className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint outline-none focus:border-accent"
         />
         {binError !== null && <div className="text-xs text-status-err">{binError}</div>}
         {sequenceError !== null && <div className="text-xs text-status-err">{sequenceError}</div>}
@@ -582,7 +582,7 @@ export function AssembleView({
                     type="button"
                     title={`Alle ${g.scenes.length} Szenen von „${assetName(g.assetId)}" anhängen`}
                     onClick={() => void applySceneIds([...ids, ...g.scenes.map((s) => s.id)])}
-                    className="shrink-0 rounded bg-sky-700 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-sky-600"
+                    className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-accent-glow"
                   >
                     + alle
                   </button>
@@ -598,7 +598,7 @@ export function AssembleView({
                 >
                   <Thumb client={client} assetId={s.asset_id ?? g.assetId} frame={s.thumb_frame ?? 0} />
                   <span className="min-w-0 flex-1 truncate text-content-strong">{s.name}</span>
-                  <span className="shrink-0 rounded bg-sky-600 px-1.5 py-0.5 font-medium text-white">
+                  <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 font-medium text-white">
                     +
                   </span>
                 </button>
@@ -699,7 +699,7 @@ export function AssembleView({
                     onDrop={(e) => onDrop(e, i)}
                     onDragLeave={() => setDragOverIndex(null)}
                     className={`flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border bg-surface-2 p-1 text-xs ${
-                      dragOverIndex === i ? "border-sky-400 shadow-[inset_3px_0_0_#38bdf8]" : "border-bezel"
+                      dragOverIndex === i ? "border-accent shadow-[inset_3px_0_0_#38bdf8]" : "border-bezel"
                     }`}
                   >
                     {dragOverIndex === i && (
@@ -759,7 +759,7 @@ export function AssembleView({
             type="button"
             onClick={() => setRailTab("transcript")}
             className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
-              railTab === "transcript" ? "bg-sky-700 text-white" : "text-content-muted hover:text-content-strong"
+              railTab === "transcript" ? "bg-accent text-white" : "text-content-muted hover:text-content-strong"
             }`}
           >
             Transkript
@@ -768,7 +768,7 @@ export function AssembleView({
             type="button"
             onClick={() => setRailTab("tools")}
             className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
-              railTab === "tools" ? "bg-sky-700 text-white" : "text-content-muted hover:text-content-strong"
+              railTab === "tools" ? "bg-accent text-white" : "text-content-muted hover:text-content-strong"
             }`}
           >
             Tools

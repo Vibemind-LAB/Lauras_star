@@ -158,7 +158,7 @@ function ClipThumb({
       } (Klick = auswählen, ziehen = umsortieren)`}
       style={{ width: `${pct}%` }}
       className={`relative flex items-center justify-center overflow-hidden ${
-        url ? "" : index % 2 === 0 ? "bg-sky-700/50" : "bg-sky-500/40"
+        url ? "" : index % 2 === 0 ? "bg-accent/50" : "bg-accent/40"
       } ${selected ? "z-10 ring-2 ring-inset ring-amber-400" : "hover:brightness-125"} ${
         dragOver ? "border-l-2 border-amber-300" : ""
       }`}
@@ -976,7 +976,7 @@ export function TimelineBar({
                     onClick={() => onScrub?.(w.assetId, w.srcFrame)}
                     title={w.text}
                     style={{ left: `${w.leftPct}%`, width: `${w.widthPct}%` }}
-                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-bezel/60 px-0.5 text-left text-[10px] leading-7 text-content-muted hover:bg-sky-600/40 hover:text-white"
+                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-bezel/60 px-0.5 text-left text-[10px] leading-7 text-content-muted hover:bg-accent/40 hover:text-white"
                   >
                     {w.text}
                   </button>

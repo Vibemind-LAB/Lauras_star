@@ -363,7 +363,7 @@ export function ExportView({
                       userPickedRef.current = true;
                       setSelectedTargetId(t.id);
                     }}
-                    className="accent-sky-500"
+                    className="accent-accent"
                   />
                   {t.label}
                   {count != null && (
@@ -402,7 +402,7 @@ export function ExportView({
             type="button"
             onClick={() => void onExport()}
             disabled={!timelineId || exportBusy}
-            className="rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
           >
             {exportBusy ? "rendert…" : "Exportieren"}
           </button>
@@ -591,7 +591,7 @@ export function ExportView({
           type="button"
           onClick={() => void onExportReel()}
           disabled={!timelineId || reelBusy}
-          className="self-start rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+          className="self-start rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
         >
           {reelBusy ? "rendert…" : "Reel 9:16"}
         </button>
@@ -671,12 +671,12 @@ export function ExportView({
               <div className="mx-2 mb-2 h-1 overflow-hidden rounded-full bg-surface-2">
                 {progress !== null ? (
                   <div
-                    className="h-full rounded-full bg-sky-500 transition-all duration-500"
+                    className="h-full rounded-full bg-accent transition-all duration-500"
                     style={{ width: `${Math.round(progress * 100)}%` }}
                   />
                 ) : (
                   /* Indeterminate shimmer — no numeric progress available from backend yet. */
-                  <div className="h-full w-1/3 animate-pulse rounded-full bg-sky-500/60" />
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-accent/60" />
                 )}
               </div>
             ) : undefined;

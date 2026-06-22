@@ -271,7 +271,7 @@ export function AudioLaneControls({
         type="button"
         onClick={() => void submit()}
         disabled={busy || !timelineId || audioAssets.length === 0}
-        className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent disabled:opacity-40"
+        className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
       >
         Audio einsetzen
       </button>

@@ -64,7 +64,7 @@ export function DropZone({ onImport }: { onImport: (r: ResolvedImport) => void }
         active ? "bg-surface-0/80 backdrop-blur-sm" : "pointer-events-none opacity-0"
       }`}
     >
-      <div className="rounded-2xl border-2 border-dashed border-sky-500/60 px-12 py-10 text-center">
+      <div className="rounded-2xl border-2 border-dashed border-accent/60 px-12 py-10 text-center">
         <div className="text-lg text-content-strong">Dateien, Ordner oder Link hier ablegen</div>
         <div className="mt-1 text-sm text-content-faint">
           Video-Dateien · ganze Ordner · http(s)/Magnet-Links

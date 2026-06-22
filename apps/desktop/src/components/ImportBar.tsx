@@ -94,7 +94,7 @@ export function ImportBar({
           <button
             type="submit"
             disabled={disabled || urls.length === 0}
-            className="shrink-0 rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+            className="shrink-0 rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
           >
             Laden
           </button>

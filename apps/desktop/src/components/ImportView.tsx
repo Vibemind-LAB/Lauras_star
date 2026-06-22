@@ -106,8 +106,8 @@ function ImportCard({
       aria-selected={isSelected}
       tabIndex={tabIndex}
       onKeyDown={onKeyDown}
-      className={`rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${
-        isSelected ? "ring-2 ring-sky-500" : "ring-0"
+      className={`rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        isSelected ? "ring-2 ring-accent" : "ring-0"
       }`}
     >
       <MediaCard
@@ -145,7 +145,7 @@ function ToolbarSelect({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded border border-bezel bg-surface-2 px-1.5 py-0.5 text-xs text-content-strong focus:outline-none focus:ring-1 focus:ring-sky-500"
+        className="rounded border border-bezel bg-surface-2 px-1.5 py-0.5 text-xs text-content-strong focus:outline-none focus:ring-1 focus:ring-accent"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -296,7 +296,7 @@ export function ImportView({
               placeholder="Suchen…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-40 rounded border border-bezel bg-surface-2 px-2 py-0.5 text-xs text-content-strong placeholder:text-content-faint focus:outline-none focus:ring-1 focus:ring-sky-500"
+              className="w-40 rounded border border-bezel bg-surface-2 px-2 py-0.5 text-xs text-content-strong placeholder:text-content-faint focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </label>
 

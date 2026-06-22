@@ -24,7 +24,7 @@ function jobChipClass(status: string): string {
   if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
   if (status === "succeeded") return "border-status-ok bg-status-ok/20 text-status-ok";
   if (status === "running" || status === "leased" || status === "queued")
-    return "border-sky-800 bg-sky-950/30 text-sky-200";
+    return "border-accent bg-accent/30 text-accent";
   return "border-bezel bg-surface-1 text-content-muted";
 }
 
@@ -244,7 +244,7 @@ export function ReenactPanel({
                   type="button"
                   onClick={() => void submitReenact()}
                   disabled={reenactBusy || !consentId || !timelineId || seqOut <= seqIn || !portraitAssetId}
-                  className="self-start rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+                  className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
                 >
                   Erneut versuchen
                 </button>
@@ -346,7 +346,7 @@ export function ReenactPanel({
             onClick={() => void submitReenact()}
             disabled={reenactDisabled}
             title={!consentId ? "Zuerst Consent bestätigen (Schritt 1)" : undefined}
-            className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
           >
             {reenactBusy ? "…" : isRunning ? "Läuft…" : backend === "liveportrait" ? "Reenact (LivePortrait)" : "Reenact (stub)"}
           </button>

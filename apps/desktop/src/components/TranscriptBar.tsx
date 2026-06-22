@@ -21,7 +21,7 @@ function SegmentText({
       <button
         type="button"
         onClick={() => onSeek(segment.start_frame)}
-        className={`text-left hover:underline ${active ? "text-sky-300" : ""}`}
+        className={`text-left hover:underline ${active ? "text-accent" : ""}`}
       >
         {segment.text}
       </button>
@@ -36,7 +36,7 @@ function SegmentText({
             <button
               type="button"
               onClick={() => onSeek(w.start_frame)}
-              className={`rounded px-0.5 hover:bg-surface-2 ${active ? "bg-sky-600/50 text-white" : ""}`}
+              className={`rounded px-0.5 hover:bg-surface-2 ${active ? "bg-accent/50 text-white" : ""}`}
             >
               {w.text}
             </button>{" "}
@@ -173,7 +173,7 @@ export function TranscriptBar({
                   <button
                     type="button"
                     onClick={() => onSeek(w.srcFrame)}
-                    className={`rounded px-0.5 hover:bg-surface-2 ${active ? "bg-sky-600/50 text-white" : ""}`}
+                    className={`rounded px-0.5 hover:bg-surface-2 ${active ? "bg-accent/50 text-white" : ""}`}
                   >
                     {w.text}
                   </button>{" "}
@@ -241,12 +241,12 @@ export function TranscriptBar({
               <span
                 key={seg.id}
                 ref={seg.id === firstMatchId ? firstMatchRef : undefined}
-                className={`mr-1 inline rounded px-1 ${active ? "bg-sky-900/40" : ""} ${
+                className={`mr-1 inline rounded px-1 ${active ? "bg-accent/40" : ""} ${
                   isMatch ? "bg-amber-500/20 ring-1 ring-amber-400/60" : ""
                 } ${dimmed ? "opacity-40" : ""}`}
               >
                 {seg.speaker_label && (
-                  <span className="mr-1 rounded bg-surface-0 px-1.5 py-0.5 text-xs text-sky-300">
+                  <span className="mr-1 rounded bg-surface-0 px-1.5 py-0.5 text-xs text-accent">
                     {seg.speaker_label}
                   </span>
                 )}

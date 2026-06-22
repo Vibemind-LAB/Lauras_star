@@ -39,7 +39,7 @@ export function TransitionReviewPanel({
           type="button"
           disabled={loading || timelineId == null}
           onClick={() => void run()}
-          className="rounded bg-sky-600/20 px-2 py-0.5 text-sky-300 hover:bg-sky-600/30 disabled:opacity-50"
+          className="rounded bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30 disabled:opacity-50"
         >
           {loading ? "läuft…" : "Prüfen"}
         </button>

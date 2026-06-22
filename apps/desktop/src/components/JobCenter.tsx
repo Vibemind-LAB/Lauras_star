@@ -17,7 +17,7 @@ function statusLabel(status: string): string {
 function statusClass(status: string): string {
   if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
   if (status === "succeeded") return "border-status-ok bg-status-ok/20 text-status-ok";
-  if (RUNNING.has(status)) return "border-sky-800 bg-sky-950/30 text-sky-200";
+  if (RUNNING.has(status)) return "border-accent bg-accent/30 text-accent";
   return "border-bezel bg-surface-1 text-content-muted";
 }
 
@@ -156,7 +156,7 @@ export function JobCenter({
                             type="button"
                             onClick={() => void retry(job.id)}
                             disabled={busyId === job.id}
-                            className="rounded bg-sky-700 px-2 py-1 text-[11px] text-white hover:bg-sky-600 disabled:opacity-40"
+                            className="rounded bg-accent px-2 py-1 text-[11px] text-white hover:bg-accent-glow disabled:opacity-40"
                           >
                             Retry
                           </button>

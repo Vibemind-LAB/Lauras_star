@@ -202,7 +202,7 @@ export function Player({
     <div
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="flex min-h-0 flex-1 flex-col gap-2 rounded-md outline-none focus:ring-1 focus:ring-sky-600/50"
+      className="flex min-h-0 flex-1 flex-col gap-2 rounded-md outline-none focus:ring-1 focus:ring-accent/50"
     >
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-bezel bg-black">
         {loadError ? (
@@ -257,7 +257,7 @@ export function Player({
           type="button"
           onClick={toggle}
           disabled={!url}
-          className="rounded bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-40"
+          className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
         >
           {playing ? "❚❚" : "▶"}
         </button>
@@ -276,7 +276,7 @@ export function Player({
           value={Math.min(frame, Math.max(0, total - 1))}
           onChange={(e) => seekToFrame(Number(e.target.value))}
           disabled={!url || total === 0}
-          className="flex-1 accent-sky-500"
+          className="flex-1 accent-accent"
         />
         <span className="w-36 shrink-0 text-right text-xs tabular-nums text-content-muted">
           {shuttle !== 0 && (

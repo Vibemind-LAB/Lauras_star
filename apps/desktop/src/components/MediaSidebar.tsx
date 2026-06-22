@@ -49,7 +49,7 @@ function AssetThumb({
         <img src={url} alt="" className="h-full w-full object-cover" />
       ) : (
         <span
-          className={`block h-full w-full ${index % 2 === 0 ? "bg-sky-700/40" : "bg-sky-500/30"}`}
+          className={`block h-full w-full ${index % 2 === 0 ? "bg-accent/40" : "bg-accent/30"}`}
         />
       )}
     </span>
@@ -219,7 +219,7 @@ function MediaSidebarItem({
 
   const rowBase =
     "flex items-center gap-2 rounded px-1 py-1 text-left transition cursor-pointer select-none";
-  const rowActive = "bg-sky-600/20 ring-1 ring-sky-500/40";
+  const rowActive = "bg-accent/20 ring-1 ring-accent/40";
   const rowInactive = "hover:bg-surface-2";
 
   return (
@@ -257,7 +257,7 @@ function MediaSidebarItem({
                 e.stopPropagation();
                 handleAnalyse();
               }}
-              className="rounded bg-sky-700 px-2 py-0.5 text-[10px] text-white hover:bg-sky-600"
+              className="rounded bg-accent px-2 py-0.5 text-[10px] text-white hover:bg-accent-glow"
             >
               Analysieren
             </button>
@@ -277,7 +277,7 @@ function MediaSidebarItem({
                   e.stopPropagation();
                   handleAnalyse();
                 }}
-                className="rounded bg-sky-700 px-2 py-0.5 text-[10px] text-white hover:bg-sky-600"
+                className="rounded bg-accent px-2 py-0.5 text-[10px] text-white hover:bg-accent-glow"
               >
                 Analysieren
               </button>

@@ -71,7 +71,7 @@ function ShotThumb({
         <img src={url} alt={`Shot ${index + 1}`} className="h-full w-full object-cover" />
       ) : (
         <span
-          className={`block h-full w-full ${index % 2 === 0 ? "bg-sky-700/40" : "bg-sky-500/30"}`}
+          className={`block h-full w-full ${index % 2 === 0 ? "bg-accent/40" : "bg-accent/30"}`}
         />
       )}
       <span className="absolute bottom-0 left-0 bg-surface-0/70 px-1 text-[10px] leading-tight text-content-strong">`n        {index + 1}

@@ -474,7 +474,7 @@ export function App(): ReactElement {
               <button
                 type="submit"
                 disabled={!name.trim() || busy}
-                className="rounded bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-40"
+                className="rounded bg-accent px-2 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
               >
                 + Anlegen
               </button>
@@ -621,7 +621,7 @@ export function App(): ReactElement {
                             onClick={() => void selectProject(p.id)}
                             className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm transition ${
                               p.id === selectedProjectId
-                                ? "bg-sky-600/20 text-sky-200"
+                                ? "bg-accent/20 text-accent"
                                 : "text-content-strong hover:bg-surface-2"
                             }`}
                           >
@@ -660,7 +660,7 @@ export function App(): ReactElement {
                       <button
                         type="submit"
                         disabled={busy || !client || !name.trim()}
-                        className="w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
+                        className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-glow disabled:opacity-40"
                       >
                         {busy ? "Lege an…" : "Projekt anlegen"}
                       </button>
@@ -716,7 +716,7 @@ export function App(): ReactElement {
                         disabled={!selectedProjectId}
                         title="Lexikalisch (LIKE) ↔ semantisch (Qdrant-Vektoren)"
                         className={`rounded px-2 py-0.5 text-[10px] transition disabled:opacity-40 ${
-                          semantic ? "bg-sky-600/30 text-sky-200" : "bg-surface-1 text-content-muted hover:bg-surface-2"
+                          semantic ? "bg-accent/30 text-accent" : "bg-surface-1 text-content-muted hover:bg-surface-2"
                         }`}
                       >
                         {semantic ? "● semantisch" : "○ lexikalisch"}
@@ -755,7 +755,7 @@ export function App(): ReactElement {
                               onClick={() => setSelectedAssetId(a.id)}
                               className={`min-w-0 flex-1 truncate rounded-md px-3 py-2 text-left text-sm transition ${
                                 a.id === selectedAssetId
-                                  ? "bg-sky-600/20 text-sky-200"
+                                  ? "bg-accent/20 text-accent"
                                   : "text-content-strong hover:bg-surface-2"
                               }`}
                             >

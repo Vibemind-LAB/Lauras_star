@@ -158,7 +158,7 @@ export function DemoAssistantPanel({
         type="button"
         onClick={() => void createDraft()}
         disabled={busy || videoAssets.length === 0}
-        className="self-start rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40"
+        className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
       >
         {busy && draft === null ? "Analysiert..." : "Demo-Draft erzeugen"}
       </button>
@@ -211,7 +211,7 @@ export function DemoAssistantPanel({
             type="button"
             onClick={() => void applyDraft()}
             disabled={busy || draft === null || items.every((item) => !item.enabled)}
-            className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent disabled:opacity-40"
+            className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
           >
             In Sequenz übernehmen
           </button>

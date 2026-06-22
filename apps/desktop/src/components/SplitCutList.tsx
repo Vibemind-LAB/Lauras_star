@@ -87,7 +87,7 @@ export function SplitCutList({
           type="button"
           onClick={acceptAll}
           disabled={busy || !projectId || !timelineId}
-          className="rounded bg-sky-600 px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
+          className="rounded bg-accent px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
         >
           Alle übernehmen
         </button>
@@ -128,7 +128,7 @@ export function SplitCutList({
                   type="button"
                   onClick={() => toggle(sc)}
                   disabled={busy || !projectId || !timelineId}
-                  className="shrink-0 rounded bg-sky-600 px-2 py-0.5 text-white disabled:opacity-40"
+                  className="shrink-0 rounded bg-accent px-2 py-0.5 text-white disabled:opacity-40"
                 >
                   Übernehmen
                 </button>

@@ -106,7 +106,7 @@ export function InspectorPanel({
               checked={analysis.diarize}
               onChange={(e) => analysis.setDiarize(e.target.checked)}
               disabled={running}
-              className="accent-sky-500"
+              className="accent-accent"
             />
             Diarize
           </label>
@@ -119,7 +119,7 @@ export function InspectorPanel({
               checked={analysis.align}
               onChange={(e) => analysis.setAlign(e.target.checked)}
               disabled={running}
-              className="accent-sky-500"
+              className="accent-accent"
             />
             Align
           </label>
@@ -167,7 +167,7 @@ export function InspectorPanel({
           type="button"
           onClick={onBuildFromShots}
           disabled={analysis.shots.length === 0 || !canAppend}
-          className="mt-2 w-full rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:opacity-40"
+          className="mt-2 w-full rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition hover:bg-accent-glow disabled:opacity-40"
           title="Eine Rough-Cut-Sequenz aus den erkannten Szenen bauen (schwache automatisch verworfen)"
         >
           Rough Cut aus Szenen bauen

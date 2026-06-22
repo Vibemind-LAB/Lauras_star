@@ -79,7 +79,7 @@ export function ImportProgress({
     <div className="mt-1">
       <div className="h-1.5 w-full overflow-hidden rounded bg-surface-2">
         <div
-          className="h-full bg-sky-500 transition-all"
+          className="h-full bg-accent transition-all"
           style={{ width: pct != null ? `${pct}%` : "33%" }}
         />
       </div>

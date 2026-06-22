@@ -395,7 +395,7 @@ export function SequencePlayer({
           type="button"
           onClick={toggle}
           disabled={clips.length === 0 || !firstClipHasProxy}
-          className="rounded bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-40"
+          className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
         >
           {playing ? "❚❚" : "▶"}
         </button>
@@ -406,7 +406,7 @@ export function SequencePlayer({
           value={Math.min(seqFrame, Math.max(0, total - 1))}
           onChange={(e) => seekToSeqFrame(Number(e.target.value))}
           disabled={clips.length === 0 || total === 0}
-          className="flex-1 accent-sky-500"
+          className="flex-1 accent-accent"
         />
         <span className="w-36 shrink-0 text-right text-xs tabular-nums text-content-muted">
           {seqFrame} / {total} f

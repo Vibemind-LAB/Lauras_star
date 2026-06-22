@@ -44,7 +44,7 @@ export function SceneMusicControls({
         <span className="w-10 tabular-nums">{gain}%</span>
       </label>
       <button type="button" onClick={() => void apply()} disabled={!pick}
-        className="rounded bg-sky-600 px-2 py-1 text-white disabled:opacity-40">Musik setzen</button>
+        className="rounded bg-accent px-2 py-1 text-white disabled:opacity-40">Musik setzen</button>
       {scene.music_asset_id && (
         <button type="button" onClick={() => void clear()}
           className="rounded bg-surface-2 px-2 py-1 text-content-strong">entfernen</button>

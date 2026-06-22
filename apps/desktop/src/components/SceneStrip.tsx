@@ -64,7 +64,7 @@ function Thumb({
       {url ? (
         <img src={url} alt="" className="h-full w-full object-cover" />
       ) : (
-        <span className="block h-full w-full bg-sky-700/40" />
+        <span className="block h-full w-full bg-accent/40" />
       )}
     </span>
   );

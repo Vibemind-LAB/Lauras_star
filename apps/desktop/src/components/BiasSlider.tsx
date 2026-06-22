@@ -52,7 +52,7 @@ export function BiasSlider({
           onChange={(e) => onChange(Number(e.target.value))}
           aria-label="Schnitt-Bias: Bild-genau bis Schnitt-sauber"
           aria-valuetext={`${display}, ${value.toFixed(2)}`}
-          className="min-w-0 flex-1 accent-sky-500 disabled:opacity-40"
+          className="min-w-0 flex-1 accent-accent disabled:opacity-40"
         />
         <span className="shrink-0 text-[10px] text-content-faint">Schnitt-sauber</span>
       </div>

@@ -113,7 +113,7 @@ export function RoughCutView({
             type="button"
             onClick={() => void onGenerate()}
             disabled={busy}
-            className="rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
           >
             {busy ? "Erzeuge…" : "Szenen erzeugen"}
           </button>
