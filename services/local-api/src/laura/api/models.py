@@ -998,3 +998,55 @@ class BatchPlanOut(BaseModel):
 
     plans: list[BatchShortPlanOut]
     batch_hash: str
+
+
+# --- batch-status (P7-T2) ---------------------------------------------------
+
+
+class BatchStageCounts(BaseModel):
+    """Per-stage short counts for POST /shorts/batch-status.
+
+    All 7 stage keys are always present (zero when no shorts are in that stage)
+    so the shape is stable for consumers that iterate the keys without checking.
+
+    Stage mapping (from resolve_next_action label_key):
+      next_action.preparing  → preparing
+      next_action.analyzing  → analyzing
+      next_action.analyze    → analyze
+      next_action.cut        → cut
+      next_action.build_reel → build
+      next_action.done       → done
+      resolve returns None   → not_found
+    """
+
+    preparing: int = 0
+    analyzing: int = 0
+    analyze: int = 0
+    cut: int = 0
+    build: int = 0
+    done: int = 0
+    not_found: int = 0
+
+
+class BatchStatusIn(BaseModel):
+    """Request body for POST /shorts/batch-status.
+
+    ``short_ids`` must be non-empty; empty list → 422.
+    """
+
+    short_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+class BatchStatusOut(BaseModel):
+    """Response for POST /shorts/batch-status — conveyor rollup over a manifest.
+
+    ``total`` == len(short_ids).
+    ``by_stage`` counts how many shorts are in each pipeline stage (all 7 keys
+    always present, zero-filled).
+    ``needs_human`` counts shorts where get_asset_policy returns a row with
+    mode == "human".  Unverified count is deferred (needs short_runs).
+    """
+
+    total: int
+    by_stage: BatchStageCounts
+    needs_human: int

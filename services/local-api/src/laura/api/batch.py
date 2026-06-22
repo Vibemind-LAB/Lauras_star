@@ -26,7 +26,16 @@ from fastapi import APIRouter, Depends, Request
 
 from ..db.database import Database
 from ..ledger.recipe import canonical_json
-from .models import BatchPlanIn, BatchPlanOut, BatchShortPlanOut, NextActionOut
+from ..policy import get_asset_policy, parse_policy
+from .models import (
+    BatchPlanIn,
+    BatchPlanOut,
+    BatchShortPlanOut,
+    BatchStageCounts,
+    BatchStatusIn,
+    BatchStatusOut,
+    NextActionOut,
+)
 from .security import require_token
 from .shorts import resolve_next_action
 
@@ -122,6 +131,88 @@ def _db(request: Request) -> Database:
     return db
 
 
+# ---------------------------------------------------------------------------
+# Stage mapping
+# ---------------------------------------------------------------------------
+
+#: Maps label_key values from resolve_next_action onto BatchStageCounts field names.
+_LABEL_KEY_TO_STAGE: dict[str, str] = {
+    "next_action.preparing": "preparing",
+    "next_action.analyzing": "analyzing",
+    "next_action.analyze": "analyze",
+    "next_action.cut": "cut",
+    "next_action.build_reel": "build",
+    "next_action.done": "done",
+}
+
+
+# ---------------------------------------------------------------------------
+# Pure resolver — batch_status
+# ---------------------------------------------------------------------------
+
+
+def batch_status(db: Database, short_ids: list[str]) -> dict[str, Any]:
+    """Roll up resolve_next_action across a manifest into stage counts.
+
+    PURE READ — no writes, no enqueues.
+
+    Returns::
+
+        {
+            "total": int,
+            "by_stage": {
+                "preparing": int, "analyzing": int, "analyze": int,
+                "cut": int, "build": int, "done": int, "not_found": int,
+            },
+            "needs_human": int,
+        }
+
+    Stage mapping: each short_id is resolved via resolve_next_action; the
+    resulting label_key is mapped to a stage bucket via _LABEL_KEY_TO_STAGE.
+    Shorts for which resolve_next_action returns None are counted as "not_found".
+
+    needs_human: count of shorts where get_asset_policy returns a row whose
+    policy string parses to mode == "human".
+
+    Deferred: an "unverified" count requires per-short timeline-quality
+    resolution from the short_runs ledger — that is out of scope for v1.
+    """
+    stage_counts: dict[str, int] = {
+        "preparing": 0,
+        "analyzing": 0,
+        "analyze": 0,
+        "cut": 0,
+        "build": 0,
+        "done": 0,
+        "not_found": 0,
+    }
+    needs_human = 0
+
+    for sid in short_ids:
+        action = resolve_next_action(db, sid)
+        if action is None:
+            stage_counts["not_found"] += 1
+        else:
+            stage = _LABEL_KEY_TO_STAGE.get(action.label_key, "not_found")
+            stage_counts[stage] += 1
+
+        # needs_human: check asset policy (pure read — get_asset_policy never writes)
+        policy_row = get_asset_policy(db, sid)
+        if policy_row is not None:
+            try:
+                parsed = parse_policy(policy_row["policy"])
+                if parsed.mode == "human":
+                    needs_human += 1
+            except ValueError:
+                pass  # malformed policy row — skip silently; no writes, no abort
+
+    return {
+        "total": len(short_ids),
+        "by_stage": stage_counts,
+        "needs_human": needs_human,
+    }
+
+
 @router.post("/shorts/batch-plan", response_model=BatchPlanOut)
 def post_batch_plan(body: BatchPlanIn, request: Request) -> BatchPlanOut:
     """Deterministic, side-effect-free batch next-action projection.
@@ -143,3 +234,22 @@ def post_batch_plan(body: BatchPlanIn, request: Request) -> BatchPlanOut:
         for entry in result["plans"]
     ]
     return BatchPlanOut(plans=plans_out, batch_hash=result["batch_hash"])
+
+
+@router.post("/shorts/batch-status", response_model=BatchStatusOut)
+def post_batch_status(body: BatchStatusIn, request: Request) -> BatchStatusOut:
+    """Conveyor rollup: aggregate resolve_next_action across a manifest into stage counts.
+
+    Pure read — no writes.  Unknown short_ids are counted as ``not_found``
+    without aborting the rest.  ``needs_human`` counts shorts whose persisted
+    asset_policy has mode == "human".
+
+    Deferred: ``unverified`` count (requires short_runs ledger).
+    """
+    db = _db(request)
+    result = batch_status(db, body.short_ids)
+    return BatchStatusOut(
+        total=result["total"],
+        by_stage=BatchStageCounts(**result["by_stage"]),
+        needs_human=result["needs_human"],
+    )
