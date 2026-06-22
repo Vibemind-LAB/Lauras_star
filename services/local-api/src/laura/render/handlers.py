@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .. import audit
 from ..db import repos
 from ..db.database import Database
 from ..editing.otio_sync import resolve_clip_rows
@@ -344,6 +345,22 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         raise
 
     repos.set_export_done(ctx.db, export_id, path=str(dest), size_bytes=size_bytes)
+    try:
+        audit.record(
+            ctx.db,
+            audit.system_principal(),
+            "export.render",
+            entity_type="export",
+            entity_id=export_id,
+            payload={
+                "timeline_id": exp.get("timeline_id"),
+                "format": "mp4",
+                "path": str(dest),
+                "size_bytes": size_bytes,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        _log.exception("audit.record failed for export_id=%s (ignored)", export_id)
     record_short_run_result(
         ctx.db,
         exp["options"],

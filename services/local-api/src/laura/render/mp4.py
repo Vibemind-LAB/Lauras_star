@@ -18,6 +18,14 @@ from .reel import reel_video_chain, resolve_font
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_DISCLOSURE: str = "KI · synthetisch"
+
+
+def _effective_disclosure(disclosure_text: str | None) -> str:
+    """Disclosure presence is mandatory (EU AI Act). Blank → default label."""
+    text = (disclosure_text or "").strip()
+    return text if text else _DEFAULT_DISCLOSURE
+
 
 @dataclass(frozen=True)
 class VideoTransition:
@@ -286,11 +294,11 @@ def render_clips_mp4(
         hook_path.write_text(hook_text, encoding="utf-8")
         reel_files.append(hook_path)
         hook_tf = hook_path.name
-    if disclosure_text:
-        disc_path = dest.parent / f"{dest.stem}.reel_disclosure.txt"
-        disc_path.write_text(disclosure_text, encoding="utf-8")
-        reel_files.append(disc_path)
-        disc_tf = disc_path.name
+    disclosure = _effective_disclosure(disclosure_text)
+    disc_path = dest.parent / f"{dest.stem}.reel_disclosure.txt"
+    disc_path.write_text(disclosure, encoding="utf-8")
+    reel_files.append(disc_path)
+    disc_tf = disc_path.name
 
     ass_basename: str | None = None
     if caption_ass:
