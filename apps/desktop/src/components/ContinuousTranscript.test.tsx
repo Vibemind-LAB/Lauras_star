@@ -78,4 +78,75 @@ describe("ContinuousTranscript", () => {
     fireEvent.click(screen.getByRole("button", { name: /löschen/i }));
     expect(onDeleteSelection).toHaveBeenCalledWith("w1", "w2");
   });
+
+  it("'Text ersetzen' button is not rendered when onReplaceText is absent", () => {
+    render(
+      <ContinuousTranscript words={words} scenes={scenes}
+        selection={{ startWordId: "w1", endWordId: "w2" }}
+        onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
+        onCutAt={vi.fn()} onSeek={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button", { name: /ersetzen/i })).toBeNull();
+  });
+
+  it("'Text ersetzen' opens an inline input prefilled with the selected words' text", () => {
+    render(
+      <ContinuousTranscript words={words} scenes={scenes}
+        selection={{ startWordId: "w1", endWordId: "w2" }}
+        onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
+        onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
+    const input = screen.getByRole("textbox", { name: /neuer text/i }) as HTMLInputElement;
+    expect(input.value).toBe("hallo welt");
+  });
+
+  it("committing a non-empty replacement calls onReplaceText with the correct ids and text", () => {
+    const onReplaceText = vi.fn();
+    const onSelectionChange = vi.fn();
+    render(
+      <ContinuousTranscript words={words} scenes={scenes}
+        selection={{ startWordId: "w1", endWordId: "w2" }}
+        onSelectionChange={onSelectionChange} onDeleteSelection={vi.fn()}
+        onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={onReplaceText} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
+    const input = screen.getByRole("textbox", { name: /neuer text/i });
+    fireEvent.change(input, { target: { value: "neuer text" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onReplaceText).toHaveBeenCalledWith("w1", "w2", "neuer text");
+    // selection is cleared after commit
+    expect(onSelectionChange).toHaveBeenCalledWith(null);
+  });
+
+  it("committing an empty input does not call onReplaceText", () => {
+    const onReplaceText = vi.fn();
+    render(
+      <ContinuousTranscript words={words} scenes={scenes}
+        selection={{ startWordId: "w1", endWordId: "w2" }}
+        onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
+        onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={onReplaceText} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
+    const input = screen.getByRole("textbox", { name: /neuer text/i });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onReplaceText).not.toHaveBeenCalled();
+  });
+
+  it("pressing Escape in the inline editor closes it without calling onReplaceText", () => {
+    const onReplaceText = vi.fn();
+    render(
+      <ContinuousTranscript words={words} scenes={scenes}
+        selection={{ startWordId: "w1", endWordId: "w2" }}
+        onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
+        onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={onReplaceText} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /neuer text/i }), { key: "Escape" });
+    expect(onReplaceText).not.toHaveBeenCalled();
+    // editor is gone; delete button reappears
+    expect(screen.queryByRole("textbox", { name: /neuer text/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /löschen/i })).toBeTruthy();
+  });
 });

@@ -12,10 +12,12 @@ interface Selection {
 /**
  * The continuous rough-cut transcript as the editing surface (spec §3, §4.1).
  *
- * Words are grouped into scene sections (label + cut marker at each boundary). Three gestures,
+ * Words are grouped into scene sections (label + cut marker at each boundary). Four gestures,
  * no tool picker: click a word -> seek; drag / shift over words -> selection (ordered by seqStart)
  * which the parent ripple-deletes; click the caret between two words -> cut at the right word's
- * sequence frame (a new scene starts there). Pure presentation — all effects flow through props.
+ * sequence frame (a new scene starts there); "Text ersetzen" on an active selection -> inline
+ * input prefilled with selection text -> commit on Enter calls onReplaceText. Pure presentation —
+ * all effects flow through props.
  */
 export function ContinuousTranscript({
   words,
@@ -25,6 +27,7 @@ export function ContinuousTranscript({
   onDeleteSelection,
   onCutAt,
   onSeek,
+  onReplaceText,
 }: {
   words: CutWord[];
   scenes: Scene[];
@@ -33,10 +36,13 @@ export function ContinuousTranscript({
   onDeleteSelection: (startWordId: string, endWordId: string) => void;
   onCutAt: (seqFrame: number) => void;
   onSeek: (seqFrame: number) => void;
+  onReplaceText?: (startWordId: string, endWordId: string, newText: string) => void;
 }): ReactElement {
   const groups = groupCutWordsByScene(words, scenes);
   // words are already sorted by seqStart from projectCutWords
   const [anchor, setAnchor] = useState<CutWord | null>(null);
+  // null = no inline editor open; string = current draft text in the editor
+  const [replaceText, setReplaceText] = useState<string | null>(null);
 
   function selectTo(from: CutWord, to: CutWord): void {
     const [a, b] = from.seqStart <= to.seqStart ? [from, to] : [to, from];
@@ -51,12 +57,42 @@ export function ContinuousTranscript({
     return w.seqStart >= s.seqStart && w.seqStart <= e.seqStart;
   }
 
+  /** Collect the display text of all words currently in the selection (joined by space). */
+  function selectionText(): string {
+    if (!selection) return "";
+    const s = words.find((x) => x.id === selection.startWordId);
+    const e = words.find((x) => x.id === selection.endWordId);
+    if (!s || !e) return "";
+    return words
+      .filter((w) => w.seqStart >= s.seqStart && w.seqStart <= e.seqStart)
+      .map((w) => w.text)
+      .join(" ");
+  }
+
+  function openReplaceEditor(): void {
+    setReplaceText(selectionText());
+  }
+
+  function commitReplace(): void {
+    if (!selection || replaceText === null) return;
+    const trimmed = replaceText.trim();
+    if (trimmed !== "" && onReplaceText) {
+      onReplaceText(selection.startWordId, selection.endWordId, trimmed);
+    }
+    setReplaceText(null);
+    onSelectionChange(null);
+  }
+
+  function cancelReplace(): void {
+    setReplaceText(null);
+  }
+
   return (
     <div
       className="flex flex-col gap-2 overflow-auto p-2 text-sm"
       data-testid="continuous-transcript"
     >
-      {selection && (
+      {selection && replaceText === null && (
         <div className="flex items-center gap-2 text-xs text-content-muted">
           <button
             type="button"
@@ -64,6 +100,45 @@ export function ContinuousTranscript({
             onClick={() => onDeleteSelection(selection.startWordId, selection.endWordId)}
           >
             Auswahl löschen
+          </button>
+          {onReplaceText && (
+            <button
+              type="button"
+              className="rounded bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
+              onClick={openReplaceEditor}
+            >
+              Text ersetzen
+            </button>
+          )}
+        </div>
+      )}
+      {selection && replaceText !== null && (
+        <div className="flex items-center gap-2 text-xs">
+          <input
+            type="text"
+            aria-label="Neuer Text"
+            className="flex-1 rounded border border-accent bg-surface-1 px-2 py-0.5 text-content-base focus:outline-none focus:ring-1 focus:ring-accent"
+            value={replaceText}
+            onChange={(e) => setReplaceText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitReplace();
+              if (e.key === "Escape") cancelReplace();
+            }}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="rounded bg-accent px-2 py-0.5 text-accent-ink hover:opacity-90"
+            onClick={commitReplace}
+          >
+            OK
+          </button>
+          <button
+            type="button"
+            className="rounded bg-surface-2 px-2 py-0.5 text-content-muted hover:bg-surface-3"
+            onClick={cancelReplace}
+          >
+            Abbrechen
           </button>
         </div>
       )}

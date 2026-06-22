@@ -227,6 +227,7 @@ export function FineCutView({
           onDeleteSelection={(a, b) => void rc.deleteRange(a, b)}
           onCutAt={(f) => void rc.cutAt(f)}
           onSeek={onSeek}
+          onReplaceText={(s, e, t) => void rc.replaceSpanText(s, e, t, voiceId ?? "")}
         />
 
         {rc.error && (
