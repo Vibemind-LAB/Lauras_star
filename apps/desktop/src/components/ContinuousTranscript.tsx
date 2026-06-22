@@ -80,7 +80,7 @@ export function ContinuousTranscript({
                   type="button"
                   aria-label={`Schnitt vor ${w.text}`}
                   data-testid={`caret-${w.id}`}
-                  className="mx-0.5 inline-block w-1 cursor-col-resize align-middle text-content-faint hover:text-sky-400"
+                  className="mx-0.5 inline-block w-1 cursor-col-resize align-middle text-content-faint hover:text-accent"
                   onClick={() => onCutAt(w.seqStart)}
                 >
                   |
@@ -89,7 +89,7 @@ export function ContinuousTranscript({
                   role="button"
                   tabIndex={0}
                   className={`cursor-text rounded px-0.5 ${
-                    inSelection(w) ? "bg-sky-700 text-white" : "hover:bg-surface-2"
+                    inSelection(w) ? "bg-accent text-accent-ink" : "hover:bg-surface-2"
                   }`}
                   onClick={() => onSeek(w.seqStart)}
                   onMouseDown={() => {
