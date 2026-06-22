@@ -144,11 +144,25 @@ def cut_at_frame(
         repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
 
     # --- Phase 2: split the scene that strictly contains `at` ----------------------
-    # A frame on a scene edge → no-op for the scene (idempotent).
+    # If `at` is already a scene boundary, return the current state (idempotent — no error).
+    all_scenes = repos.list_scenes(db, timeline_id)
+    scene_boundaries: set[int] = set()
+    for s in all_scenes:
+        scene_boundaries.add(int(s["seq_in_frame"]))
+        scene_boundaries.add(int(s["seq_out_frame_exclusive"]))
+    if at in scene_boundaries:
+        return {
+            "clips": [
+                ClipOut(**c).model_dump()
+                for c in repos.list_timeline_clips(db, timeline_id)
+            ],
+            "scenes": [SceneOut(**s).model_dump() for s in all_scenes],
+        }
+
     scene = next(
         (
             s
-            for s in repos.list_scenes(db, timeline_id)
+            for s in all_scenes
             if s["seq_in_frame"] < at < s["seq_out_frame_exclusive"]
         ),
         None,

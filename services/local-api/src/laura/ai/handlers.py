@@ -348,6 +348,17 @@ def _maybe_enqueue_lipsync_after_vo(
                 r for r in repos.list_timeline_clips(ctx.db, timeline["id"])
                 if r.get("role", "base") != "replace" and int(r.get("lane") or 0) == 0
             ]
+        # Restrict probe base rows to the primary asset in the VO span so we don't
+        # stitch footage from different sources into the probe clip (multi-asset cut).
+        primary_asset_id: str | None = None
+        for _br in base_rows:
+            r_in = int(_br["seq_in_frame"])
+            r_out = int(_br["seq_out_frame_exclusive"])
+            if min(r_out, seq_out) > max(r_in, seq_in):  # overlaps VO span
+                primary_asset_id = str(_br["asset_id"])
+                break
+        if primary_asset_id is not None:
+            base_rows = [r for r in base_rows if str(r["asset_id"]) == primary_asset_id]
         clips: list[tuple[Path, int, int]] = []
         for row in base_rows:
             r_in, r_out = int(row["seq_in_frame"]), int(row["seq_out_frame_exclusive"])
@@ -535,6 +546,18 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         sha256=None,
     )
 
+    # Remove any prior synthetic VO clips overlapping this span so editing the same span
+    # twice (different text or voice) never stacks two replace_original clips.
+    effective_mix_mode = str(payload.get("mix_mode") or "mix")
+    if effective_mix_mode in {"replace_original", "mute_original"}:
+        repos.delete_timeline_audio_clips_overlapping(
+            ctx.db,
+            timeline_id=timeline["id"],
+            seq_in=seq_in,
+            seq_out_excl=seq_out,
+            mix_mode=effective_mix_mode,
+        )
+
     clip = repos.add_timeline_audio_clip(
         ctx.db,
         timeline_id=timeline["id"],
@@ -545,7 +568,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         gain_percent=int(payload.get("gain_percent") or 100),
         fade_in_frames=int(payload.get("fade_in_frames") or 0),
         fade_out_frames=int(payload.get("fade_out_frames") or 0),
-        mix_mode=str(payload.get("mix_mode") or "mix"),
+        mix_mode=effective_mix_mode,
         ducking_percent=(
             int(payload["ducking_percent"]) if payload.get("ducking_percent") is not None else 100
         ),

@@ -955,12 +955,25 @@ def apply_operation(
     # For delete_words we need the sequence-space span *before* the delete so we can
     # reconcile scene markers after the ripple.  Compute it here against `current`.
     delete_words_span: tuple[int, int] | None = None
+    _audio_ripple_span: tuple[int, int] | None = None
     if body.op == "delete_words":
         delete_words_span = _delete_words_span(db, current, body)
+        _audio_ripple_span = delete_words_span
+    elif body.op == "delete":
+        seq_in = body.seq_in_frame
+        seq_out = body.seq_out_frame_exclusive
+        if seq_in is not None and seq_out is not None:
+            _audio_ripple_span = (seq_in, seq_out)
 
     new_clips = _apply(db, current, body, row)
 
     repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
+
+    if _audio_ripple_span is not None:
+        repos.ripple_timeline_audio_clips(
+            db, timeline_id, _audio_ripple_span[0], _audio_ripple_span[1]
+        )
+
     fresh = repos.get_timeline(db, timeline_id)
     assert fresh is not None
     # Regenerate from clips, re-applying any accepted L/J split offsets carried in the previous
