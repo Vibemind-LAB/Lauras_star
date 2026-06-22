@@ -216,10 +216,12 @@ Wenn vorhanden, nutzt das Script ausserdem `E:\laura-hf-cache`,
 Health:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8898/healthz
-Invoke-RestMethod http://127.0.0.1:8899/healthz
-Invoke-RestMethod http://127.0.0.1:8901/healthz
+.\scripts\ai-runtimes.ps1 -Action health -Mode model
 ```
+
+Die `health`-Action gibt die drei `/healthz`-Payloads aus und bricht mit einem
+Fehler ab, sobald ein Sidecar zwar antwortet, aber `ready=false` bzw. `ok=false`
+meldet.
 
 Prereq-/Doctor-Check:
 

@@ -97,7 +97,13 @@ switch ($Action) {
     "health" {
         $ports = @(8898, 8899, 8901)
         foreach ($port in $ports) {
-            Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz"
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz"
+            $ready = [bool]($health.ready -or $health.ok)
+            if (-not $ready) {
+                $payload = $health | ConvertTo-Json -Compress
+                throw "sidecar port $port is not ready: $payload"
+            }
+            $health
         }
     }
 }

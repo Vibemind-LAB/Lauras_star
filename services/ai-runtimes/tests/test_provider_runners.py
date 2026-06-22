@@ -143,6 +143,58 @@ def test_musetalk_runner_writes_config_and_copies_newest_result(
     assert output.read_bytes() == b"musetalk"
 
 
+def test_musetalk_runner_links_repo_models_to_external_weights_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "opt" / "MuseTalk"
+    repo.mkdir(parents=True)
+    model_root = tmp_path / "model-root"
+    weights_root = model_root / "MuseTalk" / "models"
+    weights_root.mkdir(parents=True)
+    result_dir = tmp_path / "results"
+    video = tmp_path / "video.mp4"
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "lipsync.mp4"
+    video.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+
+    def fake_run(
+        args: list[str],
+        *,
+        cwd: Path,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert (cwd / "models").resolve() == weights_root.resolve()
+        result_dir.mkdir(parents=True, exist_ok=True)
+        (result_dir / "result.mp4").write_bytes(b"musetalk")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setenv("LAURA_MUSETALK_REPO", str(repo))
+    monkeypatch.setenv("LAURA_MUSETALK_WEIGHTS_ROOT", str(weights_root))
+    monkeypatch.setenv("LAURA_MUSETALK_RESULT_DIR", str(result_dir))
+    monkeypatch.setattr(musetalk_runner.subprocess, "run", fake_run)
+
+    assert (
+        musetalk_runner.main(
+            [
+                "--video",
+                str(video),
+                "--audio",
+                str(audio),
+                "--output",
+                str(output),
+                "--model-root",
+                str(model_root),
+            ]
+        )
+        == 0
+    )
+
+    assert (repo / "models").resolve() == weights_root.resolve()
+    assert output.read_bytes() == b"musetalk"
+
+
 def test_piper_voice_runner_invokes_piper_with_request_text(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

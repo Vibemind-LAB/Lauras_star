@@ -71,7 +71,10 @@ import urllib.request
 
 for port in (8898, 8899, 8901):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as response:
-        sys.stdout.write(json.dumps(json.loads(response.read().decode()), sort_keys=True) + "\n")
+        data = json.loads(response.read().decode())
+        sys.stdout.write(json.dumps(data, sort_keys=True) + "\n")
+        if not data.get("ready", data.get("ok", False)):
+            raise SystemExit(f"sidecar port {port} is not ready")
 PY
     ;;
   *)

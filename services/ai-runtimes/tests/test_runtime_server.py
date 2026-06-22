@@ -93,6 +93,18 @@ def test_model_health_exposes_command_and_model_root_diagnostics(tmp_path: Path)
 
 
 def test_model_health_requires_runtime_specific_model_artifacts(tmp_path: Path) -> None:
+    required = [
+        tmp_path / "MuseTalk" / "models" / "musetalkV15" / "unet.pth",
+        tmp_path / "MuseTalk" / "models" / "musetalkV15" / "musetalk.json",
+        tmp_path / "MuseTalk" / "models" / "dwpose" / "dw-ll_ucoco_384.pth",
+        tmp_path / "MuseTalk" / "models" / "face-parse-bisent" / "79999_iter.pth",
+        tmp_path / "MuseTalk" / "models" / "face-parse-bisent" / "resnet18-5c106cde.pth",
+        tmp_path / "MuseTalk" / "models" / "sd-vae" / "config.json",
+        tmp_path / "MuseTalk" / "models" / "sd-vae" / "diffusion_pytorch_model.bin",
+        tmp_path / "MuseTalk" / "models" / "whisper" / "config.json",
+        tmp_path / "MuseTalk" / "models" / "whisper" / "preprocessor_config.json",
+        tmp_path / "MuseTalk" / "models" / "whisper" / "pytorch_model.bin",
+    ]
     config = RuntimeConfig(
         kind="vibevideo",
         mode="model",
@@ -107,13 +119,12 @@ def test_model_health_requires_runtime_specific_model_artifacts(tmp_path: Path) 
     assert missing_health["ready"] is False
     assert missing_health["state"] == "not_ready"
     assert "unet.pth" in str(missing_health["message"])
-    assert missing_caps["required_model_paths"] == [
-        str(tmp_path / "MuseTalk" / "models" / "musetalkV15" / "unet.pth")
-    ]
+    assert missing_caps["required_model_paths"] == [str(path) for path in required]
     assert missing_caps["missing_model_paths"] == missing_caps["required_model_paths"]
 
-    (tmp_path / "MuseTalk" / "models" / "musetalkV15").mkdir(parents=True)
-    (tmp_path / "MuseTalk" / "models" / "musetalkV15" / "unet.pth").write_bytes(b"weights")
+    for path in required:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"weights")
     with running_runtime(config) as port:
         ready_health = _json_request(port, "GET", "/healthz")
 
