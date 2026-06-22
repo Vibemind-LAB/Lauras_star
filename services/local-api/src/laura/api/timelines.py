@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -10,12 +13,12 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .. import audit
+from ..analysis import cutplace, transition_review
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.eval_quality import evaluate_rough_cut
-from ..analysis.joint import bias_to_weights, joint_place
+from ..analysis.joint import bias_to_weights
 from ..analysis.semantic import sentence_end_frames, speaker_turn_frames
-from ..analysis.silence import detect_silence
 from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
 from ..db import repos
@@ -51,6 +54,8 @@ from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from ..timebase.sampling import frame_to_sample
 from .models import (
+    ApplyFixOut,
+    ApplyFixRequest,
     ClipOut,
     ClipSourceOut,
     DroppedShot,
@@ -63,18 +68,25 @@ from .models import (
     RenderExportOut,
     RenderRequest,
     RoughCutQualityOut,
+    SequenceTransitionRequest,
     SetClipsRequest,
     SplitCutOut,
     TimelineCreate,
     TimelineImportOut,
     TimelineImportRequest,
     TimelineOut,
+    TimelineQualityOut,
+    TransitionReviewOut,
+    TransitionVerdictOut,
     ValidateOut,
     ValidateRequest,
 )
 from .otio_split import AcceptedSplit, accepted_offsets_from_otio
 from .pagination import PageParams
+from .quality_gate import evaluate_quality_gate
 from .security import require_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
 
@@ -241,42 +253,17 @@ def import_timeline(
 def _resolve_video_path(
     db: Database, asset_id: str, asset: dict[str, Any]
 ) -> str | None:
-    """The readable video for the joint visual signal — proxy preferred, else original/source.
-
-    Mirrors ``eval_cut_cli.resolve_video``: the CFR editorial proxy is the right surface for the
-    diff signal (it is what the shot detector ran on), falling back to an ``original`` derived
-    file and finally the asset's ``source_path``. Returns ``None`` when nothing on disk is
-    readable, in which case joint placement degrades to the editorial-only choice.
-    """
-    by_kind = {f["kind"]: f["path"] for f in repos.list_asset_files(db, asset_id)}
-    for kind in ("proxy", "original"):
-        path = by_kind.get(kind)
-        if path and Path(path).is_file():
-            return str(path)
-    src = asset.get("source_path")
-    if src and Path(src).is_file():
-        return str(src)
-    return None
+    """Module seam over :func:`laura.analysis.cutplace.resolve_video_path` (kept here so endpoint
+    tests can monkeypatch the resolver on this module)."""
+    return cutplace.resolve_video_path(db, asset_id, asset)
 
 
 def _detect_asset_silence(
     video_path: Path | str | None, asset: dict[str, Any]
 ) -> list[tuple[int, int]]:
-    """Real audio silences of the asset as source-frame ranges, or ``[]`` when unavailable.
-
-    Runs :func:`laura.analysis.silence.detect_silence` on the resolved editorial video and maps
-    the seconds-based ``silencedetect`` output into the asset's source-frame space via its frame
-    rate (``rate_num / rate_den``). Returns ``[]`` when there is no readable video or the asset
-    rate is unknown — silence is purely additive, so its absence just leaves placement to the
-    word-gap proxy.
-    """
-    if video_path is None:
-        return []
-    rate_num = asset.get("rate_num")
-    rate_den = asset.get("rate_den")
-    if not rate_num or not rate_den:
-        return []
-    return detect_silence(video_path, rate_num=rate_num, rate_den=rate_den)
+    """Module seam over :func:`laura.analysis.cutplace.detect_asset_silence` (kept here so endpoint
+    tests can monkeypatch silence detection on this module)."""
+    return cutplace.detect_asset_silence(video_path, asset)
 
 
 def _align_rows_editorial(
@@ -324,44 +311,19 @@ def _align_rows_editorial(
     contiguous and end-exclusive on the timeline. Empty ``words`` (and no readable video) leaves
     each cut exactly where the visual stage put it — placement only ever refines.
     """
-    if window <= 0:
-        return
-    if not words and not silence and video_path is None:
-        return
-    for i in range(1, len(rows)):
-        cur = rows[i]
-        prev = rows[i - 1]
-        cut = cur["src_in_frame"]
-        aligned, _score = joint_place(
-            cut,
-            words,
-            window=window,
-            w_visual=w_visual,
-            w_editorial=w_editorial,
-            silence=silence,
-            sentence_frames=sentence_frames,
-            speaker_frames=speaker_frames,
-            video_path=video_path,
-            total_frames=total_frames,
-            frame_loader=frame_loader,
-        )
-        if aligned == cut:
-            continue
-        # Keep both source ranges non-empty; skip a move that would collapse a clip.
-        if aligned <= prev["src_in_frame"] or aligned >= cur["src_out_frame_exclusive"]:
-            continue
-        contiguous = prev["src_out_frame_exclusive"] == cut
-        cur["src_in_frame"] = aligned
-        if contiguous:
-            prev["src_out_frame_exclusive"] = aligned
-
-    # Repack the sequence from the (possibly changed) source lengths: contiguous, end-exclusive.
-    offset = rows[0]["seq_in_frame"] if rows else 0
-    for row in rows:
-        length = row["src_out_frame_exclusive"] - row["src_in_frame"]
-        row["seq_in_frame"] = offset
-        row["seq_out_frame_exclusive"] = offset + length
-        offset += length
+    cutplace.place_editorial_cuts(
+        rows,
+        words,
+        window=window,
+        w_visual=w_visual,
+        w_editorial=w_editorial,
+        silence=silence,
+        sentence_frames=sentence_frames,
+        speaker_frames=speaker_frames,
+        video_path=video_path,
+        total_frames=total_frames,
+        frame_loader=frame_loader,
+    )
 
 
 def _plan_split_cuts(
@@ -635,6 +597,28 @@ def timeline_from_shots(
     fresh = repos.get_timeline(db, target["id"])
     assert fresh is not None
     repos.update_timeline_otio(db, fresh["id"], timeline_to_otio_string(_build_model(db, fresh)))
+
+    # Persist quality verdict — MUST NOT break the build; wrap in try/except.
+    if body.align_editorial:
+        try:
+            if quality is not None:
+                repos.set_timeline_quality(
+                    db,
+                    fresh["id"],
+                    status="computed",
+                    overall=quality.overall,
+                    visual_exactness=quality.visual_exactness,
+                    editorial_cleanliness=quality.editorial_cleanliness,
+                    n_cuts=quality.n_cuts,
+                    n_split_cuts=quality.n_split_cuts,
+                )
+            else:
+                repos.set_timeline_quality(db, fresh["id"], status="no_video")
+        except Exception:  # noqa: BLE001 - quality persistence must never break the build
+            logger.warning("quality persistence failed for timeline %s", fresh["id"], exc_info=True)
+            with contextlib.suppress(Exception):
+                repos.set_timeline_quality(db, fresh["id"], status="error")
+
     return FromShotsOut(
         timeline=_timeline_out(db, fresh), dropped=dropped, split_cuts=split_cuts,
         quality=quality,
@@ -658,6 +642,33 @@ def get_timeline(timeline_id: str, request: Request) -> TimelineOut:
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     return _timeline_out(db, row)
+
+
+@router.get("/timelines/{timeline_id}/quality", response_model=TimelineQualityOut)
+def get_timeline_quality(timeline_id: str, request: Request) -> TimelineQualityOut:
+    """Persisted rough-cut quality for a timeline.
+
+    Returns 404 when the timeline does not exist. Returns 200 with ``status='pending'``
+    when the timeline exists but quality has not been computed yet (no row in table).
+    ``status='computed'`` carries all score fields; ``status='no_video'`` and
+    ``status='error'`` have null scores.
+    """
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    row = repos.get_timeline_quality(db, timeline_id)
+    if row is None:
+        return TimelineQualityOut(timeline_id=timeline_id, status="pending")
+    return TimelineQualityOut(
+        timeline_id=timeline_id,
+        status=row["status"],
+        overall=row["overall"],
+        visual_exactness=row["visual_exactness"],
+        editorial_cleanliness=row["editorial_cleanliness"],
+        n_cuts=row["n_cuts"],
+        n_split_cuts=row["n_split_cuts"],
+        created_at=row["created_at"],
+    )
 
 
 @router.get(
@@ -768,17 +779,22 @@ def rename_timeline(
     return _timeline_out(db, row)
 
 
-@router.delete("/timelines/{timeline_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/timelines/{timeline_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def delete_timeline(
     timeline_id: str,
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
-) -> None:
+) -> Response:
     db = _db(request)
     if repos.get_timeline(db, timeline_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     repos.delete_timeline(db, timeline_id)
     audit.record(db, principal, "timeline.delete", entity_type="timeline", entity_id=timeline_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _require(value: Any, message: str) -> Any:
@@ -955,6 +971,114 @@ def set_timeline_clips(
     return _timeline_out(db, fresh)
 
 
+@router.patch(
+    "/timelines/{timeline_id}/clips/{clip_id}/transition",
+    response_model=TimelineOut,
+)
+def set_clip_transition(
+    timeline_id: str,
+    clip_id: str,
+    body: SequenceTransitionRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> TimelineOut:
+    """Set the transition that plays AFTER a clip: ``hard`` | ``fade`` | ``crossfade``.
+
+    The same shape as the sequence-item transition, but on a rough_cut/scene clip so a
+    smoothness fix applies where the cut is made. ``hard`` forces ``frames`` to 0."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    if not any(c["id"] == clip_id for c in repos.list_timeline_clips(db, timeline_id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "clip not found")
+    allowed = {"hard", "fade", "crossfade"}
+    kind = body.kind if body.kind in allowed else "hard"
+    frames = 0 if kind == "hard" else body.duration_frames
+    repos.set_clip_transition(db, clip_id=clip_id, kind=kind, frames=frames)
+    fresh = repos.get_timeline(db, timeline_id)
+    assert fresh is not None
+    audit.record(
+        db, principal, "timeline.set_clip_transition", entity_type="timeline", entity_id=timeline_id
+    )
+    return _timeline_out(db, fresh)
+
+
+@router.post(
+    "/timelines/{timeline_id}/transitions/review", status_code=status.HTTP_202_ACCEPTED
+)
+def review_transitions(timeline_id: str, request: Request) -> dict[str, str]:
+    """Enqueue an on-demand VLM transition-smoothness review for a timeline.
+
+    No-ops gracefully if no model is installed (the job returns ``skipped``); cached verdicts are
+    served by the GET endpoint."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    job_id = enqueue(
+        db,
+        queue=queue_for("transition.review"),
+        kind="transition.review",
+        payload={"timeline_id": timeline_id},
+        idempotency_key=f"transition.review:{timeline_id}",
+    )
+    return {"job_id": job_id}
+
+
+@router.get(
+    "/timelines/{timeline_id}/transitions/review", response_model=TransitionReviewOut
+)
+def get_transition_review(timeline_id: str, request: Request) -> TransitionReviewOut:
+    """Cached transition verdicts for a timeline (most recent per boundary identity)."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    verdicts: list[TransitionVerdictOut] = []
+    for row in repos.list_transition_reviews(db, timeline_id):
+        try:
+            fix = json.loads(row["suggested_fix_json"])
+        except (TypeError, ValueError):
+            fix = {}
+        verdicts.append(
+            TransitionVerdictOut(
+                boundary_seq_frame=row["boundary_seq_frame"],
+                asset_a=row["asset_a"], asset_b=row["asset_b"],
+                src_out_a=row["src_out_a"], src_in_b=row["src_in_b"],
+                smoothness=row["smoothness"], label=row["label"], reason=row["reason"],
+                suggested_fix=fix, model_id=row["model_id"], created_at=row["created_at"],
+            )
+        )
+    return TransitionReviewOut(verdicts=verdicts)
+
+
+@router.post(
+    "/timelines/{timeline_id}/transitions/apply-fix", response_model=ApplyFixOut
+)
+def apply_transition_fix(
+    timeline_id: str,
+    body: ApplyFixRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> ApplyFixOut:
+    """Apply a transition fix (resnap roll or crossfade/fade) at a boundary by semantic identity."""
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    fix = transition_review.SuggestedFix(
+        kind=body.fix.kind,
+        resnap_delta_frames=body.fix.resnap_delta_frames,
+        transition_style=body.fix.transition_style,
+        transition_frames=body.fix.transition_frames,
+    )
+    result = transition_review.apply_fix(
+        db, timeline_id=timeline_id, identity=body.identity.model_dump(), fix=fix
+    )
+    audit.record(
+        db, principal, "timeline.apply_transition_fix",
+        entity_type="timeline", entity_id=timeline_id,
+    )
+    return ApplyFixOut(**result)
+
+
 @router.post(
     "/projects/{project_id}/timelines/{timeline_id}/split-cuts",
     response_model=AcceptSplitCutsOut,
@@ -1054,8 +1178,13 @@ def render_timeline(
     tl = repos.get_timeline(db, timeline_id)
     if tl is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    gate = evaluate_quality_gate(db, timeline_id, body.min_quality)
     exp = repos.create_export(
-        db, project_id=tl["project_id"], timeline_id=timeline_id, format=body.format
+        db,
+        project_id=tl["project_id"],
+        timeline_id=timeline_id,
+        format=body.format,
+        options=gate,
     )
     job_id = enqueue(
         db,
@@ -1073,7 +1202,17 @@ def list_project_exports(
 ) -> list[RenderExportOut]:
     """List all render-pipeline exports for a project."""
     db = _db(request)
-    return [RenderExportOut(**e) for e in repos.list_exports(db, project_id)]
+    out: list[RenderExportOut] = []
+    for e in repos.list_exports(db, project_id):
+        opts: dict[str, object] = e.get("options") or {}
+        out.append(
+            RenderExportOut(
+                **{k: v for k, v in e.items() if k != "options"},
+                quality_status=opts.get("quality_status"),  # type: ignore[arg-type]
+                quality_verified=opts.get("quality_verified"),  # type: ignore[arg-type]
+            )
+        )
+    return out
 
 
 @router.post(

@@ -24,12 +24,29 @@ def resolve_clip_rows(db: Database, timeline_row: dict[str, Any]) -> list[dict[s
     """Return the effective clip rows for a timeline.
 
     For ``kind="sequence"`` timelines the content is flattened from ordered scene
-    references via ``flatten_sequence``; all other kinds use ``list_timeline_clips``
-    directly (non-sequence path is unchanged — regression-safe).
+    references via ``flatten_sequence``; replace-overlay clips on the sequence itself
+    are collected separately and applied via ``apply_overlay_precedence``.
+
+    For all other timeline kinds, base and overlay rows are split by ``role`` and
+    ``apply_overlay_precedence`` is called when overlays are present; otherwise the
+    full ``list_timeline_clips`` result is returned unchanged (regression-safe).
     """
     if timeline_row.get("kind") == "sequence":
-        return flatten_sequence(db, timeline_row["id"])
-    return repos.list_timeline_clips(db, timeline_row["id"])
+        base = flatten_sequence(db, timeline_row["id"])
+        overlays = [
+            c
+            for c in repos.list_timeline_clips(db, timeline_row["id"])
+            if c.get("role") == "replace"
+        ]
+    else:
+        rows = repos.list_timeline_clips(db, timeline_row["id"])
+        base = [c for c in rows if c.get("role", "base") != "replace"]
+        overlays = [c for c in rows if c.get("role") == "replace"]
+    if not overlays:
+        return base  # regression-safe: byte-identical to the old path
+    from .overlays import apply_overlay_precedence
+
+    return apply_overlay_precedence(base, overlays)
 
 
 def build_model(db: Database, timeline_row: dict[str, Any]) -> Timeline:

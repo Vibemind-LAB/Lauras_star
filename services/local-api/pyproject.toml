@@ -39,9 +39,13 @@ semantic = [
     "fastembed>=0.8.0",
     "qdrant-client>=1.18.0",
 ]
+# MCP stdio server — exposes the build graph as agent-operable tools.
+# Requires: uv sync --extra mcp  (or pip install laura-local-api[mcp]).
+mcp = ["mcp>=1.0"]
 
 [project.scripts]
 laura-api = "laura.main:run"
+laura-deck = "laura.mcp.server:main"
 
 [dependency-groups]
 dev = [
@@ -88,6 +92,7 @@ module = [
     "scenedetect.*", "faster_whisper.*", "whisperx.*", "pyannote.*", "cv2.*",
     "opentimelineio.*", "celery.*", "qdrant_client.*", "psycopg.*", "opentelemetry.*",
     "torch.*", "numpy.*", "fastembed.*", "transnetv2_pytorch.*", "yt_dlp.*",
+    "mcp.*", "ctranslate2.*",
 ]
 ignore_missing_imports = true
 

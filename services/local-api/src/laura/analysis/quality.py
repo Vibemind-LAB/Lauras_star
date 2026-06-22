@@ -19,14 +19,20 @@ SAMPLE_K = 5
 BLACK_LUMA = 16.0
 
 
+def _shot_sample_indices(src_in: int, src_out: int, k: int = SAMPLE_K) -> list[int]:
+    """The frame indices sampled for a shot's metrics — the single source of truth shared by
+    the per-shot :func:`_sample_gray_frames` and the batched :func:`batch_shot_metrics`."""
+    n = max(1, src_out - src_in)
+    count = min(k, n)
+    return sorted({src_in + (i * n) // count for i in range(count)})
+
+
 def _sample_gray_frames(
     video: Path | str, src_in: int, src_out: int, *, k: int = SAMPLE_K,
     w: int = SAMPLE_W, h: int = SAMPLE_H,
 ) -> list[np.ndarray]:
     """Extract up to ``k`` evenly-spaced grayscale frames of [src_in, src_out) as HxW uint8."""
-    n = max(1, src_out - src_in)
-    count = min(k, n)
-    idxs = sorted({src_in + (i * n) // count for i in range(count)})
+    idxs = _shot_sample_indices(src_in, src_out, k)
     expr = "+".join(f"eq(n\\,{i})" for i in idxs)
     cmd = [
         "ffmpeg", "-v", "error", "-i", str(video),
@@ -99,6 +105,63 @@ class ShotMetrics:
 
 def compute_shot_metrics(video: Path | str, src_in: int, src_out: int) -> ShotMetrics:
     return ShotMetrics.from_frames(_sample_gray_frames(video, src_in, src_out))
+
+
+def _read_exact(stream: Any, n: int) -> bytes:
+    """Read exactly ``n`` bytes from a pipe (which may return short reads), or fewer at EOF."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
+
+
+def batch_shot_metrics(
+    video: Path | str, shots: list[tuple[int, int]], *, k: int = SAMPLE_K,
+    w: int = SAMPLE_W, h: int = SAMPLE_H,
+) -> list[ShotMetrics]:
+    """Compute :class:`ShotMetrics` for many shots in a SINGLE decode pass.
+
+    Equivalent to calling :func:`compute_shot_metrics` per shot — it samples the *identical*
+    frame indices, so metrics (and thus keep/drop decisions) are unchanged — but it streams the
+    whole video's grayscale frames once and distributes them to shots. That turns the per-shot
+    ``select='eq(n,..)'`` (which decodes from frame 0 on every call → O(N²) across a long video)
+    into one O(N) pass. The result is in the same order as ``shots``."""
+    per_shot = [_shot_sample_indices(src_in, src_out, k) for (src_in, src_out) in shots]
+    needed: set[int] = set()
+    for idxs in per_shot:
+        needed.update(idxs)
+    if not needed:
+        return [ShotMetrics.from_frames([]) for _ in shots]
+    last = max(needed)
+    frame_bytes = w * h
+    frames: dict[int, np.ndarray] = {}
+    proc = subprocess.Popen(
+        [
+            "ffmpeg", "-v", "error", "-i", str(video),
+            "-vf", f"scale={w}:{h},format=gray", "-vsync", "0", "-f", "rawvideo", "-",
+        ],
+        stdout=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    try:
+        idx = 0
+        while idx <= last:
+            buf = _read_exact(proc.stdout, frame_bytes)
+            if len(buf) < frame_bytes:
+                break  # EOF before the last needed frame
+            if idx in needed:
+                frames[idx] = np.frombuffer(buf, dtype=np.uint8).reshape(h, w)
+            idx += 1
+    finally:
+        proc.stdout.close()
+        proc.terminate()
+        proc.wait()
+    return [
+        ShotMetrics.from_frames([frames[i] for i in idxs if i in frames]) for idxs in per_shot
+    ]
 
 
 @dataclass(frozen=True)

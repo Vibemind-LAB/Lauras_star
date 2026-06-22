@@ -32,15 +32,15 @@ export function BiasSlider({
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex items-baseline justify-between gap-2">
-        <label htmlFor={id} className="text-[10px] uppercase tracking-wide text-slate-500">
+        <label htmlFor={id} className="text-[10px] uppercase tracking-wide text-content-faint">
           Schnitt-Bias
         </label>
-        <span className="text-[10px] text-slate-400 tabular-nums" data-testid="bias-readout">
+        <span className="text-[10px] text-content-muted tabular-nums" data-testid="bias-readout">
           {display} · {value.toFixed(2)}
         </span>
       </div>
       <div className="flex items-center gap-2">
-        <span className="shrink-0 text-[10px] text-slate-500">Bild-genau</span>
+        <span className="shrink-0 text-[10px] text-content-faint">Bild-genau</span>
         <input
           id={id}
           type="range"
@@ -54,8 +54,9 @@ export function BiasSlider({
           aria-valuetext={`${display}, ${value.toFixed(2)}`}
           className="min-w-0 flex-1 accent-sky-500 disabled:opacity-40"
         />
-        <span className="shrink-0 text-[10px] text-slate-500">Schnitt-sauber</span>
+        <span className="shrink-0 text-[10px] text-content-faint">Schnitt-sauber</span>
       </div>
     </div>
   );
 }
+

@@ -8,8 +8,11 @@ worker died is requeued once its lease expires (until ``max_attempts``).
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,6 +22,9 @@ from ..db.database import Database
 from ..metrics import JOBS
 from ..telemetry import span
 from ..util import new_id, utcnow_iso
+from .errors import trace_from_exception
+
+logger = logging.getLogger(__name__)
 
 # A handler receives a JobContext and returns an optional JSON-serialisable result.
 JobHandler = Callable[["JobContext"], "dict[str, Any] | None"]
@@ -80,11 +86,15 @@ def enqueue(
                 # previous attempt failed/canceled — drop it so the key can be reused
                 conn.execute("DELETE FROM jobs WHERE id = ?", (row["id"],))
         job_id = new_id()
+        order_row = conn.execute(
+            "SELECT COALESCE(MAX(created_order), 0) + 1 AS created_order FROM jobs"
+        ).fetchone()
+        created_order = int(order_row["created_order"])
         conn.execute(
             "INSERT INTO jobs (id, queue, kind, priority, payload_json, status, attempt, "
-            "max_attempts, caused_by_job_id, pipeline_version, idempotency_key, "
+            "max_attempts, caused_by_job_id, pipeline_version, idempotency_key, created_order, "
             "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?)",
             (
                 job_id,
                 queue,
@@ -95,6 +105,7 @@ def enqueue(
                 caused_by_job_id,
                 pipeline_version,
                 idempotency_key,
+                created_order,
                 now,
                 now,
             ),
@@ -115,6 +126,8 @@ class JobRunner:
         lease_seconds: int = 60,
         poll_interval: float = 0.5,
         queues: tuple[str, ...] | None = None,
+        concurrency: int = 1,
+        max_runtime_seconds: int = 3600,
     ) -> None:
         self.db = db
         self.registry: dict[str, JobHandler] = registry or {}
@@ -122,8 +135,10 @@ class JobRunner:
         self.lease_seconds = lease_seconds
         self.poll_interval = poll_interval
         self.queues = queues  # None = all queues
+        self.concurrency = max(1, concurrency)
+        self.max_runtime_seconds = max_runtime_seconds
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
 
     # --- registry ---------------------------------------------------------
     def register(self, kind: str, handler: JobHandler) -> None:
@@ -160,22 +175,37 @@ class JobRunner:
                 (json.dumps(result or {}), now, now, job_id),
             )
 
-    def _finish_fail(self, job: dict[str, Any], error: str) -> None:
+    def _finish_fail(self, job: dict[str, Any], error: BaseException | str) -> None:
         now = utcnow_iso()
         attempt = int(job["attempt"]) + 1  # already incremented at claim
-        retriable = attempt < int(job["max_attempts"])
+
+        # Build a structured trace from whatever error type we received.
+        if isinstance(error, str):
+            # Plain string path (reap_expired, "no handler registered") — wrap
+            # exactly as bare exceptions so requeue logic is unchanged.
+            trace: dict[str, Any] = {
+                "error": error, "code": "unknown", "retriable": True, "details": None
+            }
+        else:
+            trace = trace_from_exception(error)
+
+        # Requeue only when BOTH the attempt budget allows it AND the error
+        # is retriable.  A LauraJobError with retriable=False ends permanently
+        # even when attempts remain.
+        should_requeue = (attempt < int(job["max_attempts"])) and bool(trace["retriable"])
+
         with self.db.connection() as conn:
-            if retriable:
+            if should_requeue:
                 conn.execute(
                     "UPDATE jobs SET status='queued', worker_id=NULL, lease_expires_at=NULL, "
                     "error_json=?, updated_at=? WHERE id=?",
-                    (json.dumps({"error": error}), now, job["id"]),
+                    (json.dumps(trace), now, job["id"]),
                 )
             else:
                 conn.execute(
                     "UPDATE jobs SET status='failed', error_json=?, finished_at=?, "
                     "updated_at=? WHERE id=?",
-                    (json.dumps({"error": error}), now, now, job["id"]),
+                    (json.dumps(trace), now, now, job["id"]),
                 )
 
     def _execute(self, job: dict[str, Any]) -> None:
@@ -195,16 +225,44 @@ class JobRunner:
                 db=self.db,
                 lease_seconds=self.lease_seconds,
             )
+            # Keep the lease fresh for the whole (possibly minutes-long) handler so a
+            # concurrent worker's reaper never requeues an in-flight job. This decouples
+            # liveness from handler internals — no handler needs to call heartbeat itself.
+            stop_hb = threading.Event()
+            hb_started = time.monotonic()
+
+            def _heartbeat_loop() -> None:
+                interval = max(1.0, self.lease_seconds / 2)
+                while not stop_hb.wait(interval):
+                    if time.monotonic() - hb_started > self.max_runtime_seconds:
+                        logger.warning(
+                            "job %s exceeded max runtime %ss; ceasing heartbeat so the "
+                            "reaper can recover it", job["id"], self.max_runtime_seconds,
+                        )
+                        return
+                    with contextlib.suppress(Exception):  # heartbeat is best-effort
+                        ctx.heartbeat()
+
+            hb = threading.Thread(
+                target=_heartbeat_loop, name=f"hb-{str(job['id'])[:8]}", daemon=True
+            )
+            hb.start()
+            # The terminal DB write (finish_ok/finish_fail) runs INSIDE the try so the
+            # heartbeat keeps the lease fresh until the job is marked terminal — otherwise
+            # a concurrent worker's reaper could requeue the job in the gap between the
+            # heartbeat stopping and the status write, causing a double-run.
             try:
                 result = handler(ctx)
+                sp.set_attribute("job.status", "succeeded")
+                self._finish_ok(str(job["id"]), result)
+                JOBS.labels(kind, "succeeded").inc()
             except Exception as exc:  # noqa: BLE001 - we record any handler failure
                 sp.set_attribute("job.status", "failed")
-                self._finish_fail(job, f"{type(exc).__name__}: {exc}")
+                self._finish_fail(job, exc)
                 JOBS.labels(kind, "failed").inc()
-                return
-            sp.set_attribute("job.status", "succeeded")
-            self._finish_ok(str(job["id"]), result)
-            JOBS.labels(kind, "succeeded").inc()
+            finally:
+                stop_hb.set()
+                hb.join(timeout=2.0)
 
     def run_once(self) -> bool:
         """Reap, then claim and run at most one job. Returns True if a job ran."""
@@ -228,17 +286,20 @@ class JobRunner:
                 self._stop.wait(self.poll_interval)
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._threads:
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="laura-job-runner", daemon=True)
-        self._thread.start()
+        for i in range(self.concurrency):
+            t = threading.Thread(target=self._loop, name=f"laura-job-runner-{i}", daemon=True)
+            t.start()
+            self._threads.append(t)
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            self._thread = None
+        deadline = time.monotonic() + timeout
+        for t in self._threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        self._threads = []
 
 
 # --- default handlers -----------------------------------------------------

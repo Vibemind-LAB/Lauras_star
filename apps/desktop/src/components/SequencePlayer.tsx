@@ -56,7 +56,22 @@ export interface SequencePlayerProps {
   projectId: string | null;
   sequenceId: string | null;
   reloadKey?: unknown;
+  /**
+   * Optional external seek in SEQUENCE frames. When this prop changes to a
+   * non-null value the player scrubs to that sequence frame. Mirrors the
+   * `seekTo` pattern in Player.tsx (object identity change triggers the effect;
+   * pass a new `{ frame }` object each time to re-seek). AssembleView does not
+   * pass this prop — default behaviour is unchanged.
+   */
+  seekTo?: { frame: number } | null;
   onFrame?: (seqFrame: number) => void;
+  /**
+   * Already-resolved clips to play, bypassing `getSequenceFlattened`. Required for non-sequence
+   * timelines (e.g. a materialized SCENE timeline in Feinschnitt): `/sequences/{id}/flattened`
+   * only resolves kind="sequence" timelines and returns [] for a scene, so without this the player
+   * would show no video. AssembleView omits it and keeps fetching the flattened sequence.
+   */
+  clipsOverride?: TimelineClip[];
 }
 
 export function SequencePlayer({
@@ -64,7 +79,9 @@ export function SequencePlayer({
   projectId,
   sequenceId,
   reloadKey,
+  seekTo,
   onFrame,
+  clipsOverride,
 }: SequencePlayerProps): ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -99,8 +116,10 @@ export function SequencePlayer({
     setError(null);
     void (async () => {
       try {
+        // clipsOverride (e.g. a materialized scene timeline) plays its clips directly; the
+        // flatten endpoint only resolves kind="sequence" timelines and would return [].
         const [fetchedClips, fetchedAssets] = await Promise.all([
-          client.getSequenceFlattened(sequenceId),
+          clipsOverride ?? client.getSequenceFlattened(sequenceId),
           client.listAssets(projectId),
         ]);
         if (cancelled) return;
@@ -198,6 +217,19 @@ export function SequencePlayer({
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // External seek (sequence frames) — mirrors Player.tsx's seekTo-effect.
+  // Only fires when the seekTo object reference changes and is non-null.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!seekTo) return;
+    // Depend on `clips` too: a seekTo that arrives before the async flatten
+    // completes would otherwise be dropped (clips still []). Re-running once
+    // clips populate re-applies the pending seek. seekToSeqFrame no-ops on empty clips.
+    seekToSeqFrame(seekTo.frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekTo, clips]);
+
   const total = totalFrames(clips);
   const proxyReady = (i: number): boolean => {
     const clip = clips[i];
@@ -265,9 +297,9 @@ export function SequencePlayer({
 
   return (
     <div className="space-y-2 rounded-md">
-      <div className="overflow-hidden rounded-md border border-edge bg-black">
+      <div className="overflow-hidden rounded-md border border-bezel bg-black">
         {loading ? (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
             Lade Sequenz…
           </div>
         ) : error ? (
@@ -275,11 +307,11 @@ export function SequencePlayer({
             {error}
           </div>
         ) : clips.length === 0 ? (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
             Noch keine Sequenz — Szenen hinzufügen
           </div>
         ) : !firstClipHasProxy ? (
-          <div className="flex aspect-video w-full items-center justify-center text-xs text-slate-600">
+          <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
             Proxy wird erstellt…
           </div>
         ) : (
@@ -316,10 +348,12 @@ export function SequencePlayer({
           disabled={clips.length === 0 || total === 0}
           className="flex-1 accent-sky-500"
         />
-        <span className="w-36 shrink-0 text-right text-xs tabular-nums text-slate-400">
+        <span className="w-36 shrink-0 text-right text-xs tabular-nums text-content-muted">
           {seqFrame} / {total} f
         </span>
       </div>
     </div>
   );
 }
+
+

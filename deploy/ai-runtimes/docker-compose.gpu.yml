@@ -1,0 +1,6 @@
+services:
+  liveportrait:
+    gpus: all
+
+  vibevideo:
+    gpus: all

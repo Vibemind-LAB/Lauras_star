@@ -8,6 +8,10 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    setupFiles: ["./src/test-setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
+    // Headroom above the 5s waitFor deadline (test-setup) so the per-test timeout never fires
+    // first and masks the real waitFor diagnostic; passing tests finish well under this.
+    testTimeout: 15000,
   },
 });

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "build:renderer": "vite build -c vite.renderer.config.ts",
     "lint": "eslint .",
+    "lint:tokens": "node scripts/lint-tokens.mjs",
     "test": "vitest run"
   },
   "dependencies": {

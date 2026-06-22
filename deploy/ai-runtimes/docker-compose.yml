@@ -1,0 +1,99 @@
+name: laura-ai-runtimes
+
+services:
+  voice:
+    image: laura-runtime-voice:local
+    container_name: laura-runtime-voice
+    build:
+      context: ../../services/ai-runtimes
+      args:
+        RUNTIME_KIND: voice
+    environment:
+      LAURA_RUNTIME_KIND: voice
+      LAURA_RUNTIME_MODE: ${LAURA_RUNTIME_MODE:-smoke}
+      LAURA_RUNTIME_PROVIDER: piper
+      LAURA_RUNTIME_PORT: "8898"
+      LAURA_MODEL_ROOT: /models
+      LAURA_VOICE_COMMAND: ${LAURA_VOICE_COMMAND:-python -m providers.piper_voice_runner --request {request_json} --output {output} --model-root {model_root}}
+      LAURA_PIPER_VOICE: ${LAURA_PIPER_VOICE:-en_US-lessac-medium}
+      LAURA_PIPER_DATA_DIR: ${LAURA_PIPER_DATA_DIR:-/models/piper}
+    ports:
+      - "8898:8898"
+    volumes:
+      - ${LAURA_RUNTIME_WORKSPACE:-../../workspace/ai-runtime}:/workspace
+      - ${LAURA_MODELS_ROOT:-../../workspace/models}/voice:/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; data=json.loads(urllib.request.urlopen('http://127.0.0.1:8898/healthz', timeout=2).read().decode()); raise SystemExit(0 if data.get('ready', data.get('ok', False)) else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  liveportrait:
+    image: laura-runtime-liveportrait:local
+    container_name: laura-runtime-liveportrait
+    build:
+      context: ../../services/ai-runtimes
+      args:
+        RUNTIME_KIND: liveportrait
+    environment:
+      LAURA_RUNTIME_KIND: liveportrait
+      LAURA_RUNTIME_MODE: ${LAURA_RUNTIME_MODE:-smoke}
+      LAURA_RUNTIME_PROVIDER: liveportrait
+      LAURA_RUNTIME_PORT: "8899"
+      LAURA_MODEL_ROOT: /models
+      LAURA_LIVEPORTRAIT_COMMAND: ${LAURA_LIVEPORTRAIT_COMMAND:-python -m providers.liveportrait_runner --portrait {portrait} --driving {driving} --output {output} --model-root {model_root}}
+      LAURA_LIVEPORTRAIT_REPO: ${LAURA_LIVEPORTRAIT_REPO:-/models/LivePortrait}
+      LAURA_LIVEPORTRAIT_OUTPUT_GLOB: ${LAURA_LIVEPORTRAIT_OUTPUT_GLOB:-*.mp4}
+    ports:
+      - "8899:8899"
+    volumes:
+      - ${LAURA_RUNTIME_WORKSPACE:-../../workspace/ai-runtime}:/workspace
+      - ${LAURA_MODELS_ROOT:-../../workspace/models}/liveportrait:/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; data=json.loads(urllib.request.urlopen('http://127.0.0.1:8899/healthz', timeout=2).read().decode()); raise SystemExit(0 if data.get('ready', data.get('ok', False)) else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  vibevideo:
+    image: laura-runtime-vibevideo:local
+    container_name: laura-runtime-vibevideo
+    build:
+      context: ../../services/ai-runtimes
+      args:
+        RUNTIME_KIND: vibevideo
+    environment:
+      LAURA_RUNTIME_KIND: vibevideo
+      LAURA_RUNTIME_MODE: ${LAURA_RUNTIME_MODE:-smoke}
+      LAURA_RUNTIME_PROVIDER: musetalk
+      LAURA_RUNTIME_PORT: "8901"
+      LAURA_MODEL_ROOT: /models
+      LAURA_VIBEVIDEO_COMMAND: ${LAURA_VIBEVIDEO_COMMAND:-python -m providers.musetalk_runner --video {video} --audio {audio} --output {output} --model-root {model_root}}
+      LAURA_VIBEVIDEO_PROBE_COMMAND: ${LAURA_VIBEVIDEO_PROBE_COMMAND:-}
+      LAURA_MUSETALK_REPO: ${LAURA_MUSETALK_REPO:-/models/MuseTalk}
+      LAURA_MUSETALK_RESULT_DIR: ${LAURA_MUSETALK_RESULT_DIR:-/workspace/musetalk-results}
+    ports:
+      - "8901:8901"
+    volumes:
+      - ${LAURA_RUNTIME_WORKSPACE:-../../workspace/ai-runtime}:/workspace
+      - ${LAURA_MODELS_ROOT:-../../workspace/models}/vibevideo:/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; data=json.loads(urllib.request.urlopen('http://127.0.0.1:8901/healthz', timeout=2).read().decode()); raise SystemExit(0 if data.get('ready', data.get('ok', False)) else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 12

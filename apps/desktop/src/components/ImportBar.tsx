@@ -62,7 +62,7 @@ export function ImportBar({
           placeholder="URLs einfügen — eine pro Zeile (YouTube, Drive, Playlist …)"
           disabled={disabled}
           rows={2}
-          className="min-h-0 w-full resize-y rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-600"
+          className="min-h-0 w-full resize-y rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint"
         />
         <div className="flex gap-1">
           <select
@@ -70,7 +70,7 @@ export function ImportBar({
             onChange={(e) => setFormat(e.target.value as ImportFormat)}
             disabled={disabled}
             aria-label="Qualität"
-            className="min-w-0 flex-1 rounded bg-slate-800 px-1.5 py-1 text-xs text-slate-100 disabled:opacity-40"
+            className="min-w-0 flex-1 rounded bg-surface-2 px-1.5 py-1 text-xs text-content-strong disabled:opacity-40"
           >
             {FORMAT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -83,7 +83,7 @@ export function ImportBar({
             onChange={(e) => setCookies(e.target.value as CookiesFromBrowser | "")}
             disabled={disabled}
             aria-label="Cookies aus Browser"
-            className="min-w-0 flex-1 rounded bg-slate-800 px-1.5 py-1 text-xs text-slate-100 disabled:opacity-40"
+            className="min-w-0 flex-1 rounded bg-surface-2 px-1.5 py-1 text-xs text-content-strong disabled:opacity-40"
           >
             {COOKIE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -105,7 +105,7 @@ export function ImportBar({
           type="button"
           onClick={onPickFiles}
           disabled={disabled}
-          className="flex-1 rounded bg-slate-700 px-2 py-1 text-xs text-slate-100 hover:bg-slate-600 disabled:opacity-40"
+          className="flex-1 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
         >
           + Datei(en)
         </button>
@@ -113,7 +113,7 @@ export function ImportBar({
           type="button"
           onClick={onPickFolder}
           disabled={disabled}
-          className="flex-1 rounded bg-slate-700 px-2 py-1 text-xs text-slate-100 hover:bg-slate-600 disabled:opacity-40"
+          className="flex-1 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
         >
           + Ordner
         </button>

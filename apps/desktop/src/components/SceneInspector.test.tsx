@@ -53,6 +53,8 @@ function asset(over: Partial<Asset> = {}): Asset {
     codec_video: "h264",
     codec_audio: "aac",
     is_vfr: false,
+    synthetic: over.synthetic ?? false,
+    ai_effect: over.ai_effect ?? null,
     created_at: "",
     files: [],
     ...over,

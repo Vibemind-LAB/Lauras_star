@@ -85,4 +85,6 @@ def test_open_materializes_rebased_to_zero(tmp_path: Path) -> None:
     assert again.status_code == 200, again.text
     assert again.json()["id"] == tl["id"]
     # scene row must have been linked
-    assert repos.get_scene(db, sid)["scene_timeline_id"] == tl["id"]
+    scene_row = repos.get_scene(db, sid)
+    assert scene_row is not None
+    assert scene_row["scene_timeline_id"] == tl["id"]

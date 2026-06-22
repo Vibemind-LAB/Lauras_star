@@ -31,10 +31,13 @@ celery_app.conf.beat_schedule = {
 @celery_app.task(name="laura.drain_jobs")  # type: ignore[untyped-decorator]
 def drain_jobs() -> int:
     """Run all currently-queued jobs once; returns how many ran."""
+    from ..ai.handlers import register_ai_handlers
     from ..analysis.handlers import register_analysis_handlers
     from ..config import Settings
     from ..db.database import create_database
+    from ..demo.handlers import register_demo_handlers
     from ..ingest.handlers import register_ingest_handlers
+    from ..render.handlers import register_render_handlers
     from .runner import JobRunner, default_registry
 
     settings = Settings.load()
@@ -43,6 +46,9 @@ def drain_jobs() -> int:
     registry = default_registry()
     register_ingest_handlers(registry)
     register_analysis_handlers(registry)
+    register_render_handlers(registry)
+    register_ai_handlers(registry)
+    register_demo_handlers(registry)
     runner = JobRunner(db, registry, lease_seconds=settings.lease_seconds)
 
     ran = 0

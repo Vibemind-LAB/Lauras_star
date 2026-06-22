@@ -61,12 +61,12 @@ export function DropZone({ onImport }: { onImport: (r: ResolvedImport) => void }
       onDrop={(e) => void onDrop(e)}
       onDragOver={(e) => e.preventDefault()}
       className={`fixed inset-0 z-50 flex items-center justify-center transition ${
-        active ? "bg-ink/80 backdrop-blur-sm" : "pointer-events-none opacity-0"
+        active ? "bg-surface-0/80 backdrop-blur-sm" : "pointer-events-none opacity-0"
       }`}
     >
       <div className="rounded-2xl border-2 border-dashed border-sky-500/60 px-12 py-10 text-center">
-        <div className="text-lg text-slate-200">Dateien, Ordner oder Link hier ablegen</div>
-        <div className="mt-1 text-sm text-slate-500">
+        <div className="text-lg text-content-strong">Dateien, Ordner oder Link hier ablegen</div>
+        <div className="mt-1 text-sm text-content-faint">
           Video-Dateien · ganze Ordner · http(s)/Magnet-Links
         </div>
       </div>

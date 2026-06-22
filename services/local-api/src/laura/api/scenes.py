@@ -12,7 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
-from ..scenes.grouping import group_into_scenes
+from ..scenes.build import (
+    default_gap_frames,
+    group_timeline_scenes,
+    populate_rough_cut_from_shots,
+)
 from ..scenes.materialize import materialize_scene
 from .models import (
     ClipOut,
@@ -34,28 +38,6 @@ def _db(request: Request) -> Database:
     return db
 
 
-def _asset_words(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    words: list[dict[str, Any]] = []
-    for seg in transcript:
-        spk = seg.get("speaker_id")
-        for w in seg["words"]:
-            words.append(
-                {"start_frame": w["start_frame"], "end_frame": w["end_frame"], "speaker": spk}
-            )
-    words.sort(key=lambda w: w["start_frame"])
-    return words
-
-
-def _assign_words(
-    clips: list[dict[str, Any]], words: list[dict[str, Any]]
-) -> list[list[dict[str, Any]]]:
-    out: list[list[dict[str, Any]]] = []
-    for c in clips:
-        lo, hi = c["src_in_frame"], c["src_out_frame_exclusive"]
-        out.append([w for w in words if w["start_frame"] < hi and w["end_frame"] > lo])
-    return out
-
-
 @router.post("/timelines/{timeline_id}/scenes:generate", response_model=list[SceneOut])
 def generate_scenes(
     timeline_id: str, body: GenerateScenesRequest, request: Request
@@ -70,20 +52,25 @@ def generate_scenes(
     run = repos.get_latest_analysis_run(db, body.asset_id)
     if run is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run")
-    clips = repos.list_timeline_clips(db, timeline_id)
+    # Auto-build a minimal rough cut from the asset's kept shots so generation is never a
+    # dead-end. The dedicated /timelines/from-shots endpoint offers the richer build (quality
+    # filtering, split-cut recommendations); this is the fallback. No-op if clips exist.
+    clips = populate_rough_cut_from_shots(db, timeline_id, body.asset_id, run["id"])
     if not clips:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "rough cut is empty; build it from shots first",
+            "asset has no kept shots to build a rough cut from",
         )
-    words = _asset_words(repos.get_transcript(db, body.asset_id, run["id"]))
-    words_by_clip = _assign_words(clips, words)
-    if body.gap_frames is not None:
-        gap = body.gap_frames
-    else:
-        gap = round(1.5 * (asset["rate_num"] or 30) / (asset["rate_den"] or 1))
-    ranges = group_into_scenes(clips, words_by_clip, gap_frames=gap)
-    repos.replace_scenes(db, tl["project_id"], timeline_id, ranges)
+    gap = body.gap_frames if body.gap_frames is not None else default_gap_frames(asset)
+    group_timeline_scenes(
+        db,
+        project_id=tl["project_id"],
+        timeline_id=timeline_id,
+        asset=asset,
+        run_id=run["id"],
+        clips=clips,
+        gap_frames=gap,
+    )
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
 
 
@@ -203,3 +190,28 @@ def clear_scene_music(scene_id: str, request: Request) -> SceneOut:
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)
+
+
+@router.get(
+    "/projects/{project_id}/assets/{asset_id}/rough-cut",
+    response_model=TimelineOut,
+)
+def get_rough_cut(project_id: str, asset_id: str, request: Request) -> TimelineOut:
+    """Return (or lazily create) the rough-cut timeline for one asset in a project."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    row = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
+    return _timeline_out(db, row)
+
+
+@router.get(
+    "/projects/{project_id}/scenes",
+    response_model=list[SceneOut],
+)
+def list_project_scenes_ep(project_id: str, request: Request) -> list[SceneOut]:
+    """All scenes across every rough-cut timeline in a project."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    return [SceneOut(**s) for s in repos.list_project_scenes(db, project_id)]

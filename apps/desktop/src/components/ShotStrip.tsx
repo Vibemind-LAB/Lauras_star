@@ -64,7 +64,7 @@ function ShotThumb({
       className={`relative h-9 w-16 shrink-0 overflow-hidden rounded border ${
         dropped
           ? "border-dashed border-amber-500/50 opacity-50 hover:opacity-80"
-          : `border-edge ${onAppend ? "hover:ring-2 hover:ring-emerald-500/60" : "cursor-default"}`
+          : `border-bezel ${onAppend ? "hover:ring-2 hover:ring-accent/60" : "cursor-default"}`
       }`}
     >
       {url ? (
@@ -74,8 +74,7 @@ function ShotThumb({
           className={`block h-full w-full ${index % 2 === 0 ? "bg-sky-700/40" : "bg-sky-500/30"}`}
         />
       )}
-      <span className="absolute bottom-0 left-0 bg-ink/70 px-1 text-[10px] leading-tight text-slate-200">
-        {index + 1}
+      <span className="absolute bottom-0 left-0 bg-surface-0/70 px-1 text-[10px] leading-tight text-content-strong">`n        {index + 1}
       </span>
       {dropped && (
         <span
@@ -101,7 +100,7 @@ export function ShotStrip({
   onAppend?: (shot: Shot) => void;
 }): ReactElement {
   if (shots.length === 0) {
-    return <div className="text-xs text-slate-600">keine Shots</div>;
+    return <div className="text-xs text-content-faint">keine Shots</div>;
   }
   return (
     <div className="flex w-full gap-1 overflow-x-auto pb-1">
@@ -111,3 +110,5 @@ export function ShotStrip({
     </div>
   );
 }
+
+
