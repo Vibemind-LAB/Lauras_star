@@ -52,8 +52,25 @@ export function useJobStatus(
     let intervalId: ReturnType<typeof setInterval> | null = null;
 
     const poll = (): void => {
-      client
-        .getJob(jobId)
+      let pending: Promise<JobStatus>;
+      try {
+        // A partial/misconfigured client (notably in component tests) may not expose
+        // getJob. Calling a non-function throws synchronously here — before the .catch
+        // below can attach — so it would escape as an uncaught error that crosses test
+        // boundaries. Guard the invocation: report once and stop the interval, since a
+        // structurally-absent getJob will never recover.
+        pending = client.getJob(jobId);
+      } catch (err: unknown) {
+        if (activeRef.current) {
+          log.error("useJobStatus poll failed for job", jobId, err instanceof Error ? err.message : String(err));
+        }
+        if (intervalId !== null) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+        return;
+      }
+      pending
         .then((job) => {
           if (!activeRef.current) return;
           setJobStatus(job);
