@@ -21,9 +21,17 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DISCLOSURE: str = "KI · synthetisch"
 
 
-def _effective_disclosure(disclosure_text: str | None) -> str:
-    """Disclosure presence is mandatory (EU AI Act). Blank → default label."""
-    text = (disclosure_text or "").strip()
+def _effective_disclosure(disclosure_text: str | None) -> str | None:
+    """Map disclosure_text to the effective value for the renderer.
+
+    - ``None``        → ``None``  (no overlay; plain export, not a reel)
+    - ``""`` / blank  → ``_DEFAULT_DISCLOSURE``  (explicit blank cannot suppress a
+                        requested disclosure — EU AI Act enforcement for the reel path)
+    - non-blank str   → stripped text
+    """
+    if disclosure_text is None:
+        return None
+    text = disclosure_text.strip()
     return text if text else _DEFAULT_DISCLOSURE
 
 
@@ -295,10 +303,11 @@ def render_clips_mp4(
         reel_files.append(hook_path)
         hook_tf = hook_path.name
     disclosure = _effective_disclosure(disclosure_text)
-    disc_path = dest.parent / f"{dest.stem}.reel_disclosure.txt"
-    disc_path.write_text(disclosure, encoding="utf-8")
-    reel_files.append(disc_path)
-    disc_tf = disc_path.name
+    if disclosure is not None:
+        disc_path = dest.parent / f"{dest.stem}.reel_disclosure.txt"
+        disc_path.write_text(disclosure, encoding="utf-8")
+        reel_files.append(disc_path)
+        disc_tf = disc_path.name
 
     ass_basename: str | None = None
     if caption_ass:
