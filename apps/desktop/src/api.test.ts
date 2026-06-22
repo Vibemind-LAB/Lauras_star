@@ -33,6 +33,16 @@ function mockFetch(json: unknown) {
 }
 
 describe("import client methods", () => {
+  it("createDemoProject POSTs the demo endpoint", async () => {
+    const fn = mockFetch({ id: "p-demo" });
+    const c = new LauraClient("http://h", "tok");
+    await c.createDemoProject();
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/projects/demo",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("importAssetFromUrl posts source_url", async () => {
     const fn = mockFetch({ asset_id: "a", job_id: "j", extra_asset_ids: [] });
     const c = new LauraClient("http://h", "tok");
@@ -71,6 +81,13 @@ describe("import client methods", () => {
     const st = await c.getImportStatus("a1");
     expect(fn).toHaveBeenCalledWith("http://h/assets/a1/import-status", expect.anything());
     expect(st.phase).toBe("downloading");
+  });
+
+  it("GETs asset provenance", async () => {
+    const fn = mockFetch({ schema: "laura.ai.provenance.v1", asset_id: "a1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.getAssetProvenance("a1");
+    expect(fn).toHaveBeenCalledWith("http://h/assets/a1/provenance", expect.anything());
   });
 
   it("retryImport posts import-retry", async () => {
@@ -178,5 +195,327 @@ describe("LauraClient.buildRoughCutFromShots", () => {
     const res = await c.buildRoughCutFromShots("p", "a");
     expect(res.quality?.overall).toBe(0.8);
     expect(res.split_cuts[0].kind).toBe("L");
+  });
+});
+
+describe("LauraClient sequence transcript methods", () => {
+  it("GETs the sequence transcript", async () => {
+    const fn = mockFetch([]);
+    const c = new LauraClient("http://h", "tok") as unknown as {
+      getSequenceTranscript: (sequenceId: string) => Promise<unknown>;
+    };
+    await c.getSequenceTranscript("seq-1");
+    expect(fn).toHaveBeenCalledWith("http://h/sequences/seq-1/transcript", expect.anything());
+  });
+
+  it("PATCHes transcript segment text", async () => {
+    const fn = mockFetch({ id: "seg-1", text: "Better" });
+    const c = new LauraClient("http://h", "tok") as unknown as {
+      updateTranscriptSegment: (
+        segmentId: string,
+        body: { text?: string; speakerId?: string | null },
+      ) => Promise<unknown>;
+    };
+    await c.updateTranscriptSegment("seg-1", { text: "Better" });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/transcript/segments/seg-1",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({ text: "Better" });
+  });
+
+  it("POSTs transcript realignment for selected segments", async () => {
+    const fn = mockFetch({ job_id: "job-1" });
+    const c = new LauraClient("http://h", "tok") as unknown as {
+      realignTranscript: (
+        assetId: string,
+        body: { segmentIds?: string[]; language?: string },
+      ) => Promise<unknown>;
+    };
+    await c.realignTranscript("asset-1", { segmentIds: ["seg-1"], language: "en" });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/assets/asset-1/transcript:realign",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      segment_ids: ["seg-1"],
+      language: "en",
+    });
+  });
+
+  it("GETs a job status by id", async () => {
+    const fn = mockFetch({ id: "job-1", status: "succeeded" });
+    const c = new LauraClient("http://h", "tok") as unknown as {
+      getJob: (jobId: string) => Promise<unknown>;
+    };
+    await c.getJob("job-1");
+    expect(fn).toHaveBeenCalledWith("http://h/jobs/job-1", expect.anything());
+  });
+
+  it("lists, cancels, and retries jobs", async () => {
+    const listFetch = mockFetch([]);
+    const c = new LauraClient("http://h", "tok");
+    await c.listJobs(25);
+    expect(listFetch).toHaveBeenCalledWith("http://h/jobs?limit=25", expect.anything());
+
+    const cancelFetch = mockFetch({ id: "job-1", status: "cancelled" });
+    await c.cancelJob("job-1");
+    expect(cancelFetch).toHaveBeenCalledWith(
+      "http://h/jobs/job-1/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    const retryFetch = mockFetch({ job_id: "job-2" });
+    await c.retryJob("job-1");
+    expect(retryFetch).toHaveBeenCalledWith(
+      "http://h/jobs/job-1/retry",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("POSTs voiceover generation for a transcript segment range", async () => {
+    const fn = mockFetch({ job_id: "voice-job-1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.createVoiceover("tl-1", {
+      segmentId: "seg-1",
+      text: "Better line",
+      seqIn: 10,
+      seqOut: 40,
+      gainPercent: 90,
+      fadeInFrames: 3,
+      fadeOutFrames: 4,
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/timelines/tl-1/voiceover",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      segment_id: "seg-1",
+      text: "Better line",
+      seq_in_frame: 10,
+      seq_out_frame_exclusive: 40,
+      gain_percent: 90,
+      fade_in_frames: 3,
+      fade_out_frames: 4,
+    });
+  });
+
+  it("PATCHes a sequence item transition", async () => {
+    const fn = mockFetch({ timeline_id: "seq", project_id: "p", items: [] });
+    const c = new LauraClient("http://h", "tok");
+    await c.updateSequenceTransition("seq", "item-1", {
+      kind: "dip_black",
+      durationFrames: 12,
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/sequences/seq/items/item-1/transition",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      kind: "dip_black",
+      duration_frames: 12,
+    });
+  });
+
+  it("POSTs reel caption direction options", async () => {
+    const fn = mockFetch({ export_id: "e1", job_id: "j1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.renderReel("tl-1", {
+      hookText: null,
+      disclosureText: "KI",
+      vertical: true,
+      captions: true,
+      captionPreset: "reels",
+      captionMode: "normal",
+      captionPosition: "top",
+      captionFontsize: 84,
+      captionSafeMargin: 180,
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      hook_text: null,
+      disclosure_text: "KI",
+      vertical: true,
+      captions: true,
+      caption_preset: "reels",
+      caption_mode: "normal",
+      caption_position: "top",
+      caption_fontsize: 84,
+      caption_safe_margin: 180,
+      max_duration_seconds: null,
+    });
+  });
+
+  it("creates, updates, and applies demo drafts", async () => {
+    const c = new LauraClient("http://h", "tok");
+    const item = {
+      src_in_frame: 0,
+      src_out_frame_exclusive: 30,
+      label: "Intro",
+      voiceover_text: "Intro line",
+      thumb_frame: 0,
+      confidence: 0.8,
+      enabled: true,
+    };
+    const draft = {
+      id: "draft-1",
+      project_id: "p",
+      asset_id: "asset-1",
+      status: "ready",
+      items: [item],
+      result: {},
+      created_at: "",
+      updated_at: "",
+      applied_at: null,
+    };
+
+    const createFetch = mockFetch({ draft_id: "draft-1", job_id: "job-1" });
+    await c.createDemoDraft("asset-1");
+    expect(createFetch).toHaveBeenCalledWith(
+      "http://h/assets/asset-1/demo-drafts",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    const getFetch = mockFetch(draft);
+    await c.getDemoDraft("draft-1");
+    expect(getFetch).toHaveBeenCalledWith("http://h/demo-drafts/draft-1", expect.anything());
+
+    const patchFetch = mockFetch(draft);
+    await c.updateDemoDraft("draft-1", [item]);
+    const [, patchInit] = patchFetch.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(patchInit.body as string)).toEqual({ items: [item] });
+
+    const applyFetch = mockFetch({
+      draft,
+      sequence: { timeline_id: "seq", project_id: "p", items: [] },
+    });
+    await c.applyDemoDraft("draft-1");
+    expect(applyFetch).toHaveBeenCalledWith(
+      "http://h/demo-drafts/draft-1/apply",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("POSTs lipsync with consent, license, audio, and quality gate fields", async () => {
+    const fn = mockFetch({ job_id: "lip-job-1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.lipsync("tl-1", {
+      seqIn: 10,
+      seqOut: 50,
+      audioAssetId: "audio-1",
+      consentId: "consent-1",
+      licenseAccepted: true,
+      backend: "vibevideo",
+      qualityThreshold: 0.72,
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/timelines/tl-1/lipsync",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      seq_in_frame: 10,
+      seq_out_frame_exclusive: 50,
+      audio_asset_id: "audio-1",
+      consent_id: "consent-1",
+      license_accepted: true,
+      backend: "vibevideo",
+      quality_threshold: 0.72,
+    });
+  });
+});
+
+describe("LauraClient.cutAtFrame", () => {
+  it("cutAtFrame posts at_seq_frame and returns clips + scenes", async () => {
+    const fn = mockFetch({ clips: [], scenes: [] });
+    const c = new LauraClient("http://x", "tok");
+    const out = await c.cutAtFrame("tl1", 42);
+    expect(out).toEqual({ clips: [], scenes: [] });
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://x/timelines/tl1/cut-at-frame");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ at_seq_frame: 42 });
+  });
+});
+
+describe("LauraClient timeline audio clip methods", () => {
+  it("GETs timeline audio clips", async () => {
+    const fn = mockFetch([]);
+    const c = new LauraClient("http://h", "tok");
+    await c.listTimelineAudioClips("tl-1");
+    expect(fn).toHaveBeenCalledWith("http://h/timelines/tl-1/audio-clips", expect.anything());
+  });
+
+  it("POSTs a timeline audio clip with snake_case frame fields", async () => {
+    const fn = mockFetch({ id: "ac-1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.createTimelineAudioClip("tl-1", {
+      assetId: "asset-1",
+      seqIn: 10,
+      seqOut: 70,
+      assetIn: 4,
+      gainPercent: 80,
+      fadeInFrames: 5,
+      fadeOutFrames: 6,
+      mixMode: "replace_original",
+      duckingPercent: 25,
+      label: "VO",
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/timelines/tl-1/audio-clips",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      asset_id: "asset-1",
+      seq_in_frame: 10,
+      seq_out_frame_exclusive: 70,
+      asset_in_frame: 4,
+      gain_percent: 80,
+      fade_in_frames: 5,
+      fade_out_frames: 6,
+      mix_mode: "replace_original",
+      ducking_percent: 25,
+      label: "VO",
+    });
+  });
+
+  it("PATCHes only provided audio clip fields", async () => {
+    const fn = mockFetch({ id: "ac-1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.updateTimelineAudioClip("tl-1", "ac-1", {
+      gainPercent: 120,
+      mixMode: "mix",
+      duckingPercent: 60,
+      label: "mix",
+    });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/timelines/tl-1/audio-clips/ac-1",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      gain_percent: 120,
+      mix_mode: "mix",
+      ducking_percent: 60,
+      label: "mix",
+    });
+  });
+
+  it("DELETEs a timeline audio clip", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      text: () => Promise.resolve(""),
+    } as unknown as Response);
+    const c = new LauraClient("http://h", "tok");
+    await c.deleteTimelineAudioClip("tl-1", "ac-1");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://h/timelines/tl-1/audio-clips/ac-1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 });

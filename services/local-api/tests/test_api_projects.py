@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
+from laura.api import projects as project_api
 from laura.config import Settings
+from laura.db import repos
 from laura.main import create_app
 
 
@@ -38,6 +42,29 @@ def test_create_get_list_project(client: TestClient) -> None:
     listed = client.get("/projects")
     assert listed.status_code == 200
     assert any(p["id"] == created["id"] for p in listed.json())
+
+
+def test_create_demo_project(client: TestClient, monkeypatch: MonkeyPatch) -> None:
+    def fake_clip(path: Path, _label: str, _color: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"demo")
+
+    monkeypatch.setattr(project_api, "_write_demo_clip", fake_clip)
+
+    resp = client.post("/projects/demo")
+
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+    assert project["name"] == "Laura Demo"
+    db = cast(Any, client.app).state.db
+    assets = repos.list_assets(db, project["id"])
+    assert len(assets) == 2
+    scenes = repos.list_project_scenes(db, project["id"])
+    assert len(scenes) == 2
+    sequence = repos.get_or_create_project_sequence(db, project["id"])
+    items = repos.list_sequence_items(db, sequence["id"])
+    assert len(items) == 2
+    assert items[0]["transition_after_kind"] == "dip_black"
 
 
 def test_create_project_rejects_invalid_dropframe(client: TestClient) -> None:

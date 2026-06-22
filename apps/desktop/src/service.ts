@@ -25,6 +25,17 @@ function devServiceDir(): string {
 }
 
 function resolveServiceCommand(): ServiceCommand {
+  // Test override: force the uv-run dev service even in a packaged build, so a
+  // `forge package` build runs without a frozen PyInstaller binary. Inert unless
+  // LAURA_FORCE_UV_SERVICE=1 is set in the launching environment.
+  if (process.env.LAURA_FORCE_UV_SERVICE === "1") {
+    return {
+      cmd: "uv",
+      args: ["run", "laura-api"],
+      cwd: process.env.LAURA_SERVICE_DIR ?? devServiceDir(),
+      useShell: process.platform === "win32",
+    };
+  }
   if (app.isPackaged) {
     // Packaged: a standalone service binary bundled as an extraResource
     // (see docs/13-packaging.md). No `uv`, no shell.
@@ -85,12 +96,13 @@ export async function startService(): Promise<{ info: ServiceInfo; stop: () => v
   // Packaged: point the backend at the bundled ffmpeg/ffprobe (extraResource
   // "ffmpeg"; see forge.config.ts). laura/ingest/ffmpeg.py reads these env vars
   // first, falling back to PATH. Dev is left untouched and uses PATH.
-  const ffmpegEnv: Record<string, string> = app.isPackaged
-    ? {
-        LAURA_FFMPEG: path.join(process.resourcesPath, "ffmpeg", "ffmpeg.exe"),
-        LAURA_FFPROBE: path.join(process.resourcesPath, "ffmpeg", "ffprobe.exe"),
-      }
-    : {};
+  const ffmpegEnv: Record<string, string> =
+    app.isPackaged && process.env.LAURA_FORCE_UV_SERVICE !== "1"
+      ? {
+          LAURA_FFMPEG: path.join(process.resourcesPath, "ffmpeg", "ffmpeg.exe"),
+          LAURA_FFPROBE: path.join(process.resourcesPath, "ffmpeg", "ffprobe.exe"),
+        }
+      : {};
   const child: ChildProcess = spawn(command.cmd, command.args, {
     cwd: command.cwd,
     env: {

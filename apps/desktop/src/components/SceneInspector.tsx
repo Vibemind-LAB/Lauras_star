@@ -52,11 +52,11 @@ function Frame({
       onClick={() => onSeek(safeFrame)}
       title={`Frame ${safeFrame}`}
       className={`relative flex aspect-video min-w-0 flex-1 items-end justify-center overflow-hidden rounded-sm ${
-        url ? "bg-ink" : "bg-edge"
+        url ? "bg-surface-0" : "bg-surface-2"
       } ${isCut ? "z-10 ring-2 ring-inset ring-amber-400" : "hover:brightness-125"}`}
     >
       {url && <img src={url} alt="" className="absolute inset-0 h-full w-full object-cover" />}
-      <span className="relative mb-0.5 rounded bg-ink/70 px-1 text-[9px] leading-tight tabular-nums text-slate-200">
+      <span className="relative mb-0.5 rounded bg-surface-0/70 px-1 text-[9px] leading-tight tabular-nums text-content-strong">
         {safeFrame}
       </span>
     </button>
@@ -118,7 +118,7 @@ function Nudges({
           type="button"
           onClick={() => onNudge(s.delta)}
           title={`${label} ${s.delta > 0 ? "+" : ""}${s.delta} Frame${Math.abs(s.delta) === 1 ? "" : "s"}`}
-          className="flex-1 rounded bg-ink px-2 py-1 text-xs tabular-nums text-slate-200 transition hover:bg-edge"
+          className="flex-1 rounded bg-surface-0 px-2 py-1 text-xs tabular-nums text-content-strong transition hover:bg-surface-2"
         >
           {s.text}
         </button>
@@ -222,22 +222,21 @@ export function SceneInspector({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4">
       <div>
-        <h2 className="text-xs font-medium uppercase tracking-wide text-slate-500">Szene</h2>
-        <div className="mt-1 text-sm text-slate-200">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-content-faint">Szene</h2>
+        <div className="mt-1 text-sm text-content-strong">
           Quelle{" "}
           <span className="tabular-nums">
             {clip.src_in_frame}–{clip.src_out_frame_exclusive}
           </span>
         </div>
-        <div className="text-xs text-slate-500">
-          {durFrames} frame{durFrames === 1 ? "" : "s"} · {fps} fps
+        <div className="text-xs text-content-faint">`n          {durFrames} frame{durFrames === 1 ? "" : "s"} · {fps} fps
         </div>
       </div>
 
-      {error && <div className="text-xs text-red-400">{error}</div>}
+      {error && <div className="text-xs text-status-err">{error}</div>}
 
       <section className="space-y-1.5">
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        <h3 className="text-[11px] font-medium uppercase tracking-wide text-content-faint">
           IN-Schnitt
         </h3>
         <Filmstrip client={client} assetId={asset.id} center={clip.src_in_frame} onSeek={onSeek} />
@@ -245,7 +244,7 @@ export function SceneInspector({
       </section>
 
       <section className="space-y-1.5">
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        <h3 className="text-[11px] font-medium uppercase tracking-wide text-content-faint">
           OUT-Schnitt
         </h3>
         <Filmstrip
@@ -258,13 +257,13 @@ export function SceneInspector({
       </section>
 
       <section className="space-y-1.5">
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        <h3 className="text-[11px] font-medium uppercase tracking-wide text-content-faint">
           Audio-Fenster
         </h3>
         {slice ? (
           <Waveform peaks={slice} />
         ) : (
-          <div className="flex h-24 items-center justify-center rounded-md bg-ink text-xs text-slate-600">
+          <div className="flex h-24 items-center justify-center rounded-md bg-surface-0 text-xs text-content-faint">
             Lade Waveform…
           </div>
         )}
@@ -272,3 +271,5 @@ export function SceneInspector({
     </div>
   );
 }
+
+

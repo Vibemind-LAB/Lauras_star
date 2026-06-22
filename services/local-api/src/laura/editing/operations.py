@@ -345,6 +345,43 @@ def trim_clip(
     return _normalize_offsets(result)
 
 
+def roll_boundary(
+    clips: list[EditClip], boundary_seq_frame: int, delta_frames: int
+) -> list[EditClip]:
+    """Roll the cut between the two adjacent lane-0 clips meeting at ``boundary_seq_frame``.
+
+    Clip A (which ENDS at the boundary) gains ``delta_frames`` of source; clip B (which STARTS
+    there) loses them. The total sequence length and every other clip are unchanged — only the cut
+    point moves. ``delta_frames`` is in source frames and may be negative. Speed-1 clips only (a
+    resnap target); a retimed clip raises. Raises ``ValueError`` on a missing boundary or a delta
+    that would empty either clip (valid range ``[-(len_A - 1), len_B - 1]``)."""
+    a = next(
+        (c for c in clips if c.lane == 0 and c.seq_out_frame_exclusive == boundary_seq_frame), None
+    )
+    b = next(
+        (c for c in clips if c.lane == 0 and c.seq_in_frame == boundary_seq_frame), None
+    )
+    if a is None or b is None:
+        raise ValueError(f"no lane-0 boundary at seq frame {boundary_seq_frame}")
+    if (a.speed_num, a.speed_den) != (1, 1) or (b.speed_num, b.speed_den) != (1, 1):
+        raise ValueError("roll_boundary supports speed-1 clips only")
+    lo, hi = -(a.src_length - 1), (b.src_length - 1)
+    if not (lo <= delta_frames <= hi):
+        raise ValueError(f"roll delta {delta_frames} out of range [{lo}, {hi}]")
+    a2 = replace(
+        a,
+        src_out_frame_exclusive=a.src_out_frame_exclusive + delta_frames,
+        seq_out_frame_exclusive=a.seq_out_frame_exclusive + delta_frames,
+    )
+    b2 = replace(
+        b,
+        src_in_frame=b.src_in_frame + delta_frames,
+        seq_in_frame=b.seq_in_frame + delta_frames,
+    )
+    # Only the source/seq ranges of A and B change; offsets and every other clip are preserved.
+    return _normalize_offsets([a2 if c is a else b2 if c is b else c for c in clips])
+
+
 def set_audio_offset(
     clips: list[EditClip],
     at_seq_frame: int,

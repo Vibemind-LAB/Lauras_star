@@ -47,7 +47,13 @@ def _drain(runner: JobRunner, limit: int = 50) -> int:
     return ran
 
 
-def test_full_ingest_pipeline(tmp_path: Path, sample_media: Path) -> None:
+def test_full_ingest_pipeline(
+    tmp_path: Path, sample_media: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This test exercises the ingest chain only (probe→proxy→audio→waveform); auto-analyze is a
+    # separate pipeline with its own tests. Disable it so draining the queue doesn't also enqueue
+    # an analysis.run that this ingest-only runner has no handler for (it would fail the run).
+    monkeypatch.setenv("LAURA_AUTO_ANALYZE", "0")
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
     db = SqliteDatabase(settings.db_path)
     db.migrate()

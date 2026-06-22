@@ -5,7 +5,9 @@ import {
   type LauraClient,
   type Operation,
   type Timeline,
+  type TimelineAudioClip,
   type TimelineClip,
+  type Segment,
 } from "../api";
 
 const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
@@ -156,13 +158,13 @@ function ClipThumb({
       } (Klick = auswählen, ziehen = umsortieren)`}
       style={{ width: `${pct}%` }}
       className={`relative flex items-center justify-center overflow-hidden ${
-        url ? "" : index % 2 === 0 ? "bg-sky-700/50" : "bg-sky-500/40"
+        url ? "" : index % 2 === 0 ? "bg-accent/50" : "bg-accent/40"
       } ${selected ? "z-10 ring-2 ring-inset ring-amber-400" : "hover:brightness-125"} ${
         dragOver ? "border-l-2 border-amber-300" : ""
       }`}
     >
       {url && <img src={url} alt="" className="absolute inset-0 h-full w-full object-cover" />}
-      <span className="relative rounded bg-ink/70 px-1 text-[10px] leading-tight text-slate-100">
+      <span className="relative rounded bg-surface-0/70 px-1 text-[10px] leading-tight text-content-strong">
         {index + 1}
         {retimed ? "⏩" : ""}
       </span>
@@ -244,7 +246,7 @@ function AudioBlock({
       }`}
       style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
       className={`absolute inset-y-0 flex items-center overflow-hidden rounded-sm ${
-        isSplit ? "bg-emerald-700/50 ring-1 ring-inset ring-emerald-400/60" : "bg-teal-800/40"
+        isSplit ? "bg-status-ok/30 ring-1 ring-inset ring-status-ok/60" : "bg-teal-800/40"
       }`}
     >
       <span className="pointer-events-none truncate px-1 text-[9px] leading-none text-teal-100/80">
@@ -265,10 +267,38 @@ function AudioBlock({
           }}
           style={{ width: `${HANDLE_PX}px` }}
           className={`absolute inset-y-0 left-0 z-20 cursor-ew-resize ${
-            isDragging ? "bg-amber-300" : "bg-emerald-400/80 hover:bg-emerald-300"
+            isDragging ? "bg-amber-300" : "bg-accent/80 hover:bg-accent-glow"
           }`}
         />
       )}
+    </div>
+  );
+}
+
+function A2Block({
+  clip,
+  total,
+}: {
+  clip: TimelineAudioClip;
+  total: number;
+}): ReactElement {
+  const leftPct = total > 0 ? (clip.seq_in_frame / total) * 100 : 0;
+  const widthPct =
+    total > 0
+      ? ((clip.seq_out_frame_exclusive - clip.seq_in_frame) / total) * 100
+      : 0;
+  const label = clip.label ?? `Audio ${clip.asset_id}`;
+  return (
+    <div
+      role="group"
+      aria-label={`A2 Clip ${label} · seq ${clip.seq_in_frame}–${clip.seq_out_frame_exclusive}`}
+      title={`${label} · seq ${clip.seq_in_frame}–${clip.seq_out_frame_exclusive} · ${clip.gain_percent}%`}
+      style={{ left: `${leftPct}%`, width: `${Math.max(0.6, widthPct)}%` }}
+      className="absolute inset-y-0 flex items-center overflow-hidden rounded-sm bg-cyan-800/50 ring-1 ring-inset ring-cyan-400/40"
+    >
+      <span className="truncate px-1 text-[9px] leading-none text-cyan-100/90">
+        {label} · {clip.gain_percent}%
+      </span>
     </div>
   );
 }
@@ -279,6 +309,10 @@ export function TimelineBar({
   onChange,
   onScrub,
   onSelect,
+  onRemoveOverlay,
+  audioClips = [],
+  segments,
+  currentFrame,
 }: {
   client: LauraClient;
   timeline: Timeline | null;
@@ -288,6 +322,15 @@ export function TimelineBar({
   /** Notify the parent which clip is selected (null = none) so it can open the
    *  SceneInspector. TimelineBar keeps its own `selected` state as the source of truth. */
   onSelect?: (clipId: string | null) => void;
+  /** Called when the user clicks × on an overlay clip (lane >= 1). */
+  onRemoveOverlay?: (clipId: string) => void;
+  /** Optional sequence-level audio overlays shown as the A2 lane. */
+  audioClips?: TimelineAudioClip[];
+  /** Optional transcript — renders a 3rd "TX" lane with each spoken word placed at its
+   *  position on the sequence (words trimmed out of the cut simply don't appear). */
+  segments?: Segment[];
+  /** The player's current SOURCE frame; drawn as a playhead across all lanes. */
+  currentFrame?: number;
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -323,7 +366,9 @@ export function TimelineBar({
   }, [tlId, onSelect]);
 
   // Load the selected clip's asset duration so edge-trim can clamp the OUT point to it.
-  const selAssetId = timeline?.clips.find((c) => c.id === selected)?.asset_id ?? null;
+  // Only base clips (lane 0) are selectable for edge-trim.
+  const selAssetId =
+    timeline?.clips.find((c) => c.id === selected && (c.lane ?? 0) === 0)?.asset_id ?? null;
   useEffect(() => {
     if (!selAssetId) {
       setAssetDuration(null);
@@ -343,10 +388,10 @@ export function TimelineBar({
     };
   }, [client, selAssetId]);
 
-  // Load the timeline's audio rate (from its first clip's asset) so the A1 lane can project the
-  // per-clip sample offset onto frames. Rough cuts are single-asset; if clips span assets this is
-  // a reasonable display approximation (the backend re-derives the authoritative frame anyway).
-  const firstAssetId = timeline?.clips[0]?.asset_id ?? null;
+  // Load the timeline's audio rate (from its first base clip's asset) so the A1 lane can project
+  // the per-clip sample offset onto frames. Rough cuts are single-asset; if clips span assets this
+  // is a reasonable display approximation (the backend re-derives the authoritative frame anyway).
+  const firstAssetId = timeline?.clips.find((c) => (c.lane ?? 0) === 0)?.asset_id ?? null;
   useEffect(() => {
     if (!firstAssetId) {
       setAudioRate({ sampleRate: null, rateNum: null, rateDen: null });
@@ -374,15 +419,59 @@ export function TimelineBar({
 
   if (!timeline) {
     return (
-      <div className="flex h-20 items-center border-t border-edge bg-panel px-5 text-xs text-slate-600">
+      <div className="flex h-20 items-center border-t border-bezel bg-surface-1 px-5 text-xs text-content-faint">
         Rough Cut — wähle ein Projekt.
       </div>
     );
   }
 
   const tl = timeline;
-  const total = tl.clips.reduce((m, c) => Math.max(m, c.seq_out_frame_exclusive), 0);
-  const sel = tl.clips.find((c) => c.id === selected) ?? null;
+  // Separate base (V1) clips from overlay (V2) clips so each lane renders its own set.
+  const baseClips = tl.clips.filter((c) => (c.lane ?? 0) === 0);
+  const overlayClips = tl.clips.filter((c) => (c.lane ?? 0) >= 1);
+  // Total sequence length spans ALL clips (base + overlay share the same timeline geometry).
+  const total = [...tl.clips, ...audioClips].reduce(
+    (m, c) => Math.max(m, c.seq_out_frame_exclusive),
+    0,
+  );
+  // Map each transcript word (asset source frames) onto the sequence timeline via the clip
+  // that contains it. Words trimmed out of the cut have no containing clip and are dropped.
+  const transcriptWords =
+    total > 0 && segments
+      ? segments.flatMap((seg) =>
+          seg.words.flatMap((w) => {
+            const clip = baseClips.find(
+              (c) => c.src_in_frame <= w.start_frame && w.start_frame < c.src_out_frame_exclusive,
+            );
+            if (!clip) return [];
+            const seqStart = clip.seq_in_frame + (w.start_frame - clip.src_in_frame);
+            const srcEnd = Math.min(w.end_frame, clip.src_out_frame_exclusive);
+            const seqEnd = clip.seq_in_frame + (srcEnd - clip.src_in_frame);
+            return [
+              {
+                id: w.id,
+                text: w.text,
+                assetId: clip.asset_id,
+                srcFrame: w.start_frame,
+                leftPct: (seqStart / total) * 100,
+                widthPct: Math.max(0.4, ((seqEnd - seqStart) / total) * 100),
+              },
+            ];
+          }),
+        )
+      : [];
+  // Playhead position as a fraction of the sequence: map the player's current SOURCE frame
+  // onto the sequence via the base clip that contains it (same mapping as the transcript words).
+  const playheadFrac = (() => {
+    if (currentFrame == null || total <= 0) return null;
+    const cf = currentFrame;
+    const clip = baseClips.find((c) => c.src_in_frame <= cf && cf < c.src_out_frame_exclusive);
+    if (!clip) return null;
+    const seqFrame = clip.seq_in_frame + (cf - clip.src_in_frame);
+    return Math.min(1, Math.max(0, seqFrame / total));
+  })();
+  // Selection is limited to base clips (overlays use the remove button instead).
+  const sel = baseClips.find((c) => c.id === selected) ?? null;
 
   async function runOp(op: Operation): Promise<void> {
     const snapshot = tl.clips;
@@ -645,10 +734,10 @@ export function TimelineBar({
   }
 
   return (
-    <div className="border-t border-edge bg-panel px-5 py-3">
+    <div className="border-t border-bezel bg-surface-1 px-5 py-3">
       <div className="mb-1 flex items-center justify-between">
         <span className="flex items-center gap-2">
-          <span className="text-xs uppercase tracking-wide text-slate-500">
+          <span className="text-xs uppercase tracking-wide text-content-faint">
             Rough Cut · {tl.name}
           </span>
           <button
@@ -656,7 +745,7 @@ export function TimelineBar({
             onClick={() => void undo()}
             disabled={history.length === 0}
             title="Rückgängig"
-            className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge disabled:opacity-30"
+            className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-30"
           >
             ↶ Undo
           </button>
@@ -665,38 +754,103 @@ export function TimelineBar({
             onClick={() => void redo()}
             disabled={future.length === 0}
             title="Wiederholen"
-            className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge disabled:opacity-30"
+            className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-30"
           >
             ↷ Redo
           </button>
         </span>
         <span className="flex items-center gap-2">
-          {tl.clips.length > 0 &&
+          {baseClips.length > 0 &&
             EXPORT_FORMATS.map((f) => (
               <button
                 key={f.fmt}
                 type="button"
                 onClick={() => void exportAs(f.fmt, f.ext)}
-                className="rounded bg-ink px-2 py-0.5 text-xs text-slate-300 hover:bg-edge"
+                className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2"
               >
                 {f.label}
               </button>
             ))}
-          <span className="text-xs text-slate-500">
-            {tl.clips.length} Clips · {total} frames
+          <span className="text-xs text-content-faint">
+            {baseClips.length} Clips · {total} frames
+            {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""}` : ""}
           </span>
         </span>
       </div>
       {error && <div className="mb-1 text-xs text-red-400">{error}</div>}
-      {tl.clips.length === 0 ? (
-        <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-edge text-xs text-slate-600">
+      {baseClips.length === 0 && overlayClips.length === 0 ? (
+        <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-bezel text-xs text-content-faint">
           Klicke einen Shot oder Transkript-Satz an, um ihn anzuhängen.
         </div>
       ) : (
-        <div className="flex flex-col gap-1">
-          {/* V1 — picture lane (reorder + edge-trim). */}
+        <div className="relative flex flex-col gap-1">
+          {/* Playhead — a vertical line across all lanes at the current frame. The lane area
+              starts 2rem in (w-6 label + gap-2), so offset the % into that region. */}
+          {playheadFrac !== null && (
+            <div
+              aria-label="Abspielposition"
+              className="pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 bg-amber-400"
+              style={{ left: `calc(2rem + (100% - 2rem) * ${playheadFrac})` }}
+            />
+          )}
+          {/* V2/Replace — overlay lane above V1; only shown when overlay clips exist. */}
+          {overlayClips.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-violet-400">V2</span>
+              <div
+                aria-label="Ersatz-Spur (V2/Replace)"
+                className="relative h-8 min-w-0 flex-1 overflow-hidden rounded-md bg-violet-950/40"
+              >
+                {overlayClips.map((c) => {
+                  const leftPct = total > 0 ? (c.seq_in_frame / total) * 100 : 0;
+                  const widthPct =
+                    total > 0
+                      ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100
+                      : 0;
+                  // Label and tooltip for the overlay block. TimelineBar does not receive an
+                  // `assets` prop, so we derive what we can from the clip itself: `role` is
+                  // always "replace" for lane->=1 clips; no asset.synthetic / ai_effect is
+                  // available here without a new data dependency, so we label by role only.
+                  const overlayLabel = c.role === "replace" ? "Replace" : (c.role ?? "Overlay");
+                  const overlayTitle = `${overlayLabel}-Overlay · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`;
+                  return (
+                    <div
+                      key={c.id}
+                      role="group"
+                      aria-label={`Overlay ${c.id} · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
+                      title={overlayTitle}
+                      style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                      className="absolute inset-y-0 flex items-center justify-between overflow-hidden rounded-sm bg-violet-700/60 ring-1 ring-inset ring-violet-400/50"
+                    >
+                      <span className="flex min-w-0 items-center gap-0.5 truncate px-1">
+                        {/* Role badge — amber pill for replace/AI overlays, matching the KI badge
+                            style used elsewhere (MediaSidebar). */}
+                        <span className="shrink-0 rounded-full bg-amber-500/80 px-1 py-px text-[8px] font-semibold leading-none text-amber-950">
+                          {overlayLabel}
+                        </span>
+                        <span className="truncate text-[9px] leading-none text-violet-100">
+                          {c.seq_in_frame}–{c.seq_out_frame_exclusive}
+                        </span>
+                      </span>
+                      {onRemoveOverlay && (
+                        <button
+                          type="button"
+                          title="Overlay entfernen"
+                          onClick={() => onRemoveOverlay(c.id)}
+                          className="mr-0.5 shrink-0 rounded px-0.5 text-[9px] leading-none text-violet-200 hover:bg-violet-900/80 hover:text-white"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {/* V1 — picture lane (reorder + edge-trim); shows only base clips (lane 0). */}
           <div className="flex items-center gap-2">
-            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">V1</span>
+            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">V1</span>
             <div
               ref={stripRef}
               className="flex h-12 min-w-0 flex-1 gap-px overflow-hidden rounded-md"
@@ -704,7 +858,7 @@ export function TimelineBar({
               onPointerUp={() => void onEdgeUp()}
               onPointerCancel={() => void onEdgeUp()}
             >
-              {tl.clips.map((c, i) => (
+              {baseClips.map((c, i) => (
                 <ClipThumb
                   key={c.id}
                   client={client}
@@ -751,19 +905,19 @@ export function TimelineBar({
               />
             </div>
           </div>
-          {/* A1 — audio lane. Each clip's audio leading edge is drawn offset from its picture cut by
-              `audio_offset_samples` (projected to frames); the handle drags a J/L split. The lane
-              shares the V1 timebase (same `total`), so the geometry lines up under the picture. */}
+          {/* A1 — audio lane. Each base clip's audio leading edge is drawn offset from its picture
+              cut by `audio_offset_samples` (projected to frames); the handle drags a J/L split.
+              The lane shares the V1 timebase (same `total`), so the geometry lines up under V1. */}
           <div className="flex items-center gap-2">
-            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-slate-500">A1</span>
+            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">A1</span>
             <div
               aria-label="Audio-Spur (A1)"
-              className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-ink/40"
+              className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-surface-0/40"
               onPointerMove={onAudioMove}
               onPointerUp={() => void onAudioUp()}
               onPointerCancel={() => void onAudioUp()}
             >
-              {tl.clips.map((c, i) => {
+              {baseClips.map((c, i) => {
                 const dragging = audioDrag?.clipId === c.id;
                 const offsetFrames = dragging
                   ? audioDrag.offsetFrames
@@ -789,15 +943,52 @@ export function TimelineBar({
             </div>
           </div>
           {audioDrag && (
-            <div className="pl-8 text-[10px] text-emerald-300" data-testid="audio-offset-readout">
+            <div className="pl-8 text-[10px] text-status-ok" data-testid="audio-offset-readout">
               {offsetLabel(audioDrag.offsetFrames)}
+            </div>
+          )}
+          {/* A2 — sequence audio overlays (music/voiceover). Editing lives in the Tools rail. */}
+          {audioClips.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-cyan-400">A2</span>
+              <div
+                aria-label="Audio-Lane A2"
+                className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-cyan-950/30"
+              >
+                {audioClips.map((clip) => (
+                  <A2Block key={clip.id} clip={clip} total={total} />
+                ))}
+              </div>
+            </div>
+          )}
+          {/* TX — transcript lane: each spoken word placed at its position on the sequence. */}
+          {transcriptWords.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">TX</span>
+              <div
+                aria-label="Transkript-Spur"
+                className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-surface-0/40"
+              >
+                {transcriptWords.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => onScrub?.(w.assetId, w.srcFrame)}
+                    title={w.text}
+                    style={{ left: `${w.leftPct}%`, width: `${w.widthPct}%` }}
+                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-bezel/60 px-0.5 text-left text-[10px] leading-7 text-content-muted hover:bg-accent/40 hover:text-white"
+                  >
+                    {w.text}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
       )}
       {sel && (
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-slate-500">
+          <span className="text-content-faint">
             Clip src{" "}
             {edgeDrag && edgeDrag.clipId === sel.id ? edgeDrag.newSrcIn : sel.src_in_frame}–
             {edgeDrag && edgeDrag.clipId === sel.id ? edgeDrag.newSrcOut : sel.src_out_frame_exclusive}:
@@ -805,35 +996,35 @@ export function TimelineBar({
           <button
             type="button"
             onClick={() => void splitSelected()}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Split (Mitte)
           </button>
           <button
             type="button"
             onClick={() => void trimSelected(-TRIM_STEP)}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Trim −{TRIM_STEP}
           </button>
           <button
             type="button"
             onClick={() => void trimSelected(TRIM_STEP)}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Trim +{TRIM_STEP}
           </button>
           <button
             type="button"
             onClick={() => void duplicateSelected()}
-            className="rounded bg-ink px-2 py-0.5 text-slate-200 hover:bg-edge"
+            className="rounded bg-surface-0 px-2 py-0.5 text-content-strong hover:bg-surface-2"
           >
             Duplizieren
           </button>
           <button
             type="button"
             onClick={() => void deleteSelected()}
-            className="rounded bg-ink px-2 py-0.5 text-red-300 hover:bg-red-600/40"
+            className="rounded bg-surface-0 px-2 py-0.5 text-red-300 hover:bg-red-600/40"
           >
             Löschen
           </button>
@@ -842,3 +1033,5 @@ export function TimelineBar({
     </div>
   );
 }
+
+

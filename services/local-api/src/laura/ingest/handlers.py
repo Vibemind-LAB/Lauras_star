@@ -20,8 +20,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .. import PIPELINE_VERSION
 from ..db import repos
 from ..db.database import Database
+from ..jobs.queues import queue_for
 from ..jobs.runner import JobContext, JobHandler, enqueue
 from .aria2 import Aria2Cancelled, aria2_available, aria2_download
 from .audio import extract_mix48k, extract_mono16k
@@ -178,6 +180,40 @@ def handle_audio(ctx: JobContext) -> dict[str, Any]:
     return {"mono": str(mono), "mix": str(mix)}
 
 
+def _maybe_auto_analyze(ctx: JobContext, asset_id: str) -> str | None:
+    """Smart handling: once import is complete, auto-start analysis (scene + transcript)
+    so the user need not click "Analysieren". Opt out with LAURA_AUTO_ANALYZE=0. Idempotent:
+    returns None (skips) when disabled or an analysis run already exists; else returns the
+    enqueued job id."""
+    if os.environ.get("LAURA_AUTO_ANALYZE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if repos.get_latest_analysis_run(ctx.db, asset_id) is not None:
+        return None
+    config: dict[str, Any] = {
+        "stages": {"scene": True, "asr": True, "diarize": False, "align": False},
+        # Must be a real model size, NOT None: handle_analysis_run does
+        # config.get("model", "base"), which returns None (not "base") when the key is
+        # present-but-None, and WhisperModel(None) then crashes (stat(None)). "base" is
+        # the asr DEFAULT_MODEL. language None is fine (Whisper auto-detects).
+        "model": "base",
+        "language": None,
+        "detector": "adaptive",
+    }
+    run = repos.create_analysis_run(
+        ctx.db, asset_id=asset_id, pipeline_version=PIPELINE_VERSION, config=config
+    )
+    return enqueue(
+        ctx.db,
+        queue=queue_for("analysis.run"),
+        kind="analysis.run",
+        payload={"asset_id": asset_id, "analysis_run_id": run["id"], "config": config},
+        idempotency_key=f"analysis:{run['id']}",
+        pipeline_version=PIPELINE_VERSION,
+        max_attempts=2,
+        caused_by_job_id=ctx.job_id,
+    )
+
+
 def handle_waveform(ctx: JobContext) -> dict[str, Any]:
     asset = _require_asset(ctx)
     root = _project_root(ctx.db, asset)
@@ -188,7 +224,8 @@ def handle_waveform(ctx: JobContext) -> dict[str, Any]:
     payload = compute_waveform(mono, dest)
     repos.add_asset_file(ctx.db, asset_id=asset["id"], kind="waveform", path=str(dest),
                          size_bytes=os.path.getsize(dest), is_waveform=True)
-    return {"waveform": str(dest), "length": payload["length"]}
+    analysis_job = _maybe_auto_analyze(ctx, asset["id"])
+    return {"waveform": str(dest), "length": payload["length"], "analysis_job": analysis_job}
 
 
 def _finalize_media_asset(

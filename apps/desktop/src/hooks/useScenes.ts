@@ -47,6 +47,7 @@ export function useScenes(
         setScenes(await client.generateScenes(timelineId, assetId));
       } catch (e) {
         setError(String(e));
+        throw e;
       } finally {
         setLoading(false);
       }

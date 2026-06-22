@@ -48,18 +48,18 @@ export function DownloadView({
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Video-URL einfügen (http/s, Magnet)…"
           disabled={disabled}
-          className="min-w-0 flex-1 rounded bg-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-600"
+          className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint"
         />
         <button
           type="submit"
           disabled={disabled || url.trim() === ""}
-          className="shrink-0 rounded bg-sky-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+          className="shrink-0 rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
         >
           + Download
         </button>
       </form>
       {assets.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+        <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
           Noch keine Downloads — füge eine URL hinzu oder ziehe einen Link ins Fenster.
         </div>
       ) : (
@@ -72,3 +72,4 @@ export function DownloadView({
     </div>
   );
 }
+

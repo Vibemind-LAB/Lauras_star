@@ -31,3 +31,13 @@ def record(
         entity_id=entity_id,
         payload=payload or {},
     )
+
+
+def system_principal() -> Principal:
+    """The principal recorded for server-side automation (job handlers).
+
+    Jobs run without a request principal; audit rows still need a stable
+    actor. This is the local owner identity, matching the default request
+    principal in auth/deps.py.
+    """
+    return Principal(kind="local", role="owner")

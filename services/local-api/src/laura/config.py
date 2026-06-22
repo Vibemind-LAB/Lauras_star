@@ -21,6 +21,8 @@ class Settings:
     token: str | None = None          # if set, required via X-Laura-Token header
     start_runner: bool = True         # background job runner thread
     lease_seconds: int = 60
+    worker_concurrency: int = 3       # background job-runner threads (desktop)
+    job_max_runtime_seconds: int = 3600  # cap before a job's lease stops being refreshed
     database_url: str | None = None   # postgresql://… for server mode; else SQLite
     rate_limit_rpm: int = 0           # per-identity requests/minute; 0 disables the limiter
     rate_limit_burst: int = 0         # bucket capacity; 0 -> falls back to rpm
@@ -42,6 +44,8 @@ class Settings:
             host=os.environ.get("LAURA_HOST", DEFAULT_HOST),
             port=int(os.environ.get("LAURA_PORT", str(DEFAULT_PORT))),
             token=os.environ.get("LAURA_TOKEN") or None,
+            worker_concurrency=int(os.environ.get("LAURA_WORKERS", "3")),
+            job_max_runtime_seconds=int(os.environ.get("LAURA_JOB_MAX_RUNTIME", "3600")),
             database_url=os.environ.get("DATABASE_URL") or None,
             rate_limit_rpm=int(os.environ.get("LAURA_RATE_LIMIT_RPM", "0")),
             rate_limit_burst=int(os.environ.get("LAURA_RATE_LIMIT_BURST", "0")),

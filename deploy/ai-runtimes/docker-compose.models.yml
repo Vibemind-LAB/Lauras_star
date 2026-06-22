@@ -1,0 +1,28 @@
+services:
+  voice:
+    environment:
+      LAURA_RUNTIME_MODE: model
+
+  liveportrait:
+    image: laura-runtime-liveportrait-model:local
+    build:
+      context: ../../services/ai-runtimes
+      dockerfile: Dockerfile.liveportrait
+    environment:
+      LAURA_RUNTIME_MODE: model
+      LAURA_LIVEPORTRAIT_REPO: /models/LivePortrait
+      LAURA_LIVEPORTRAIT_OUTPUT_GLOB: "*.mp4"
+
+  vibevideo:
+    image: laura-runtime-musetalk-model:local
+    build:
+      context: ../../services/ai-runtimes
+      dockerfile: Dockerfile.musetalk
+    environment:
+      LAURA_RUNTIME_MODE: model
+      LAURA_MUSETALK_REPO: /opt/MuseTalk
+      LAURA_MUSETALK_WEIGHTS_ROOT: /models/MuseTalk/models
+      LAURA_MUSETALK_RESULT_DIR: /workspace/musetalk-results
+      LAURA_MUSETALK_VERSION: v15
+      LAURA_MUSETALK_OUTPUT_GLOB: "**/*.mp4"
+      LAURA_MUSETALK_EXTRA_ARGS: --use_float16

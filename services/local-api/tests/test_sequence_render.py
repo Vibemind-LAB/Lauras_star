@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,7 +32,7 @@ def _src(tmp_path: Path, name: str, secs: int) -> Path:
     return p
 
 
-def _scene_tl(db: SqliteDatabase, pid: str, aid: str) -> dict:
+def _scene_tl(db: SqliteDatabase, pid: str, aid: str) -> dict[str, Any]:
     tl = repos.create_timeline(db, project_id=pid, name="s", kind="scene")
     repos.replace_timeline_clips(db, tl["id"], [{
         "asset_id": aid, "src_in_frame": 0, "src_out_frame_exclusive": 30,
@@ -82,5 +83,6 @@ def test_sequence_renders_to_mp4(tmp_path: Path) -> None:
     while runner.run_once():
         pass
     done = repos.get_export(db, exp["id"])
+    assert done is not None
     assert done["status"] == "ready", done
     assert Path(done["path"]).exists() and done["size_bytes"] > 0

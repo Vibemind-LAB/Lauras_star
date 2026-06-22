@@ -191,7 +191,7 @@ def test_edl_emits_parallel_v_and_a_events_on_offset() -> None:
     channels = [ln.split()[2] for ln in lines]
     assert channels == ["V", "V", "V", "A", "A", "A"]
 
-    fr_in = lambda frame: _tc(frame)  # noqa: E731 - terse local timecode helper
+    fr_in = _tc  # local timecode helper alias
     # The B audio event's record-in is the J-cut frame 46 (audio earlier), not the video frame 50.
     a_events = [ln for ln in lines if ln.split()[2] == "A"]
     # Event B (second A) record-in == 46; its source-in == 196.

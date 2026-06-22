@@ -1,21 +1,27 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 
-import { type Asset, type LauraClient, type Segment } from "../api";
-import { useSceneTimeline } from "../hooks/useSceneTimeline";
+import { type Asset, type BoundaryIdentity, type LauraClient, type Segment, type Timeline, type TimelineAudioClip, type VoiceoverVoice } from "../api";
 import { useScenes } from "../hooks/useScenes";
-import { Player } from "./Player";
-import { SceneMusicControls } from "./SceneMusicControls";
+import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
+import { useJobStatus } from "../hooks/useJobStatus";
+import { crossfadeFix, findFirstSameSourceEdge } from "../shared/smoothEdge";
+import { ContinuousTranscript } from "./ContinuousTranscript";
+import { EditorialToolsBar } from "./EditorialToolsBar";
+import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
-import { TranscriptBar } from "./TranscriptBar";
 
 /**
- * Feinschnitt per-scene editor.
+ * Feinschnitt: edit the CONTINUOUS rough-cut directly (spec §3/§4.1). Scenes are jump markers,
+ * not isolated copies — clicking one navigates (seeks) the single continuous transcript+timeline.
+ * Three transcript gestures (delete-selection / caret-cut / [Phase C] text-replace) are the only
+ * editing affordances; there is no scene materialization (openScene) on this path.
  *
- * Composes the existing Player, TimelineBar, and TranscriptBar against the
- * materialized scene timeline opened via useSceneTimeline. SceneInspector is
- * omitted in 4a because wiring it requires a selected-clip state sourced from
- * the scene timeline's clips, which is out of scope here and will be added in a
- * follow-up (see plan note).
+ * Features deliberately deferred to Phase B/C (per spec §10):
+ *   - SceneInspector (right panel, clip-level In/Out trim)
+ *   - SceneMusicControls (per-scene music overlay)
+ *   - TransitionReviewPanel (VLM transition check)
+ * These are removed from the default FineCutView screen. They will return in a follow-up task
+ * once the contextual-inspector pattern is defined. See CONCERNS in report-A8.md.
  */
 export function FineCutView({
   client,
@@ -32,92 +38,231 @@ export function FineCutView({
   roughCutId: string | null;
   segments: Segment[];
   currentFrame: number;
+  /**
+   * External seek in SEQUENCE frames. A new `{ frame }` object is passed by App.tsx each time the
+   * user clicks a transcript word or scene jump button (via onSeek → App.setSeek). Object-identity
+   * change triggers SequencePlayer's seekTo effect — the player scrubs to that frame.
+   * Flow: onSeek → App.setSeek({frame}) → new `seek` object → SequencePlayer re-seeks.
+   */
   seek: { frame: number } | null;
   onSeek: (f: number) => void;
   onFrame: (f: number) => void;
 }): ReactElement {
-  const { scenes, reload } = useScenes(client, roughCutId);
-  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
-  const selectedScene = scenes.find((s) => s.id === selectedSceneId);
+  const rc = useRoughCutTranscript(client, roughCutId, segments, asset?.id);
 
-  // Auto-select the first scene once the list is loaded.
+  // Voice picker state — selection is the only explicit editorial choice (spec §10).
+  const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
+  const [voiceId, setVoiceId] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!selectedSceneId && scenes[0]) {
-      setSelectedSceneId(scenes[0].id);
+    let cancelled = false;
+    client
+      .listVoiceoverVoices()
+      .then((vs) => {
+        if (!cancelled) setVoices(vs);
+      })
+      .catch(() => {
+        if (!cancelled) setVoices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Pending same-source edge: scan ALL lane-0 boundaries for a contiguous
+  // same-source jump-cut, independent of currentFrame. This ensures the
+  // "Übergang glätten" button lights up immediately after any delete that
+  // creates such an edge, without requiring the user to seek to the cut
+  // (spec §8 — Fix 3).
+  const pendingEdge = useMemo<BoundaryIdentity | null>(
+    () => findFirstSameSourceEdge(rc.clips),
+    [rc.clips],
+  );
+
+  // One-tap smooth: apply a 6-frame crossfade then reload.
+  const { reload: reloadRc } = rc;
+  const handleSmooth = useCallback(() => {
+    if (!roughCutId || !pendingEdge) return;
+    void client
+      .applyTransitionFix(roughCutId, pendingEdge, crossfadeFix())
+      .then(() => reloadRc())
+      .catch(() => undefined);
+  }, [client, roughCutId, pendingEdge, reloadRc]);
+
+  // Load audio clips from the rough-cut timeline so VO + music play in preview.
+  // Extracted into a useCallback so it can be re-triggered on VO job completion
+  // without changing [client, roughCutId] (Fix 1).
+  const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
+  const reloadAudioClips = useCallback(() => {
+    if (!roughCutId) {
+      setAudioClips([]);
+      return;
     }
-  }, [scenes, selectedSceneId]);
+    let cancelled = false;
+    client
+      .listTimelineAudioClips(roughCutId)
+      .then((cs) => {
+        if (!cancelled) setAudioClips(cs);
+      })
+      .catch(() => {
+        if (!cancelled) setAudioClips([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, roughCutId]);
 
-  const scene = useSceneTimeline(client, selectedSceneId);
+  useEffect(() => {
+    return reloadAudioClips();
+  }, [reloadAudioClips]);
 
-  if (scenes.length === 0) {
+  // Track the most recently dispatched VO job and re-fetch audio clips when it
+  // succeeds so the new VO becomes audible in preview and the disclosure strip
+  // updates without a manual remount (Fix 1).
+  const { jobStatus: voJobStatus, isRunning: voJobRunning } = useJobStatus(
+    client,
+    rc.lastVoJobId,
+  );
+  useEffect(() => {
+    if (voJobStatus?.status === "succeeded") {
+      reloadAudioClips();
+    }
+  }, [voJobStatus, reloadAudioClips]);
+
+  // Fallback scene list from useScenes if the hook hasn't populated rc.scenes yet.
+  const { scenes: scenesFromHook } = useScenes(client, roughCutId);
+  const jumpScenes = rc.scenes.length > 0 ? rc.scenes : scenesFromHook;
+
+  const clips = useMemo(() => rc.clips, [rc.clips]);
+
+  // Derive synthetic-effect labels from audio clips in the timeline.
+  // replace_original → a VO/lipsync clip replaced the original audio; mute_original → VO on top.
+  // These labels appear in the always-on disclosure strip (spec §7).
+  const syntheticEffects = useMemo<string[]>(() => {
+    const effects: string[] = [];
+    if (audioClips.some((c) => c.mix_mode === "replace_original")) effects.push("VO");
+    if (audioClips.some((c) => c.mix_mode === "mute_original")) effects.push("Lipsync");
+    return effects;
+  }, [audioClips]);
+
+  // Asset list for the embedded ReenactPanel: unique asset ids from lane-0 clips.
+  const toolbarAssets = useMemo<{ id: string; display_name: string }[]>(() => {
+    const seen = new Set<string>();
+    const result: { id: string; display_name: string }[] = [];
+    for (const cl of clips) {
+      if (!seen.has(cl.asset_id)) {
+        seen.add(cl.asset_id);
+        result.push({
+          id: cl.asset_id,
+          display_name: asset?.display_name ?? cl.asset_id,
+        });
+      }
+    }
+    return result;
+  }, [clips, asset?.display_name]);
+
+  // Build a minimal Timeline shape so TimelineBar (which expects Timeline | null) gets a typed
+  // value instead of an unsafe cast. The fields TimelineBar actually reads are id + clips;
+  // project_id / name / kind / created_at are display-only and safe to stub.
+  const syntheticTimeline = useMemo<Timeline | null>(() => {
+    if (!roughCutId) return null;
+    return {
+      id: roughCutId,
+      project_id: asset?.project_id ?? "",
+      name: "Rough Cut",
+      kind: "rough_cut",
+      created_at: "",
+      clips,
+    };
+  }, [roughCutId, asset?.project_id, clips]);
+
+  if (!roughCutId) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-slate-600">
+      <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
         Noch keine Szenen — erst Rough Cut ausführen.
       </div>
     );
   }
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-px bg-edge">
-      {/* Left: scene list */}
-      <aside className="flex flex-col gap-1 overflow-auto bg-ink p-2">
-        {scenes.map((s) => (
+    <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-px bg-bezel">
+      {/* Left: scene jump navigation (read-only — no openScene materialization) */}
+      <aside className="flex flex-col gap-1 overflow-auto bg-surface-0 p-2">
+        {jumpScenes.map((s) => (
           <button
             key={s.id}
             type="button"
-            onClick={() => setSelectedSceneId(s.id)}
-            className={`truncate rounded px-2 py-1 text-left text-xs ${
-              s.id === selectedSceneId
-                ? "bg-sky-700 text-white"
-                : "text-slate-300 hover:bg-slate-700"
-            }`}
+            onClick={() => onSeek(s.seq_in_frame)}
+            className="truncate rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-2"
           >
             {s.name}
           </button>
         ))}
       </aside>
 
-      {/* Center: player + timeline + transcript */}
+      {/* Center: continuous rough-cut player + timeline + transcript */}
       <section className="flex min-h-0 flex-col">
         <div className="flex min-h-0 flex-1 items-center justify-center bg-black/40 p-4">
-          {asset ? (
-            <Player asset={asset} seekTo={seek} onFrame={onFrame} />
-          ) : (
-            <span className="text-xs text-slate-600">Kein Medium gewählt.</span>
-          )}
+          <SequencePlayer
+            client={client}
+            projectId={asset?.project_id ?? null}
+            sequenceId={roughCutId}
+            reloadKey={`${roughCutId}:${clips.length}`}
+            clipsOverride={clips}
+            seekTo={seek}
+            onFrame={onFrame}
+            audioClips={audioClips}
+            rateNum={asset?.rate_num ?? 30}
+            rateDen={asset?.rate_den ?? 1}
+          />
         </div>
+        {/* Inline VO progress indicator — visible while VO job is running (Fix 1). */}
+        {voJobRunning && (
+          <div className="px-3 py-1 text-xs text-accent" aria-live="polite">
+            Voiceover wird generiert…
+          </div>
+        )}
+
+        <EditorialToolsBar
+          client={client}
+          projectId={asset?.project_id ?? null}
+          timelineId={roughCutId}
+          assets={toolbarAssets}
+          voices={voices}
+          voiceId={voiceId}
+          onVoiceChange={setVoiceId}
+          pendingEdge={pendingEdge}
+          onSmooth={handleSmooth}
+          syntheticEffects={syntheticEffects}
+          currentSeqFrame={currentFrame}
+          rateNum={asset?.rate_num ?? 30}
+          rateDen={asset?.rate_den ?? 1}
+          onChange={() => void rc.reload()}
+        />
 
         <TimelineBar
           client={client}
-          timeline={scene.timeline}
-          onChange={() => void scene.reload()}
+          timeline={syntheticTimeline}
+          onChange={() => void rc.reload()}
           onScrub={(_assetId, frame) => onSeek(frame)}
-        />
-
-        <TranscriptBar
-          client={client}
-          assetId={asset?.id ?? null}
-          assetName={asset?.display_name ?? null}
+          onSelect={() => undefined}
           segments={segments}
-          note={null}
           currentFrame={currentFrame}
-          onSeek={onSeek}
-          canAppend={false}
-          onAppendSegment={() => undefined}
-          onDeleteWords={(a, b) => void scene.deleteWords(a, b)}
         />
 
-        {selectedScene && (
-          <SceneMusicControls
-            client={client}
-            projectId={asset?.project_id ?? null}
-            scene={selectedScene}
-            onChange={() => void reload()}
-          />
-        )}
+        <ContinuousTranscript
+          words={rc.words}
+          scenes={jumpScenes}
+          selection={rc.selection}
+          onSelectionChange={rc.setSelection}
+          onDeleteSelection={(a, b) => void rc.deleteRange(a, b)}
+          onCutAt={(f) => void rc.cutAt(f)}
+          onSeek={onSeek}
+          onReplaceText={(s, e, t) => void rc.replaceSpanText(s, e, t, voiceId ?? "")}
+        />
 
-        {scene.error && (
-          <div className="px-3 py-1 text-xs text-red-400">{scene.error}</div>
+        {rc.error && (
+          <div className="px-3 py-1 text-xs text-status-err">{rc.error}</div>
         )}
       </section>
     </div>

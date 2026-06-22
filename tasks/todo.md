@@ -184,6 +184,76 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [x] 17.3 **Demo-Projekt + Golden-Fixtures** — `fixtures/golden/` (EDL/FCP7-XML/SRT/VTT) byte-genau vs. kanonischer Demo-Schnitt, `LAURA_REGEN_GOLDEN=1` zum Neu-Erzeugen, OTIO per Round-Trip; `.gitattributes` schützt CRLF; 5 Tests, **185 grün**
 - **Exit:** ✓ betriebsreif; Live-PG/FFmpeg/OTel-In-Memory-verifiziert. **Portion 17 komplett — alle headless-baubaren Portionen (15–17) abgeschlossen.**
 
+## Portion R0 — Reel-Render-Skelett (vertikal 9:16 + Hook + Kennzeichnung)  `[x]`  (Plan: docs/superpowers/plans/2026-06-09-R0-reel-render-skeleton.md)
+> Erstes fertiges, gekennzeichnetes Reel — **null KI, null neue schwere Deps**. Additive Erweiterung des Render-Pfads.
+- [x] **R0.1** `render/reel.py` — reiner Filter-Builder `reel_video_chain` (crop=ih*9/16:ih,scale=1080:1920 + drawtext Hook/Disclosure, escaped) + `resolve_font` (Drive-Colon doppelt-escapen). 4 Unit-Tests. `b4fd258`
+- [x] **R0.2** `render_clips_mp4` Reel-Kwargs (`vertical`/`hook_text`/`disclosure_text`, Concat→`[vcat]`→Reel-Chain→`[out]`); Default off = byte-identisch. ffprobe-Test 1080×1920. `1524143`
+- [x] **R0.3** Migration `0013_export_options.sql` (`exports.options TEXT`, additiv) + `create_export(options=)` json.dumps + `get_export`/`list_exports` json.loads→`{}`. `6678675`
+- [x] **R0.4** `handle_render` liest `exp["options"]` → reicht Reel-Params an `render_clips_mp4` durch (leer = unverändert). Monkeypatch-Test. `d5144f2`
+- [x] **R0.5** `POST /timelines/{id}/render-reel` in **eigenem Router** `api/reels.py` (in `main.py` gemountet, `timelines.py` unberührt) + `ReelRenderRequest`. API-Test (202 + options round-trip + 404). `30cbbd9`
+- [x] **R0.6** Frontend: `api.ts renderReel` (mirror renderTimeline) + ExportView „Reel 9:16"-Preset (Hook-Input + Kennzeichnungs-Toggle). tsc clean. `e04bd36`
+- [x] **R0.7** E2E `test_reel_e2e.py`: Endpoint→Job→`handle_render`→echtes ffmpeg → **ffprobe 1080×1920** + options round-trip. Volle Suite grün, tsc clean. `1b25572`
+- [x] **R0.8** **Härtung (adversarial entdeckt):** Inline `drawtext text='…'` zerbrach an Apostroph/Quote (z. B. „Geht's los" → Render-Fail) + war Filtergraph-Injection-Vektor. Fix: Overlay-Text über `drawtext textfile=` (Basename) + `run_ffmpeg(cwd=dest.parent)` — Text wird wörtlich gelesen, **null Content/Path-Escaping**, Injection unmöglich. Volle Matrix (Apostroph/Doppelpunkt/Komma/%/Unicode/Backslash) gegen echtes ffmpeg grün; `_escape_drawtext` entfernt; Temp-Textdateien im `finally` aufgeräumt. Regressions-Tests (`test_reel_render`/`test_reel_e2e` mit „Geht's los, jetzt: 100%!"). Plain-Concat-Pfad byte-identisch (cwd nur im Reel-Pfad).
+- **Exit:** ✓ Backend+Render End-to-End mit echtem ffmpeg verifiziert (1080×1920, beliebiger Hook-Text inkl. Apostroph/Sonderzeichen, Hook/Disclosure fehlerfrei). **Manuell zu prüfen (nur noch):** Live-Klick auf „Reel 9:16" in ExportView (Renderer→Endpoint identisch mit getestetem Pfad) + visuelle Textplatzierung im Output-Frame.
+
+## Portion R1 — Reel-Captions (eingebrannte Karaoke-Wort-Captions)  `[x]`  (Plan: docs/superpowers/plans/2026-06-09-R1-reel-captions.md)
+> Wort-genaue, eingebrannte Captions (Karaoke-`\kf`) via ASS/libass im 9:16-Filtergraph. GPU-frei, **keine neue schwere Dep** — Wort-Timings aus den vorhandenen Transcript-`segments`.
+- [x] **R1.1** Reiner ASS-Karaoke-Builder `render/captions.py` (`build_ass`): PlayRes 1080×1920, pro Zeile Dialogue mit `\kf`-Karaoke; Integer-Frames durchgängig, Centisekunden nur am Format-Rand (reine Integer-Arithmetik, kein Float-Drift); ASS-Escaping. 16 Unit-Tests. `4a78ce5`
+- [x] **R1.2** `render_clips_mp4` optionales `caption_ass` → ASS neben dest schreiben + `ass=<basename>` an Post-Concat-Chain (wiederverwendet R0.8 cwd/Basename+`finally`-Cleanup); `[vcat]`-Zweig greift auch captions-only. Echter `ass=`-Render (skippt ohne libass) → 1080×1920. `af5a42b`
+- [x] **R1.3a** `captions_source.timeline_caption_words` (Transcript→Sequenz-Frames via Clip-src→seq-Affin, verlustfrei; out-of-clip droppen; Punktuation in Vorwort mergen; Run wie analysis.py) + reine `group_caption_lines` (max Wörter/Zeile + Gap-Break). 7 Tests. `981264d`
+- [x] **R1.3b** `ReelRenderRequest.captions` → Endpoint→options; `handle_render` baut bei `captions=true` die ASS (`timeline_caption_words`→`group_caption_lines`→`build_ass`@Sequenz-Rate) → `caption_ass`. Leer ⇒ None ⇒ unverändert. `45a39b3`
+- [x] **R1.3c** Frontend: `api.ts renderReel`+`captions`; ExportView „Untertitel (Captions) einbrennen"-Toggle (Default **an**) + Transcript-Hinweis. tsc clean. `f6d8e79`
+- [x] **R1.4** E2E `test_caption_e2e.py`: Endpoint→Job→`handle_render`→ASS aus **echtem** Transcript→`ass=`-Burn → ffprobe 1080×1920 + options round-trip + Cleanup. Volle Suite + tsc grün. (lokaler Commit folgt)
+- **Caption-Stil-Entscheidung (User):** Karaoke-Highlight. Umfang: Voll (Auto aus Transcript + Toggle).
+- **Exit:** ✓ Auto-Karaoke-Captions End-to-End (UI→Endpoint→Job→eingebranntes MP4), gegen echtes ffmpeg+libass verifiziert.
+
+## Portion RL — Replacement-Lane (Source-Replace-Primitive)  `[x]`  (Spec/Plan: docs/superpowers/2026-06-09-replacement-lane-{design,plan})
+> Erstes Bau-Teil des **R3-Programms** (Identitäts-Ebene): nicht-destruktive Source-Replace-Primitive, auf die **R3-C Reenact** (LivePortrait) als Adapter aufsetzt. Brainstorming-Entscheidungen: Reenact zuerst · Sidecar-HTTP · timeline-range-getrieben · Replacement-Lane+Render-Vorrang · opak · beide Tabs.
+- [x] **RL1** Migration `0014_clip_role.sql` (`timeline_clips.role` 'base'|'replace', additiv) + Repos (`add_timeline_clip(lane,role)`, `update_timeline_clip_role`, `delete_timeline_clip`). `35d5ff4`
+- [x] **RL2** Reine `apply_overlay_precedence` (zeit-aligned opaker Replace: Base an Overlay-Grenzen splitten, 1:1-src-Mapping, verdeckte Frames übersprungen, nach seq_in sortiert). 7 Tests. `8b2bbda`
+- [x] **RL3** `resolve_clip_rows` am **einzigen Choke-Point** verdrahtet (Szene: role-Split; Sequenz: flatten-Base + Sequenz-Overlays) → Präzedenz; keine Overlays ⇒ byte-identisch. Echter ffmpeg-Farbprobe-Test (grün→rot→grün) + Regression. `adb851f`
+- [x] **RL4** Overlay-API `POST/DELETE /timelines/{id}/overlays` (eigener Router, `main.py` gemountet, `timelines.py` unberührt) + Validierung (Range/Asset-Länge). 10 Tests, volle Suite grün. `35dd7fa`
+- [x] **RL5** Frontend: `api.ts setOverlay/removeOverlay` + additive **V2-Lane** in geteilter TimelineBar (beide Tabs) + `OverlayControls` in AssembleView. Adversarialer Review fand 3 echte Bugs (stale assetId, still-geschluckter Fehler, Nicht-Integer-Frames) → alle gefixt. tsc clean. `3c9626e`
+- **Exit:** ✓ Nicht-destruktive opake Source-Replace in beiden Tabs, real per ffmpeg-Farbprobe verifiziert; volle Suite + tsc grün; geteilte TimelineBar additiv (alte Lanes/Playhead intakt). **Limit v1:** Speed≠1-Base unter Overlay nicht gesplittet (dokumentiert); transparente B-Roll-Overlays + Übergänge = spätere Multi-Lane-Phasen.
+
+## Portion R3-C — Reenact-Skelett (konsentiert, gekennzeichnet)  `[~]`  (Spec/Plan: docs/superpowers/2026-06-09-r3c-reenact-{design,plan}) — **Adapter fertig; LivePortrait-Sidecar = User-Install**
+> Konsentierter, gekennzeichneter Reenact über die Replace-Overlay-Primitive. Dep-freies Skelett mit **Stub-Backend** (kein echtes Modell, sichtbar markiert) — voll testbar; echtes LivePortrait läuft als externer Sidecar, damit Laura GPU-frei startbar bleibt.
+- [x] **RC1** Migration `0015` (`media_assets.synthetic`/`ai_effect` + `consent_records`) + Repos (consent CRUD, `set_asset_synthetic`). `e172397`
+- [x] **RC2** Pluggbares `ReenactBackend`-Protocol + `StubReenactBackend` (ffmpeg-Platzhalter „REENACT (stub)", längen-erhaltend) + `resolve_reenact_backend` (env/Default `stub`; null schwere Imports). `8b3a012`
+- [x] **RC3** `ai.reenact`-Job: **Consent-Gate zuerst** (verweigert fehlend/unbekannt/**widerrufen**, legt nichts an) → Driving aus **Original-Base** (nie aus früheren synthetischen Overlays) → Stub → `synthetic`-Asset → Replace-Overlay. Adversarial-Review-Härtung (4 Befunde: Migration `0016` Consent-Widerruf, Provenienz, kein verwaistes synthetic-File). `6db9366`
+- [x] **RC4** Consent-/Reenact-API (eigener Router): Consent create/list/**revoke**; `POST /timelines/{id}/reenact` mit Pflicht-`consent_id` + Revoke-Ablehnung am API-Layer (Defense-in-Depth). `b18166f`
+- [x] **RC5** Frontend `ReenactPanel` in AssembleView: Consent-Bestätigung (Schritt 1) → Reenact-Button **erst nach Consent aktiv**; Integer-Frames (≥0 geklemmt); Stub-/synthetic-Hinweis. Review fand 0 Bypass; 2 Hygiene-Fixes. tsc clean. `5cd2833`
+- [x] **RC6** Gesamt-Verifikation: volle pytest-Suite + tsc grün; Consent-Gate adversarial bestätigt (kein Bypass, Backend + UI).
+- [x] **RC7** `LivePortraitBackend` als HTTP-Sidecar-Adapter: `GET /healthz`, `POST /reenact` multipart (`driving`, `portrait`, `fps_num`, `fps_den`) → MP4-Bytes; `LAURA_LIVEPORTRAIT_URL`/Timeout; UI-Backend-Auswahl Stub/LivePortrait. Tests: Sidecar-Fake + Renderer-Select grün.
+- **Exit:** ✓ Konsentierter, gekennzeichneter Reenact-Pfad End-to-End mit Stub **oder LivePortrait-Sidecar** (UI→API→Job→synthetic-Asset→Overlay), 2× adversarial reviewed + gehärtet. **⛔ WAND (braucht dich):** Sidecar-Prozess + Modell-Download/Gewichte auf der RTX 3060 starten. Laura importiert weiterhin keine schweren Modelle. **Weitere R3-Teile danach:** Face-Probe · 2. Kennzeichnungs-Ebene (Video Seal/C2PA) · Swap-Backend · Qualität/Eval (LSE/ArcFace/LPIPS).
+
+## Portion AV2 — Assemble Workspace v2: Transcript-first Editing  `[x]`
+> `Zusammenfügen` als leichter 3-Spalten-Arbeitsbereich: links Szenen-Bin, Mitte Sequenz-Player/Timeline/Storyboard, rechts Transkript + Tools. Kein Rewrite-LLM in v1; manuelle Original-Transcript-Korrektur zuerst.
+- [x] **AV2.1 Sequence-Transcript API** — `GET /sequences/{id}/transcript` liefert Transcript-Blöcke in Sequenz-Reihenfolge inkl. Source-/Sequence-Frames und Wort-Mapping; pure Mapper-Tests.
+- [x] **AV2.2 Transcript-Edit + Re-Align Job** — Frontend-Client für `PATCH /transcript/segments/{id}`; `POST /assets/{id}/transcript:realign` validiert Segment-Zugehörigkeit und routet `transcript.realign` auf die GPU-Queue; Handler ersetzt Wörter via vorhandenes WhisperX-Alignment, mit klaren Fehlern bei fehlendem Audio/WhisperX.
+- [x] **AV2.3 Workspace UI** — `AssembleView` auf 3 Spalten umgebaut; Replace/Reenact liegen im rechten `Tools`-Tab; `Transkript`-Tab editiert Sequenz-Blöcke inline und startet Re-Alignment; Preview zeigt aktive Caption als Overlay.
+- [x] **Verifiziert:** Backend full `uv run pytest -q` grün; scoped Backend `ruff`/`mypy` grün; Desktop full `pnpm test`, `tsc --noEmit`, `build:renderer` grün. Full `ruff check` hat bestehende Alt-Test-Lints außerhalb dieser Scheibe.
+- **Exit:** ✓ Transcript-first Zusammenfügen ist bedienbar und testgedeckt; Export nutzt weiterhin den bestehenden Captions-/Transcript-Pfad aus den gespeicherten Segmenten. **Follow-ups:** Sprache nicht hart `en`, Re-Align-Status persistent anzeigen, Caption-Stil-Auswahl, Rewrite-Modell als separater Anschluss.
+
+## Portion AV3 — Assemble Produktreife 1–5  `[x]`
+> Erste integrierte Reife-Scheibe über die priorisierten Punkte 1–5: UX-Polish, Re-Align-Status, Caption-Kontrolle, AI-Sichtbarkeit und Editorial-Hilfen.
+- [x] **AV3.1 Transcript-UX** — Raw-API-Fehler (z. B. 404 JSON) werden im rechten Panel in klare Editor-Zustände übersetzt; aktive Sequenz-Caption markiert den passenden Transcript-Block.
+- [x] **AV3.2 Re-Align-Status** — `api.ts getJob` nutzt den bestehenden `/jobs/{id}`-Endpoint; nach `Speichern + neu ausrichten` zeigt das Panel Job-/Abschlussstatus statt nur fire-and-forget.
+- [x] **AV3.3 Caption-Preview-Kontrolle** — Caption-Overlay im Sequence-Player lässt sich im Workspace ein-/ausblenden, ohne Transcript-Editing zu deaktivieren.
+- [x] **AV3.4 AI/LivePortrait-Sichtbarkeit** — `Tools`-Tab zeigt einen KI-Statushinweis: Stub lokal verfügbar, LivePortrait nur bei laufendem Sidecar/Gewichten.
+- [x] **AV3.5 Editorial-Hilfen** — Sequenz-Gesamtdauer in Frames sichtbar; Storyboard-DnD bekommt eine klare Einfügemarke beim Drag-over.
+- [x] **Verifiziert:** TDD rot→grün (`AssembleView.test.tsx`, `api.test.ts`), `pnpm --dir apps/desktop test` 116 grün, `pnpm --dir apps/desktop exec tsc --noEmit` grün, `pnpm --dir apps/desktop run build:renderer` grün.
+- **Exit:** ✓ `Zusammenfügen` leakt weniger Technik, zeigt Bearbeitungs-/AI-/Caption-Zustände sichtbarer und gibt Editor:innen erste Sequenz-Metadaten.
+
+## Portion AV4 — Persistenter Re-Align-Zustand + Sprache  `[x]`
+> Transcript-Edits haben nun einen dauerhaften Alignment-Lifecycle am Segment; die UI kann nach Neustart zeigen, ob Timing alt ist, läuft oder fehlgeschlagen ist.
+- [x] **AV4.1 Persistenter Segment-State** — Migration `0017_transcript_alignment_state.sql` ergänzt `alignment_status`, `alignment_job_id`, `alignment_language`, `alignment_error`, `alignment_updated_at`; Text-PATCH setzt Segmente auf `stale`.
+- [x] **AV4.2 Re-Align-Lifecycle** — `POST /assets/{id}/transcript:realign` setzt betroffene Segmente auf `aligning`; Worker setzt nach WhisperX-Erfolg `aligned` und bei fehlendem Audio/WhisperX/Runtime-Fehler `failed` mit Ursache.
+- [x] **AV4.3 Sprache smarter** — Re-Align nutzt `body.language` nur als Override; ohne Override kommt die Sprache aus der letzten Analysis-Config, Fallback `en`.
+- [x] **AV4.4 UI-Status** — Sequence-Transcript-Blöcke zeigen persistent `Nicht neu aligned`, `Alignment läuft` oder `Alignment fehlgeschlagen`, inkl. Sprache und Fehlerursache; Frontend sendet keinen harten `en`-Override mehr.
+- [x] **Verifiziert:** `uv run pytest tests/test_sequence_transcript.py -q`; scoped `ruff`/`mypy`; `pnpm --dir apps/desktop test -- src/components/AssembleView.test.tsx src/api.test.ts`; `pnpm --dir apps/desktop exec tsc --noEmit`; `pnpm --dir apps/desktop run build:renderer`.
+- **Exit:** ✓ Transcript-Korrektur ist restart-fähig sichtbar: Text bleibt gespeichert, Timing-Zustand bleibt am Segment. **Follow-ups:** Caption-Export-Regie, Job-Zentrale, Audio-Spuren/Ducking, Transitions.
+
 ## Extern blockiert  `[!]`  (Plan: docs/16 §2 — braucht deine Ressourcen)
 - [x] **GPU (CUDA)** — **aktiviert & verifiziert** auf RTX 3060: torch/torchaudio via PyTorch-`cu128`-Index (`[tool.uv.sources]`, persistent über `uv sync`), `analysis/device.py` wählt Device (`LAURA_ASR_DEVICE` überschreibt); ASR+Align+Diarisierung laufen auf CUDA, CPU-Pfad bleibt grün. cuBLAS/cuDNN kamen über torch-cu128-Deps
 - [x] **ASR (faster-whisper)** — **real freigeschaltet & verifiziert**: `transcribe` mit `device`-Param + **CPU-Fallback** bei fehlendem cuBLAS; gated Test (ffmpeg-`flite`-Sprache → korrekte Wörter + Zeitkern-Mapping), **188 grün**
@@ -193,6 +263,127 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
 - [!] **libmpv nativ** — nativer Build-Toolchain + GUI (Proxy-Player ist verifizierter MVP)
 - [!] **Signierte Builds** — Win-Code-Signing-Cert + Apple-Developer-ID/Notarization
 - [!] **Auto-Update** — Release-/Update-Server (+ signierte Builds)
+- [!] **VibeVideo-Repos als optionale Sidecars** — `Flissel/vibevideo` (MIT: Pipeline,
+  Sora/Vision, Product-Demo, TTS/STT) und `Flissel/vibevideo-deepfake` (proprietär laut Repo:
+  Voice cloning + Lipsync/Deepfake) sind als externe Integrationsquellen in
+  `docs/superpowers/specs/2026-06-09-ai-effects-integration-plan.md` verankert; Feature-Audit:
+  `docs/superpowers/specs/2026-06-14-vibevideo-feature-audit.md`; akzeptiertes Integrationsdesign:
+  `docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md`. Kein Code-Copy in
+  Lauras Kern; Deepfake nur nach Lizenz-/Consent-Gate.
+
+## VibeVideo-Integration  `[~]`  (Design: docs/superpowers/specs/2026-06-14-vibevideo-laura-integration-design.md)
+- [x] **VV1 Audio-Lane v1** — `timeline_audio_clips` (Migration 0018) + CRUD-API,
+  strukturierte `AudioOverlay`s im MP4-Renderpfad, Gain + einfache Fade-in/out,
+  Assemble-Tools-Control und sichtbare A2-Spur in `TimelineBar`. Verifiziert:
+  `test_timeline_audio_clips`, `test_render_audio_overlays`, `test_render_handler_options`,
+  `test_render_music`, Desktop `api`/`AudioLaneControls`/`TimelineBar`/`AssembleView`, `tsc`.
+  **AV-Audio-Pro Update:** MP4-Render bewahrt Source-Originalton, A2-Clips koennen
+  `mix`/`replace_original`/`mute_original` und Ducking-Prozent setzen; UI zeigt Modus und
+  Ducking. Verifiziert: fokussierte Render-/Audio-API-/UI-Tests, scoped ruff/mypy, `tsc`.
+  **Follow-up:** Keyframes und Spur-level-Presets.
+- [x] **VV2 Voiceover/TTS v1** — `ai.voiceover` Job + `VoiceoverBackend` (`stub` + HTTP-Sidecar),
+  Button `Stimme erzeugen` im Transcript-Panel, synthetisches WAV-Asset (`ai_effect=voiceover`)
+  wird framegenau als A2-Clip platziert. Verifiziert: `test_voiceover`, scoped ruff/mypy,
+  Desktop `api`/`AssembleView`, `tsc`. **Follow-up:** echte VibeVideo/Chatterbox/Fish-Sidecar-
+  Runtime anschliessen, Voice-ID/Reference-Audio/Consent fuer Personenstimmen.
+- [x] **Job-/Export-Zentrale v1** — `GET /jobs`, `POST /jobs/{id}/cancel`,
+  `POST /jobs/{id}/retry`; Header-Drawer `JobCenter` zeigt laufende/fehlgeschlagene Jobs,
+  Fehlerursachen, Retry und Cancel. Verifiziert: `test_jobs_api`, scoped ruff/mypy,
+  Desktop `api`/`JobCenter`, `tsc`.
+- [x] **Caption-Export-Regie v1** — Reel-Export-Optionen fuer Presets (`reels`/`tiktok`/
+  `shorts`/`wide`), Normal/Karaoke, Position, Groesse und Safe-Zone; `build_ass` rendert
+  Preview-nahe ASS-Parameter und `ExportView` sendet sie explizit. Verifiziert:
+  `test_captions_ass`, `test_reel_render_api`, `test_render_handler_options`,
+  Desktop `api`/`ExportView`, scoped ruff/mypy, `tsc`.
+- [x] **Transitions v1** — Storyboard-Boundary-State auf `sequence_items`
+  (`hard`/`dip_black`/`fade_black`/`crossfade`), PATCH-API und kompakter Chip zwischen
+  Szenen im Assemble-Storyboard. MP4-Export uebergibt Boundary-Transitions an den Renderer;
+  Dip/Fade-to-black werden als finale Fade-Filter gerendert. Verifiziert:
+  `test_sequences_api`, `test_render_handler_options`, `test_render_mp4_filter`,
+  Desktop `api`/`AssembleView`, scoped ruff/mypy, `tsc`. **Follow-up:** echter xfade-
+  Crossfade mit ueberlappenden Scene-Streams und Audio-Crossfade.
+- [x] **Demo-Projekt + Version-Guard v1** — `POST /projects/demo` erzeugt ein lokales
+  Demo-Projekt mit synthetischen Clips, Assets, Rough-Cut, Szenen, Sequenz und Dip-Transition;
+  Header-Button `Demo` legt es per One-click an. `HealthBadge` vergleicht Backend-Schema mit
+  der erwarteten Renderer-Schema-Version und meldet Backend-/Frontend-Mismatch sichtbar.
+  Verifiziert: `test_api_projects`, Desktop `App`/`api`, full `uv run pytest -q`,
+  full `uv run ruff check .`, `uv run mypy src`, full Desktop `pnpm test`,
+  `tsc --noEmit`, `build:renderer`. Full `mypy src tests` bleibt durch bestehende
+  Test-Typisierungsschulden rot.
+- [x] **VV3 Sync Guard** — Framecount-basierte A/V-Drift-Pruefung + optionaler
+  Duration-Fix fuer Exporte und Sidecar-Outputs. `render/sync.py` prueft Video-Frames
+  und Audio-Dauer gegen die erwartete Sequence-Laenge; Export-, Reenact- und Voiceover-
+  Jobs normalisieren bei Drift einmal per ffmpeg und pruefen danach erneut, bevor Assets/
+  Exporte als gueltig markiert werden. Verifiziert: `test_sync_guard`, Render/Reel/Caption-
+  E2E, Reenact-Job, Voiceover-Job, full ruff, `mypy src`.
+- [x] **VV4 Product-Demo Assistant** — Screenrecording analysieren, Szenen/Labels/Voiceovertext als
+  editierbaren Laura-Sequenz-Draft uebernehmen. Backend `demo_drafts` speichert Draft-Items,
+  `demo.analyze` erzeugt Shot-/Transcript-basierte Vorschlaege, PATCH editiert Labels/
+  Voiceovertexte, Apply baut Szenen + Sequenz. Desktop `DemoAssistantPanel` sitzt im
+  Assemble-Tools-Rail und aktualisiert Sequenz/Storyboard/Transcript nach Apply. Verifiziert:
+  `test_demo_drafts`, full `uv run pytest -q`, full `uv run ruff check .`, `uv run mypy src`,
+  Desktop `api`/`DemoAssistantPanel`/`AssembleView`, full `pnpm --dir apps/desktop test`,
+  `pnpm --dir apps/desktop exec tsc --noEmit`, `pnpm --dir apps/desktop run build:renderer`.
+  **Follow-up:** Draft-Voiceovertexte optional direkt als A2-Voiceover-Jobs materialisieren.
+- [x] **VV5 Lipsync/Deepfake** — Consent-/Lizenz-gated Sidecar mit Face-/Mouth-Probe,
+  synthetischer Kennzeichnung und Quality-Gate. Backend `ai.lipsync` rendert die gewaehlte
+  Sequenz-Range, nimmt ein Audio-/Voiceover-Asset, prueft `license_accepted`, nicht widerrufenen
+  Consent, Sidecar-Verfuegbarkeit, Probe (`face_detected`, `mouth_visible`, `audio_present`) und
+  Quality-Metriken (`sync_score`, `mouth_score`, `temporal_score`) vor Asset-Registrierung.
+  Output wird als `synthetic`/`ai_effect=lipsync` registriert und als Replace-Overlay platziert;
+  Stub bleibt sichtbar markiert, echter VibeVideo/MuseTalk/Wav2Lip-Pfad laeuft nur als optionaler
+  HTTP-Sidecar. Desktop `LipsyncPanel` sitzt im Assemble-Tools-Rail mit Consent-Schritt,
+  Lizenz-Checkbox, Audio-Auswahl und Backend-Wahl. Verifiziert: `test_lipsync_job`,
+  `test_lipsync_api`, full `uv run pytest -q`, full `uv run ruff check .`, `uv run mypy src`,
+  Desktop `api`/`LipsyncPanel`/`AssembleView`, full `pnpm --dir apps/desktop test`,
+  `pnpm --dir apps/desktop exec tsc --noEmit`, `pnpm --dir apps/desktop run build:renderer`.
+  **Follow-ups:** echten Sidecar samt Modellgewichten installieren, staerkere Mouth-/Identity-
+  Quality-Metriken (SyncNet/ArcFace/LPIPS), zweite Kennzeichnungs-Ebene (C2PA/Video Seal).
+- [x] **VV6 AI Provenance Manifest v1** — Dep-freie zweite Kennzeichnungsebene fuer
+  synthetische Medien: Voiceover/Reenact/Lipsync schreiben neben dem erzeugten Media-File ein
+  `.laura-provenance.json` mit Schema, Asset-/Projekt-ID, `synthetic`, `ai_effect`, SHA-256,
+  Quelle/Range und Job-Kontext. Die Asset-API liefert `synthetic`/`ai_effect` bis in den Renderer;
+  die Medienliste markiert KI-Assets sichtbar. Verifiziert: `test_ai_provenance`,
+  Voiceover/Reenact/Lipsync-Jobtests, full `uv run pytest -q`, full `uv run ruff check .`,
+  `uv run mypy src`, full `pnpm --dir apps/desktop test`,
+  `pnpm --dir apps/desktop exec tsc --noEmit`, `pnpm --dir apps/desktop run build:renderer`.
+  **Follow-up:** echtes C2PA/Video-Seal-Embedding als optionaler Signatur-/Manifest-Adapter.
+- [x] **VV7 AI Provenance Inspector v1** — `GET /assets/{id}/provenance` liest das
+  `.laura-provenance.json` Sidecar sicher aus, validiert die `asset_id` gegen das angefragte
+  Asset und liefert das Manifest fuer lokale UI-Inspektion. `LauraClient.getAssetProvenance`
+  verdrahtet den Endpoint; die Medienliste laedt Provenance nur fuer das ausgewaehlte
+  synthetische Asset und zeigt Schema, Effekt und kurzen SHA-256-Fingerprint. Verifiziert:
+  `test_api_assets.py::test_get_asset_provenance_returns_manifest`, `test_ai_provenance`,
+  Desktop `api`/`MediaSidebar`, scoped ruff/mypy, `tsc`.
+  **Follow-up:** Provenance in Export-Reports aufnehmen und spaeter C2PA/Video-Seal einbetten.
+- [x] **VV8 Echte AI-Runtime-Sidecars** — Voice/Piper, LivePortrait und MuseTalk laufen als
+  optionale HTTP-Sidecars ausserhalb des Laura-Core. `services/ai-runtimes` kapselt den
+  Runtime-Server und Provider-Runner; `deploy/ai-runtimes` und `scripts/ai-runtimes.ps1`
+  starten Smoke- oder Model-Mode. Modellroot/Caches sind auf `E:\Laura\models` verlegt
+  (Fallback `workspace/models`), die lokalen Gewichte liegen dort. Backend-Runtime-Registry
+  (`/ai/runtimes`) ist additiv mit Migration `0025`; bestehende `backend`-Felder bleiben
+  Fallback, `runtime_id` routet Voice/Reenact/Lipsync in den normalen Job-Flow. Verifiziert:
+  `services/ai-runtimes/tests` 18 gruen, Runtime-API/Repo/Manager/Routing 21 gruen,
+  Compose-Config gruen, Skript-Parse/WhatIf gruen, Registry-Smoke gegen lokale API registriert
+  drei Model-Runtimes mit E:-Mounts. Runtime-`/healthz`/`/capabilities` pruefen im Model-Mode
+  jetzt auch runtime-spezifische Pflichtartefakte (`piper`, LivePortrait-Weights, vollstaendige
+  MuseTalk-Weights inkl. DWPose/Face-Parse/SD-VAE/Whisper) und melden `missing_model_paths`;
+  Compose-Healthchecks sowie `ai-runtimes` `health` werten `ready`/`ok` aus und schlagen bei
+  fehlenden Modellartefakten fehl. MuseTalk-Image patcht den UNet-Checkpoint-Load auf CPU und
+  linkt `/opt/MuseTalk/models` auf den gemounteten Weight-Root, damit Code aus dem Image und
+  Gewichte von `E:` zusammenlaufen; die MuseTalk-`inference.py`-FFmpeg-Finalisierung laeuft
+  ueber `subprocess.run(..., stdin=DEVNULL, timeout=LAURA_MUSETALK_FFMPEG_TIMEOUT)` statt
+  blindem `os.system`, damit haengende Finalisierung nicht mehr den Laura-HTTP-Job blockiert.
+  `check-ai-runtime-prereqs.ps1` prueft Modellroot, Docker, WSL und Sidecar-Ports.
+  **Live-Stand:** Docker Desktop/WSL recovered; Sidecars laufen im GPU-Model-Mode healthy.
+  Piper direkt und ueber Laura-Voiceover-Job gruen;
+  LivePortrait direkter Model-Sidecar gruen; MuseTalk direkter Model-Sidecar gruen
+  (`E:\Laura\ai-runtime\live-tests\musetalk-direct-linked-models.mp4`, 576x768, 22.49s).
+  Laura-JobRunner-Lipsync ueber `runtime_id` auf den MuseTalk-Sidecar ist live gruen:
+  `E:\Laura\ai-runtime\laura-live-lipsync-api-20260622075050\project\synthetic\c916b971aa7e45d191574125f795cc96.lipsync.mp4`
+  (576x768, 50 Frames, 2.000s, H.264 + AAC, Provenance-Sidecar). Rebuild:
+  `laura-runtime-musetalk-model:local`; Health: Voice 8898, LivePortrait 8899, VibeVideo 8901
+  jeweils `ok=true`, `ready=true`.
 
 ---
 

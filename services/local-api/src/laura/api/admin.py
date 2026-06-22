@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from .. import audit
 from ..auth import Principal, generate_api_key, is_valid_role, require_permission
@@ -88,15 +88,20 @@ def create_key(
                       created_at=row["created_at"])
 
 
-@router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/keys/{key_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def revoke_key(
     key_id: str, request: Request,
     principal: Annotated[Principal, Depends(require_permission("admin:manage"))],
-) -> None:
+) -> Response:
     db = _db(request)
     if not repos.revoke_api_key(db, key_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
     audit.record(db, principal, "key.revoke", entity_type="api_key", entity_id=key_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/audit", response_model=list[AuditEventOut])

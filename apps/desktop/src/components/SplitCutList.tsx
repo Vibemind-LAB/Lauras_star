@@ -80,14 +80,14 @@ export function SplitCutList({
   if (recs.length === 0) return null;
 
   return (
-    <div className="w-64 rounded-md border border-edge bg-ink p-2" data-testid="split-cut-list">
+    <div className="w-64 rounded-md border border-bezel bg-surface-0 p-2" data-testid="split-cut-list">
       <div className="mb-1.5 flex items-baseline justify-between">
-        <span className="text-[10px] uppercase tracking-wide text-slate-500">Split-Cuts (L/J)</span>
+        <span className="text-[10px] uppercase tracking-wide text-content-faint">Split-Cuts (L/J)</span>
         <button
           type="button"
           onClick={acceptAll}
           disabled={busy || !projectId || !timelineId}
-          className="rounded bg-sky-600 px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
+          className="rounded bg-accent px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
         >
           Alle übernehmen
         </button>
@@ -98,18 +98,18 @@ export function SplitCutList({
           return (
             <li
               key={sc.seq_cut}
-              className="flex items-center justify-between gap-2 text-[10px] text-slate-400"
+              className="flex items-center justify-between gap-2 text-[10px] text-content-muted"
               data-testid={`split-cut-${sc.seq_cut}`}
             >
               <span className="min-w-0 truncate">
-                <span className="font-medium text-slate-300">{kindLabel(sc.kind)}</span>{" "}
+                <span className="font-medium text-content-muted">{kindLabel(sc.kind)}</span>{" "}
                 Bild {sc.video_frame} · Ton {sc.audio_frame} ({sc.offset > 0 ? "+" : ""}
                 {sc.offset})
               </span>
               {on ? (
                 <span className="flex shrink-0 items-center gap-1">
                   <span
-                    className="rounded bg-emerald-700/40 px-1.5 py-0.5 text-emerald-300"
+                    className="rounded bg-status-ok/20 px-1.5 py-0.5 text-status-ok"
                     data-testid={`split-cut-applied-${sc.seq_cut}`}
                   >
                     {kindLabel(sc.kind)} aktiv
@@ -118,7 +118,7 @@ export function SplitCutList({
                     type="button"
                     onClick={() => toggle(sc)}
                     disabled={busy}
-                    className="rounded border border-edge px-1.5 py-0.5 text-slate-400 disabled:opacity-40"
+                    className="rounded border border-bezel px-1.5 py-0.5 text-content-muted disabled:opacity-40"
                   >
                     Zurücknehmen
                   </button>
@@ -128,7 +128,7 @@ export function SplitCutList({
                   type="button"
                   onClick={() => toggle(sc)}
                   disabled={busy || !projectId || !timelineId}
-                  className="shrink-0 rounded bg-sky-600 px-2 py-0.5 text-white disabled:opacity-40"
+                  className="shrink-0 rounded bg-accent px-2 py-0.5 text-white disabled:opacity-40"
                 >
                   Übernehmen
                 </button>
@@ -137,14 +137,15 @@ export function SplitCutList({
           );
         })}
       </ul>
-      {error && <p className="mt-1 text-[10px] text-red-400">{error}</p>}
+      {error && <p className="mt-1 text-[10px] text-status-err">{error}</p>}
       {/* Honest framing: the internal timeline blocks do NOT visually change when a split is
           accepted — the L/J lives in the OTIO/exported NLE project, not the hard-cut editing
           timeline. Full 2-lane editing here is a deferred step. */}
-      <p className="mt-1.5 border-t border-edge pt-1.5 text-[9px] leading-snug text-slate-500">
+      <p className="mt-1.5 border-t border-bezel pt-1.5 text-[9px] leading-snug text-content-faint">
         Übernommene Splits erscheinen im OTIO-Export und im NLE-Projekt (Premiere/FCP). Die interne
         Schnitt-Timeline bleibt hart geschnitten — 2-Spur-Bearbeitung folgt später.
       </p>
     </div>
   );
 }
+

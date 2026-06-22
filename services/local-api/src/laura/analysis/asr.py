@@ -7,12 +7,23 @@ WhisperX (extra ``[align]``) is a future refinement pass for tighter alignment.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
+from ..gpu import asr_cuda_available
 from .types import SegmentResult, WordResult
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "base"
+
+
+def resolve_asr_device(device: str | None = None) -> str:
+    """Pick the ASR device: explicit arg > LAURA_ASR_DEVICE > CUDA-if-available > cpu."""
+    return device or os.environ.get("LAURA_ASR_DEVICE") or (
+        "cuda" if asr_cuda_available() else "cpu"
+    )
 
 
 def faster_whisper_available() -> bool:
@@ -28,7 +39,9 @@ def _run(
 ) -> list[SegmentResult]:
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(model_size, device=device, compute_type="int8")
+    compute_type = "float16" if device == "cuda" else "int8"
+    logger.info("ASR device=%s compute_type=%s model=%s", device, compute_type, model_size)
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
     segments, _info = model.transcribe(str(audio_path), word_timestamps=True, language=language)
 
     results: list[SegmentResult] = []
@@ -63,11 +76,11 @@ def transcribe(
 ) -> list[SegmentResult]:
     """Transcribe an audio file (lazy faster-whisper; raises if ``[asr]`` is absent).
 
-    ``device`` defaults to ``LAURA_ASR_DEVICE`` or ``"auto"``. A CUDA load failure
-    (e.g. missing cuBLAS on a half-configured GPU host) transparently falls back to CPU
-    so the pipeline runs everywhere.
+    Device is resolved via ``resolve_asr_device`` (explicit arg > ``LAURA_ASR_DEVICE`` >
+    CUDA-if-available > cpu). A CUDA load failure (e.g. missing cuBLAS on a half-configured
+    GPU host) transparently falls back to CPU so the pipeline runs everywhere.
     """
-    chosen = device or os.environ.get("LAURA_ASR_DEVICE") or "auto"
+    chosen = resolve_asr_device(device)
     try:
         return _run(audio_path, model_size, language, chosen)
     except Exception:  # noqa: BLE001 - GPU libraries may be missing; retry on CPU

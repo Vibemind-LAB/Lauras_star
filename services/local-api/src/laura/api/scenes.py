@@ -12,10 +12,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
-from ..scenes.grouping import group_into_scenes
+from ..editing.operations import EditClip, ordered, split_clip
+from ..editing.otio_sync import serialize_timeline_otio
+from ..scenes.build import (
+    default_gap_frames,
+    group_timeline_scenes,
+    populate_rough_cut_from_shots,
+)
 from ..scenes.materialize import materialize_scene
 from .models import (
     ClipOut,
+    CutAtFrameRequest,
     GenerateScenesRequest,
     MergeScenesRequest,
     RenameSceneRequest,
@@ -34,28 +41,6 @@ def _db(request: Request) -> Database:
     return db
 
 
-def _asset_words(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    words: list[dict[str, Any]] = []
-    for seg in transcript:
-        spk = seg.get("speaker_id")
-        for w in seg["words"]:
-            words.append(
-                {"start_frame": w["start_frame"], "end_frame": w["end_frame"], "speaker": spk}
-            )
-    words.sort(key=lambda w: w["start_frame"])
-    return words
-
-
-def _assign_words(
-    clips: list[dict[str, Any]], words: list[dict[str, Any]]
-) -> list[list[dict[str, Any]]]:
-    out: list[list[dict[str, Any]]] = []
-    for c in clips:
-        lo, hi = c["src_in_frame"], c["src_out_frame_exclusive"]
-        out.append([w for w in words if w["start_frame"] < hi and w["end_frame"] > lo])
-    return out
-
-
 @router.post("/timelines/{timeline_id}/scenes:generate", response_model=list[SceneOut])
 def generate_scenes(
     timeline_id: str, body: GenerateScenesRequest, request: Request
@@ -70,20 +55,25 @@ def generate_scenes(
     run = repos.get_latest_analysis_run(db, body.asset_id)
     if run is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run")
-    clips = repos.list_timeline_clips(db, timeline_id)
+    # Auto-build a minimal rough cut from the asset's kept shots so generation is never a
+    # dead-end. The dedicated /timelines/from-shots endpoint offers the richer build (quality
+    # filtering, split-cut recommendations); this is the fallback. No-op if clips exist.
+    clips = populate_rough_cut_from_shots(db, timeline_id, body.asset_id, run["id"])
     if not clips:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "rough cut is empty; build it from shots first",
+            "asset has no kept shots to build a rough cut from",
         )
-    words = _asset_words(repos.get_transcript(db, body.asset_id, run["id"]))
-    words_by_clip = _assign_words(clips, words)
-    if body.gap_frames is not None:
-        gap = body.gap_frames
-    else:
-        gap = round(1.5 * (asset["rate_num"] or 30) / (asset["rate_den"] or 1))
-    ranges = group_into_scenes(clips, words_by_clip, gap_frames=gap)
-    repos.replace_scenes(db, tl["project_id"], timeline_id, ranges)
+    gap = body.gap_frames if body.gap_frames is not None else default_gap_frames(asset)
+    group_timeline_scenes(
+        db,
+        project_id=tl["project_id"],
+        timeline_id=timeline_id,
+        asset=asset,
+        run_id=run["id"],
+        clips=clips,
+        gap_frames=gap,
+    )
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
 
 
@@ -120,6 +110,80 @@ def split_scene(
             ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
     repos.replace_scenes(db, scene["project_id"], timeline_id, ranges)
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
+
+
+@router.post("/timelines/{timeline_id}/cut-at-frame")
+def cut_at_frame(
+    timeline_id: str, body: CutAtFrameRequest, request: Request
+) -> dict[str, Any]:
+    """Composite cut: split the lane-0 clip at ``at_seq_frame`` (if mid-clip), then split
+    the scene that strictly contains that frame at the resulting boundary.
+
+    Guarantees a valid clip boundary before the scene split so the result is always
+    consistent (Laura invariant: scene boundaries must land on clip edges).
+    Idempotent: if ``at_seq_frame`` is already a clip+scene boundary this is a no-op.
+    """
+    db = _db(request)
+    tl = repos.get_timeline(db, timeline_id)
+    if tl is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    at = body.at_seq_frame
+
+    # --- Phase 1: ensure a clip boundary exists at `at` ----------------------------
+    clips = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
+    boundaries = {c.seq_in_frame for c in clips} | {c.seq_out_frame_exclusive for c in clips}
+    if at not in boundaries:
+        # Frame is inside a clip — split it to create the boundary (integer frames, invariant #1).
+        try:
+            clips = split_clip(clips, at)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(clips)])
+        fresh = repos.get_timeline(db, timeline_id)
+        assert fresh is not None
+        repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
+
+    # --- Phase 2: split the scene that strictly contains `at` ----------------------
+    # If `at` is already a scene boundary, return the current state (idempotent — no error).
+    all_scenes = repos.list_scenes(db, timeline_id)
+    scene_boundaries: set[int] = set()
+    for s in all_scenes:
+        scene_boundaries.add(int(s["seq_in_frame"]))
+        scene_boundaries.add(int(s["seq_out_frame_exclusive"]))
+    if at in scene_boundaries:
+        return {
+            "clips": [
+                ClipOut(**c).model_dump()
+                for c in repos.list_timeline_clips(db, timeline_id)
+            ],
+            "scenes": [SceneOut(**s).model_dump() for s in all_scenes],
+        }
+
+    scene = next(
+        (
+            s
+            for s in all_scenes
+            if s["seq_in_frame"] < at < s["seq_out_frame_exclusive"]
+        ),
+        None,
+    )
+    if scene is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "cut point is not inside a scene"
+        )
+    ranges: list[tuple[int, int]] = []
+    for s in repos.list_scenes(db, timeline_id):
+        if s["id"] == scene["id"]:
+            ranges.append((s["seq_in_frame"], at))
+            ranges.append((at, s["seq_out_frame_exclusive"]))
+        else:
+            ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
+    repos.replace_scenes(db, tl["project_id"], timeline_id, ranges)
+
+    return {
+        "clips": [ClipOut(**c).model_dump() for c in repos.list_timeline_clips(db, timeline_id)],
+        "scenes": [SceneOut(**s).model_dump() for s in repos.list_scenes(db, timeline_id)],
+    }
 
 
 @router.post("/timelines/{timeline_id}/scenes/merge", response_model=list[SceneOut])
@@ -203,3 +267,28 @@ def clear_scene_music(scene_id: str, request: Request) -> SceneOut:
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)
+
+
+@router.get(
+    "/projects/{project_id}/assets/{asset_id}/rough-cut",
+    response_model=TimelineOut,
+)
+def get_rough_cut(project_id: str, asset_id: str, request: Request) -> TimelineOut:
+    """Return (or lazily create) the rough-cut timeline for one asset in a project."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    row = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
+    return _timeline_out(db, row)
+
+
+@router.get(
+    "/projects/{project_id}/scenes",
+    response_model=list[SceneOut],
+)
+def list_project_scenes_ep(project_id: str, request: Request) -> list[SceneOut]:
+    """All scenes across every rough-cut timeline in a project."""
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    return [SceneOut(**s) for s in repos.list_project_scenes(db, project_id)]

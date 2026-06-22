@@ -53,8 +53,22 @@ export interface Asset {
   codec_video: string | null;
   codec_audio: string | null;
   is_vfr: boolean;
+  synthetic: boolean;
+  ai_effect: string | null;
   created_at: string;
   files: AssetFile[];
+}
+
+export interface AiProvenanceManifest {
+  schema: string;
+  asset_id: string;
+  project_id?: string;
+  synthetic?: boolean;
+  ai_effect?: string | null;
+  media_path?: string;
+  media_sha256?: string;
+  created_at?: string;
+  source?: Record<string, unknown>;
 }
 
 export interface ImportAccepted {
@@ -84,6 +98,20 @@ export interface ImportStatus {
   error: string | null;
 }
 
+export interface JobStatus {
+  id: string;
+  queue: string;
+  kind: string;
+  status: string;
+  attempt: number;
+  max_attempts: number;
+  result_json: string | null;
+  error_json: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
 export interface Waveform {
   version: number;
   sample_rate: number;
@@ -103,6 +131,9 @@ export interface Scene {
   scene_timeline_id?: string | null;
   music_asset_id?: string | null;
   music_gain_percent?: number;
+  /** Source video + representative frame — only set by listProjectScenes (assemble bin). */
+  asset_id?: string | null;
+  thumb_frame?: number | null;
 }
 
 export function hasFile(asset: Asset, kind: string): boolean {
@@ -202,6 +233,8 @@ export interface TimelineClip {
   seq_in_frame: number;
   seq_out_frame_exclusive: number;
   lane: number;
+  /** "base" for normal clips; "replace" for overlay clips on lane >= 1. */
+  role?: string;
   speaker_id: string | null;
   origin_word_start_id: string | null;
   origin_word_end_id: string | null;
@@ -215,6 +248,14 @@ export interface TimelineClip {
   audio_offset_samples: number;
 }
 
+/**
+ * A replace-overlay clip returned by POST /timelines/{id}/overlays.
+ * Shape mirrors OverlayOut from the backend: `role` is always "replace",
+ * `lane` is always >= 1. This is a type alias over TimelineClip for callers
+ * that want the narrower semantic name.
+ */
+export type OverlayClip = TimelineClip;
+
 export interface Timeline {
   id: string;
   project_id: string;
@@ -222,6 +263,49 @@ export interface Timeline {
   kind: string;
   created_at: string;
   clips: TimelineClip[];
+}
+
+export interface TimelineAudioClip {
+  id: string;
+  timeline_id: string;
+  asset_id: string;
+  seq_in_frame: number;
+  seq_out_frame_exclusive: number;
+  asset_in_frame: number;
+  gain_percent: number;
+  fade_in_frames: number;
+  fade_out_frames: number;
+  mix_mode: AudioMixMode;
+  ducking_percent: number;
+  label: string | null;
+  created_at: string;
+}
+
+export type AudioMixMode = "mix" | "replace_original" | "mute_original";
+
+export interface TimelineAudioClipCreateInput {
+  assetId: string;
+  seqIn: number;
+  seqOut: number;
+  assetIn?: number;
+  gainPercent?: number;
+  fadeInFrames?: number;
+  fadeOutFrames?: number;
+  mixMode?: AudioMixMode;
+  duckingPercent?: number;
+  label?: string | null;
+}
+
+export interface TimelineAudioClipUpdateInput {
+  seqIn?: number;
+  seqOut?: number;
+  assetIn?: number;
+  gainPercent?: number;
+  fadeInFrames?: number;
+  fadeOutFrames?: number;
+  mixMode?: AudioMixMode;
+  duckingPercent?: number;
+  label?: string | null;
 }
 
 export interface Operation {
@@ -259,11 +343,127 @@ export interface Operation {
 
 export interface Segment {
   id: string;
+  speaker_id?: string | null;
   speaker_label: string | null;
+  start_sample?: number;
+  end_sample?: number;
   start_frame: number;
   end_frame: number;
   text: string;
+  confidence?: number | null;
   words: Word[];
+  alignment_status?: TranscriptAlignmentStatus;
+  alignment_job_id?: string | null;
+  alignment_language?: string | null;
+  alignment_error?: string | null;
+  alignment_updated_at?: string | null;
+}
+
+export type TranscriptAlignmentStatus = "aligned" | "stale" | "aligning" | "failed" | string;
+
+export interface SequenceTranscriptWord {
+  id: string;
+  idx: number;
+  segment_id: string;
+  asset_id: string;
+  source_start_frame: number;
+  source_end_frame: number;
+  seq_in_frame: number;
+  seq_out_frame_exclusive: number;
+  text: string;
+  confidence: number | null;
+  is_punctuation: boolean;
+}
+
+export interface SequenceTranscriptBlock {
+  segment_id: string;
+  asset_id: string;
+  speaker_label: string | null;
+  source_start_frame: number;
+  source_end_frame: number;
+  seq_in_frame: number;
+  seq_out_frame_exclusive: number;
+  text: string;
+  words: SequenceTranscriptWord[];
+  alignment_status?: TranscriptAlignmentStatus;
+  alignment_job_id?: string | null;
+  alignment_language?: string | null;
+  alignment_error?: string | null;
+  alignment_updated_at?: string | null;
+}
+
+export interface TranscriptSegmentUpdate {
+  text?: string;
+  speakerId?: string | null;
+}
+
+export interface TranscriptRealignOptions {
+  segmentIds?: string[];
+  language?: string;
+}
+
+export interface TranscriptRealignAccepted {
+  job_id: string;
+}
+
+export interface VoiceoverOptions {
+  segmentId?: string;
+  text?: string;
+  seqIn: number;
+  seqOut: number;
+  language?: string;
+  backend?: string;
+  gainPercent?: number;
+  fadeInFrames?: number;
+  fadeOutFrames?: number;
+  /** How the voice-over treats the original audio under its span (default 'mix'). */
+  mixMode?: AudioMixMode;
+  /** In 'mix' mode, duck the original to this percent under the voice-over (0–100). */
+  duckingPercent?: number;
+  /** Explicit TTS voice name; omitted picks a voice by language, else the system default. */
+  voiceId?: string;
+}
+
+export interface VoiceoverAccepted {
+  job_id: string;
+}
+
+export interface VoiceoverVoice {
+  name: string;
+  culture: string;
+  gender: string;
+}
+
+export interface LipsyncOptions {
+  seqIn: number;
+  seqOut: number;
+  audioAssetId: string;
+  consentId: string;
+  licenseAccepted: boolean;
+  backend?: string;
+  qualityThreshold?: number;
+}
+
+export interface LipsyncAccepted {
+  job_id: string;
+}
+
+export type CaptionPreset = "reels" | "tiktok" | "shorts" | "wide";
+export type CaptionMode = "karaoke" | "normal";
+export type CaptionPosition = "bottom" | "middle" | "top";
+
+export interface ReelRenderOptions {
+  hookText: string | null;
+  disclosureText: string | null;
+  vertical?: boolean;
+  captions?: boolean;
+  captionPreset?: CaptionPreset;
+  captionMode?: CaptionMode;
+  captionPosition?: CaptionPosition;
+  captionFontsize?: number;
+  captionSafeMargin?: number;
+  /** Hard cap on the reel length in seconds (platform max-durations). null/undefined = no cap. */
+  maxDurationSeconds?: number | null;
 }
 
 export interface AnalysisRun {
@@ -326,12 +526,101 @@ export interface SequenceItem {
   scene_id: string;
   scene_name: string;
   order_index: number;
+  transition_after_kind: SequenceTransitionKind;
+  transition_after_frames: number;
+}
+
+export type SequenceTransitionKind = "hard" | "dip_black" | "fade_black" | "crossfade";
+
+/** Clip-level transition kinds the renderer supports for rough_cut/scene clips. */
+export type ClipTransitionKind = "hard" | "fade" | "crossfade";
+
+/** A fix the transition review can apply at a cut boundary. */
+export interface SuggestedFix {
+  kind: "none" | "resnap" | "transition";
+  resnap_delta_frames?: number;
+  transition_style?: "crossfade" | "fade";
+  transition_frames?: number;
+}
+
+/** Semantic identity of a cut boundary (stable across upstream edits). */
+export interface BoundaryIdentity {
+  asset_a: string;
+  asset_b: string;
+  src_out_a: number;
+  src_in_b: number;
+}
+
+export type SmoothnessLabel = "smooth" | "jump_cut" | "hard_jolt" | "motion_break";
+
+/** A cached VLM verdict on how smooth one cut transition is. */
+export interface TransitionVerdict {
+  boundary_seq_frame: number;
+  asset_a: string;
+  asset_b: string;
+  src_out_a: number;
+  src_in_b: number;
+  smoothness: number;
+  label: SmoothnessLabel;
+  reason: string;
+  suggested_fix: SuggestedFix;
+  model_id: string;
+  created_at: string;
+}
+
+export interface TransitionReviewResult {
+  verdicts: TransitionVerdict[];
+}
+
+export interface ApplyFixResult {
+  status: "ok" | "error" | "not_supported" | string;
+  applied?: string;
+  reason?: string;
+  delta?: number;
+  style?: string;
 }
 
 export interface Sequence {
   timeline_id: string;
   project_id: string;
   items: SequenceItem[];
+}
+
+export interface SequenceTransitionUpdate {
+  kind: SequenceTransitionKind;
+  durationFrames: number;
+}
+
+export interface DemoDraftItem {
+  src_in_frame: number;
+  src_out_frame_exclusive: number;
+  label: string;
+  voiceover_text: string;
+  thumb_frame: number;
+  confidence: number;
+  enabled: boolean;
+}
+
+export interface DemoDraft {
+  id: string;
+  project_id: string;
+  asset_id: string;
+  status: string;
+  items: DemoDraftItem[];
+  result: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  applied_at: string | null;
+}
+
+export interface DemoDraftAccepted {
+  draft_id: string;
+  job_id: string;
+}
+
+export interface DemoDraftApplyResult {
+  draft: DemoDraft;
+  sequence: Sequence;
 }
 
 /**
@@ -352,6 +641,17 @@ function parseAcceptedSplits(raw: unknown): AcceptedSplit[] {
     }
   }
   return out;
+}
+
+export interface ConsentRecord {
+  id: string;
+  project_id: string;
+  subject_label: string;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  source_asset_id: string | null;
+  note: string | null;
+  revoked_at: string | null;
 }
 
 export class LauraClient {
@@ -433,6 +733,30 @@ export class LauraClient {
     });
   }
 
+  renderReel(
+    timelineId: string,
+    opts: ReelRenderOptions,
+  ): Promise<{ export_id: string; job_id: string }> {
+    return this.request<{ export_id: string; job_id: string }>(
+      `/timelines/${timelineId}/render-reel`,
+      {
+        method: "POST",
+          body: JSON.stringify({
+            hook_text: opts.hookText,
+            disclosure_text: opts.disclosureText,
+            vertical: opts.vertical ?? true,
+            captions: opts.captions ?? false,
+            caption_preset: opts.captionPreset ?? "reels",
+            caption_mode: opts.captionMode ?? "karaoke",
+            caption_position: opts.captionPosition ?? "bottom",
+            caption_fontsize: opts.captionFontsize ?? 72,
+            caption_safe_margin: opts.captionSafeMargin ?? 250,
+            max_duration_seconds: opts.maxDurationSeconds ?? null,
+          }),
+        },
+      );
+  }
+
   listExports(projectId: string): Promise<Export[]> {
     return this.request<Export[]>(`/projects/${projectId}/exports`);
   }
@@ -448,12 +772,41 @@ export class LauraClient {
     });
   }
 
+  createDemoProject(): Promise<Project> {
+    return this.request<Project>("/projects/demo", { method: "POST" });
+  }
+
+  createDemoDraft(assetId: string): Promise<DemoDraftAccepted> {
+    return this.request<DemoDraftAccepted>(`/assets/${assetId}/demo-drafts`, { method: "POST" });
+  }
+
+  getDemoDraft(draftId: string): Promise<DemoDraft> {
+    return this.request<DemoDraft>(`/demo-drafts/${draftId}`);
+  }
+
+  updateDemoDraft(draftId: string, items: DemoDraftItem[]): Promise<DemoDraft> {
+    return this.request<DemoDraft>(`/demo-drafts/${draftId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ items }),
+    });
+  }
+
+  applyDemoDraft(draftId: string): Promise<DemoDraftApplyResult> {
+    return this.request<DemoDraftApplyResult>(`/demo-drafts/${draftId}/apply`, {
+      method: "POST",
+    });
+  }
+
   listAssets(projectId: string): Promise<Asset[]> {
     return this.request<Asset[]>(`/projects/${projectId}/assets`);
   }
 
   getAsset(assetId: string): Promise<Asset> {
     return this.request<Asset>(`/assets/${assetId}`);
+  }
+
+  getAssetProvenance(assetId: string): Promise<AiProvenanceManifest> {
+    return this.request<AiProvenanceManifest>(`/assets/${assetId}/provenance`);
   }
 
   importAsset(projectId: string, sourcePath: string): Promise<ImportAccepted> {
@@ -479,6 +832,22 @@ export class LauraClient {
 
   getImportStatus(assetId: string): Promise<ImportStatus> {
     return this.request<ImportStatus>(`/assets/${assetId}/import-status`);
+  }
+
+  getJob(jobId: string): Promise<JobStatus> {
+    return this.request<JobStatus>(`/jobs/${jobId}`);
+  }
+
+  listJobs(limit = 50): Promise<JobStatus[]> {
+    return this.request<JobStatus[]>(`/jobs?limit=${limit}`);
+  }
+
+  cancelJob(jobId: string): Promise<JobStatus> {
+    return this.request<JobStatus>(`/jobs/${jobId}/cancel`, { method: "POST" });
+  }
+
+  retryJob(jobId: string): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>(`/jobs/${jobId}/retry`, { method: "POST" });
   }
 
   retryImport(assetId: string): Promise<ImportAccepted> {
@@ -561,6 +930,75 @@ export class LauraClient {
 
   getTranscript(assetId: string): Promise<Segment[]> {
     return this.request<Segment[]>(`/assets/${assetId}/transcript`);
+  }
+
+  getSequenceTranscript(sequenceId: string): Promise<SequenceTranscriptBlock[]> {
+    return this.request<SequenceTranscriptBlock[]>(`/sequences/${sequenceId}/transcript`);
+  }
+
+  updateTranscriptSegment(segmentId: string, update: TranscriptSegmentUpdate): Promise<Segment> {
+    const body: Record<string, unknown> = {};
+    if (update.text !== undefined) body.text = update.text;
+    if (update.speakerId !== undefined) body.speaker_id = update.speakerId;
+    return this.request<Segment>(`/transcript/segments/${segmentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  realignTranscript(
+    assetId: string,
+    opts: TranscriptRealignOptions = {},
+  ): Promise<TranscriptRealignAccepted> {
+    const body: Record<string, unknown> = {};
+    if (opts.segmentIds !== undefined) body.segment_ids = opts.segmentIds;
+    if (opts.language !== undefined) body.language = opts.language;
+    return this.request<TranscriptRealignAccepted>(`/assets/${assetId}/transcript:realign`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  createVoiceover(timelineId: string, opts: VoiceoverOptions): Promise<VoiceoverAccepted> {
+    const body: Record<string, unknown> = {
+      seq_in_frame: opts.seqIn,
+      seq_out_frame_exclusive: opts.seqOut,
+    };
+    if (opts.segmentId !== undefined) body.segment_id = opts.segmentId;
+    if (opts.text !== undefined) body.text = opts.text;
+    if (opts.language !== undefined) body.language = opts.language;
+    if (opts.backend !== undefined) body.backend = opts.backend;
+    if (opts.gainPercent !== undefined) body.gain_percent = opts.gainPercent;
+    if (opts.fadeInFrames !== undefined) body.fade_in_frames = opts.fadeInFrames;
+    if (opts.fadeOutFrames !== undefined) body.fade_out_frames = opts.fadeOutFrames;
+    if (opts.mixMode !== undefined) body.mix_mode = opts.mixMode;
+    if (opts.duckingPercent !== undefined) body.ducking_percent = opts.duckingPercent;
+    if (opts.voiceId !== undefined) body.voice_id = opts.voiceId;
+    return this.request<VoiceoverAccepted>(`/timelines/${timelineId}/voiceover`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** Installed local TTS voices for the voice-over picker (empty when none are available). */
+  listVoiceoverVoices(): Promise<VoiceoverVoice[]> {
+    return this.request<VoiceoverVoice[]>("/voiceover/voices");
+  }
+
+  lipsync(timelineId: string, opts: LipsyncOptions): Promise<LipsyncAccepted> {
+    const body: Record<string, unknown> = {
+      seq_in_frame: opts.seqIn,
+      seq_out_frame_exclusive: opts.seqOut,
+      audio_asset_id: opts.audioAssetId,
+      consent_id: opts.consentId,
+      license_accepted: opts.licenseAccepted,
+    };
+    if (opts.backend !== undefined) body.backend = opts.backend;
+    if (opts.qualityThreshold !== undefined) body.quality_threshold = opts.qualityThreshold;
+    return this.request<LipsyncAccepted>(`/timelines/${timelineId}/lipsync`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   async getCaptions(assetId: string, fmt: "srt" | "vtt"): Promise<string> {
@@ -646,11 +1084,37 @@ export class LauraClient {
     return this.request<Scene[]>(`/timelines/${timelineId}/scenes`);
   }
 
+  getAssetRoughCut(projectId: string, assetId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/projects/${projectId}/assets/${assetId}/rough-cut`);
+  }
+
+  /** Fetch a timeline (with its clips) by id. Works for any kind — unlike
+   *  getSequenceFlattened, which only resolves kind="sequence" timelines. */
+  getTimeline(timelineId: string): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}`);
+  }
+
+  listProjectScenes(projectId: string): Promise<Scene[]> {
+    return this.request<Scene[]>(`/projects/${projectId}/scenes`);
+  }
+
   splitScene(timelineId: string, sceneId: string, atSeqFrame: number): Promise<Scene[]> {
     return this.request<Scene[]>(`/timelines/${timelineId}/scenes/${sceneId}/split`, {
       method: "POST",
       body: JSON.stringify({ at_seq_frame: atSeqFrame }),
     });
+  }
+
+  /** Composite cut on the rough-cut: split the clip at the frame (if mid-clip) then the scene
+   *  there. Returns the updated clips and scene markers in one round-trip. */
+  cutAtFrame(
+    timelineId: string,
+    atSeqFrame: number,
+  ): Promise<{ clips: TimelineClip[]; scenes: Scene[] }> {
+    return this.request<{ clips: TimelineClip[]; scenes: Scene[] }>(
+      `/timelines/${timelineId}/cut-at-frame`,
+      { method: "POST", body: JSON.stringify({ at_seq_frame: atSeqFrame }) },
+    );
   }
 
   mergeScenes(timelineId: string, sceneId: string): Promise<Scene[]> {
@@ -700,7 +1164,190 @@ export class LauraClient {
     });
   }
 
+  updateSequenceTransition(
+    sequenceId: string,
+    itemId: string,
+    body: SequenceTransitionUpdate,
+  ): Promise<Sequence> {
+    return this.request<Sequence>(`/sequences/${sequenceId}/items/${itemId}/transition`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        kind: body.kind,
+        duration_frames: body.durationFrames,
+      }),
+    });
+  }
+
+  setClipTransition(
+    timelineId: string,
+    clipId: string,
+    kind: ClipTransitionKind,
+    durationFrames: number,
+  ): Promise<Timeline> {
+    return this.request<Timeline>(`/timelines/${timelineId}/clips/${clipId}/transition`, {
+      method: "PATCH",
+      body: JSON.stringify({ kind, duration_frames: durationFrames }),
+    });
+  }
+
   getSequenceFlattened(sequenceId: string): Promise<TimelineClip[]> {
     return this.request<TimelineClip[]>(`/sequences/${sequenceId}/flattened`);
+  }
+
+  reviewTransitions(timelineId: string): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>(`/timelines/${timelineId}/transitions/review`, {
+      method: "POST",
+    });
+  }
+
+  getTransitionReview(timelineId: string): Promise<TransitionReviewResult> {
+    return this.request<TransitionReviewResult>(`/timelines/${timelineId}/transitions/review`);
+  }
+
+  applyTransitionFix(
+    timelineId: string,
+    identity: BoundaryIdentity,
+    fix: SuggestedFix,
+  ): Promise<ApplyFixResult> {
+    return this.request<ApplyFixResult>(`/timelines/${timelineId}/transitions/apply-fix`, {
+      method: "POST",
+      body: JSON.stringify({ identity, fix }),
+    });
+  }
+
+  listTimelineAudioClips(timelineId: string): Promise<TimelineAudioClip[]> {
+    return this.request<TimelineAudioClip[]>(`/timelines/${timelineId}/audio-clips`);
+  }
+
+  createTimelineAudioClip(
+    timelineId: string,
+    opts: TimelineAudioClipCreateInput,
+  ): Promise<TimelineAudioClip> {
+    const body: Record<string, unknown> = {
+      asset_id: opts.assetId,
+      seq_in_frame: opts.seqIn,
+      seq_out_frame_exclusive: opts.seqOut,
+    };
+    if (opts.assetIn !== undefined) body.asset_in_frame = opts.assetIn;
+    if (opts.gainPercent !== undefined) body.gain_percent = opts.gainPercent;
+    if (opts.fadeInFrames !== undefined) body.fade_in_frames = opts.fadeInFrames;
+    if (opts.fadeOutFrames !== undefined) body.fade_out_frames = opts.fadeOutFrames;
+    if (opts.mixMode !== undefined) body.mix_mode = opts.mixMode;
+    if (opts.duckingPercent !== undefined) body.ducking_percent = opts.duckingPercent;
+    if (opts.label !== undefined) body.label = opts.label;
+    return this.request<TimelineAudioClip>(`/timelines/${timelineId}/audio-clips`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  updateTimelineAudioClip(
+    timelineId: string,
+    clipId: string,
+    opts: TimelineAudioClipUpdateInput,
+  ): Promise<TimelineAudioClip> {
+    const body: Record<string, unknown> = {};
+    if (opts.seqIn !== undefined) body.seq_in_frame = opts.seqIn;
+    if (opts.seqOut !== undefined) body.seq_out_frame_exclusive = opts.seqOut;
+    if (opts.assetIn !== undefined) body.asset_in_frame = opts.assetIn;
+    if (opts.gainPercent !== undefined) body.gain_percent = opts.gainPercent;
+    if (opts.fadeInFrames !== undefined) body.fade_in_frames = opts.fadeInFrames;
+    if (opts.fadeOutFrames !== undefined) body.fade_out_frames = opts.fadeOutFrames;
+    if (opts.mixMode !== undefined) body.mix_mode = opts.mixMode;
+    if (opts.duckingPercent !== undefined) body.ducking_percent = opts.duckingPercent;
+    if (opts.label !== undefined) body.label = opts.label;
+    return this.request<TimelineAudioClip>(`/timelines/${timelineId}/audio-clips/${clipId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  deleteTimelineAudioClip(timelineId: string, clipId: string): Promise<void> {
+    return this.del(`/timelines/${timelineId}/audio-clips/${clipId}`);
+  }
+
+  /**
+   * Add a replacement-lane overlay clip to a timeline. Returns the created clip including
+   * `role: "replace"` and `lane >= 1`.
+   */
+  setOverlay(
+    timelineId: string,
+    opts: { assetId: string; seqIn: number; seqOut: number; lane?: number; srcIn?: number },
+  ): Promise<TimelineClip> {
+    return this.request<TimelineClip>(`/timelines/${timelineId}/overlays`, {
+      method: "POST",
+      body: JSON.stringify({
+        asset_id: opts.assetId,
+        seq_in_frame: opts.seqIn,
+        seq_out_frame_exclusive: opts.seqOut,
+        lane: opts.lane ?? 1,
+        src_in_frame: opts.srcIn ?? 0,
+      }),
+    });
+  }
+
+  /** Remove an overlay clip from a timeline by clip id. */
+  removeOverlay(timelineId: string, clipId: string): Promise<void> {
+    return this.del(`/timelines/${timelineId}/overlays/${clipId}`);
+  }
+
+  /**
+   * Record consent for a subject within a project.
+   * POST /projects/{projectId}/consent → 201 ConsentRecord
+   */
+  createConsent(
+    projectId: string,
+    opts: { subjectLabel: string },
+  ): Promise<ConsentRecord> {
+    return this.request<ConsentRecord>(`/projects/${projectId}/consent`, {
+      method: "POST",
+      body: JSON.stringify({ subject_label: opts.subjectLabel }),
+    });
+  }
+
+  /**
+   * List all consent records for a project, newest first.
+   * GET /projects/{projectId}/consent → 200 ConsentRecord[]
+   */
+  listConsent(projectId: string): Promise<ConsentRecord[]> {
+    return this.request<ConsentRecord[]>(`/projects/${projectId}/consent`);
+  }
+
+  /**
+   * Revoke a consent record. Lipsync/reenact gates refuse it afterwards.
+   * POST /projects/{projectId}/consent/{consentId}/revoke → 200 ConsentRecord
+   */
+  revokeConsent(projectId: string, consentId: string): Promise<ConsentRecord> {
+    return this.request<ConsentRecord>(
+      `/projects/${projectId}/consent/${consentId}/revoke`,
+      { method: "POST" },
+    );
+  }
+
+  /**
+   * Kick off a reenact (LivePortrait) job on a timeline range.
+   * POST /timelines/{timelineId}/reenact → 202 { job_id }
+   * consent_id is MANDATORY; revoked/missing consent is rejected server-side.
+   */
+  reenact(
+    timelineId: string,
+    opts: {
+      seqIn: number;
+      seqOut: number;
+      portraitAssetId: string;
+      consentId: string;
+      backend?: string;
+    },
+  ): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>(`/timelines/${timelineId}/reenact`, {
+      method: "POST",
+      body: JSON.stringify({
+        seq_in_frame: opts.seqIn,
+        seq_out_frame_exclusive: opts.seqOut,
+        portrait_asset_id: opts.portraitAssetId,
+        consent_id: opts.consentId,
+        backend: opts.backend,
+      }),
+    });
   }
 }

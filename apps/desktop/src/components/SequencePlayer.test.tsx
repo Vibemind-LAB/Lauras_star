@@ -1,8 +1,8 @@
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { type Asset, type LauraClient, type TimelineClip } from "../api";
-import { SequencePlayer, clipIndexAtSeqFrame, totalFrames } from "./SequencePlayer";
+import { type Asset, type LauraClient, type TimelineAudioClip, type TimelineClip } from "../api";
+import { SequencePlayer, clipIndexAtSeqFrame, totalFrames, videoVolumeForFrame } from "./SequencePlayer";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -57,6 +57,8 @@ const asset1: Asset = {
   codec_video: null,
   codec_audio: null,
   is_vfr: false,
+  synthetic: false,
+  ai_effect: null,
   created_at: "2025-01-01T00:00:00Z",
   files: [{ id: "f1", asset_id: "a1", kind: "proxy", path: "/p1.mp4", size_bytes: null, is_proxy: true, is_waveform: false, is_audio_extract: false, checksum: null }],
 };
@@ -78,9 +80,47 @@ const asset2: Asset = {
   codec_video: null,
   codec_audio: null,
   is_vfr: false,
+  synthetic: false,
+  ai_effect: null,
   created_at: "2025-01-01T00:00:00Z",
   files: [{ id: "f2", asset_id: "a2", kind: "proxy", path: "/p2.mp4", size_bytes: null, is_proxy: true, is_waveform: false, is_audio_extract: false, checksum: null }],
 };
+
+// ---------------------------------------------------------------------------
+// Pure helper: videoVolumeForFrame (ducking adapter)
+// ---------------------------------------------------------------------------
+
+function audioClip(over: Partial<TimelineAudioClip> = {}): TimelineAudioClip {
+  return {
+    id: "a1",
+    timeline_id: "t1",
+    asset_id: "vo1",
+    seq_in_frame: 30,
+    seq_out_frame_exclusive: 90,
+    asset_in_frame: 0,
+    gain_percent: 100,
+    fade_in_frames: 0,
+    fade_out_frames: 0,
+    mix_mode: "mix",
+    ducking_percent: 30,
+    label: null,
+    created_at: "",
+    ...over,
+  };
+}
+
+describe("SequencePlayer video ducking adapter", () => {
+  it("ducks the video to ducking_percent under an active VO span", () => {
+    expect(videoVolumeForFrame([audioClip()], 60)).toBeCloseTo(0.3, 6);
+  });
+  it("is full volume outside any VO span", () => {
+    expect(videoVolumeForFrame([audioClip()], 200)).toBe(1);
+    expect(videoVolumeForFrame(undefined, 60)).toBe(1);
+  });
+  it("replace_original mutes the video under the span", () => {
+    expect(videoVolumeForFrame([audioClip({ mix_mode: "replace_original" })], 60)).toBe(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure helper: totalFrames
@@ -242,5 +282,27 @@ describe("SequencePlayer render", () => {
     await waitFor(() => expect(c.getSequenceFlattened).toHaveBeenCalledTimes(1));
     rerender(<SequencePlayer client={c} projectId="p" sequenceId="seq" reloadKey={2} />);
     await waitFor(() => expect(c.getSequenceFlattened).toHaveBeenCalledTimes(2));
+  });
+
+  it("plays a provided clipsOverride without calling getSequenceFlattened", async () => {
+    // FineCutView passes a materialized SCENE timeline's clips directly. getSequenceFlattened
+    // only resolves kind="sequence" timelines and returns [] for a scene → the player would show
+    // no video. clipsOverride feeds the already-loaded clips so the scene actually renders.
+    const c = {
+      getSequenceFlattened: vi.fn().mockResolvedValue([]),
+      listAssets: vi.fn().mockResolvedValue([asset1, asset2]),
+    } as unknown as LauraClient;
+    const { container, getByText } = render(
+      <SequencePlayer
+        client={c}
+        projectId="p"
+        sequenceId="scene-tl"
+        clipsOverride={[clip1, clip2]}
+      />,
+    );
+    await waitFor(() => expect(container.querySelector("video")).toBeTruthy());
+    // Clips came from the override (110), not from the empty flatten.
+    expect(getByText(/0 \/ 110 f/)).toBeTruthy();
+    expect(c.getSequenceFlattened).not.toHaveBeenCalled();
   });
 });

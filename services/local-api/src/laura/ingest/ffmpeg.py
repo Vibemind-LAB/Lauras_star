@@ -46,11 +46,17 @@ def probe(path: Path | str) -> dict[str, Any]:
     return data
 
 
-def run_ffmpeg(args: list[str]) -> None:
-    """Run ffmpeg with the given args (``-y`` and banner suppression are added)."""
+def run_ffmpeg(args: list[str], *, cwd: Path | str | None = None) -> None:
+    """Run ffmpeg with the given args (``-y`` and banner suppression are added).
+
+    ``cwd`` sets the subprocess working directory. This lets a filtergraph
+    reference helper files (e.g. drawtext ``textfile=``) by *basename*, which
+    sidesteps the brittle Windows drive-colon escaping that ``textfile=`` (unlike
+    ``fontfile=``) does not accept. Absolute input/output paths are unaffected.
+    """
     cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)  # noqa: S603
     except FileNotFoundError as exc:
         raise FFmpegError(f"ffmpeg not found: {ffmpeg_bin()}") from exc
     if proc.returncode != 0:

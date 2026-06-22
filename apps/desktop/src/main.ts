@@ -31,6 +31,14 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// Dev/test: expose the renderer over the Chrome DevTools Protocol so an external driver
+// (e.g. Playwright connect_over_cdp) can screenshot/inspect the UI without visible DevTools.
+// Inert unless LAURA_REMOTE_DEBUG is set to a port; must run before the app is ready.
+if (process.env.LAURA_REMOTE_DEBUG) {
+  app.commandLine.appendSwitch("remote-debugging-port", process.env.LAURA_REMOTE_DEBUG);
+  app.commandLine.appendSwitch("remote-allow-origins", "*");
+}
+
 let serviceInfo: ServiceInfo | null = null;
 let stopService: (() => void) | null = null;
 
@@ -131,7 +139,14 @@ app
       } catch {
         return new Response("media missing on disk", { status: 404 });
       }
-      const base = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes" };
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType =
+        ext === ".wav" ? "audio/wav" :
+        ext === ".mp3" ? "audio/mpeg" :
+        ext === ".m4a" || ext === ".aac" ? "audio/aac" :
+        ext === ".flac" ? "audio/flac" :
+        "video/mp4";
+      const base = { "Content-Type": contentType, "Accept-Ranges": "bytes" };
       const m = /bytes=(\d+)-(\d*)/.exec(request.headers.get("Range") ?? "");
       if (m) {
         const start = Number(m[1]);
@@ -195,6 +210,35 @@ app
       return entries
         .filter((d) => d.isFile() && MEDIA_EXTS.has(path.extname(d.name).toLowerCase()))
         .map((d) => path.join(folder, d.name));
+    });
+
+    // Workspace root for the security guard. Canonicalise (and case-fold on
+    // Windows) BOTH sides: the backend persists Python-`resolve()`d paths into
+    // export records, and userData may sit behind a junction / mixed casing —
+    // a naive case-sensitive, unresolved compare would reject every valid path.
+    const canonPath = (p: string): string =>
+      process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p);
+    const workspaceRoot = canonPath(path.join(app.getPath("userData"), "workspace"));
+
+    /** True only when `p` is a non-empty absolute path inside the workspace. */
+    function isInsideWorkspace(p: string): boolean {
+      if (typeof p !== "string" || p === "") return false;
+      const resolved = canonPath(p);
+      // Separator-terminated prefix so "workspace2" can't pass as "workspace".
+      const root = workspaceRoot.endsWith(path.sep) ? workspaceRoot : workspaceRoot + path.sep;
+      return resolved === workspaceRoot || resolved.startsWith(root);
+    }
+
+    ipcMain.handle("laura:open-path", (_e, p: string): string => {
+      if (!isInsideWorkspace(p)) return "rejected: path is outside the workspace";
+      void shell.openPath(path.resolve(p));
+      return "";
+    });
+
+    ipcMain.handle("laura:reveal-path", (_e, p: string): string => {
+      if (!isInsideWorkspace(p)) return "rejected: path is outside the workspace";
+      shell.showItemInFolder(path.resolve(p));
+      return "";
     });
 
     createWindow();

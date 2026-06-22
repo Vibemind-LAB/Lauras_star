@@ -151,17 +151,22 @@ def list_project_assets(
     return out
 
 
-@router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/assets/{asset_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def delete_asset(
     asset_id: str,
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("asset:write"))],
-) -> None:
+) -> Response:
     db = _db(request)
     if repos.get_asset(db, asset_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
     repos.delete_asset(db, asset_id)
     audit.record(db, principal, "asset.delete", entity_type="asset", entity_id=asset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut)
@@ -172,6 +177,27 @@ def get_asset(asset_id: str, request: Request) -> AssetOut:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
     files = [AssetFileOut(**f) for f in repos.list_asset_files(db, asset_id)]
     return AssetOut(**asset, files=files)
+
+
+@router.get("/assets/{asset_id}/provenance")
+def get_asset_provenance(asset_id: str, request: Request) -> dict[str, Any]:
+    db = _db(request)
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+
+    manifest_path = Path(f"{asset['source_path']}.laura-provenance.json")
+    if not manifest_path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "provenance manifest not found")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "provenance manifest unreadable") from exc
+    if not isinstance(manifest, dict):
+        raise HTTPException(status.HTTP_409_CONFLICT, "provenance manifest must be an object")
+    if manifest.get("asset_id") != asset_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, "provenance manifest asset mismatch")
+    return manifest
 
 
 def _derive_import_status(db: Database, asset: dict[str, Any]) -> ImportStatusOut:

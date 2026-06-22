@@ -1,0 +1,55 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LIVEPORTRAIT_REPO=https://github.com/KlingAIResearch/LivePortrait
+ARG LIVEPORTRAIT_REF=main
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    LAURA_RUNTIME_KIND=liveportrait \
+    LAURA_RUNTIME_MODE=model \
+    LAURA_RUNTIME_PROVIDER=liveportrait \
+    LAURA_RUNTIME_PORT=8899 \
+    LAURA_MODEL_ROOT=/models \
+    LAURA_LIVEPORTRAIT_REPO=/models/LivePortrait \
+    LAURA_LIVEPORTRAIT_OUTPUT_GLOB=*.mp4
+
+WORKDIR /opt/laura-runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        git \
+        libglib2.0-0 \
+        libgl1 \
+        libgomp1 \
+        libsm6 \
+        libxext6 \
+        python-is-python3 \
+        python3-pip \
+        python3.10 \
+        python3.10-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir \
+        torch==2.3.0 \
+        torchvision==0.18.0 \
+        torchaudio==2.3.0 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+RUN git clone --depth 1 --branch "$LIVEPORTRAIT_REF" "$LIVEPORTRAIT_REPO" /opt/LivePortrait \
+    && python -m pip install --no-cache-dir -r /opt/LivePortrait/requirements.txt
+
+RUN useradd --create-home --uid 10001 laura \
+    && mkdir -p /models /workspace \
+    && chown -R laura:laura /models /workspace /opt/laura-runtime
+
+COPY runtime_server.py /opt/laura-runtime/runtime_server.py
+COPY providers /opt/laura-runtime/providers
+
+USER laura
+
+EXPOSE 8899
+
+CMD ["python", "/opt/laura-runtime/runtime_server.py"]

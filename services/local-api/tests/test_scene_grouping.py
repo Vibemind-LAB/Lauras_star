@@ -1,14 +1,16 @@
 # services/local-api/tests/test_scene_grouping.py
 from __future__ import annotations
 
+from typing import Any
+
 from laura.scenes.grouping import group_into_scenes
 
 
-def _clip(seq_in: int, seq_out: int) -> dict:
+def _clip(seq_in: int, seq_out: int) -> dict[str, Any]:
     return {"seq_in_frame": seq_in, "seq_out_frame_exclusive": seq_out}
 
 
-def _w(start: int, end: int, speaker: str | None) -> dict:
+def _w(start: int, end: int, speaker: str | None) -> dict[str, Any]:
     return {"start_frame": start, "end_frame": end, "speaker": speaker}
 
 
@@ -40,7 +42,7 @@ def test_large_gap_same_speaker_breaks() -> None:
 
 def test_no_transcript_anywhere_one_scene_per_clip() -> None:
     clips = [_clip(0, 30), _clip(30, 60), _clip(60, 90)]
-    words = [[], [], []]
+    words: list[list[dict[str, Any]]] = [[], [], []]
     assert group_into_scenes(clips, words, gap_frames=45) == [(0, 30), (30, 60), (60, 90)]
 
 
