@@ -18,7 +18,7 @@ from ..sequences.music import sequence_music_tracks
 from .audio import AudioOverlay
 from .captions import build_ass, group_caption_lines
 from .captions_source import timeline_caption_words
-from .mp4 import VideoTransition, render_clips_mp4
+from .mp4 import _DEFAULT_DISCLOSURE, VideoTransition, render_clips_mp4
 from .sync import assert_or_fix_media_sync
 
 _log = logging.getLogger(__name__)
@@ -203,6 +203,32 @@ def _clip_video_transitions(db: Any, timeline_id: str) -> list[VideoTransition]:
     return transitions
 
 
+def _timeline_is_synthetic(
+    db: Database,
+    timeline_id: str,
+    audio_overlays: list[AudioOverlay],
+) -> bool:
+    """Return True if the timeline contains any synthetic/replacement content.
+
+    Checks:
+    1. audio_overlays with replace_original or mute_original mix_mode (already fetched).
+    2. A single DB query for lane>=1 role='replace' clips OR clips whose asset has synthetic=1.
+    """
+    for overlay in audio_overlays:
+        if overlay.mix_mode in {"replace_original", "mute_original"}:
+            return True
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM timeline_clips tc "
+            "LEFT JOIN media_assets a ON a.id = tc.asset_id "
+            "WHERE tc.timeline_id = ? "
+            "AND (tc.role = 'replace' OR a.synthetic = 1) "
+            "LIMIT 1",
+            (timeline_id,),
+        ).fetchone()
+    return row is not None
+
+
 def handle_render(ctx: JobContext) -> dict[str, Any]:
     """Claim an export row, resolve its timeline clips, run ffmpeg, mark done."""
     export_id = ctx.payload["export_id"]
@@ -285,6 +311,13 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
 
     opts: dict[str, object] = exp.get("options") or {}
 
+    # Force disclosure overlay when the timeline has synthetic content and the caller
+    # did not already supply a value. An explicit value (even blank) goes through
+    # _effective_disclosure unchanged — only None triggers the auto-force.
+    disc_text: str | None = opts.get("disclosure_text")  # type: ignore[assignment]
+    if disc_text is None and _timeline_is_synthetic(ctx.db, exp["timeline_id"], audio_overlays):
+        disc_text = _DEFAULT_DISCLOSURE
+
     caption_ass: str | None = None
     if opts.get("captions"):
         words = timeline_caption_words(ctx.db, exp["timeline_id"])
@@ -319,7 +352,7 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             audio_overlays=audio_overlays if audio_overlays else None,
             vertical=bool(opts.get("vertical", False)),
             hook_text=opts.get("hook_text"),  # type: ignore[arg-type]
-            disclosure_text=opts.get("disclosure_text"),  # type: ignore[arg-type]
+            disclosure_text=disc_text,
             caption_ass=caption_ass,
             video_transitions=video_transitions if video_transitions else None,
         )

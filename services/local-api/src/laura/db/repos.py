@@ -871,6 +871,70 @@ def delete_timeline_audio_clip(db: Database, clip_id: str) -> bool:
         return result.rowcount > 0
 
 
+def ripple_timeline_audio_clips(
+    db: Database,
+    timeline_id: str,
+    del_seq_in: int,
+    del_seq_out_excl: int,
+) -> None:
+    """Ripple timeline_audio_clips after a delete of [del_seq_in, del_seq_out_excl).
+
+    Clips at/after del_seq_out_excl shift left by the deleted length.
+    Clips fully inside the deleted span are dropped.
+    Clips partially overlapping are clamped.
+    Uses _shift_frame geometry from scenes.reconcile (same invariants).
+    """
+    from ..scenes.reconcile import _shift_frame
+
+    length = del_seq_out_excl - del_seq_in
+    if length <= 0:
+        return
+    clips = list_timeline_audio_clips(db, timeline_id)
+    with db.transaction() as conn:
+        for clip in clips:
+            old_in = int(clip["seq_in_frame"])
+            old_out = int(clip["seq_out_frame_exclusive"])
+            new_in = _shift_frame(old_in, del_seq_in, del_seq_out_excl)
+            new_out = _shift_frame(old_out, del_seq_in, del_seq_out_excl)
+            if new_out <= new_in:
+                # fully inside deleted span — drop
+                conn.execute("DELETE FROM timeline_audio_clips WHERE id=?", (clip["id"],))
+            elif new_in != old_in or new_out != old_out:
+                conn.execute(
+                    "UPDATE timeline_audio_clips "
+                    "SET seq_in_frame=?, seq_out_frame_exclusive=? WHERE id=?",
+                    (new_in, new_out, clip["id"]),
+                )
+
+
+def delete_timeline_audio_clips_overlapping(
+    db: Database,
+    timeline_id: str,
+    seq_in: int,
+    seq_out_excl: int,
+    *,
+    mix_mode: str | None = None,
+) -> int:
+    """Delete audio clips on timeline_id that overlap [seq_in, seq_out_excl).
+
+    Overlap condition: clip.seq_in_frame < seq_out_excl AND clip.seq_out_frame_exclusive > seq_in
+    Optionally filter by mix_mode. Returns count deleted.
+    """
+    params: list[object] = [timeline_id, seq_out_excl, seq_in]
+    sql = (
+        "DELETE FROM timeline_audio_clips "
+        "WHERE timeline_id=? "
+        "AND seq_in_frame < ? "
+        "AND seq_out_frame_exclusive > ?"
+    )
+    if mix_mode is not None:
+        sql += " AND mix_mode=?"
+        params.append(mix_mode)
+    with db.transaction() as conn:
+        result = conn.execute(sql, params)
+        return int(result.rowcount)
+
+
 def create_interchange_export(
     db: Database,
     *,
