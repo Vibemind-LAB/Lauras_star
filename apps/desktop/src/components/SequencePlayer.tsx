@@ -120,23 +120,26 @@ export function SequencePlayer({
   const [seqFrame, setSeqFrame] = useState(0);
 
   // ---------------------------------------------------------------------------
-  // AudioMixer — created once per mount; clips and rate stay stable.
+  // AudioMixer — created exactly once on mount; disposed on unmount.
+  // React 18 Strict Mode runs the render body twice, so we must NOT
+  // instantiate inside the render body (the first instance would be orphaned).
+  // The empty-dep effect runs once; initial rateNum/rateDen are captured at
+  // mount time (project rate is fixed for the lifetime of this mount).
   // ---------------------------------------------------------------------------
   const mixerRef = useRef<AudioMixer | null>(null);
-  if (mixerRef.current === null) {
+  useEffect(() => {
     mixerRef.current = new AudioMixer({ rateNum, rateDen });
-  }
-  // Keep the mixer's clip set in sync with the prop.
-  useEffect(() => {
-    mixerRef.current?.setClips(audioClips ?? []);
-  }, [audioClips]);
-  // Pause + tear down on unmount.
-  useEffect(() => {
+    mixerRef.current.setClips(audioClips ?? []);
     return () => {
       mixerRef.current?.dispose();
       mixerRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Keep the mixer's clip set in sync with the prop on subsequent changes.
+  useEffect(() => {
+    mixerRef.current?.setClips(audioClips ?? []);
+  }, [audioClips]);
 
   // The index of the clip currently loaded in the <video>.
   const clipIndexRef = useRef<number>(0);
