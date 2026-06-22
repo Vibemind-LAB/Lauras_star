@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { LauraClient } from "../api";
 import { EditorialToolsBar } from "./EditorialToolsBar";
 
 // Note: @testing-library/jest-dom is not installed in this project.
@@ -56,5 +57,29 @@ describe("EditorialToolsBar", () => {
     );
     fireEvent.change(screen.getByLabelText(/Stimme/i), { target: { value: "Hedda" } });
     expect(onVoiceChange).toHaveBeenCalledWith("Hedda");
+  });
+
+  it("hides the reenact panel until the manual Reenact action is opened", () => {
+    const c = {
+      listVoiceoverVoices: vi.fn().mockResolvedValue([]),
+      listConsent: vi.fn().mockResolvedValue([]),
+    } as unknown as LauraClient;
+    const { getByRole, queryByText } = render(
+      <EditorialToolsBar
+        client={c}
+        projectId="p"
+        timelineId="tl-1"
+        assets={[{ id: "a1", display_name: "clip.mp4" }]}
+        currentSeqFrame={0}
+        rateNum={30}
+        rateDen={1}
+        voiceId=""
+        onVoiceChange={vi.fn()}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(queryByText("Reenact (Identitäts-Ebene)")).toBeNull();
+    fireEvent.click(getByRole("button", { name: /Reenact/ }));
+    expect(queryByText("Reenact (Identitäts-Ebene)")).not.toBeNull();
   });
 });

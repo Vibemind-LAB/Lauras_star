@@ -2,19 +2,33 @@ import { useState, type ReactElement } from "react";
 
 import type { BoundaryIdentity, LauraClient, VoiceoverVoice } from "../api";
 import { useConsent } from "../hooks/useConsent";
+import { ReenactPanel } from "./ReenactPanel";
 
 export interface EditorialToolsBarProps {
-  voices: VoiceoverVoice[];
-  voiceId: string | null;
-  onVoiceChange(voiceId: string | null): void;
-  pendingEdge: BoundaryIdentity | null;
-  onSmooth(): void;
-  onReenact(): void;
-  syntheticEffects: string[];
+  voices?: VoiceoverVoice[];
+  voiceId?: string | null;
+  onVoiceChange?(voiceId: string | null): void;
+  pendingEdge?: BoundaryIdentity | null;
+  onSmooth?(): void;
+  /** Optional legacy callback — kept for backward compat; the panel is now embedded. */
+  onReenact?(): void;
+  syntheticEffects?: string[];
   busy?: boolean;
-  /** Required for the consent inspector. If omitted, the inspector renders in a disconnected state. */
+  /** Required for the consent inspector and embedded ReenactPanel. */
   client?: LauraClient | null;
   projectId?: string | null;
+  /** Required for embedded ReenactPanel. */
+  timelineId?: string | null;
+  /** Assets forwarded to the embedded ReenactPanel. */
+  assets?: { id: string; display_name: string }[];
+  /** Called after a successful reenact so the parent can reload. */
+  onChange?(): void;
+  /** Current live playhead position in sequence frames. */
+  currentSeqFrame?: number;
+  /** Numerator of the project sequence frame rate. */
+  rateNum?: number;
+  /** Denominator of the project sequence frame rate. */
+  rateDen?: number;
 }
 
 /**
@@ -26,19 +40,26 @@ export interface EditorialToolsBarProps {
  * records without leaving the edit view.
  */
 export function EditorialToolsBar({
-  voices,
-  voiceId,
+  voices = [],
+  voiceId = null,
   onVoiceChange,
-  pendingEdge,
+  pendingEdge = null,
   onSmooth,
   onReenact,
-  syntheticEffects,
+  syntheticEffects = [],
   busy = false,
   client = null,
   projectId = null,
+  timelineId = null,
+  assets = [],
+  onChange,
+  currentSeqFrame = 0,
+  rateNum = 30,
+  rateDen = 1,
 }: EditorialToolsBarProps): ReactElement {
   const { active, create, revoke } = useConsent(client, projectId);
   const [subject, setSubject] = useState<string>("");
+  const [reenactOpen, setReenactOpen] = useState(false);
 
   const effectsLabel = syntheticEffects.length
     ? syntheticEffects.join(", ")
@@ -56,7 +77,7 @@ export function EditorialToolsBar({
             aria-label="Stimme"
             value={voiceId ?? ""}
             disabled={busy}
-            onChange={(e) => onVoiceChange(e.target.value === "" ? null : e.target.value)}
+            onChange={(e) => onVoiceChange?.(e.target.value === "" ? null : e.target.value)}
             className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong disabled:opacity-40"
           >
             <option value="">Auto</option>
@@ -67,7 +88,7 @@ export function EditorialToolsBar({
         </label>
         <button
           type="button"
-          onClick={onSmooth}
+          onClick={onSmooth ?? (() => undefined)}
           disabled={busy || pendingEdge === null}
           title="Markierte Schnittkante mit einer kurzen Blende glätten"
           className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
@@ -76,13 +97,31 @@ export function EditorialToolsBar({
         </button>
         <button
           type="button"
-          onClick={onReenact}
+          onClick={() => {
+            setReenactOpen((v) => !v);
+            onReenact?.();
+          }}
           disabled={busy}
+          aria-expanded={reenactOpen}
           className="rounded border border-bezel bg-surface-1 px-3 py-1 text-[11px] text-content-strong hover:border-accent disabled:opacity-40"
         >
           Reenact
         </button>
       </div>
+
+      {/* Embedded ReenactPanel — shown when the Reenact toggle is open. */}
+      {reenactOpen && client != null && (
+        <ReenactPanel
+          client={client}
+          projectId={projectId}
+          timelineId={timelineId}
+          assets={assets}
+          onChange={onChange ?? (() => undefined)}
+          currentSeqFrame={currentSeqFrame}
+          rateNum={rateNum}
+          rateDen={rateDen}
+        />
+      )}
 
       {/* Always-on synthetic-content disclosure (spec §7 — no off-switch). */}
       <div className="flex items-center gap-2 text-[11px] text-content-muted">
