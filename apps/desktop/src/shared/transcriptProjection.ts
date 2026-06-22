@@ -28,13 +28,22 @@ export interface CutWord {
  *
  * @param segments - Raw source-asset transcript segments (all words, source order).
  * @param clips    - The scene's timeline clips (any lane).
+ * @param assetId  - When provided, restrict base-clip matching to clips whose
+ *                   `asset_id` equals this value. This prevents words from one
+ *                   asset being mis-projected onto a different asset's clip whose
+ *                   source-frame range happens to overlap on a multi-asset rough-cut.
+ *                   Omit (or pass `undefined`) for single-asset callers — behaviour
+ *                   is identical to the pre-filter version.
  * @returns        Words surviving the cut, sorted by seqStart.
  */
 export function projectCutWords(
   segments: Segment[],
   clips: TimelineClip[],
+  assetId?: string,
 ): CutWord[] {
-  const baseClips = clips.filter((c) => (c.lane ?? 0) === 0);
+  const baseClips = clips.filter(
+    (c) => (c.lane ?? 0) === 0 && (assetId === undefined || c.asset_id === assetId),
+  );
   if (baseClips.length === 0) return [];
 
   const result: CutWord[] = [];

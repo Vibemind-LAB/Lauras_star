@@ -45,7 +45,7 @@ export function FineCutView({
   onSeek: (f: number) => void;
   onFrame: (f: number) => void;
 }): ReactElement {
-  const rc = useRoughCutTranscript(client, roughCutId, segments);
+  const rc = useRoughCutTranscript(client, roughCutId, segments, asset?.id);
 
   // Load audio clips from the rough-cut timeline so VO + music play in preview.
   const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);

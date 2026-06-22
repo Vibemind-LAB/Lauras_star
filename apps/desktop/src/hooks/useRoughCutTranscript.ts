@@ -29,11 +29,16 @@ export interface RoughCutTranscriptController {
  *
  * replaceSpanText is a Phase A seam: it records intent and reloads. The auto-VO/lipsync pipeline
  * (§5) is wired in Phase C — voiceId is plumbed through now so the signature is stable.
+ *
+ * @param assetId - When provided, restricts word-to-clip matching to clips from that asset only
+ *                  (prevents cross-asset mis-projection on multi-asset rough-cuts). See
+ *                  `projectCutWords` for details.
  */
 export function useRoughCutTranscript(
   client: LauraClient | null,
   roughCutId: string | null,
   segments: Segment[],
+  assetId?: string,
 ): RoughCutTranscriptController {
   const [clips, setClips] = useState<TimelineClip[]>([]);
   const [scenes, setScenes] = useState<Scene[]>([]);
@@ -65,7 +70,10 @@ export function useRoughCutTranscript(
     void reload();
   }, [reload]);
 
-  const words = useMemo(() => projectCutWords(segments, clips), [segments, clips]);
+  const words = useMemo(
+    () => projectCutWords(segments, clips, assetId),
+    [segments, clips, assetId],
+  );
 
   const deleteRange = useCallback(
     async (startWordId: string, endWordId: string) => {
