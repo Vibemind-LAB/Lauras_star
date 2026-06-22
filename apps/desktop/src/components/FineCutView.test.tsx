@@ -1,9 +1,16 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineClip } from "../api";
+import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineAudioClip, type TimelineClip } from "../api";
 import { FineCutView } from "./FineCutView";
 
-vi.mock("./SequencePlayer", () => ({ SequencePlayer: () => <div data-testid="player" /> }));
+// Capture the audioClips prop forwarded from FineCutView to SequencePlayer.
+export const fcSeqPlayerProps: { audioClips?: unknown } = {};
+vi.mock("./SequencePlayer", () => ({
+  SequencePlayer: (props: { audioClips?: unknown }) => {
+    fcSeqPlayerProps.audioClips = props.audioClips;
+    return <div data-testid="player" />;
+  },
+}));
 vi.mock("./TimelineBar", () => ({ TimelineBar: () => <div data-testid="timeline" /> }));
 vi.mock("./ContinuousTranscript", () => ({
   ContinuousTranscript: (p: { onDeleteSelection?: (a: string, b: string) => void }) => (
@@ -86,9 +93,26 @@ function makeClient(over: Partial<LauraClient> = {}): LauraClient {
     cutAtFrame: vi.fn().mockResolvedValue({ clips: [baseClip], scenes: [sceneA] }),
     getTranscript: vi.fn().mockResolvedValue([]),
     openScene: vi.fn(), // must NOT be called in the new edit path
+    listTimelineAudioClips: vi.fn().mockResolvedValue([]),
     ...over,
   } as unknown as LauraClient;
 }
+
+const oneAudioClip: TimelineAudioClip = {
+  id: "ac1",
+  timeline_id: "rc1",
+  asset_id: "a",
+  seq_in_frame: 0,
+  seq_out_frame_exclusive: 30,
+  asset_in_frame: 0,
+  gain_percent: 100,
+  fade_in_frames: 0,
+  fade_out_frames: 0,
+  mix_mode: "mix",
+  ducking_percent: 0,
+  label: null,
+  created_at: "",
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -188,5 +212,27 @@ describe("FineCutView", () => {
       />,
     );
     expect(getByText(/Noch keine Szenen/)).toBeTruthy();
+  });
+
+  it("loads rough-cut audio clips and forwards them to the player", async () => {
+    const listTimelineAudioClips = vi.fn().mockResolvedValue([oneAudioClip]);
+    const c = makeClient({ listTimelineAudioClips });
+
+    render(
+      <FineCutView
+        client={c}
+        asset={asset}
+        roughCutId="rc1"
+        segments={segments}
+        currentFrame={0}
+        seek={null}
+        onSeek={vi.fn()}
+        onFrame={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(Array.isArray(fcSeqPlayerProps.audioClips)).toBe(true));
+    expect((fcSeqPlayerProps.audioClips as unknown[]).length).toBe(1);
+    expect(listTimelineAudioClips).toHaveBeenCalledWith("rc1");
   });
 });

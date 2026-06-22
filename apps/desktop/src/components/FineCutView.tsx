@@ -1,6 +1,6 @@
-import { type ReactElement, useMemo } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 
-import { type Asset, type LauraClient, type Segment, type Timeline } from "../api";
+import { type Asset, type LauraClient, type Segment, type Timeline, type TimelineAudioClip } from "../api";
 import { useScenes } from "../hooks/useScenes";
 import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
 import { ContinuousTranscript } from "./ContinuousTranscript";
@@ -46,6 +46,27 @@ export function FineCutView({
   onFrame: (f: number) => void;
 }): ReactElement {
   const rc = useRoughCutTranscript(client, roughCutId, segments);
+
+  // Load audio clips from the rough-cut timeline so VO + music play in preview.
+  const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
+  useEffect(() => {
+    if (!roughCutId) {
+      setAudioClips([]);
+      return;
+    }
+    let cancelled = false;
+    client
+      .listTimelineAudioClips(roughCutId)
+      .then((cs) => {
+        if (!cancelled) setAudioClips(cs);
+      })
+      .catch(() => {
+        if (!cancelled) setAudioClips([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, roughCutId]);
 
   // Fallback scene list from useScenes if the hook hasn't populated rc.scenes yet.
   const { scenes: scenesFromHook } = useScenes(client, roughCutId);
@@ -103,6 +124,7 @@ export function FineCutView({
             clipsOverride={clips}
             seekTo={seek}
             onFrame={onFrame}
+            audioClips={audioClips}
           />
         </div>
 
