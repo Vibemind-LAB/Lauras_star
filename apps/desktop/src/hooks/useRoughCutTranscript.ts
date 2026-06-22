@@ -18,6 +18,8 @@ export interface RoughCutTranscriptController {
     newText: string,
     voiceId: string,
   ) => Promise<void>;
+  /** The job_id of the most recently dispatched VO job, or null if none. */
+  lastVoJobId: string | null;
   error: string | null;
   reload: () => Promise<void>;
 }
@@ -47,6 +49,7 @@ export function useRoughCutTranscript(
     { startWordId: string; endWordId: string } | null
   >(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastVoJobId, setLastVoJobId] = useState<string | null>(null);
   /** Debounce timer ref for replaceSpanText — cancelled on unmount to prevent setState-after-unmount. */
   const voDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -164,11 +167,14 @@ export function useRoughCutTranscript(
               duckingPercent: commit.duckingPercent,
               ...(commit.voiceId !== undefined ? { voiceId: commit.voiceId } : {}),
             })
-            .then(() => {
+            .then((accepted) => {
               if (!mountedRef.current) {
                 resolve();
                 return;
               }
+              // Expose the new job id so FineCutView can track completion and
+              // re-fetch audio clips once the VO is ready (Fix 1).
+              setLastVoJobId(accepted.job_id);
               return reload();
             })
             .catch((e: unknown) => {
@@ -193,6 +199,7 @@ export function useRoughCutTranscript(
     deleteRange,
     cutAt,
     replaceSpanText,
+    lastVoJobId,
     error,
     reload,
   };

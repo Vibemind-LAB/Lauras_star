@@ -3,7 +3,8 @@ import { type ReactElement, useCallback, useEffect, useMemo, useState } from "re
 import { type Asset, type BoundaryIdentity, type LauraClient, type Segment, type Timeline, type TimelineAudioClip, type VoiceoverVoice } from "../api";
 import { useScenes } from "../hooks/useScenes";
 import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
-import { crossfadeFix, findSameSourceEdge } from "../shared/smoothEdge";
+import { useJobStatus } from "../hooks/useJobStatus";
+import { crossfadeFix, findFirstSameSourceEdge } from "../shared/smoothEdge";
 import { ContinuousTranscript } from "./ContinuousTranscript";
 import { EditorialToolsBar } from "./EditorialToolsBar";
 import { SequencePlayer } from "./SequencePlayer";
@@ -68,11 +69,14 @@ export function FineCutView({
     };
   }, [client]);
 
-  // Pending same-source edge: recomputed after each clips update so the smooth
-  // button lights up automatically after a delete that creates a jump-cut (spec §8).
+  // Pending same-source edge: scan ALL lane-0 boundaries for a contiguous
+  // same-source jump-cut, independent of currentFrame. This ensures the
+  // "Übergang glätten" button lights up immediately after any delete that
+  // creates such an edge, without requiring the user to seek to the cut
+  // (spec §8 — Fix 3).
   const pendingEdge = useMemo<BoundaryIdentity | null>(
-    () => findSameSourceEdge(rc.clips, currentFrame),
-    [rc.clips, currentFrame],
+    () => findFirstSameSourceEdge(rc.clips),
+    [rc.clips],
   );
 
   // One-tap smooth: apply a 6-frame crossfade then reload.
@@ -86,8 +90,10 @@ export function FineCutView({
   }, [client, roughCutId, pendingEdge, reloadRc]);
 
   // Load audio clips from the rough-cut timeline so VO + music play in preview.
+  // Extracted into a useCallback so it can be re-triggered on VO job completion
+  // without changing [client, roughCutId] (Fix 1).
   const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
-  useEffect(() => {
+  const reloadAudioClips = useCallback(() => {
     if (!roughCutId) {
       setAudioClips([]);
       return;
@@ -105,6 +111,23 @@ export function FineCutView({
       cancelled = true;
     };
   }, [client, roughCutId]);
+
+  useEffect(() => {
+    return reloadAudioClips();
+  }, [reloadAudioClips]);
+
+  // Track the most recently dispatched VO job and re-fetch audio clips when it
+  // succeeds so the new VO becomes audible in preview and the disclosure strip
+  // updates without a manual remount (Fix 1).
+  const { jobStatus: voJobStatus, isRunning: voJobRunning } = useJobStatus(
+    client,
+    rc.lastVoJobId,
+  );
+  useEffect(() => {
+    if (voJobStatus?.status === "succeeded") {
+      reloadAudioClips();
+    }
+  }, [voJobStatus, reloadAudioClips]);
 
   // Fallback scene list from useScenes if the hook hasn't populated rc.scenes yet.
   const { scenes: scenesFromHook } = useScenes(client, roughCutId);
@@ -189,8 +212,16 @@ export function FineCutView({
             seekTo={seek}
             onFrame={onFrame}
             audioClips={audioClips}
+            rateNum={asset?.rate_num ?? 30}
+            rateDen={asset?.rate_den ?? 1}
           />
         </div>
+        {/* Inline VO progress indicator — visible while VO job is running (Fix 1). */}
+        {voJobRunning && (
+          <div className="px-3 py-1 text-xs text-accent" aria-live="polite">
+            Voiceover wird generiert…
+          </div>
+        )}
 
         <EditorialToolsBar
           client={client}

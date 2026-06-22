@@ -57,7 +57,7 @@ export function EditorialToolsBar({
   rateNum = 30,
   rateDen = 1,
 }: EditorialToolsBarProps): ReactElement {
-  const { active, create, revoke } = useConsent(client, projectId);
+  const { active, create, revoke, error: consentError } = useConsent(client, projectId);
   const [subject, setSubject] = useState<string>("");
   const [reenactOpen, setReenactOpen] = useState(false);
 
@@ -152,6 +152,11 @@ export function EditorialToolsBar({
             Bestätigen
           </button>
         </div>
+        {consentError && (
+          <p className="mt-1 text-[11px] text-status-err" role="alert">
+            {consentError}
+          </p>
+        )}
         <ul className="mt-1 space-y-0.5">
           {active.map((c) => (
             <li key={c.id} className="flex items-center justify-between gap-2">
