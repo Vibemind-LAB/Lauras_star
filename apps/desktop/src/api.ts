@@ -1306,6 +1306,25 @@ export class LauraClient {
   }
 
   /**
+   * List all consent records for a project, newest first.
+   * GET /projects/{projectId}/consent → 200 ConsentRecord[]
+   */
+  listConsent(projectId: string): Promise<ConsentRecord[]> {
+    return this.request<ConsentRecord[]>(`/projects/${projectId}/consent`);
+  }
+
+  /**
+   * Revoke a consent record. Lipsync/reenact gates refuse it afterwards.
+   * POST /projects/{projectId}/consent/{consentId}/revoke → 200 ConsentRecord
+   */
+  revokeConsent(projectId: string, consentId: string): Promise<ConsentRecord> {
+    return this.request<ConsentRecord>(
+      `/projects/${projectId}/consent/${consentId}/revoke`,
+      { method: "POST" },
+    );
+  }
+
+  /**
    * Kick off a reenact (LivePortrait) job on a timeline range.
    * POST /timelines/{timelineId}/reenact → 202 { job_id }
    * consent_id is MANDATORY; revoked/missing consent is rejected server-side.
