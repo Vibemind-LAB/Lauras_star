@@ -747,6 +747,9 @@ export function AssembleView({
             sequenceId={sequence?.timeline_id ?? null}
             reloadKey={reloadKey}
             onFrame={setSeqFrame}
+            audioClips={audioClips}
+            rateNum={rateNum}
+            rateDen={rateDen}
           />
           {captionPreview && activeCaption !== null && (
             <div

@@ -3,8 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type LauraClient, type Scene, type Sequence } from "../api";
 import { AssembleView } from "./AssembleView";
 
+// Capture props passed to SequencePlayer so tests can assert on them.
+export const seqPlayerProps: { audioClips?: unknown; rateNum?: number } = {};
 vi.mock("./SequencePlayer", () => ({
-  SequencePlayer: () => <div data-testid="sequence-player" />,
+  SequencePlayer: (props: { audioClips?: unknown; rateNum?: number }) => {
+    seqPlayerProps.audioClips = props.audioClips;
+    seqPlayerProps.rateNum = props.rateNum;
+    return <div data-testid="sequence-player" />;
+  },
 }));
 
 const scenes: Scene[] = [
@@ -221,6 +227,21 @@ describe("AssembleView", () => {
 
     expect(queryByLabelText("Caption-Preview")).toBeNull();
     expect(await findByLabelText("Sequenz-Transcript-Text")).toBeTruthy();
+  });
+
+  it("passes loaded audio clips and frame rate to the SequencePlayer", async () => {
+    const audioClip = {
+      id: "ac1", timeline_id: "seq", asset_id: "a1", lane: 2,
+      seq_in_frame: 0, seq_out_frame_exclusive: 30,
+      src_in_frame: 0, src_out_frame_exclusive: 30,
+      gain_db: 0, fade_in_frames: 0, fade_out_frames: 0,
+    };
+    const c = client({
+      listTimelineAudioClips: vi.fn().mockResolvedValue([audioClip]),
+    });
+    render(<AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} rateNum={30} rateDen={1} />);
+    await waitFor(() => expect(Array.isArray(seqPlayerProps.audioClips)).toBe(true));
+    expect(seqPlayerProps.rateNum).toBe(30);
   });
 
   it("surfaces AI readiness in the tools rail and sequence duration in the work area", async () => {
