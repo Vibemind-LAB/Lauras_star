@@ -7,6 +7,7 @@ handler raises immediately and creates nothing.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,8 @@ from .lipsync_backend import resolve_lipsync_backend
 from .provenance import write_ai_provenance_manifest
 from .reenact_backend import resolve_reenact_backend
 from .voiceover_backend import DEFAULT_VOICEOVER_SAMPLE_RATE, resolve_voiceover_backend
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -380,6 +383,10 @@ def _maybe_enqueue_lipsync_after_vo(
         )
         return job_id, "ok"
     except Exception:  # noqa: BLE001 - VO already succeeded; lipsync is best-effort
+        _log.warning(
+            "lipsync auto-enqueue failed after voiceover; VO result preserved",
+            exc_info=True,
+        )
         return None, "probe_error"
 
 
