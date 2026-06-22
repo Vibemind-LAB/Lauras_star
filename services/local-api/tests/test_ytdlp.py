@@ -21,6 +21,11 @@ from laura.ingest.ytdlp import (
     ytdlp_available,
 )
 
+# These tests exercise real yt-dlp option-building (monkeypatching yt_dlp.YoutubeDL), so they
+# require yt_dlp installed. The backend imports it lazily and boots without it, and CI's minimal
+# extra set (scene + otel) omits it — skip the whole module there instead of failing.
+pytest.importorskip("yt_dlp")
+
 
 # --- routing heuristic ----------------------------------------------------
 @pytest.mark.parametrize("url", [
