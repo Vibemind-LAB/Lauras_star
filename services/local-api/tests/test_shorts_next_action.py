@@ -18,14 +18,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
 from laura.main import create_app
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -428,8 +426,10 @@ def test_multi_asset_no_cross_pollination(tmp_path: Path) -> None:
                                            pipeline_version="1", config={"stages": {}})
         repos.start_analysis_run(db, run_a["id"])
         repos.finish_analysis_run(db, run_a["id"], status="succeeded", diagnostics={})
-        repos.insert_shots(db, asset_id=asset_a["id"], run_id=run_a["id"],
-                           shots=[{"src_in_frame": 0, "src_out_frame_exclusive": 100, "method": "t"}])
+        repos.insert_shots(
+            db, asset_id=asset_a["id"], run_id=run_a["id"],
+            shots=[{"src_in_frame": 0, "src_out_frame_exclusive": 100, "method": "t"}],
+        )
 
         # Asset B: has a rough_cut WITH clips
         asset_b = repos.create_asset(db, project_id=pid, type="video",

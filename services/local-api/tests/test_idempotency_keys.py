@@ -21,7 +21,6 @@ from laura.jobs.keys import idempotency_key_for
 from laura.jobs.runner import enqueue
 from laura.main import create_app
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

@@ -17,7 +17,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from laura.config import Settings
@@ -343,7 +342,9 @@ def test_recipe_from_trace_excludes_quality_keys(tmp_path: Path) -> None:
     options_with_run_id = dict(options)
     options_with_run_id["short_run_id"] = run_id
     import json as _json
-    exp = repos.create_export(db, project_id="p1", timeline_id="tl1", format="mp4", options=options_with_run_id)
+    exp = repos.create_export(
+        db, project_id="p1", timeline_id="tl1", format="mp4", options=options_with_run_id
+    )
     store.update_run(run_id, status="succeeded", trace_json=_json.dumps({"export_id": exp["id"]}))
 
     result = recipe_from_trace(db, run_id)

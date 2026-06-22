@@ -133,7 +133,8 @@ def test_sapi_voice_select_script() -> None:
     by_lang = _sapi_voice_select_script(None, "de-DE")
     assert "GetInstalledVoices" in by_lang and "de-DE*" in by_lang
     # Explicit voice wins over language; nothing requested -> no selection (system default).
-    assert "SelectVoice('Microsoft Stefan')" in _sapi_voice_select_script("Microsoft Stefan", "en-US")
+    explicit = _sapi_voice_select_script("Microsoft Stefan", "en-US")
+    assert "SelectVoice('Microsoft Stefan')" in explicit
     assert _sapi_voice_select_script(None, None) == ""
 
 
