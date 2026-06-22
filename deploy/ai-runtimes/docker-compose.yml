@@ -28,7 +28,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8898/healthz', timeout=2).read()"
+        - "import json, urllib.request; data=json.loads(urllib.request.urlopen('http://127.0.0.1:8898/healthz', timeout=2).read().decode()); raise SystemExit(0 if data.get('ready', data.get('ok', False)) else 1)"
       interval: 10s
       timeout: 3s
       retries: 12
@@ -60,7 +60,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8899/healthz', timeout=2).read()"
+        - "import json, urllib.request; data=json.loads(urllib.request.urlopen('http://127.0.0.1:8899/healthz', timeout=2).read().decode()); raise SystemExit(0 if data.get('ready', data.get('ok', False)) else 1)"
       interval: 10s
       timeout: 3s
       retries: 12
@@ -93,7 +93,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8901/healthz', timeout=2).read()"
+        - "import json, urllib.request; data=json.loads(urllib.request.urlopen('http://127.0.0.1:8901/healthz', timeout=2).read().decode()); raise SystemExit(0 if data.get('ready', data.get('ok', False)) else 1)"
       interval: 10s
       timeout: 3s
       retries: 12

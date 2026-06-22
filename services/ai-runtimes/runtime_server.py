@@ -31,6 +31,7 @@ class RuntimeSpec:
     endpoints: tuple[str, ...]
     command_env: tuple[str, ...]
     requires_gpu: bool
+    required_model_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class RuntimeConfig:
     command: str | None = None
     provider: str | None = None
     probe_command: str | None = None
+    required_model_paths: tuple[str, ...] | None = None
     timeout_seconds: float = 3600.0
     version: str = VERSION
 
@@ -61,6 +63,7 @@ class RuntimeConfig:
             command=command,
             provider=os.environ.get("LAURA_RUNTIME_PROVIDER"),
             probe_command=os.environ.get("LAURA_VIBEVIDEO_PROBE_COMMAND"),
+            required_model_paths=_path_list_env("LAURA_MODEL_REQUIRED_PATHS"),
             timeout_seconds=timeout,
         )
 
@@ -80,6 +83,7 @@ _RUNTIME_SPECS = {
         endpoints=("/reenact",),
         command_env=("LAURA_LIVEPORTRAIT_COMMAND",),
         requires_gpu=True,
+        required_model_paths=("LivePortrait/pretrained_weights",),
     ),
     "vibevideo": RuntimeSpec(
         runtime="vibevideo",
@@ -88,6 +92,18 @@ _RUNTIME_SPECS = {
         endpoints=("/probe", "/lipsync"),
         command_env=("LAURA_VIBEVIDEO_COMMAND", "LAURA_LIPSYNC_COMMAND"),
         requires_gpu=True,
+        required_model_paths=(
+            "MuseTalk/models/musetalkV15/unet.pth",
+            "MuseTalk/models/musetalkV15/musetalk.json",
+            "MuseTalk/models/dwpose/dw-ll_ucoco_384.pth",
+            "MuseTalk/models/face-parse-bisent/79999_iter.pth",
+            "MuseTalk/models/face-parse-bisent/resnet18-5c106cde.pth",
+            "MuseTalk/models/sd-vae/config.json",
+            "MuseTalk/models/sd-vae/diffusion_pytorch_model.bin",
+            "MuseTalk/models/whisper/config.json",
+            "MuseTalk/models/whisper/preprocessor_config.json",
+            "MuseTalk/models/whisper/pytorch_model.bin",
+        ),
     ),
     "voice": RuntimeSpec(
         runtime="voice",
@@ -96,6 +112,7 @@ _RUNTIME_SPECS = {
         endpoints=("/voiceover",),
         command_env=("LAURA_VOICE_COMMAND", "LAURA_VOICEOVER_COMMAND"),
         requires_gpu=False,
+        required_model_paths=("piper",),
     ),
 }
 
@@ -437,6 +454,8 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
     model_root = _model_root(config)
     command_configured = bool(config.command)
     root_exists = model_root.exists()
+    required_paths = _required_model_paths(config, spec)
+    missing_paths = _missing_model_paths(required_paths)
     if mode == "smoke":
         return {
             "ok": True,
@@ -447,6 +466,8 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "provider": provider,
             "command_configured": command_configured,
             "model_root_exists": root_exists,
+            "required_model_paths": [str(path) for path in required_paths],
+            "missing_model_paths": [str(path) for path in missing_paths],
             "message": "smoke mode ready; no model weights loaded",
         }
     if mode != "model":
@@ -459,6 +480,8 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "provider": provider,
             "command_configured": command_configured,
             "model_root_exists": root_exists,
+            "required_model_paths": [str(path) for path in required_paths],
+            "missing_model_paths": [str(path) for path in missing_paths],
             "message": "LAURA_RUNTIME_MODE must be 'model' or 'smoke'",
         }
     if not config.command:
@@ -471,6 +494,8 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "provider": provider,
             "command_configured": False,
             "model_root_exists": root_exists,
+            "required_model_paths": [str(path) for path in required_paths],
+            "missing_model_paths": [str(path) for path in missing_paths],
             "message": f"{spec.runtime} model command is not configured",
         }
     if not model_root.exists():
@@ -483,7 +508,24 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
             "provider": provider,
             "command_configured": True,
             "model_root_exists": False,
+            "required_model_paths": [str(path) for path in required_paths],
+            "missing_model_paths": [str(path) for path in missing_paths],
             "message": f"model root does not exist: {model_root}",
+        }
+    if missing_paths:
+        missing = ", ".join(str(path) for path in missing_paths)
+        return {
+            "ok": False,
+            "ready": False,
+            "state": "not_ready",
+            "runtime": spec.runtime,
+            "mode": mode,
+            "provider": provider,
+            "command_configured": True,
+            "model_root_exists": True,
+            "required_model_paths": [str(path) for path in required_paths],
+            "missing_model_paths": [str(path) for path in missing_paths],
+            "message": f"required model paths missing: {missing}",
         }
     return {
         "ok": True,
@@ -494,6 +536,8 @@ def _health_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str, objec
         "provider": provider,
         "command_configured": True,
         "model_root_exists": True,
+        "required_model_paths": [str(path) for path in required_paths],
+        "missing_model_paths": [],
         "message": "model command configured",
     }
 
@@ -513,6 +557,10 @@ def _capabilities_payload(config: RuntimeConfig, spec: RuntimeSpec) -> dict[str,
         "command_configured": bool(config.command),
         "probe_command_configured": bool(config.probe_command),
         "model_root": str(_model_root(config)),
+        "required_model_paths": [str(path) for path in _required_model_paths(config, spec)],
+        "missing_model_paths": [
+            str(path) for path in _missing_model_paths(_required_model_paths(config, spec))
+        ],
     }
 
 
@@ -590,6 +638,25 @@ def _model_root(config: RuntimeConfig) -> Path:
     return config.model_root if config.model_root is not None else Path("/models")
 
 
+def _required_model_paths(config: RuntimeConfig, spec: RuntimeSpec) -> tuple[Path, ...]:
+    model_root = _model_root(config)
+    raw_paths = config.required_model_paths
+    requirements = raw_paths if raw_paths is not None else spec.required_model_paths
+    return tuple(
+        _resolve_model_requirement(model_root, requirement)
+        for requirement in requirements
+    )
+
+
+def _resolve_model_requirement(model_root: Path, requirement: str) -> Path:
+    path = Path(requirement)
+    return path if path.is_absolute() else model_root / path
+
+
+def _missing_model_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    return tuple(path for path in paths if not path.exists())
+
+
 def _positive_int(value: object, name: str) -> int:
     try:
         if isinstance(value, int):
@@ -611,6 +678,13 @@ def _first_env(names: tuple[str, ...]) -> str | None:
         if value:
             return value
     return None
+
+
+def _path_list_env(name: str) -> tuple[str, ...] | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return tuple(part.strip() for part in re.split(r"[;,]", raw) if part.strip())
 
 
 def _float_env(name: str, default: float) -> float:

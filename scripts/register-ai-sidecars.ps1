@@ -1,3 +1,4 @@
+[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string] $ApiUrl = "http://127.0.0.1:8765",
     [string] $Token = $env:LAURA_TOKEN,
@@ -14,6 +15,27 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-DefaultModelRoot {
+    if (Test-Path -LiteralPath "E:\") {
+        return "E:\Laura\models"
+    }
+    return ""
+}
+
+function Get-DefaultRuntimeWorkspace {
+    if (Test-Path -LiteralPath "E:\") {
+        return "E:\Laura\ai-runtime"
+    }
+    return ""
+}
+
+if ($ModelRoot -eq "") {
+    $ModelRoot = Get-DefaultModelRoot
+}
+if ($WorkspaceMount -eq "") {
+    $WorkspaceMount = Get-DefaultRuntimeWorkspace
+}
 
 function Invoke-Laura {
     param(
@@ -151,6 +173,11 @@ Add-ModelEnv $definitions[2] @{
     LAURA_VIBEVIDEO_PROBE_COMMAND = $VibeVideoProbeCommand
 }
 
+if ($WhatIfPreference) {
+    $definitions | ConvertTo-Json -Depth 10
+    return
+}
+
 $existing = @(Invoke-Laura -Method GET -Path "/ai/runtimes")
 foreach ($definition in $definitions) {
     $containerName = [string] $definition["container_name"]
@@ -159,6 +186,8 @@ foreach ($definition in $definitions) {
         Write-Host "exists $containerName ($($match.id))"
         continue
     }
-    $created = Invoke-Laura -Method POST -Path "/ai/runtimes" -Body $definition
-    Write-Host "created $containerName ($($created.id))"
+    if ($PSCmdlet.ShouldProcess($containerName, "register AI runtime")) {
+        $created = Invoke-Laura -Method POST -Path "/ai/runtimes" -Body $definition
+        Write-Host "created $containerName ($($created.id))"
+    }
 }

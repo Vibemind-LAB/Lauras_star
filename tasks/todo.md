@@ -403,6 +403,34 @@ Legende: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig & verifiziert · `[!]` b
   `register-ai-sidecars.ps1 -Mode model` registriert diese Images. Verifiziert: Sidecar-Provider-
   Tests, PowerShell-Syntax, Compose-Config, echte `/healthz`, `/voiceover`, `/reenact`, `/probe`
   und `/lipsync` Calls; Artefakte liegen gitignored unter `workspace/ai-runtime/`.
+- [x] **VV8 Echte AI-Runtime-Sidecars** — Voice/Piper, LivePortrait und MuseTalk laufen als
+  optionale HTTP-Sidecars ausserhalb des Laura-Core. `services/ai-runtimes` kapselt den
+  Runtime-Server und Provider-Runner; `deploy/ai-runtimes` und `scripts/ai-runtimes.ps1`
+  starten Smoke- oder Model-Mode. Modellroot/Caches sind auf `E:\Laura\models` verlegt
+  (Fallback `workspace/models`), die lokalen Gewichte liegen dort. Backend-Runtime-Registry
+  (`/ai/runtimes`) ist additiv mit Migration `0025`; bestehende `backend`-Felder bleiben
+  Fallback, `runtime_id` routet Voice/Reenact/Lipsync in den normalen Job-Flow. Verifiziert:
+  `services/ai-runtimes/tests` 18 gruen, Runtime-API/Repo/Manager/Routing 21 gruen,
+  Compose-Config gruen, Skript-Parse/WhatIf gruen, Registry-Smoke gegen lokale API registriert
+  drei Model-Runtimes mit E:-Mounts. Runtime-`/healthz`/`/capabilities` pruefen im Model-Mode
+  jetzt auch runtime-spezifische Pflichtartefakte (`piper`, LivePortrait-Weights, vollstaendige
+  MuseTalk-Weights inkl. DWPose/Face-Parse/SD-VAE/Whisper) und melden `missing_model_paths`;
+  Compose-Healthchecks sowie `ai-runtimes` `health` werten `ready`/`ok` aus und schlagen bei
+  fehlenden Modellartefakten fehl. MuseTalk-Image patcht den UNet-Checkpoint-Load auf CPU und
+  linkt `/opt/MuseTalk/models` auf den gemounteten Weight-Root, damit Code aus dem Image und
+  Gewichte von `E:` zusammenlaufen; die MuseTalk-`inference.py`-FFmpeg-Finalisierung laeuft
+  ueber `subprocess.run(..., stdin=DEVNULL, timeout=LAURA_MUSETALK_FFMPEG_TIMEOUT)` statt
+  blindem `os.system`, damit haengende Finalisierung nicht mehr den Laura-HTTP-Job blockiert.
+  `check-ai-runtime-prereqs.ps1` prueft Modellroot, Docker, WSL und Sidecar-Ports.
+  **Live-Stand:** Docker Desktop/WSL recovered; Sidecars laufen im GPU-Model-Mode healthy.
+  Piper direkt und ueber Laura-Voiceover-Job gruen;
+  LivePortrait direkter Model-Sidecar gruen; MuseTalk direkter Model-Sidecar gruen
+  (`E:\Laura\ai-runtime\live-tests\musetalk-direct-linked-models.mp4`, 576x768, 22.49s).
+  Laura-JobRunner-Lipsync ueber `runtime_id` auf den MuseTalk-Sidecar ist live gruen:
+  `E:\Laura\ai-runtime\laura-live-lipsync-api-20260622075050\project\synthetic\c916b971aa7e45d191574125f795cc96.lipsync.mp4`
+  (576x768, 50 Frames, 2.000s, H.264 + AAC, Provenance-Sidecar). Rebuild:
+  `laura-runtime-musetalk-model:local`; Health: Voice 8898, LivePortrait 8899, VibeVideo 8901
+  jeweils `ok=true`, `ready=true`.
 
 ---
 

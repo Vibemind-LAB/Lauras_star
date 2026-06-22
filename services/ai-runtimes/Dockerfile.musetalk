@@ -15,6 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LAURA_MUSETALK_RESULT_DIR=/workspace/musetalk-results \
     LAURA_MUSETALK_VERSION=v15 \
     LAURA_MUSETALK_OUTPUT_GLOB=**/*.mp4 \
+    LAURA_MUSETALK_FFMPEG_TIMEOUT=300 \
     LAURA_MUSETALK_EXTRA_ARGS=--use_float16
 
 WORKDIR /opt/laura-runtime
@@ -52,6 +53,75 @@ RUN git clone --depth 1 --branch "$MUSETALK_REF" "$MUSETALK_REPO" /opt/MuseTalk 
 
 RUN python -m pip install --no-cache-dir --no-build-isolation "chumpy==0.70" \
     && mim install "mmpose==1.1.0"
+
+ENV LAURA_MUSETALK_REPO=/opt/MuseTalk \
+    LAURA_MUSETALK_WEIGHTS_ROOT=/models/MuseTalk/models
+
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("/opt/MuseTalk/musetalk/models/unet.py")
+text = path.read_text(encoding="utf-8")
+old = "weights = torch.load(model_path) if torch.cuda.is_available() else torch.load(model_path, map_location=self.device)"
+new = "weights = torch.load(model_path, map_location='cpu')"
+if old not in text:
+    raise SystemExit("MuseTalk unet.py checkpoint-load pattern changed")
+path.write_text(text.replace(old, new), encoding="utf-8")
+PY
+
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("/opt/MuseTalk/scripts/inference.py")
+text = path.read_text(encoding="utf-8")
+
+if "import shlex\n" not in text:
+    old = "import subprocess\n"
+    new = "import subprocess\nimport shlex\n"
+    if old not in text:
+        raise SystemExit("MuseTalk inference.py subprocess import pattern changed")
+    text = text.replace(old, new, 1)
+
+helper = '''def _run_ffmpeg_command(command: str) -> None:
+    timeout = float(os.environ.get("LAURA_MUSETALK_FFMPEG_TIMEOUT", "300"))
+    subprocess.run(
+        shlex.split(command),
+        check=True,
+        stdin=subprocess.DEVNULL,
+        timeout=timeout,
+    )
+
+'''
+if "def _run_ffmpeg_command(command: str)" not in text:
+    old = "def fast_check_ffmpeg():\n"
+    new = helper + old
+    if old not in text:
+        raise SystemExit("MuseTalk inference.py fast_check_ffmpeg pattern changed")
+    text = text.replace(old, new, 1)
+
+replacements = {
+    'cmd = f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"': (
+        'cmd = f"ffmpeg -nostdin -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"'
+    ),
+    "os.system(cmd)": "_run_ffmpeg_command(cmd)",
+    'cmd_img2video = f"ffmpeg -y -v warning -r {fps} -f image2 -i {result_img_save_path}/%08d.png -vcodec libx264 -vf format=yuv420p -crf 18 {temp_vid_path}"': (
+        'cmd_img2video = f"ffmpeg -nostdin -y -v warning -r {fps} -f image2 -i {result_img_save_path}/%08d.png -vcodec libx264 -vf format=yuv420p -crf 18 {temp_vid_path}"'
+    ),
+    "os.system(cmd_img2video)": "_run_ffmpeg_command(cmd_img2video)",
+    'cmd_combine_audio = f"ffmpeg -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"': (
+        'cmd_combine_audio = f"ffmpeg -nostdin -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"'
+    ),
+    "os.system(cmd_combine_audio)": "_run_ffmpeg_command(cmd_combine_audio)",
+}
+for old, new in replacements.items():
+    if old not in text:
+        raise SystemExit(f"MuseTalk inference.py ffmpeg pattern changed: {old}")
+    text = text.replace(old, new)
+
+path.write_text(text, encoding="utf-8")
+PY
+
+RUN test -e /opt/MuseTalk/models || ln -s /models/MuseTalk/models /opt/MuseTalk/models
 
 RUN useradd --create-home --uid 10001 laura \
     && mkdir -p /models /workspace \

@@ -92,6 +92,62 @@ def test_model_health_exposes_command_and_model_root_diagnostics(tmp_path: Path)
     assert "LAURA_VOICE_COMMAND" in command_env
 
 
+def test_model_health_requires_runtime_specific_model_artifacts(tmp_path: Path) -> None:
+    required = [
+        tmp_path / "MuseTalk" / "models" / "musetalkV15" / "unet.pth",
+        tmp_path / "MuseTalk" / "models" / "musetalkV15" / "musetalk.json",
+        tmp_path / "MuseTalk" / "models" / "dwpose" / "dw-ll_ucoco_384.pth",
+        tmp_path / "MuseTalk" / "models" / "face-parse-bisent" / "79999_iter.pth",
+        tmp_path / "MuseTalk" / "models" / "face-parse-bisent" / "resnet18-5c106cde.pth",
+        tmp_path / "MuseTalk" / "models" / "sd-vae" / "config.json",
+        tmp_path / "MuseTalk" / "models" / "sd-vae" / "diffusion_pytorch_model.bin",
+        tmp_path / "MuseTalk" / "models" / "whisper" / "config.json",
+        tmp_path / "MuseTalk" / "models" / "whisper" / "preprocessor_config.json",
+        tmp_path / "MuseTalk" / "models" / "whisper" / "pytorch_model.bin",
+    ]
+    config = RuntimeConfig(
+        kind="vibevideo",
+        mode="model",
+        port=0,
+        model_root=tmp_path,
+        command=f"{sys.executable} -c \"from pathlib import Path\"",
+    )
+    with running_runtime(config) as port:
+        missing_health = _json_request(port, "GET", "/healthz")
+        missing_caps = _json_request(port, "GET", "/capabilities")
+
+    assert missing_health["ready"] is False
+    assert missing_health["state"] == "not_ready"
+    assert "unet.pth" in str(missing_health["message"])
+    assert missing_caps["required_model_paths"] == [str(path) for path in required]
+    assert missing_caps["missing_model_paths"] == missing_caps["required_model_paths"]
+
+    for path in required:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"weights")
+    with running_runtime(config) as port:
+        ready_health = _json_request(port, "GET", "/healthz")
+
+    assert ready_health["ready"] is True
+    assert ready_health["missing_model_paths"] == []
+
+
+def test_model_required_paths_can_be_overridden(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        kind="liveportrait",
+        mode="model",
+        port=0,
+        model_root=tmp_path,
+        command=f"{sys.executable} -c \"from pathlib import Path\"",
+        required_model_paths=("custom-ready.marker",),
+    )
+    with running_runtime(config) as port:
+        health = _json_request(port, "GET", "/healthz")
+
+    assert health["ready"] is False
+    assert health["missing_model_paths"] == [str(tmp_path / "custom-ready.marker")]
+
+
 def test_lipsync_smoke_probe_and_lipsync_contract(tmp_path: Path) -> None:
     config = RuntimeConfig(kind="vibevideo", mode="smoke", port=0, model_root=tmp_path)
     multipart, content_type = _multipart(

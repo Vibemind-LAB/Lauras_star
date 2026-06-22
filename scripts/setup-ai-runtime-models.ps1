@@ -10,10 +10,35 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+
+function Get-DefaultModelRoot {
+    if (Test-Path -LiteralPath "E:\") {
+        return "E:\Laura\models"
+    }
+    return (Join-Path $RepoRoot "workspace\models")
+}
+
+function Use-ExternalCachesIfPresent {
+    $cacheCandidates = @{
+        HF_HOME = "E:\laura-hf-cache"
+        HUGGINGFACE_HUB_CACHE = "E:\huggingface_cache"
+        UV_CACHE_DIR = "E:\uv-cache"
+    }
+    foreach ($key in $cacheCandidates.Keys) {
+        $value = $cacheCandidates[$key]
+        if ((-not [Environment]::GetEnvironmentVariable($key, "Process")) -and (Test-Path -LiteralPath $value)) {
+            [Environment]::SetEnvironmentVariable($key, $value, "Process")
+        }
+    }
+}
+
 if ($ModelRoot -eq "") {
-    $ModelRoot = Join-Path $RepoRoot "workspace\models"
+    $ModelRoot = Get-DefaultModelRoot
 }
 $ResolvedModelRoot = New-Item -ItemType Directory -Force -Path $ModelRoot
+Use-ExternalCachesIfPresent
+Write-Host "Using model root: $($ResolvedModelRoot.FullName)" -ForegroundColor Green
+Write-Host "HF_HOME=$env:HF_HOME HUGGINGFACE_HUB_CACHE=$env:HUGGINGFACE_HUB_CACHE UV_CACHE_DIR=$env:UV_CACHE_DIR" -ForegroundColor DarkGray
 
 function Invoke-Checked {
     param([string[]] $CommandArgs)
@@ -46,12 +71,9 @@ foreach ($selectedRuntime in $runtimes) {
             "-v",
             "$($voiceRoot.FullName):/models",
             "laura-runtime-voice:local",
-            "python",
-            "-m",
-            "piper.download_voices",
-            "--data-dir",
-            "/models/piper",
-            $PiperVoice
+            "sh",
+            "-lc",
+            "python -m piper.download_voices --data-dir /models/piper '$PiperVoice' && chmod -R a+rX /models/piper"
         )
         Write-Host "Piper voice ready: $piperRoot" -ForegroundColor Green
         }

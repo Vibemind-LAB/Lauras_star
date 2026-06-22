@@ -25,6 +25,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     result_dir.mkdir(parents=True, exist_ok=True)
     version = os.environ.get("LAURA_MUSETALK_VERSION", "v15")
     weights_root = Path(os.environ.get("LAURA_MUSETALK_WEIGHTS_ROOT", str(repo / "models")))
+    _ensure_repo_models_path(repo, weights_root)
 
     with tempfile.TemporaryDirectory(prefix="laura-musetalk-") as tmp:
         config_path = Path(tmp) / "inference.yaml"
@@ -62,6 +63,22 @@ def _write_inference_config(path: Path, *, video: Path, audio: Path) -> None:
         f"  audio_path: {audio.as_posix()}\n",
         encoding="utf-8",
     )
+
+
+def _ensure_repo_models_path(repo: Path, weights_root: Path) -> None:
+    repo_models = repo / "models"
+    if repo_models.resolve(strict=False) == weights_root.resolve(strict=False):
+        return
+    if repo_models.exists() or repo_models.is_symlink():
+        if repo_models.resolve() == weights_root.resolve():
+            return
+        raise RuntimeError(
+            "MuseTalk repo models path already exists and does not point to "
+            f"weights root: {repo_models}"
+        )
+    if not weights_root.exists():
+        raise FileNotFoundError(f"MuseTalk weights root does not exist: {weights_root}")
+    repo_models.symlink_to(weights_root, target_is_directory=True)
 
 
 def _copy_newest(root: Path, pattern: str, output: Path) -> None:

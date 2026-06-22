@@ -19,7 +19,7 @@ from laura.ingest.ffmpeg import run_ffmpeg
 from laura.render.reel import resolve_font
 
 DEFAULT_LIPSYNC_URL = "http://127.0.0.1:8901"
-DEFAULT_LIPSYNC_TIMEOUT_SECONDS = 600.0
+DEFAULT_LIPSYNC_TIMEOUT_SECONDS = 1800.0
 
 
 @dataclass(frozen=True)

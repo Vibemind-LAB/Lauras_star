@@ -20,7 +20,8 @@ services:
       dockerfile: Dockerfile.musetalk
     environment:
       LAURA_RUNTIME_MODE: model
-      LAURA_MUSETALK_REPO: /models/MuseTalk
+      LAURA_MUSETALK_REPO: /opt/MuseTalk
+      LAURA_MUSETALK_WEIGHTS_ROOT: /models/MuseTalk/models
       LAURA_MUSETALK_RESULT_DIR: /workspace/musetalk-results
       LAURA_MUSETALK_VERSION: v15
       LAURA_MUSETALK_OUTPUT_GLOB: "**/*.mp4"

@@ -31,17 +31,24 @@ setzen und den passenden Command konfigurieren.
 
 ## Model Mode
 
-In `model` mode ist eine Runtime nur ready, wenn ein Modell-Command gesetzt ist
-und `LAURA_MODEL_ROOT` existiert. Die Commands werden als lokale Container-
+In `model` mode ist eine Runtime nur ready, wenn ein Modell-Command gesetzt ist,
+`LAURA_MODEL_ROOT` existiert und die runtime-spezifischen Pflichtartefakte
+vorhanden sind. `/healthz` und `/capabilities` liefern `required_model_paths`
+und `missing_model_paths`, damit falsche Mounts oder unvollstaendige Downloads
+vor dem ersten Job sichtbar werden. Die Commands werden als lokale Container-
 Konfiguration gesetzt, nicht in Git gespeichert. Compose setzt bereits sinnvolle
 Provider-Commands; echte Repos/Gewichte muessen lokal gemountet werden.
 
 ### Erwartetes Modell-Layout
 
-Standard-Mount:
+Standard-Mount auf dieser Windows-Workstation ist `E:\Laura\models` (via
+`scripts/ai-runtimes.ps1` und `scripts/setup-ai-runtime-models.ps1`). Auf
+Hosts ohne `E:` fallen die Skripte auf `workspace/models` zurueck. Direkte
+`docker compose`-Aufrufe koennen denselben Pfad ueber `LAURA_MODELS_ROOT`
+setzen.
 
 ```text
-workspace/models/
+E:\Laura\models\
   voice/
     piper/
       <piper voice files>
@@ -64,6 +71,10 @@ workspace/models/
 ```
 
 Alternativ kann `LAURA_MODELS_ROOT` auf einen externen Modellordner zeigen.
+Wenn ein Provider ein anderes Layout nutzt, kann `LAURA_MODEL_REQUIRED_PATHS`
+im Container gesetzt werden. Mehrere relative oder absolute Pfade werden mit
+Komma oder Semikolon getrennt; ein leer gesetzter Wert deaktiviert die
+Pflichtartefakt-Liste fuer diesen Runtime-Container.
 
 ### LivePortrait
 
@@ -168,33 +179,68 @@ im Modell-/Sidecar-Environment installiert, nicht im Laura-Core.
 Vom Repo-Root:
 
 ```powershell
-docker compose -f deploy/ai-runtimes/docker-compose.yml up -d --build
+.\scripts\ai-runtimes.ps1 -Action build
+.\scripts\ai-runtimes.ps1 -Action up
 ```
 
 Mit GPU-Override:
 
 ```powershell
-docker compose -f deploy/ai-runtimes/docker-compose.yml -f deploy/ai-runtimes/docker-compose.gpu.yml up -d --build
+.\scripts\ai-runtimes.ps1 -Action up -Gpu
 ```
 
 Mit echten Modell-Images:
 
 ```powershell
 .\scripts\setup-ai-runtime-models.ps1 -Runtime all
-docker compose -f deploy/ai-runtimes/docker-compose.yml -f deploy/ai-runtimes/docker-compose.models.yml up -d --build
+.\scripts\ai-runtimes.ps1 -Action build -Mode model -Gpu
+.\scripts\ai-runtimes.ps1 -Action up -Mode model -Gpu
 ```
 
-`setup-ai-runtime-models.ps1` laedt Modellgewichte unter `workspace/models/<runtime>`
-und setzt die Dateien nach Docker-Downloads auf `a+rX`, damit die nicht-root
-Sidecar-User die Read-only-Mounts lesen koennen.
+Git-Bash/WSL nutzt denselben Ablauf:
+
+```bash
+scripts/ai-runtimes.sh build model --gpu
+scripts/ai-runtimes.sh up model --gpu
+```
+
+`setup-ai-runtime-models.ps1` laedt Modellgewichte standardmaessig unter
+`E:\Laura\models\<runtime>` und setzt die Dateien nach Docker-Downloads auf
+`a+rX`, damit die nicht-root Sidecar-User die Read-only-Mounts lesen koennen.
+Wenn vorhanden, nutzt das Script ausserdem `E:\laura-hf-cache`,
+`E:\huggingface_cache` und `E:\uv-cache` als Prozess-Caches.
+`ai-runtimes.sh` bevorzugt auf Windows-Bash/WSL ebenfalls `E:\Laura\models`
+(`/e/Laura/models` bzw. `/mnt/e/Laura/models`) und faellt nur ohne E:-Drive auf
+`workspace/models` zurueck.
 
 Health:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8898/healthz
-Invoke-RestMethod http://127.0.0.1:8899/healthz
-Invoke-RestMethod http://127.0.0.1:8901/healthz
+.\scripts\ai-runtimes.ps1 -Action health -Mode model
 ```
+
+Die `health`-Action gibt die drei `/healthz`-Payloads aus und bricht mit einem
+Fehler ab, sobald ein Sidecar zwar antwortet, aber `ready=false` bzw. `ok=false`
+meldet.
+
+Prereq-/Doctor-Check:
+
+```powershell
+.\scripts\check-ai-runtime-prereqs.ps1
+```
+
+Der Doctor ist nicht-destruktiv und prueft:
+
+- freie Laufwerke und den aktiven `ModelRoot`
+- erwartete Modellordner fuer Piper, LivePortrait und MuseTalk
+- Docker CLI, Docker Desktop Service und Docker Engine
+- `docker-desktop` WSL-Distro
+- Sidecar-Ports `8898`, `8899`, `8901`
+
+Wenn `Docker Desktop Service status=Stopped` und `Docker engine ... pipe ...
+not found` erscheint, muss Docker Desktop ausserhalb dieser Skriptumgebung
+gestartet werden. Falls `sc start com.docker.service` mit `Zugriff verweigert`
+scheitert, braucht der Service-Start Admin-/Desktop-Rechte.
 
 ## Registrierung in Laura
 
@@ -204,9 +250,12 @@ Wenn die lokale API auf `http://127.0.0.1:8765` laeuft:
 .\scripts\register-ai-sidecars.ps1 -ApiUrl http://127.0.0.1:8765 -Mode smoke
 ```
 
-Das legt drei `container`-Runtimes an. Wenn die Compose-Container schon laufen,
-nutzt Laura dieselben Container-Namen. Wenn sie noch nicht laufen, kann Laura sie
-ueber Runtime Start starten.
+Das legt drei `container`-Runtimes an. Die Runtimes verwenden die Standardports
+`8898`, `8899` und `8901`, also dieselben Defaults, die die bestehenden
+Voiceover/Reenact/Lipsync-Jobhandler bereits als Sidecar-Backends nutzen.
+Wenn die Compose-Container schon laufen, nutzt Laura dieselben Container-Namen.
+Wenn sie noch nicht laufen, kann Laura sie ueber Runtime Start starten. `-WhatIf`
+gibt die JSON-Definitionen aus, ohne die API zu kontaktieren.
 
 Fuer Modellmodus:
 
@@ -227,8 +276,10 @@ Optional koennen Commands ueberschrieben werden:
 ## Gewichte und Lizenzen
 
 Keine Modellgewichte, gated Repositories oder Lizenzartefakte gehoeren in Git.
-Lege Modellcode und Gewichte lokal unter `workspace/models/<runtime>` oder einem
-externen Modellpfad ab und mounte diesen Pfad als `/models`.
+Lege Modellcode und Gewichte lokal bevorzugt unter `E:\Laura\models\<runtime>`
+oder einem externen Modellpfad ab und mounte diesen Pfad als `/models`. Der
+Repo-Fallback `workspace/models/<runtime>` ist nur fuer kleine Smoke-/Dev-Setups
+gedacht.
 
 Referenzen, die fuer die Default-Provider verwendet wurden:
 
