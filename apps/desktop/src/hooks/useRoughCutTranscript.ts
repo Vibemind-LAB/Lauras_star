@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { type LauraClient, type Scene, type Segment, type TimelineClip } from "../api";
 import { type CutWord, projectCutWords } from "../shared/transcriptProjection";
+import { buildVoiceoverCommit } from "../shared/spanReplaceCommit";
 
 export interface RoughCutTranscriptController {
   words: CutWord[];
@@ -46,6 +47,19 @@ export function useRoughCutTranscript(
     { startWordId: string; endWordId: string } | null
   >(null);
   const [error, setError] = useState<string | null>(null);
+  /** Debounce timer ref for replaceSpanText — cancelled on unmount to prevent setState-after-unmount. */
+  const voDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (voDebounceRef.current !== null) {
+        clearTimeout(voDebounceRef.current);
+        voDebounceRef.current = null;
+      }
+    };
+  }, []);
 
   const reload = useCallback(async () => {
     if (!client || !roughCutId) {
@@ -104,17 +118,70 @@ export function useRoughCutTranscript(
   );
 
   const replaceSpanText = useCallback(
-    async (
-      _startWordId: string,
-      _endWordId: string,
-      _newText: string,
-      _voiceId: string,
-    ) => {
-      // Phase A seam: the auto-VO/lipsync pipeline (§5) lands in Phase C. Reload to keep the
-      // projection fresh; arguments are plumbed so the contract is stable across phases.
-      await reload();
+    (
+      startWordId: string,
+      endWordId: string,
+      newText: string,
+      voiceId: string,
+    ): Promise<void> => {
+      // Debounce: cancel any pending timer so rapid edits coalesce into one VO call.
+      if (voDebounceRef.current !== null) {
+        clearTimeout(voDebounceRef.current);
+        voDebounceRef.current = null;
+      }
+
+      return new Promise<void>((resolve) => {
+        voDebounceRef.current = setTimeout(() => {
+          voDebounceRef.current = null;
+
+          // Snapshot words at call time (closure over `words` from the memo).
+          const commit = buildVoiceoverCommit({
+            startWordId,
+            endWordId,
+            newText,
+            voiceId: voiceId || null,
+            words: words.map((w) => ({
+              id: w.id,
+              seq_in_frame: w.seqStart,
+              seq_out_frame_exclusive: w.seqEnd,
+              text: w.text,
+            })),
+          });
+
+          if (!client || !roughCutId || commit === null) {
+            // Nothing to enqueue (blank text, missing span, or no client). Reload anyway
+            // so the projection stays fresh.
+            void reload().then(resolve);
+            return;
+          }
+
+          void client
+            .createVoiceover(roughCutId, {
+              text: commit.text,
+              seqIn: commit.seqIn,
+              seqOut: commit.seqOut,
+              mixMode: commit.mixMode,
+              duckingPercent: commit.duckingPercent,
+              ...(commit.voiceId !== undefined ? { voiceId: commit.voiceId } : {}),
+            })
+            .then(() => {
+              if (!mountedRef.current) {
+                resolve();
+                return;
+              }
+              return reload();
+            })
+            .catch((e: unknown) => {
+              if (mountedRef.current) {
+                setError(String(e));
+              }
+            })
+            .then(resolve);
+        }, 400);
+      });
     },
-    [reload],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [client, roughCutId, reload, words],
   );
 
   return {
