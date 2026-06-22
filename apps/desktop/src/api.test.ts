@@ -429,6 +429,19 @@ describe("LauraClient sequence transcript methods", () => {
   });
 });
 
+describe("LauraClient.cutAtFrame", () => {
+  it("cutAtFrame posts at_seq_frame and returns clips + scenes", async () => {
+    const fn = mockFetch({ clips: [], scenes: [] });
+    const c = new LauraClient("http://x", "tok");
+    const out = await c.cutAtFrame("tl1", 42);
+    expect(out).toEqual({ clips: [], scenes: [] });
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://x/timelines/tl1/cut-at-frame");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ at_seq_frame: 42 });
+  });
+});
+
 describe("LauraClient timeline audio clip methods", () => {
   it("GETs timeline audio clips", async () => {
     const fn = mockFetch([]);

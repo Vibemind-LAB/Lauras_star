@@ -1105,6 +1105,18 @@ export class LauraClient {
     });
   }
 
+  /** Composite cut on the rough-cut: split the clip at the frame (if mid-clip) then the scene
+   *  there. Returns the updated clips and scene markers in one round-trip. */
+  cutAtFrame(
+    timelineId: string,
+    atSeqFrame: number,
+  ): Promise<{ clips: TimelineClip[]; scenes: Scene[] }> {
+    return this.request<{ clips: TimelineClip[]; scenes: Scene[] }>(
+      `/timelines/${timelineId}/cut-at-frame`,
+      { method: "POST", body: JSON.stringify({ at_seq_frame: atSeqFrame }) },
+    );
+  }
+
   mergeScenes(timelineId: string, sceneId: string): Promise<Scene[]> {
     return this.request<Scene[]>(`/timelines/${timelineId}/scenes/merge`, {
       method: "POST",
