@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import audit
 from ..db import repos
 from ..db.database import Database
 from ..jobs.keys import idempotency_key_for
@@ -288,6 +289,23 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
         role="replace",
     )
 
+    try:
+        audit.record(
+            ctx.db,
+            audit.system_principal(),
+            "ai.reenact",
+            entity_type="media_asset",
+            entity_id=asset["id"],
+            payload={
+                "timeline_id": tl["id"],
+                "consent_id": consent_id,
+                "seq_in_frame": seq_in,
+                "seq_out_frame_exclusive": seq_out,
+            },
+        )
+    except Exception:
+        _log.warning("audit.record failed for ai.reenact; job result preserved", exc_info=True)
+
     return {
         "asset_id": asset["id"],
         "out_path": str(out_path),
@@ -542,6 +560,24 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         seq_in=seq_in,
         seq_out=seq_out,
     )
+
+    try:
+        audit.record(
+            ctx.db,
+            audit.system_principal(),
+            "ai.voiceover",
+            entity_type="media_asset",
+            entity_id=asset["id"],
+            payload={
+                "timeline_id": timeline["id"],
+                "audio_clip_id": clip["id"],
+                "seq_in_frame": seq_in,
+                "seq_out_frame_exclusive": seq_out,
+            },
+        )
+    except Exception:
+        _log.warning("audit.record failed for ai.voiceover; job result preserved", exc_info=True)
+
     return {
         "asset_id": asset["id"],
         "audio_clip_id": clip["id"],
@@ -760,6 +796,24 @@ def handle_lipsync(ctx: JobContext) -> dict[str, Any]:
         lane=1,
         role="replace",
     )
+    try:
+        audit.record(
+            ctx.db,
+            audit.system_principal(),
+            "ai.lipsync",
+            entity_type="media_asset",
+            entity_id=asset["id"],
+            payload={
+                "timeline_id": timeline["id"],
+                "audio_asset_id": audio_asset_id,
+                "consent_id": consent_id,
+                "seq_in_frame": seq_in,
+                "seq_out_frame_exclusive": seq_out,
+            },
+        )
+    except Exception:
+        _log.warning("audit.record failed for ai.lipsync; job result preserved", exc_info=True)
+
     return {
         "asset_id": asset["id"],
         "audio_asset_id": audio_asset_id,
