@@ -654,6 +654,13 @@ export interface ConsentRecord {
   revoked_at: string | null;
 }
 
+export interface HistoryState {
+  can_undo: boolean;
+  can_redo: boolean;
+  undo_label: string | null;
+  redo_label: string | null;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -1349,5 +1356,23 @@ export class LauraClient {
         backend: opts.backend,
       }),
     });
+  }
+
+  undo(timelineId: string): Promise<{ clips: TimelineClip[]; scenes: Scene[] }> {
+    return this.request<{ clips: TimelineClip[]; scenes: Scene[] }>(
+      `/timelines/${timelineId}/undo`,
+      { method: "POST" },
+    );
+  }
+
+  redo(timelineId: string): Promise<{ clips: TimelineClip[]; scenes: Scene[] }> {
+    return this.request<{ clips: TimelineClip[]; scenes: Scene[] }>(
+      `/timelines/${timelineId}/redo`,
+      { method: "POST" },
+    );
+  }
+
+  getHistory(timelineId: string): Promise<HistoryState> {
+    return this.request<HistoryState>(`/timelines/${timelineId}/history`);
   }
 }
