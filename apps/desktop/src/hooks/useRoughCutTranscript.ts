@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { type LauraClient, type Scene, type Segment, type TimelineClip } from "../api";
+import { type HistoryState, type LauraClient, type Scene, type Segment, type TimelineClip } from "../api";
 import { type CutWord, projectCutWords } from "../shared/transcriptProjection";
 import { buildVoiceoverCommit } from "../shared/spanReplaceCommit";
 
@@ -22,6 +22,12 @@ export interface RoughCutTranscriptController {
   lastVoJobId: string | null;
   error: string | null;
   reload: () => Promise<void>;
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoLabel: string | null;
+  redoLabel: string | null;
 }
 
 /**
@@ -50,6 +56,12 @@ export function useRoughCutTranscript(
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [lastVoJobId, setLastVoJobId] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryState>({
+    can_undo: false,
+    can_redo: false,
+    undo_label: null,
+    redo_label: null,
+  });
   /** Debounce timer ref for replaceSpanText — cancelled on unmount to prevent setState-after-unmount. */
   const voDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -63,6 +75,15 @@ export function useRoughCutTranscript(
       }
     };
   }, []);
+
+  const refreshHistory = useCallback(async () => {
+    if (!client || !roughCutId) return;
+    try {
+      setHistory(await client.getHistory(roughCutId));
+    } catch {
+      /* non-fatal */
+    }
+  }, [client, roughCutId]);
 
   const reload = useCallback(async () => {
     if (!client || !roughCutId) {
@@ -81,7 +102,30 @@ export function useRoughCutTranscript(
     } catch (e) {
       setError(String(e));
     }
-  }, [client, roughCutId]);
+    void refreshHistory();
+  }, [client, roughCutId, refreshHistory]);
+
+  const undo = useCallback(async () => {
+    if (!client || !roughCutId) return;
+    try {
+      await client.undo(roughCutId);
+      await reload();
+      await refreshHistory();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [client, roughCutId, reload, refreshHistory]);
+
+  const redo = useCallback(async () => {
+    if (!client || !roughCutId) return;
+    try {
+      await client.redo(roughCutId);
+      await reload();
+      await refreshHistory();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [client, roughCutId, reload, refreshHistory]);
 
   useEffect(() => {
     void reload();
@@ -202,5 +246,11 @@ export function useRoughCutTranscript(
     lastVoJobId,
     error,
     reload,
+    undo,
+    redo,
+    canUndo: history.can_undo,
+    canRedo: history.can_redo,
+    undoLabel: history.undo_label,
+    redoLabel: history.redo_label,
   };
 }
