@@ -154,27 +154,29 @@ automatisch undo-bar; alles andere fällt im Test auf.
   `otio_json` ist veraltet-aber-regenerierbar; der Undo-Endpunkt rebuildet und behandelt einen
   Rebuild-Fehler als weiche Warnung (Zeilen-Restore gilt als Erfolg). Kein „Teilzustand" der Clips.
 
-## 6 · Async-Jobs (VO / Lipsync / Reenact) — korrigiert
+## 6 · Async-Jobs (VO / Lipsync / Reenact) — seamless via kooperativem Cancel
 
 Snapshots sind „pre-edit". Weil Undo/Redo gegen den **Live**-DB-Zustand diffen, sind bereits **fertige**
-Jobs (Audio-/Clip-Zeile schon geschrieben) korrekt erfasst — Undo schiebt den Live-Zustand (mit Zeile)
-auf Redo und stellt den Pre-Edit-Snapshot her. Die Async-Handler-Writes laufen bewusst **außerhalb** des
-Wrappers (Allowlist §4.3) — das ist genau, warum das Live-Diff sie erfasst.
+Jobs (Zeile schon geschrieben) automatisch erfasst; die Async-Handler-Writes laufen bewusst **außerhalb**
+des Wrappers (Allowlist §4.3) — genau damit das Live-Diff sie sieht.
 
-**Laufende Jobs werden nicht „weggecancelt".** Review-Befund: `cancel_job` stoppt nur `queued`-Jobs;
-bei `running` setzt es lediglich `cancel_requested=1`, und die AI-Handler **pollen das nie**
-(`repos.py:119-136`, keine Cancel-Prüfung in `handlers.py`). Ein laufender VO-Job würde also seinen Clip
-**nach** dem Undo anhängen. Deshalb:
+**Undo/Redo sind jederzeit sofort möglich — auch während ein VO/Lipsync/Reenact noch generiert.** Das ist
+die ausdrückliche Vorgabe (seamless, **keine** disabled-Buttons, kein Warten). Damit ein weggeklickter,
+noch laufender Job seinen Clip nicht **nach** dem Undo anhängt:
 
-- **Primärmechanismus: Undo/Redo sind gesperrt, solange für die Timeline ein nicht-terminaler Job
-  existiert.** Der `GET /history`-Endpunkt (§8) ermittelt das, indem er nicht-terminale Jobs scannt und
-  `payload_json.timeline_id` matcht (die `jobs`-Tabelle hat **keine** `timeline_id`-Spalte; die ID liegt
-  nur im Payload — `runner.py:62-113`). N ist klein (wenige in-flight Jobs) → Scan ist günstig.
-- Das deckt auch den **VO→Lipsync-Auto-Chain** (zwei Jobs) ab: gesperrt wird timeline-weit, nicht über
-  eine Einzel-Job-ID.
-- **Bewusste Grenze:** Hat man Text ersetzt und klickt Undo, *bevor* der VO fertig ist, ist Undo kurz
-  gesperrt (Button disabled) statt einen halben Zwischenzustand zu erzeugen. Nach Job-Ende greift Undo
-  ganz normal und entfernt den fertigen VO-Clip. (Kein `cancel_job` auf laufende AI-Jobs.)
+- Undo/Redo **cancel-requesten** alle nicht-terminalen Jobs der Timeline: `queued` → `cancel_job` setzt
+  `cancelled`; `running` → `cancel_requested=1`. „Nicht-terminale Jobs dieser Timeline" werden ermittelt,
+  indem nicht-terminale Jobs gescannt und `payload_json.timeline_id` gematcht wird (die `jobs`-Tabelle hat
+  keine `timeline_id`-Spalte; `runner.py:62-113`). Deckt den **VO→Lipsync-Auto-Chain** (zwei Jobs) ab.
+- Die AI-Handler (`handle_voiceover/_lipsync/_reenact`) **prüfen `cancel_requested` unmittelbar vor ihrem
+  finalen Timeline-Write** und brechen ab, wenn gesetzt — Muster wie `ingest.fetch` (`is_import_cancelled`).
+  *Heute pollen sie nicht — dieser Check ist Teil der Arbeit* (`handlers.py:561/811/280`,
+  `repos.py:119-136`).
+- **Rest-Race (selten, selbstheilend):** Landet ein Write im winzigen Fenster nach dem Cancel-Check, aber
+  nach der Undo-Restore-Transaktion, taucht der Clip verwaist auf; der nächste Undo/Reload räumt ihn ab.
+  Kein gesperrter Zustand, kein Datenverlust.
+- **Bewusste Grenze:** Redo eines abgebrochenen in-flight VO regeneriert ihn nicht (er wurde nie fertig) —
+  man wiederholt einfach das Text-Ersetzen. Kein spürbarer Seam.
 
 ## 7 · Tiefe & Langlebigkeit
 
@@ -185,21 +187,20 @@ bei `running` setzt es lediglich `cancel_requested=1`, und die AI-Handler **poll
 
 ## 8 · API
 
-- `POST /timelines/{id}/undo` → `{ clips, scenes }` + `409`, wenn Undo-Stapel leer **oder** ein
-  nicht-terminaler Job für die Timeline läuft.
-- `POST /timelines/{id}/redo` → `{ clips, scenes }` + `409` analog.
-- `GET  /timelines/{id}/history` → `{ canUndo, canRedo, undoLabel, redoLabel, busy }` (`busy` = §6-Sperre).
+- `POST /timelines/{id}/undo` → `{ clips, scenes }`; cancel-requestet offene Jobs der Timeline (§6).
+  `409` **nur**, wenn der Undo-Stapel leer ist.
+- `POST /timelines/{id}/redo` → `{ clips, scenes }`; analog. `409` nur bei leerem Redo-Stapel.
+- `GET  /timelines/{id}/history` → `{ canUndo, canRedo, undoLabel, redoLabel }`.
 - Modelle in `api/models.py`; Routen in `api/timelines.py`.
 
 ## 9 · Frontend
 
 - `api.ts`: `undo(timelineId)`, `redo(timelineId)`, `getHistory(timelineId)`.
-- `useRoughCutTranscript`: ergänzt um `undo()`, `redo()`, `canUndo`, `canRedo`, `undoLabel`, `redoLabel`,
-  `historyBusy`; nach Undo/Redo das vorhandene `reload()`; `getHistory` nach jeder Mutation +
-  nach Undo/Redo. `lastVoJobId`/laufende Jobs speisen `historyBusy` (Server-`busy` ist die Wahrheit).
-- `EditorialToolsBar`: zwei Buttons (↶ Rückgängig / ↷ Wiederholen), Tooltip = Label, `disabled` bei
-  `!canUndo`/`!canRedo` oder `historyBusy`. Grün/weiß-Token (`accent`), kein `sky-*`. Button-Muster wie
-  `TimelineBar` (button-only) spiegeln.
+- `useRoughCutTranscript`: ergänzt um `undo()`, `redo()`, `canUndo`, `canRedo`, `undoLabel`, `redoLabel`;
+  nach Undo/Redo das vorhandene `reload()`; `getHistory` nach jeder Mutation + nach Undo/Redo.
+- `EditorialToolsBar`: zwei Buttons (↶ Rückgängig / ↷ Wiederholen), Tooltip = Label, `disabled` **nur**
+  bei `!canUndo`/`!canRedo` (kein Sperren während laufender Jobs — Undo ist immer sofort, §6). Grün/weiß-
+  Token (`accent`), kein `sky-*`. Button-Muster wie `TimelineBar` (button-only) spiegeln.
 - **Tastatur — Neuland:** Es gibt **keinen** vorhandenen Keyboard-Undo (TimelineBar ist button-only;
   Review fand keinen `ctrlKey`/`keydown`-Undo-Handler). Strg+Z / Strg+Umschalt+Z wird **neu** an der
   `FineCutView` gebaut, mit **Fokus-Guard**: kein Auslösen, wenn der Fokus in einem Texteingabefeld liegt
@@ -217,7 +218,8 @@ bei `running` setzt es lediglich `cancel_requested=1`, und die AI-Handler **poll
 - **VO-Undo** entfernt den Audio-Clip, **Asset bleibt auf Platte**.
 - **Szenen-Musik-Undo:** set/clear `scenes.music_*` Roundtrip (deckt die korrigierte Tabellen-Lage ab).
 - **Übergang/Overlay-Undo:** `set_clip_transition` bzw. Overlay-Add rückgängig — Übergänge/`role` bleiben erhalten.
-- **Sperre bei laufendem Job:** mit nicht-terminalem Job für die Timeline → `undo`/`redo` `409`, `busy=true`.
+- **Undo während laufendem VO:** Undo setzt `cancel_requested` für die Timeline-Jobs; der VO-Handler bricht
+  **vor** `add_timeline_audio_clip` ab; Undo liefert **sofort** den Pre-Edit-Zustand (kein nachträglicher Clip).
 - **Atomarität:** simulierter Fehler im Restore ⇒ kein Teilzustand der vier Gruppen.
 - **Coverage-Allowlist-Test:** keine Timeline-Mutation am Wrapper vorbei außer der erlaubten (§4.3).
 - Tiefen-Cap (51. Edit ⇒ ältester weg) + grobe Snapshot-Größe bei vielen Clips.
@@ -236,7 +238,8 @@ Schwere Modelle/ffmpeg sind nicht nötig (Snapshots sind reine DB-Zeilen).
   `replace_timeline_clips` **nicht** wiederverwenden.
 - **Atomarität** nur für den Zeilen-Restore garantiert (neue Ein-Connection-Funktion); `rebuild_otio`
   separat + idempotent (§5).
-- **Laufende AI-Jobs nicht abbrechbar** → Undo/Redo timeline-weit gesperrt, solange ein Job offen ist (§6).
+- **Laufende AI-Jobs:** kooperativer Cancel-Check im Handler vor dem finalen Write (Muster
+  `is_import_cancelled`) macht Undo seamless; seltener Rest-Race ist selbstheilend (§6).
 - **Snapshot-Größe** → Tiefen-Cap (50), kompaktes JSON.
 - **Annahme** „Feinschnitt editiert nur die Rough-Cut-`timeline_id`" → Plan-Task 1 verifiziert sie, bevor
   gebaut wird (sonst wäre der Single-Timeline-Snapshot das falsche Aggregat).
