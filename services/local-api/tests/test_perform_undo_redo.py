@@ -1,6 +1,7 @@
 import pytest
-from laura.editing import history
+
 from laura.db import repos
+from laura.editing import history
 
 
 def test_undo_then_redo_round_trips(seeded_rough_cut):

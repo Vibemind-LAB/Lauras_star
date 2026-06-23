@@ -24,7 +24,7 @@ def test_restore_roundtrip_is_byte_identical_including_extra_columns(seeded_roug
     assert repos.capture_timeline_snapshot(db, tl)["clips"] == []
     repos.restore_timeline_snapshot(db, tl, before)
     after = repos.capture_timeline_snapshot(db, tl)
-    assert after == before          # all columns incl role/transition_after_*/linked_audio_group/music_*
+    assert after == before  # full-column incl role/transition/linked_audio_group/music
 
 
 def test_restore_is_atomic_on_bad_row(seeded_rough_cut):

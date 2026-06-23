@@ -17,7 +17,8 @@ def test_checkpoint_pushes_pre_edit_snapshot(seeded_rough_cut):
     assert st["can_undo"] and st["undo_label"] == "Wörter gelöscht"
     with db.connection() as conn:
         payload = conn.execute(
-            "SELECT payload_json FROM timeline_history WHERE timeline_id=? ORDER BY seq_no DESC LIMIT 1",
+            "SELECT payload_json FROM timeline_history "
+            "WHERE timeline_id=? ORDER BY seq_no DESC LIMIT 1",
             (tl,),
         ).fetchone()["payload_json"]
     assert json.loads(payload)["clips"] == before["clips"]  # the PRE-edit snapshot
