@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from ..db import repos
 from ..db.database import Database
+from ..editing.history import timeline_checkpoint
 from .models import TimelineAudioClipCreate, TimelineAudioClipOut, TimelineAudioClipUpdate
 from .security import require_token
 
@@ -90,20 +91,21 @@ def create_audio_clip(
     db = _db(request)
     _timeline_or_404(db, timeline_id)
     _asset_or_404(db, body.asset_id)
-    clip = repos.add_timeline_audio_clip(
-        db,
-        timeline_id=timeline_id,
-        asset_id=body.asset_id,
-        seq_in_frame=body.seq_in_frame,
-        seq_out_frame_exclusive=body.seq_out_frame_exclusive,
-        asset_in_frame=body.asset_in_frame,
-        gain_percent=body.gain_percent,
-        fade_in_frames=body.fade_in_frames,
-        fade_out_frames=body.fade_out_frames,
-        mix_mode=body.mix_mode,
-        ducking_percent=body.ducking_percent,
-        label=body.label,
-    )
+    with timeline_checkpoint(db, timeline_id, "Audio hinzugefügt"):
+        clip = repos.add_timeline_audio_clip(
+            db,
+            timeline_id=timeline_id,
+            asset_id=body.asset_id,
+            seq_in_frame=body.seq_in_frame,
+            seq_out_frame_exclusive=body.seq_out_frame_exclusive,
+            asset_in_frame=body.asset_in_frame,
+            gain_percent=body.gain_percent,
+            fade_in_frames=body.fade_in_frames,
+            fade_out_frames=body.fade_out_frames,
+            mix_mode=body.mix_mode,
+            ducking_percent=body.ducking_percent,
+            label=body.label,
+        )
     return TimelineAudioClipOut(**clip)
 
 
@@ -123,7 +125,8 @@ def update_audio_clip(
     if current is None or current["timeline_id"] != timeline_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "audio clip not found")
     patch = _validated_update(current, body)
-    updated = repos.update_timeline_audio_clip(db, clip_id, **patch)
+    with timeline_checkpoint(db, timeline_id, "Audio geändert"):
+        updated = repos.update_timeline_audio_clip(db, clip_id, **patch)
     assert updated is not None
     return TimelineAudioClipOut(**updated)
 
@@ -139,5 +142,6 @@ def delete_audio_clip(timeline_id: str, clip_id: str, request: Request) -> Respo
     current = repos.get_timeline_audio_clip(db, clip_id)
     if current is None or current["timeline_id"] != timeline_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "audio clip not found")
-    repos.delete_timeline_audio_clip(db, clip_id)
+    with timeline_checkpoint(db, timeline_id, "Audio gelöscht"):
+        repos.delete_timeline_audio_clip(db, clip_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

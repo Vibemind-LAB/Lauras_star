@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..db import repos
 from ..db.database import Database
+from ..editing.history import timeline_checkpoint
 from ..editing.operations import EditClip, ordered, split_clip
 from ..editing.otio_sync import serialize_timeline_otio
 from ..scenes.build import (
@@ -65,15 +66,16 @@ def generate_scenes(
             "asset has no kept shots to build a rough cut from",
         )
     gap = body.gap_frames if body.gap_frames is not None else default_gap_frames(asset)
-    group_timeline_scenes(
-        db,
-        project_id=tl["project_id"],
-        timeline_id=timeline_id,
-        asset=asset,
-        run_id=run["id"],
-        clips=clips,
-        gap_frames=gap,
-    )
+    with timeline_checkpoint(db, timeline_id, "Szenen erzeugt"):
+        group_timeline_scenes(
+            db,
+            project_id=tl["project_id"],
+            timeline_id=timeline_id,
+            asset=asset,
+            run_id=run["id"],
+            clips=clips,
+            gap_frames=gap,
+        )
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
 
 
@@ -108,7 +110,8 @@ def split_scene(
             ranges.append((at, s["seq_out_frame_exclusive"]))
         else:
             ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
-    repos.replace_scenes(db, scene["project_id"], timeline_id, ranges)
+    with timeline_checkpoint(db, timeline_id, "Szene geteilt"):
+        repos.replace_scenes(db, scene["project_id"], timeline_id, ranges)
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
 
 
@@ -129,56 +132,58 @@ def cut_at_frame(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     at = body.at_seq_frame
 
-    # --- Phase 1: ensure a clip boundary exists at `at` ----------------------------
-    clips = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
-    boundaries = {c.seq_in_frame for c in clips} | {c.seq_out_frame_exclusive for c in clips}
-    if at not in boundaries:
-        # Frame is inside a clip — split it to create the boundary (integer frames, invariant #1).
-        try:
-            clips = split_clip(clips, at)
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-        repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(clips)])
-        fresh = repos.get_timeline(db, timeline_id)
-        assert fresh is not None
-        repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
+    with timeline_checkpoint(db, timeline_id, "Schnitt gesetzt"):
+        # --- Phase 1: ensure a clip boundary exists at `at` ----------------------------
+        clips = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
+        boundaries = {c.seq_in_frame for c in clips} | {c.seq_out_frame_exclusive for c in clips}
+        if at not in boundaries:
+            # Frame is inside a clip — split it to create the boundary
+            # (integer frames, invariant #1).
+            try:
+                clips = split_clip(clips, at)
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+            repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(clips)])
+            fresh = repos.get_timeline(db, timeline_id)
+            assert fresh is not None
+            repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
 
-    # --- Phase 2: split the scene that strictly contains `at` ----------------------
-    # If `at` is already a scene boundary, return the current state (idempotent — no error).
-    all_scenes = repos.list_scenes(db, timeline_id)
-    scene_boundaries: set[int] = set()
-    for s in all_scenes:
-        scene_boundaries.add(int(s["seq_in_frame"]))
-        scene_boundaries.add(int(s["seq_out_frame_exclusive"]))
-    if at in scene_boundaries:
-        return {
-            "clips": [
-                ClipOut(**c).model_dump()
-                for c in repos.list_timeline_clips(db, timeline_id)
-            ],
-            "scenes": [SceneOut(**s).model_dump() for s in all_scenes],
-        }
+        # --- Phase 2: split the scene that strictly contains `at` ----------------------
+        # If `at` is already a scene boundary, return the current state (idempotent — no error).
+        all_scenes = repos.list_scenes(db, timeline_id)
+        scene_boundaries: set[int] = set()
+        for s in all_scenes:
+            scene_boundaries.add(int(s["seq_in_frame"]))
+            scene_boundaries.add(int(s["seq_out_frame_exclusive"]))
+        if at in scene_boundaries:
+            return {
+                "clips": [
+                    ClipOut(**c).model_dump()
+                    for c in repos.list_timeline_clips(db, timeline_id)
+                ],
+                "scenes": [SceneOut(**s).model_dump() for s in all_scenes],
+            }
 
-    scene = next(
-        (
-            s
-            for s in all_scenes
-            if s["seq_in_frame"] < at < s["seq_out_frame_exclusive"]
-        ),
-        None,
-    )
-    if scene is None:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "cut point is not inside a scene"
+        scene = next(
+            (
+                s
+                for s in all_scenes
+                if s["seq_in_frame"] < at < s["seq_out_frame_exclusive"]
+            ),
+            None,
         )
-    ranges: list[tuple[int, int]] = []
-    for s in repos.list_scenes(db, timeline_id):
-        if s["id"] == scene["id"]:
-            ranges.append((s["seq_in_frame"], at))
-            ranges.append((at, s["seq_out_frame_exclusive"]))
-        else:
-            ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
-    repos.replace_scenes(db, tl["project_id"], timeline_id, ranges)
+        if scene is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "cut point is not inside a scene"
+            )
+        ranges: list[tuple[int, int]] = []
+        for s in repos.list_scenes(db, timeline_id):
+            if s["id"] == scene["id"]:
+                ranges.append((s["seq_in_frame"], at))
+                ranges.append((at, s["seq_out_frame_exclusive"]))
+            else:
+                ranges.append((s["seq_in_frame"], s["seq_out_frame_exclusive"]))
+        repos.replace_scenes(db, tl["project_id"], timeline_id, ranges)
 
     return {
         "clips": [ClipOut(**c).model_dump() for c in repos.list_timeline_clips(db, timeline_id)],
@@ -207,16 +212,20 @@ def merge_scenes(
         else:
             ranges.append((scenes[i]["seq_in_frame"], scenes[i]["seq_out_frame_exclusive"]))
             i += 1
-    repos.replace_scenes(db, scene["project_id"], timeline_id, ranges)
+    with timeline_checkpoint(db, timeline_id, "Szenen verbunden"):
+        repos.replace_scenes(db, scene["project_id"], timeline_id, ranges)
     return [SceneOut(**s) for s in repos.list_scenes(db, timeline_id)]
 
 
 @router.patch("/scenes/{scene_id}", response_model=SceneOut)
 def rename_scene(scene_id: str, body: RenameSceneRequest, request: Request) -> SceneOut:
     db = _db(request)
-    if repos.get_scene(db, scene_id) is None:
+    scene = repos.get_scene(db, scene_id)
+    if scene is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
-    repos.update_scene_name(db, scene_id, body.name)
+    tid = scene["source_timeline_id"]
+    with timeline_checkpoint(db, tid, "Szene umbenannt"):
+        repos.update_scene_name(db, scene_id, body.name)
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)
@@ -251,7 +260,9 @@ def set_scene_music(scene_id: str, body: SetSceneMusicRequest, request: Request)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
     if repos.get_asset(db, body.asset_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
-    repos.set_scene_music(db, scene_id, body.asset_id, body.gain_percent)
+    tid = scene["source_timeline_id"]
+    with timeline_checkpoint(db, tid, "Musik geändert"):
+        repos.set_scene_music(db, scene_id, body.asset_id, body.gain_percent)
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)
@@ -263,7 +274,9 @@ def clear_scene_music(scene_id: str, request: Request) -> SceneOut:
     scene = repos.get_scene(db, scene_id)
     if scene is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scene not found")
-    repos.clear_scene_music(db, scene_id)
+    tid = scene["source_timeline_id"]
+    with timeline_checkpoint(db, tid, "Musik entfernt"):
+        repos.clear_scene_music(db, scene_id)
     updated = repos.get_scene(db, scene_id)
     assert updated is not None
     return SceneOut(**updated)

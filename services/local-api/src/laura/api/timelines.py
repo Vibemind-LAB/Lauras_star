@@ -23,6 +23,7 @@ from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
+from ..editing.history import timeline_checkpoint
 from ..editing.operations import (
     EditClip,
     append_clip,
@@ -965,34 +966,48 @@ def apply_operation(
         if seq_in is not None and seq_out is not None:
             _audio_ripple_span = (seq_in, seq_out)
 
-    new_clips = _apply(db, current, body, row)
+    _op_label = {
+        "delete_words": "Wörter gelöscht",
+        "delete": "Bereich gelöscht",
+        "append": "Clip hinzugefügt",
+        "insert": "Clip eingefügt",
+        "trim": "Clip getrimmt",
+        "move": "Clip verschoben",
+        "lift": "Bereich entfernt",
+        "set_speed": "Geschwindigkeit geändert",
+        "set_audio_offset": "Audio-Offset geändert",
+    }.get(body.op, f"Op: {body.op}")
+    with timeline_checkpoint(db, timeline_id, _op_label):
+        new_clips = _apply(db, current, body, row)
 
-    repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
+        repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
 
-    if _audio_ripple_span is not None:
-        repos.ripple_timeline_audio_clips(
-            db, timeline_id, _audio_ripple_span[0], _audio_ripple_span[1]
-        )
+        if _audio_ripple_span is not None:
+            repos.ripple_timeline_audio_clips(
+                db, timeline_id, _audio_ripple_span[0], _audio_ripple_span[1]
+            )
 
-    fresh = repos.get_timeline(db, timeline_id)
-    assert fresh is not None
-    # Regenerate from clips, re-applying any accepted L/J split offsets carried in the previous
-    # blob so an edit never clobbers a split back to a hard cut (migration-free; offsets persist
-    # in the OTIO metadata itself — see editing.otio_sync.serialize_timeline_otio).
-    repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
+        fresh = repos.get_timeline(db, timeline_id)
+        assert fresh is not None
+        # Regenerate from clips, re-applying any accepted L/J split offsets carried in the previous
+        # blob so an edit never clobbers a split back to a hard cut (migration-free; offsets persist
+        # in the OTIO metadata itself — see editing.otio_sync.serialize_timeline_otio).
+        repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
 
-    if delete_words_span is not None:
-        old_bounds = [
-            (s["seq_in_frame"], s["seq_out_frame_exclusive"])
-            for s in repos.list_scenes(db, timeline_id)
-        ]
-        new_bounds = reconcile_after_delete(old_bounds, delete_words_span[0], delete_words_span[1])
-        repos.replace_scenes(db, row["project_id"], timeline_id, new_bounds)
-        base = _timeline_out(db, fresh)
-        return TimelineWithScenesOut(
-            **base.model_dump(),
-            scenes=[SceneOut(**s) for s in repos.list_scenes(db, timeline_id)],
-        )
+        if delete_words_span is not None:
+            old_bounds = [
+                (s["seq_in_frame"], s["seq_out_frame_exclusive"])
+                for s in repos.list_scenes(db, timeline_id)
+            ]
+            new_bounds = reconcile_after_delete(
+                old_bounds, delete_words_span[0], delete_words_span[1]
+            )
+            repos.replace_scenes(db, row["project_id"], timeline_id, new_bounds)
+            base = _timeline_out(db, fresh)
+            return TimelineWithScenesOut(
+                **base.model_dump(),
+                scenes=[SceneOut(**s) for s in repos.list_scenes(db, timeline_id)],
+            )
 
     return _timeline_out(db, fresh)
 
@@ -1009,16 +1024,18 @@ def set_timeline_clips(
     db = _db(request)
     if repos.get_timeline(db, timeline_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
-    rows = [c.model_dump() for c in body.clips]
-    repos.replace_timeline_clips(db, timeline_id, rows)
-    fresh = repos.get_timeline(db, timeline_id)
-    assert fresh is not None
-    # Preserve any accepted L/J split offsets across a wholesale clip replace (undo/redo restore):
-    # they live in the previous blob's metadata and are re-applied at build time, not in a column.
-    repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
-    audit.record(
-        db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
-    )
+    with timeline_checkpoint(db, timeline_id, "Clips ersetzt"):
+        rows = [c.model_dump() for c in body.clips]
+        repos.replace_timeline_clips(db, timeline_id, rows)
+        fresh = repos.get_timeline(db, timeline_id)
+        assert fresh is not None
+        # Preserve any accepted L/J split offsets across a wholesale clip replace
+        # (undo/redo restore): they live in the previous blob's metadata and are
+        # re-applied at build time, not in a column.
+        repos.update_timeline_otio(db, timeline_id, serialize_timeline_otio(db, fresh))
+        audit.record(
+            db, principal, "timeline.set_clips", entity_type="timeline", entity_id=timeline_id
+        )
     return _timeline_out(db, fresh)
 
 
@@ -1045,12 +1062,17 @@ def set_clip_transition(
     allowed = {"hard", "fade", "crossfade"}
     kind = body.kind if body.kind in allowed else "hard"
     frames = 0 if kind == "hard" else body.duration_frames
-    repos.set_clip_transition(db, clip_id=clip_id, kind=kind, frames=frames)
-    fresh = repos.get_timeline(db, timeline_id)
-    assert fresh is not None
-    audit.record(
-        db, principal, "timeline.set_clip_transition", entity_type="timeline", entity_id=timeline_id
-    )
+    with timeline_checkpoint(db, timeline_id, "Übergang geändert"):
+        repos.set_clip_transition(db, clip_id=clip_id, kind=kind, frames=frames)
+        fresh = repos.get_timeline(db, timeline_id)
+        assert fresh is not None
+        audit.record(
+            db,
+            principal,
+            "timeline.set_clip_transition",
+            entity_type="timeline",
+            entity_id=timeline_id,
+        )
     return _timeline_out(db, fresh)
 
 
