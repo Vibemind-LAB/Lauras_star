@@ -178,6 +178,39 @@ def is_import_cancelled(db: Database, asset_id: str) -> bool:
         return bool(row["cancel_requested"]) if row is not None else False
 
 
+_NON_TERMINAL = ("queued", "leased", "running")
+_AI_KINDS = ("ai.voiceover", "ai.lipsync", "ai.reenact")
+
+
+def is_job_cancel_requested(db: Database, job_id: str) -> bool:
+    """True if the given job has a pending cancel request (cancel_requested=1)."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT cancel_requested FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    return bool(row["cancel_requested"]) if row is not None else False
+
+
+def request_timeline_jobs_cancel(db: Database, timeline_id: str) -> list[str]:
+    """Flag all non-terminal AI jobs for a timeline for cooperative cancellation.
+
+    Returns the list of job IDs that were flagged. Calls :func:`cancel_job` on
+    each matching job (queued → cancelled; running/leased → cancel_requested=1).
+    """
+    kinds_ph = ", ".join("?" for _ in _AI_KINDS)
+    status_ph = ", ".join("?" for _ in _NON_TERMINAL)
+    with db.connection() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM jobs WHERE kind IN ({kinds_ph}) AND status IN ({status_ph}) "
+            "AND json_extract(payload_json, '$.timeline_id') = ?",
+            (*_AI_KINDS, *_NON_TERMINAL, timeline_id),
+        ).fetchall()
+    ids = [r["id"] for r in rows]
+    for jid in ids:
+        cancel_job(db, jid)
+    return ids
+
+
 # --- assets ---------------------------------------------------------------
 def create_asset(
     db: Database,

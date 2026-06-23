@@ -277,6 +277,8 @@ def handle_reenact(ctx: JobContext) -> dict[str, Any]:
     )
 
     # ── 8. Place a replace-overlay clip on the timeline ───────────────────────
+    if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
+        return {"status": "cancelled", "reason": "undo"}
     repos.add_timeline_clip(
         ctx.db,
         timeline_id=tl["id"],
@@ -548,6 +550,8 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
 
     # Remove any prior synthetic VO clips overlapping this span so editing the same span
     # twice (different text or voice) never stacks two replace_original clips.
+    if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
+        return {"status": "cancelled", "reason": "undo"}
     effective_mix_mode = str(payload.get("mix_mode") or "mix")
     if effective_mix_mode in {"replace_original", "mute_original"}:
         repos.delete_timeline_audio_clips_overlapping(
@@ -808,6 +812,8 @@ def handle_lipsync(ctx: JobContext) -> dict[str, Any]:
             "quality": quality_payload,
         },
     )
+    if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
+        return {"status": "cancelled", "reason": "undo"}
     repos.add_timeline_clip(
         ctx.db,
         timeline_id=timeline["id"],
