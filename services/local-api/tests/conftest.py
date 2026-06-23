@@ -92,3 +92,58 @@ def seeded_timeline(tmp_path: Path) -> tuple[Database, str, str]:
         words=[],
     )
     return database, timeline["id"], segment_id
+
+
+@pytest.fixture
+def seeded_rough_cut(tmp_path: Path) -> tuple[Database, str, str]:
+    """A migrated DB with a rough-cut timeline carrying one clip, one scene (with music),
+    and one audio clip. Returns (db, timeline_id, asset_id). Shared by the undo/redo tests."""
+    workspace = tmp_path / "ws" / "project"
+    workspace.mkdir(parents=True, exist_ok=True)
+    settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
+    database = SqliteDatabase(settings.db_path)
+    database.migrate()
+    project = repos.create_project(
+        database,
+        name="undo-test",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(workspace),
+    )
+    timeline = repos.create_timeline(
+        database,
+        project_id=project["id"],
+        name="rough",
+        kind="sequence",
+    )
+    asset = repos.create_asset(
+        database,
+        project_id=project["id"],
+        type="video",
+        display_name="src",
+        source_path=str(workspace / "source.mp4"),
+    )
+    repos.add_timeline_clip(
+        database,
+        timeline_id=timeline["id"],
+        asset_id=asset["id"],
+        src_in_frame=0,
+        src_out_frame_exclusive=30,
+        seq_in_frame=0,
+        seq_out_frame_exclusive=30,
+        lane=0,
+        role="base",
+    )
+    repos.replace_scenes(database, project["id"], timeline["id"], [(0, 30)])
+    scene = repos.list_scenes(database, timeline["id"])[0]
+    repos.set_scene_music(database, scene["id"], asset["id"], 80)
+    repos.add_timeline_audio_clip(
+        database,
+        timeline_id=timeline["id"],
+        asset_id=asset["id"],
+        seq_in_frame=0,
+        seq_out_frame_exclusive=30,
+        label="VO",
+    )
+    return database, timeline["id"], asset["id"]

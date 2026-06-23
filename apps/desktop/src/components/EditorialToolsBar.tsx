@@ -29,6 +29,13 @@ export interface EditorialToolsBarProps {
   rateNum?: number;
   /** Denominator of the project sequence frame rate. */
   rateDen?: number;
+  /** Undo/redo history state and handlers. */
+  canUndo?: boolean;
+  canRedo?: boolean;
+  undoLabel?: string | null;
+  redoLabel?: string | null;
+  onUndo?(): void;
+  onRedo?(): void;
 }
 
 /**
@@ -56,6 +63,12 @@ export function EditorialToolsBar({
   currentSeqFrame = 0,
   rateNum = 30,
   rateDen = 1,
+  canUndo = false,
+  canRedo = false,
+  undoLabel = null,
+  redoLabel = null,
+  onUndo,
+  onRedo,
 }: EditorialToolsBarProps): ReactElement {
   const { active, create, revoke, error: consentError } = useConsent(client, projectId);
   const [subject, setSubject] = useState<string>("");
@@ -71,6 +84,24 @@ export function EditorialToolsBar({
   return (
     <div className="flex flex-col gap-1 border-y border-bezel/80 px-2 py-1.5">
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        <button
+          type="button"
+          onClick={onUndo ?? (() => undefined)}
+          disabled={!canUndo}
+          title={undoLabel ? `Rückgängig: ${undoLabel}` : "Rückgängig"}
+          className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
+        >
+          ↶ Rückgängig
+        </button>
+        <button
+          type="button"
+          onClick={onRedo ?? (() => undefined)}
+          disabled={!canRedo}
+          title={redoLabel ? `Wiederholen: ${redoLabel}` : "Wiederholen"}
+          className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
+        >
+          ↷ Wiederholen
+        </button>
         <label className="flex items-center gap-1 text-content-muted">
           <span className="text-[10px] uppercase tracking-wide">Stimme</span>
           <select

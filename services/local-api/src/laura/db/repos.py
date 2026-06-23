@@ -178,6 +178,39 @@ def is_import_cancelled(db: Database, asset_id: str) -> bool:
         return bool(row["cancel_requested"]) if row is not None else False
 
 
+_NON_TERMINAL = ("queued", "leased", "running")
+_AI_KINDS = ("ai.voiceover", "ai.lipsync", "ai.reenact")
+
+
+def is_job_cancel_requested(db: Database, job_id: str) -> bool:
+    """True if the given job has a pending cancel request (cancel_requested=1)."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT cancel_requested FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    return bool(row["cancel_requested"]) if row is not None else False
+
+
+def request_timeline_jobs_cancel(db: Database, timeline_id: str) -> list[str]:
+    """Flag all non-terminal AI jobs for a timeline for cooperative cancellation.
+
+    Returns the list of job IDs that were flagged. Calls :func:`cancel_job` on
+    each matching job (queued → cancelled; running/leased → cancel_requested=1).
+    """
+    kinds_ph = ", ".join("?" for _ in _AI_KINDS)
+    status_ph = ", ".join("?" for _ in _NON_TERMINAL)
+    with db.connection() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM jobs WHERE kind IN ({kinds_ph}) AND status IN ({status_ph}) "
+            "AND json_extract(payload_json, '$.timeline_id') = ?",
+            (*_AI_KINDS, *_NON_TERMINAL, timeline_id),
+        ).fetchall()
+    ids = [r["id"] for r in rows]
+    for jid in ids:
+        cancel_job(db, jid)
+    return ids
+
+
 # --- assets ---------------------------------------------------------------
 def create_asset(
     db: Database,
@@ -771,6 +804,69 @@ def list_timeline_clips(db: Database, timeline_id: str) -> list[dict[str, Any]]:
             (timeline_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def capture_timeline_snapshot(
+    db: Database, timeline_id: str
+) -> dict[str, list[dict[str, Any]]]:
+    """Full editorial state of one rough-cut timeline (all columns, raw dict rows).
+
+    Returns a dict with four keys: clips, scenes, audio_clips, transitions.
+    Capturing all columns ensures that a future ADD COLUMN migration is
+    not silently dropped from undo/redo snapshots.
+    """
+    return {
+        "clips": list_timeline_clips(db, timeline_id),
+        "scenes": list_scenes(db, timeline_id),
+        "audio_clips": list_timeline_audio_clips(db, timeline_id),
+        "transitions": list_transition_reviews(db, timeline_id),
+    }
+
+
+def _insert_rows(conn: Any, table: str, rows: list[dict[str, Any]]) -> None:
+    # table + column names come from our OWN SELECT * snapshot — never user input.
+    for r in rows:
+        cols = list(r.keys())
+        collist = ", ".join(cols)
+        placeholders = ", ".join("?" for _ in cols)
+        conn.execute(
+            f"INSERT INTO {table} ({collist}) VALUES ({placeholders})",  # noqa: S608
+            tuple(r[c] for c in cols),
+        )
+
+
+def _restore_into(
+    conn: Any, timeline_id: str, snapshot: dict[str, list[dict[str, Any]]]
+) -> None:
+    conn.execute("DELETE FROM timeline_clips WHERE timeline_id=?", (timeline_id,))
+    conn.execute("DELETE FROM timeline_audio_clips WHERE timeline_id=?", (timeline_id,))
+    conn.execute("DELETE FROM transition_reviews WHERE timeline_id=?", (timeline_id,))
+    conn.execute("DELETE FROM scenes WHERE source_timeline_id=?", (timeline_id,))
+    _insert_rows(conn, "timeline_clips", snapshot["clips"])
+    _insert_rows(conn, "timeline_audio_clips", snapshot["audio_clips"])
+    _insert_rows(conn, "transition_reviews", snapshot["transitions"])
+    _insert_rows(conn, "scenes", snapshot["scenes"])
+
+
+def restore_timeline_snapshot(
+    db: Database,
+    timeline_id: str,
+    snapshot: dict[str, list[dict[str, Any]]],
+    *,
+    conn: Any | None = None,
+) -> None:
+    """Atomically replace the timeline's four editorial row-groups from a snapshot.
+
+    With ``conn`` given, runs in the caller's open transaction (used by perform_undo/redo, Task 8);
+    otherwise opens its own immediate transaction. Restores EVERY column (dynamic INSERT from the
+    snapshot row keys), so role/transition/linked/music columns survive — do NOT route through
+    replace_timeline_clips, which drops them.
+    """
+    if conn is not None:
+        _restore_into(conn, timeline_id, snapshot)
+        return
+    with db.transaction(immediate=True) as own:
+        _restore_into(own, timeline_id, snapshot)
 
 
 # --- sequence audio lane --------------------------------------------------
@@ -1954,6 +2050,83 @@ def get_active_consent_id(db: Database, project_id: str) -> str | None:
             (project_id,),
         ).fetchone()
         return str(row["id"]) if row is not None else None
+
+
+_UNDO_DEPTH = 50
+
+
+def push_row(conn: Any, timeline_id: str, stack: str, label: str, snapshot: dict[str, Any]) -> None:
+    seq = conn.execute(
+        "SELECT COALESCE(MAX(seq_no), 0) + 1 AS n FROM timeline_history WHERE timeline_id=?",
+        (timeline_id,),
+    ).fetchone()["n"]
+    cols = (
+        "id, timeline_id, seq_no, stack, label, payload_json, created_at"
+    )
+    conn.execute(
+        f"INSERT INTO timeline_history ({cols}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (new_id(), timeline_id, seq, stack, label, json.dumps(snapshot), utcnow_iso()),
+    )
+
+
+def pop_top(conn: Any, timeline_id: str, stack: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id, seq_no, label, payload_json FROM timeline_history "
+        "WHERE timeline_id=? AND stack=? ORDER BY seq_no DESC LIMIT 1",
+        (timeline_id, stack),
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute("DELETE FROM timeline_history WHERE id=?", (row["id"],))
+    return {
+        "id": row["id"],
+        "seq_no": row["seq_no"],
+        "label": row["label"],
+        "payload": json.loads(row["payload_json"]),
+    }
+
+
+def push_undo_checkpoint(db: Database, timeline_id: str, label: str) -> None:
+    """Snapshot the current editorial state onto the undo stack; clear redo; cap depth."""
+    snapshot = capture_timeline_snapshot(db, timeline_id)
+    with db.transaction() as conn:
+        push_row(conn, timeline_id, "undo", label, snapshot)
+        conn.execute(
+            "DELETE FROM timeline_history WHERE timeline_id=? AND stack='redo'",
+            (timeline_id,),
+        )
+        cnt = conn.execute(
+            "SELECT COUNT(*) AS c FROM timeline_history "
+            "WHERE timeline_id=? AND stack='undo'",
+            (timeline_id,),
+        ).fetchone()["c"]
+        if cnt > _UNDO_DEPTH:
+            conn.execute(
+                "DELETE FROM timeline_history WHERE id IN ("
+                "SELECT id FROM timeline_history WHERE timeline_id=? AND stack='undo' "
+                "ORDER BY seq_no ASC LIMIT ?)",
+                (timeline_id, cnt - _UNDO_DEPTH),
+            )
+
+
+def get_history_state(db: Database, timeline_id: str) -> dict[str, Any]:
+    with db.connection() as conn:
+        u = conn.execute(
+            "SELECT label FROM timeline_history WHERE timeline_id=? AND stack='undo' "
+            "ORDER BY seq_no DESC LIMIT 1",
+            (timeline_id,),
+        ).fetchone()
+        r = conn.execute(
+            "SELECT label FROM timeline_history WHERE timeline_id=? AND stack='redo' "
+            "ORDER BY seq_no DESC LIMIT 1",
+            (timeline_id,),
+        ).fetchone()
+    return {
+        "can_undo": u is not None,
+        "can_redo": r is not None,
+        "undo_label": u["label"] if u is not None else None,
+        "redo_label": r["label"] if r is not None else None,
+    }
 
 
 def revoke_consent_record(db: Database, consent_id: str) -> bool:

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from ..db import repos
 from ..db.database import Database
+from ..editing.history import timeline_checkpoint
 from .models import OverlayOut, OverlayRequest
 from .security import require_token
 
@@ -61,17 +62,18 @@ def add_overlay(
             f"asset too short: src_out {src_out} exceeds duration_frames {duration_frames}",
         )
 
-    clip = repos.add_timeline_clip(
-        db,
-        timeline_id=timeline_id,
-        asset_id=body.asset_id,
-        src_in_frame=body.src_in_frame,
-        src_out_frame_exclusive=src_out,
-        seq_in_frame=body.seq_in_frame,
-        seq_out_frame_exclusive=body.seq_out_frame_exclusive,
-        lane=body.lane,
-        role="replace",
-    )
+    with timeline_checkpoint(db, timeline_id, "Overlay hinzugefügt"):
+        clip = repos.add_timeline_clip(
+            db,
+            timeline_id=timeline_id,
+            asset_id=body.asset_id,
+            src_in_frame=body.src_in_frame,
+            src_out_frame_exclusive=src_out,
+            seq_in_frame=body.seq_in_frame,
+            seq_out_frame_exclusive=body.seq_out_frame_exclusive,
+            lane=body.lane,
+            role="replace",
+        )
 
     return OverlayOut(
         id=clip["id"],
@@ -95,7 +97,11 @@ def remove_overlay(
 ) -> Response:
     """Remove an overlay clip from a timeline by clip id."""
     db = _db(request)
-    deleted = repos.delete_timeline_clip(db, clip_id)
-    if not deleted:
+    clip_exists = any(
+        c["id"] == clip_id for c in repos.list_timeline_clips(db, timeline_id)
+    )
+    if not clip_exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "overlay clip not found")
+    with timeline_checkpoint(db, timeline_id, "Overlay entfernt"):
+        repos.delete_timeline_clip(db, clip_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

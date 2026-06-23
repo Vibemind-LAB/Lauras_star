@@ -50,6 +50,22 @@ export function FineCutView({
 }): ReactElement {
   const rc = useRoughCutTranscript(client, roughCutId, segments, asset?.id);
 
+  // Keyboard shortcut: Ctrl+Z → undo, Ctrl+Shift+Z / Ctrl+Y → redo.
+  // Focus-guarded: no-op when a text input or textarea is focused.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) { e.preventDefault(); void rc.undo(); }
+      else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); void rc.redo(); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rc]);
+
   // Voice picker state — selection is the only explicit editorial choice (spec §10).
   const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
   const [voiceId, setVoiceId] = useState<string | null>(null);
@@ -238,6 +254,12 @@ export function FineCutView({
           rateNum={asset?.rate_num ?? 30}
           rateDen={asset?.rate_den ?? 1}
           onChange={() => void rc.reload()}
+          canUndo={rc.canUndo}
+          canRedo={rc.canRedo}
+          undoLabel={rc.undoLabel}
+          redoLabel={rc.redoLabel}
+          onUndo={() => void rc.undo()}
+          onRedo={() => void rc.redo()}
         />
 
         <TimelineBar
