@@ -2019,6 +2019,83 @@ def get_active_consent_id(db: Database, project_id: str) -> str | None:
         return str(row["id"]) if row is not None else None
 
 
+_UNDO_DEPTH = 50
+
+
+def push_row(conn: Any, timeline_id: str, stack: str, label: str, snapshot: dict[str, Any]) -> None:
+    seq = conn.execute(
+        "SELECT COALESCE(MAX(seq_no), 0) + 1 AS n FROM timeline_history WHERE timeline_id=?",
+        (timeline_id,),
+    ).fetchone()["n"]
+    cols = (
+        "id, timeline_id, seq_no, stack, label, payload_json, created_at"
+    )
+    conn.execute(
+        f"INSERT INTO timeline_history ({cols}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (new_id(), timeline_id, seq, stack, label, json.dumps(snapshot), utcnow_iso()),
+    )
+
+
+def pop_top(conn: Any, timeline_id: str, stack: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id, seq_no, label, payload_json FROM timeline_history "
+        "WHERE timeline_id=? AND stack=? ORDER BY seq_no DESC LIMIT 1",
+        (timeline_id, stack),
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute("DELETE FROM timeline_history WHERE id=?", (row["id"],))
+    return {
+        "id": row["id"],
+        "seq_no": row["seq_no"],
+        "label": row["label"],
+        "payload": json.loads(row["payload_json"]),
+    }
+
+
+def push_undo_checkpoint(db: Database, timeline_id: str, label: str) -> None:
+    """Snapshot the current editorial state onto the undo stack; clear redo; cap depth."""
+    snapshot = capture_timeline_snapshot(db, timeline_id)
+    with db.transaction() as conn:
+        push_row(conn, timeline_id, "undo", label, snapshot)
+        conn.execute(
+            "DELETE FROM timeline_history WHERE timeline_id=? AND stack='redo'",
+            (timeline_id,),
+        )
+        cnt = conn.execute(
+            "SELECT COUNT(*) AS c FROM timeline_history "
+            "WHERE timeline_id=? AND stack='undo'",
+            (timeline_id,),
+        ).fetchone()["c"]
+        if cnt > _UNDO_DEPTH:
+            conn.execute(
+                "DELETE FROM timeline_history WHERE id IN ("
+                "SELECT id FROM timeline_history WHERE timeline_id=? AND stack='undo' "
+                "ORDER BY seq_no ASC LIMIT ?)",
+                (timeline_id, cnt - _UNDO_DEPTH),
+            )
+
+
+def get_history_state(db: Database, timeline_id: str) -> dict[str, Any]:
+    with db.connection() as conn:
+        u = conn.execute(
+            "SELECT label FROM timeline_history WHERE timeline_id=? AND stack='undo' "
+            "ORDER BY seq_no DESC LIMIT 1",
+            (timeline_id,),
+        ).fetchone()
+        r = conn.execute(
+            "SELECT label FROM timeline_history WHERE timeline_id=? AND stack='redo' "
+            "ORDER BY seq_no DESC LIMIT 1",
+            (timeline_id,),
+        ).fetchone()
+    return {
+        "can_undo": u is not None,
+        "can_redo": r is not None,
+        "undo_label": u["label"] if u is not None else None,
+        "redo_label": r["label"] if r is not None else None,
+    }
+
+
 def revoke_consent_record(db: Database, consent_id: str) -> bool:
     """Mark a consent record as revoked. The reenact gate then refuses it.
 
