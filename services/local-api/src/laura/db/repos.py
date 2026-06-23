@@ -773,6 +773,23 @@ def list_timeline_clips(db: Database, timeline_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def capture_timeline_snapshot(
+    db: Database, timeline_id: str
+) -> dict[str, list[dict[str, Any]]]:
+    """Full editorial state of one rough-cut timeline (all columns, raw dict rows).
+
+    Returns a dict with four keys: clips, scenes, audio_clips, transitions.
+    Capturing all columns ensures that a future ADD COLUMN migration is
+    not silently dropped from undo/redo snapshots.
+    """
+    return {
+        "clips": list_timeline_clips(db, timeline_id),
+        "scenes": list_scenes(db, timeline_id),
+        "audio_clips": list_timeline_audio_clips(db, timeline_id),
+        "transitions": list_transition_reviews(db, timeline_id),
+    }
+
+
 # --- sequence audio lane --------------------------------------------------
 def add_timeline_audio_clip(
     db: Database,
