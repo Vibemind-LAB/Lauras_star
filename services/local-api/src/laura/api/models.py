@@ -670,6 +670,13 @@ class ImportStatusOut(BaseModel):
     error: str | None = None
 
 
+class HistoryStateOut(BaseModel):
+    can_undo: bool
+    can_redo: bool
+    undo_label: str | None = None
+    redo_label: str | None = None
+
+
 # --- render-pipeline exports ------------------------------------------------
 class SceneOut(BaseModel):
     id: str

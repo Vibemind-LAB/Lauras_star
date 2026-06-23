@@ -23,6 +23,7 @@ from ..analysis.splitedit import plan_split_cuts
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
+from ..editing import history
 from ..editing.history import timeline_checkpoint
 from ..editing.operations import (
     EditClip,
@@ -65,6 +66,7 @@ from .models import (
     ExportRequest,
     FromShotsOut,
     FromShotsRequest,
+    HistoryStateOut,
     OperationRequest,
     RenameRequest,
     RenderExportOut,
@@ -1267,6 +1269,44 @@ def render_timeline(
         idempotency_key=f"render:{exp['id']}",
     )
     return {"export_id": exp["id"], "job_id": job_id}
+
+
+@router.post("/timelines/{timeline_id}/undo")
+def undo_timeline(timeline_id: str, request: Request) -> dict[str, Any]:
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    try:
+        clips, scenes = history.perform_undo(db, timeline_id)
+    except history.HistoryEmpty:
+        raise HTTPException(status.HTTP_409_CONFLICT, "nothing to undo") from None
+    return {
+        "clips": [ClipOut(**c).model_dump() for c in clips],
+        "scenes": [SceneOut(**s).model_dump() for s in scenes],
+    }
+
+
+@router.post("/timelines/{timeline_id}/redo")
+def redo_timeline(timeline_id: str, request: Request) -> dict[str, Any]:
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    try:
+        clips, scenes = history.perform_redo(db, timeline_id)
+    except history.HistoryEmpty:
+        raise HTTPException(status.HTTP_409_CONFLICT, "nothing to redo") from None
+    return {
+        "clips": [ClipOut(**c).model_dump() for c in clips],
+        "scenes": [SceneOut(**s).model_dump() for s in scenes],
+    }
+
+
+@router.get("/timelines/{timeline_id}/history", response_model=HistoryStateOut)
+def get_timeline_history(timeline_id: str, request: Request) -> HistoryStateOut:
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    return HistoryStateOut(**repos.get_history_state(db, timeline_id))
 
 
 @router.get("/projects/{project_id}/exports", response_model=list[RenderExportOut])
