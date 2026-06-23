@@ -790,6 +790,52 @@ def capture_timeline_snapshot(
     }
 
 
+def _insert_rows(conn: Any, table: str, rows: list[dict[str, Any]]) -> None:
+    # table + column names come from our OWN SELECT * snapshot — never user input.
+    for r in rows:
+        cols = list(r.keys())
+        collist = ", ".join(cols)
+        placeholders = ", ".join("?" for _ in cols)
+        conn.execute(
+            f"INSERT INTO {table} ({collist}) VALUES ({placeholders})",  # noqa: S608
+            tuple(r[c] for c in cols),
+        )
+
+
+def _restore_into(
+    conn: Any, timeline_id: str, snapshot: dict[str, list[dict[str, Any]]]
+) -> None:
+    conn.execute("DELETE FROM timeline_clips WHERE timeline_id=?", (timeline_id,))
+    conn.execute("DELETE FROM timeline_audio_clips WHERE timeline_id=?", (timeline_id,))
+    conn.execute("DELETE FROM transition_reviews WHERE timeline_id=?", (timeline_id,))
+    conn.execute("DELETE FROM scenes WHERE source_timeline_id=?", (timeline_id,))
+    _insert_rows(conn, "timeline_clips", snapshot["clips"])
+    _insert_rows(conn, "timeline_audio_clips", snapshot["audio_clips"])
+    _insert_rows(conn, "transition_reviews", snapshot["transitions"])
+    _insert_rows(conn, "scenes", snapshot["scenes"])
+
+
+def restore_timeline_snapshot(
+    db: Database,
+    timeline_id: str,
+    snapshot: dict[str, list[dict[str, Any]]],
+    *,
+    conn: Any | None = None,
+) -> None:
+    """Atomically replace the timeline's four editorial row-groups from a snapshot.
+
+    With ``conn`` given, runs in the caller's open transaction (used by perform_undo/redo, Task 8);
+    otherwise opens its own immediate transaction. Restores EVERY column (dynamic INSERT from the
+    snapshot row keys), so role/transition/linked/music columns survive — do NOT route through
+    replace_timeline_clips, which drops them.
+    """
+    if conn is not None:
+        _restore_into(conn, timeline_id, snapshot)
+        return
+    with db.transaction(immediate=True) as own:
+        _restore_into(own, timeline_id, snapshot)
+
+
 # --- sequence audio lane --------------------------------------------------
 def add_timeline_audio_clip(
     db: Database,
