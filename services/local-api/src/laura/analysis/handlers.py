@@ -245,6 +245,22 @@ def _run_scene(
             "drop_reason": reason,
         })
     mark_duplicates(rows)
+
+    # Guard: never drop 100 % of an asset's shots as "black" — that would produce an empty
+    # rough cut. When every shot is flagged black (e.g. dark-stage poetry-slam footage with
+    # a spotlight), keep them all and log a warning; the black-filter is being over-eager.
+    if rows and all(
+        not r.get("keep") and r.get("drop_reason") == "black" for r in rows
+    ):
+        _log.warning(
+            "asset %s: all %d shots flagged black; keeping anyway — likely dark footage",
+            asset["id"],
+            len(rows),
+        )
+        for r in rows:
+            r["keep"] = True
+            r["drop_reason"] = None
+
     repos.insert_shots(db, asset_id=asset["id"], run_id=run_id, shots=rows)
     result: dict[str, Any] = {"status": "ok", "count": len(rows), "detector": detector}
     result.update(notes)  # e.g. {"transnet": "skipped: ImportError: ..."} on fallback

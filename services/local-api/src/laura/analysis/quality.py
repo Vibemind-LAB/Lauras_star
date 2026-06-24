@@ -17,6 +17,9 @@ import numpy as np
 SAMPLE_W, SAMPLE_H = 64, 36
 SAMPLE_K = 5
 BLACK_LUMA = 16.0
+# A frame is only "black" when it is *uniformly* dark — its brightest pixel is also dark.
+# A spotlight subject on a dark stage has mean~15 but max>>48, so it is NOT black.
+BLACK_MAX = 48.0
 
 
 def _shot_sample_indices(src_in: int, src_out: int, k: int = SAMPLE_K) -> list[int]:
@@ -94,7 +97,10 @@ class ShotMetrics:
     def from_frames(cls, frames: list[np.ndarray]) -> ShotMetrics:
         if not frames:
             return cls(black_ratio=1.0, static=1.0, phash="0" * 16, blur=0.0)
-        black = sum(1 for f in frames if float(np.mean(f)) < BLACK_LUMA) / len(frames)
+        black = sum(
+            1 for f in frames
+            if float(np.mean(f)) < BLACK_LUMA and float(np.max(f)) < BLACK_MAX
+        ) / len(frames)
         return cls(
             black_ratio=black,
             static=static_score(frames),
