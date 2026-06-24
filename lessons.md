@@ -14,6 +14,11 @@ Format pro Eintrag:
 
 ---
 
+## 2026-06-24 — Migration, die schema_version erhöht, muss die Frontend-Konstante mitziehen
+- **Kontext:** Das Undo/Redo-Feature fügte Migration `0029_timeline_history` hinzu (Backend-Schema → 29), ließ aber `EXPECTED_SCHEMA_VERSION` in `apps/desktop/src/App.tsx:61` auf 28. Beim Start gegen das neue Backend zeigte die App **„Frontend veraltet · schema 29/28"**. Die Frontend-Tests (`App.test.tsx`) fingen es nicht, weil sie die Konstante interpolieren statt einen festen Wert zu prüfen.
+- **Korrektur:** Jede Migration, die `schema_version` erhöht, muss im selben Zug `EXPECTED_SCHEMA_VERSION` (App.tsx) auf denselben Wert ziehen. Der Versions-Guard vergleicht `health.schema_version` mit der Konstante: `<` → „Backend veraltet", `>` → „Frontend veraltet".
+- **Konsequenz:** In Backend-Migrations-Tasks gehört das Bumpen der Frontend-Konstante in die Definition-of-Done. Nur ein Live-Backend mit der neuen Schema-Version deckt den Mismatch auf → bei schema-erhöhenden Features einen Boot-Smoke-Test gegen das echte Backend einplanen.
+
 ## 2026-06-14 — Szenen folgen dem aktuellen Rough-Cut
 - **Kontext:** Beim erneuten „Szenen erzeugen" und beim Wechsel in Feinschnitt wirkte die UI stale: Szenen wurden nicht aus dem aktuell angepassten Rough-Cut abgeleitet bzw. Szenenklicks sprangen nicht sichtbar zur passenden Stelle.
 - **Korrektur:** Die API/DB-Timeline ist die Wahrheit, nicht ein möglicherweise alter `roughCut.clips`-Prop im Renderer. Feinschnitt-Szenenwechsel muss die materialisierte Szene öffnen und zum ersten Source-Frame springen.

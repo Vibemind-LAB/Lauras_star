@@ -218,7 +218,7 @@ export function FineCutView({
 
       {/* Center: continuous rough-cut player + timeline + transcript */}
       <section className="flex min-h-0 flex-col">
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-black/40 p-4">
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/40 p-4">
           <SequencePlayer
             client={client}
             projectId={asset?.project_id ?? null}
