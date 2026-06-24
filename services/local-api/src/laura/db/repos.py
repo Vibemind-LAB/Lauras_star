@@ -1706,7 +1706,7 @@ def replace_shorts_candidates(
     source_timeline_id: str,
     candidates: list[Any],
 ) -> None:
-    """Replace all shorts candidates for *source_timeline_id* with *candidates*.
+    """Replace all shorts candidates for *asset_id* with *candidates*.
 
     Each element of *candidates* must expose (as attribute or dict key):
     ``start_frame``, ``end_frame_exclusive``, ``start_boundary``, ``end_boundary``,
@@ -1714,9 +1714,13 @@ def replace_shorts_candidates(
     ``score_breakdown`` (dict → JSON), ``qa_passed`` (bool),
     ``qa_issues`` (list → JSON).
 
-    Existing rows for the timeline are deleted and replaced in one transaction;
+    Existing rows for the asset are deleted and replaced in one transaction;
     ``order_index`` is positional (0-based). New ``id`` and ``created_at`` are
-    assigned per row.
+    assigned per row. ``source_timeline_id`` is recorded as metadata but is NOT
+    used as the delete key — deletion is keyed on ``asset_id`` so that re-extraction
+    with a different timeline (e.g. first run used asset-id fallback, later a real
+    rough_cut timeline exists) performs a true per-asset wholesale replace and never
+    accumulates stale rows from a prior ``source_timeline_id``.
     """
     now = utcnow_iso()
 
@@ -1725,8 +1729,8 @@ def replace_shorts_candidates(
 
     with db.transaction() as conn:
         conn.execute(
-            "DELETE FROM shorts_candidates WHERE source_timeline_id=?",
-            (source_timeline_id,),
+            "DELETE FROM shorts_candidates WHERE asset_id=?",
+            (asset_id,),
         )
         for i, c in enumerate(candidates):
             conn.execute(
@@ -1773,6 +1777,23 @@ def list_shorts_candidates(
         rows = conn.execute(
             "SELECT * FROM shorts_candidates WHERE source_timeline_id=? ORDER BY order_index",
             (source_timeline_id,),
+        ).fetchall()
+    return [_decode_short_candidate(dict(r)) for r in rows]
+
+
+def list_shorts_candidates_by_asset(
+    db: Database, asset_id: str
+) -> list[dict[str, Any]]:
+    """Return all shorts candidates for *asset_id*, ordered by ``order_index``.
+
+    Reads via the asset index (rather than the source-timeline key) so the API can list
+    an asset's candidates without first resolving its binding timeline. Same JSON / bool
+    deserialisation as :func:`list_shorts_candidates`.
+    """
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM shorts_candidates WHERE asset_id=? ORDER BY order_index",
+            (asset_id,),
         ).fetchall()
     return [_decode_short_candidate(dict(r)) for r in rows]
 

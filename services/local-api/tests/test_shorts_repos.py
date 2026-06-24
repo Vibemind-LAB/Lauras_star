@@ -122,6 +122,34 @@ def test_replace_does_not_accumulate(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Regression: replace with a different source_timeline_id must not accumulate
+# ---------------------------------------------------------------------------
+
+def test_replace_different_timeline_id_no_accumulation(tmp_path: Path) -> None:
+    """Fix for idempotency bug: DELETE keyed on source_timeline_id missed rows from
+    a prior extraction that used a different timeline id for the same asset.
+    After the fix the DELETE is keyed on asset_id, so the second call with T2
+    wipes the T1 rows and list_shorts_candidates_by_asset returns only the T2 set."""
+    db = _db(tmp_path)
+
+    # First extraction: T1 timeline (e.g. asset-id fallback)
+    repos.replace_shorts_candidates(db, "proj1", "asset1", "T1", [_CANDIDATE_A, _CANDIDATE_B])
+    by_asset_after_t1 = repos.list_shorts_candidates_by_asset(db, "asset1")
+    assert len(by_asset_after_t1) == 2  # sanity
+
+    # Second extraction: T2 timeline (e.g. real rough_cut timeline now exists)
+    repos.replace_shorts_candidates(db, "proj1", "asset1", "T2", [_CANDIDATE_A])
+
+    by_asset = repos.list_shorts_candidates_by_asset(db, "asset1")
+    # Must be exactly 1 — T1 rows are gone, T2 has only one candidate
+    assert len(by_asset) == 1, (
+        f"Expected 1 candidate after re-extraction with different timeline, got {len(by_asset)}"
+    )
+    assert by_asset[0]["source_timeline_id"] == "T2"
+    assert by_asset[0]["start_frame"] == 0
+
+
+# ---------------------------------------------------------------------------
 # get_short_candidate
 # ---------------------------------------------------------------------------
 

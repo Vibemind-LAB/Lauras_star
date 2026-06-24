@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import PIPELINE_VERSION, __version__
 from .ai.handlers import register_ai_handlers
 from .analysis.handlers import register_analysis_handlers
+from .analysis.shorts_handlers import register_shorts_handlers
 from .api import (
     admin,
     ai_runtimes,
@@ -33,6 +34,7 @@ from .api import (
     search,
     sequences,
     shorts,
+    shorts_candidates,
     timelines,
     voiceover,
 )
@@ -60,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_render_handlers(registry)
     register_ai_handlers(registry)
     register_demo_handlers(registry)
+    register_shorts_handlers(registry)
     runner = JobRunner(
         db, registry,
         lease_seconds=settings.lease_seconds,
@@ -114,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(projects.router)
     app.include_router(shorts.router)
+    app.include_router(shorts_candidates.router)
     app.include_router(batch.router)
     app.include_router(assets.router)
     app.include_router(jobs.router)

@@ -1102,3 +1102,41 @@ class RecipeFromTraceOut(BaseModel):
     recipe_hash: str | None
     verified: bool
     available: bool
+
+
+# --- shorts candidates (auto-cutter S5b) ------------------------------------
+
+
+class ExtractShortsRequest(BaseModel):
+    """Optional overrides for the ``shorts.extract`` job. All omitted → module defaults."""
+
+    min_duration_s: float | None = Field(default=None, gt=0)
+    max_duration_s: float | None = Field(default=None, gt=0)
+    max_candidates: int | None = Field(default=None, gt=0)
+
+
+class ExtractShortsAccepted(BaseModel):
+    """Returned when a ``shorts.extract`` job is enqueued for an asset."""
+
+    job_id: str
+    analysis_run_id: str
+
+
+class ShortsCandidateOut(BaseModel):
+    """One persisted short candidate (a transcript-safe ``[start, end)`` window + scores)."""
+
+    id: str
+    asset_id: str
+    source_timeline_id: str
+    order_index: int
+    start_frame: int
+    end_frame_exclusive: int
+    start_boundary: str
+    end_boundary: str
+    score: float
+    rejected: bool
+    reject_reason: str | None = None
+    score_breakdown: dict[str, Any] | None = None
+    qa_passed: bool
+    qa_issues: list[str] = Field(default_factory=list)
+    created_at: str
