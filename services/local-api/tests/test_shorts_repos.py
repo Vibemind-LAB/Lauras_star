@@ -1,7 +1,7 @@
 """Tests for shorts_candidates DB layer (S5a).
 
 Covers:
-- schema_version() == 30 after migrate()
+- schema_version() >= 30 after migrate() (now 31 after VE2 migration)
 - replace_shorts_candidates + list_shorts_candidates round-trip (2 candidates)
 - replace-not-accumulate (second call replaces, not appends)
 - get_short_candidate for existing + missing id
@@ -26,8 +26,9 @@ def _db(tmp_path: Path) -> SqliteDatabase:
 # ---------------------------------------------------------------------------
 
 def test_schema_version_is_30_after_migrate(tmp_path: Path) -> None:
+    # After VE2 (migration 0031) the full migrate() lands on 31; assert >= 30.
     db = _db(tmp_path)
-    assert db.schema_version() == 30
+    assert db.schema_version() >= 30
 
 
 # ---------------------------------------------------------------------------
