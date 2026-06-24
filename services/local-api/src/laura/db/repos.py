@@ -1697,6 +1697,95 @@ def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
     return out
 
 
+# --- shorts candidates -------------------------------------------------------
+
+def replace_shorts_candidates(
+    db: Database,
+    project_id: str,
+    asset_id: str,
+    source_timeline_id: str,
+    candidates: list[Any],
+) -> None:
+    """Replace all shorts candidates for *source_timeline_id* with *candidates*.
+
+    Each element of *candidates* must expose (as attribute or dict key):
+    ``start_frame``, ``end_frame_exclusive``, ``start_boundary``, ``end_boundary``,
+    ``score``, ``rejected`` (bool), ``reject_reason`` (str | None),
+    ``score_breakdown`` (dict → JSON), ``qa_passed`` (bool),
+    ``qa_issues`` (list → JSON).
+
+    Existing rows for the timeline are deleted and replaced in one transaction;
+    ``order_index`` is positional (0-based). New ``id`` and ``created_at`` are
+    assigned per row.
+    """
+    now = utcnow_iso()
+
+    def _get(obj: Any, key: str) -> Any:
+        return obj[key] if isinstance(obj, dict) else getattr(obj, key)
+
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM shorts_candidates WHERE source_timeline_id=?",
+            (source_timeline_id,),
+        )
+        for i, c in enumerate(candidates):
+            conn.execute(
+                "INSERT INTO shorts_candidates ("
+                "id, project_id, asset_id, source_timeline_id, order_index, "
+                "start_frame, end_frame_exclusive, start_boundary, end_boundary, "
+                "score, rejected, reject_reason, score_breakdown, "
+                "qa_passed, qa_issues, created_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    new_id(),
+                    project_id,
+                    asset_id,
+                    source_timeline_id,
+                    i,
+                    int(_get(c, "start_frame")),
+                    int(_get(c, "end_frame_exclusive")),
+                    str(_get(c, "start_boundary")),
+                    str(_get(c, "end_boundary")),
+                    float(_get(c, "score")),
+                    int(bool(_get(c, "rejected"))),
+                    _get(c, "reject_reason"),
+                    json.dumps(_get(c, "score_breakdown")),
+                    int(bool(_get(c, "qa_passed"))),
+                    json.dumps(_get(c, "qa_issues")),
+                    now,
+                ),
+            )
+
+
+def _decode_short_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    row["rejected"] = bool(row["rejected"])
+    row["qa_passed"] = bool(row["qa_passed"])
+    row["score_breakdown"] = json.loads(row["score_breakdown"] or "null")
+    row["qa_issues"] = json.loads(row["qa_issues"] or "[]")
+    return row
+
+
+def list_shorts_candidates(
+    db: Database, source_timeline_id: str
+) -> list[dict[str, Any]]:
+    """Return all shorts candidates for *source_timeline_id*, ordered by ``order_index``."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM shorts_candidates WHERE source_timeline_id=? ORDER BY order_index",
+            (source_timeline_id,),
+        ).fetchall()
+    return [_decode_short_candidate(dict(r)) for r in rows]
+
+
+def get_short_candidate(db: Database, candidate_id: str) -> dict[str, Any] | None:
+    """Return one candidate by primary key, or ``None`` if not found."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM shorts_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+    return _decode_short_candidate(dict(row)) if row is not None else None
+
+
 # --- ai runtimes / personas -------------------------------------------------
 
 def _decode_ai_runtime(row: dict[str, Any]) -> dict[str, Any]:
