@@ -16,6 +16,7 @@ from . import PIPELINE_VERSION, __version__
 from .ai.handlers import register_ai_handlers
 from .analysis.handlers import register_analysis_handlers
 from .analysis.shorts_handlers import register_shorts_handlers
+from .analysis.visual_embed import register_visual_handlers
 from .api import (
     admin,
     ai_runtimes,
@@ -63,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_ai_handlers(registry)
     register_demo_handlers(registry)
     register_shorts_handlers(registry)
+    register_visual_handlers(registry)
     runner = JobRunner(
         db, registry,
         lease_seconds=settings.lease_seconds,
