@@ -186,7 +186,14 @@ def _xfade_base_graph(
 
     ``xdur[i]`` is the crossfade duration (frames) for the boundary after clip ``i`` (0 = hard).
     A crossfade clip is trimmed ``xdur[i]`` frames past its out-point (reserve overlap). Returns
-    ``(parts, video_label, audio_label_or_None)``. Pure — no IO, fully unit-testable."""
+    ``(parts, video_label, audio_label_or_None)``. Pure — no IO, fully unit-testable.
+
+    Every video node carries a uniform ``settb=AVTB`` timebase. ``xfade`` rejects inputs whose
+    timebases differ ("main timebase do not match the corresponding second input link xfade
+    timebase"); in a fold that mixes ``concat`` (passes input tb 1/1000000) and ``xfade`` (emits
+    its own fps tb) the accumulator and the next raw clip otherwise disagree and the whole
+    filtergraph fails to configure (-22). Pinning each segment + each fold output to ``AVTB``
+    makes every pairwise stage see matching timebases regardless of cut/crossfade ordering."""
     n = len(clips)
     parts: list[str] = []
     lens = [fout - fin for _, fin, fout in clips]
@@ -194,7 +201,7 @@ def _xfade_base_graph(
         reserve = xdur[i] if i < n - 1 else 0
         end = fout + reserve
         parts.append(
-            f"[{i}:v]trim=start_frame={fin}:end_frame={end},setpts=PTS-STARTPTS[v{i}]"
+            f"[{i}:v]trim=start_frame={fin}:end_frame={end},setpts=PTS-STARTPTS,settb=AVTB[v{i}]"
         )
         if has_base_audio:
             if audio_flags[i]:
@@ -219,7 +226,8 @@ def _xfade_base_graph(
             dd = _seconds(d * rate_den / rate_num)
             nxt_v = f"xv{i}"
             parts.append(
-                f"[{v_acc}][v{i}]xfade=transition=fade:duration={dd}:offset={offset}[{nxt_v}]"
+                f"[{v_acc}][v{i}]xfade=transition=fade:duration={dd}:offset={offset},"
+                f"settb=AVTB[{nxt_v}]"
             )
             v_acc = nxt_v
             if has_base_audio:
@@ -228,7 +236,7 @@ def _xfade_base_graph(
                 a_acc = nxt_a
         else:
             nxt_v = f"cv{i}"
-            parts.append(f"[{v_acc}][v{i}]concat=n=2:v=1:a=0[{nxt_v}]")
+            parts.append(f"[{v_acc}][v{i}]concat=n=2:v=1:a=0,settb=AVTB[{nxt_v}]")
             v_acc = nxt_v
             if has_base_audio:
                 nxt_a = f"ca{i}"
@@ -521,22 +529,31 @@ def render_clips_mp4(
 
         # Assemble the final audio graph. With loudnorm on, the mixed/single track is folded
         # one extra stage through an EBU R128 loudnorm filter (social standard -14 LUFS) before
-        # the [aout] map; with it off the graph is byte-identical to the pre-loudnorm behaviour.
+        # the final map; with it off this stage is skipped.
         apply_loudnorm = loudnorm and bool(audio_labels)
-        final_label = "[aout_pre]" if apply_loudnorm else "[aout]"
+        # The penultimate label feeds the mandatory format-pin stage below. loudnorm (when on)
+        # writes into it; otherwise the single-track anull / multi-track amix does.
+        format_in = "[aout_pre]"
         if len(audio_labels) == 1:
-            # Single track — route directly to the final label (no amix needed).
-            parts += f";{audio_labels[0]}anull{final_label}"
+            # Single track — route to the format-pin input (no amix needed).
+            parts += f";{audio_labels[0]}anull{format_in}"
         elif len(audio_labels) > 1:
             joined = "".join(audio_labels)
-            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0{final_label}"
+            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0{format_in}"
 
         if apply_loudnorm:
             # EBU R128 two-pass-style single-pass loudnorm; I/TP/LRA are the common social target.
-            parts += f";{final_label}loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
+            # loudnorm resamples internally (often to 192k/96k), so it MUST feed the pin below.
+            parts += ";[aout_pre]loudnorm=I=-14:TP=-1.5:LRA=11[aout_loud]"
+            format_in = "[aout_loud]"
 
         if audio_labels:
-            audio_maps = ["-map", "[aout]", "-c:a", "aac"]
+            # Pin the FINAL audio stream to one encoder-safe format at the single sink, regardless
+            # of source rate (44.1k/48k/96k from loudnorm) or path (single clip, amix, acrossfade).
+            # acrossfade/loudnorm/mixed sources otherwise leave an inconsistent rate that the AAC
+            # encoder at fixed params rejects (-22 Invalid argument). aresample 48k->48k is a no-op.
+            parts += f";{format_in}aresample=48000,aformat=channel_layouts=stereo[aout]"
+            audio_maps = ["-map", "[aout]", "-c:a", "aac", "-ar", "48000", "-ac", "2"]
 
         ff_args = [
             *inputs,
