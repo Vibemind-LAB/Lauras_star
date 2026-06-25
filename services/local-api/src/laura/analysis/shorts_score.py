@@ -16,6 +16,11 @@ Feature components
 * ``hook_position``        — reward a strong opening seam: ``speaker_turn`` > ``sentence_end``.
 * ``length_fit``           — triangular peak at ~30 s, within ``[0, 1]``.
 * ``speech_density``       — spoken frames / total frames inside the window from word spans.
+* ``visual_shift``         — clean visual change at the two cuts (``1 - cosine`` of the nearest
+                             frame embeddings on either side of each cut, averaged).  Neutral
+                             ``0`` when no frame embeddings are supplied (VE1/VE2 not run).
+* ``visual_continuity``    — mean cosine of consecutive embeddings inside the window: rewards a
+                             visually coherent short.  Neutral ``0`` without embeddings.
 
 Penalties (subtractive)
 -----------------------
@@ -25,6 +30,10 @@ Penalties (subtractive)
                              :func:`laura.analysis.editorial.editorial_metrics`.
 * ``audio_jump``           — caller-supplied soft penalty (loudness discontinuity).
 * ``face_motion``          — caller-supplied soft penalty.
+* ``duplicate_penalty``    — **batch-level** soft penalty: the maximum cosine similarity of this
+                             candidate's mean segment-embedding to any *other* candidate's, so two
+                             near-identical shorts cannot both rank high.  ``0`` without embeddings
+                             or with a single candidate.
 
 Graceful degradation
 --------------------
@@ -42,10 +51,13 @@ pure, deterministic, and side-effect free.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 from dataclasses import dataclass
 from statistics import median
+
+import numpy as np
 
 from .editorial import Word, editorial_metrics
 from .joint import (
@@ -100,9 +112,12 @@ class ScoreWeights:
     hook_position: float = 0.5
     length_fit: float = 0.4
     speech_density: float = 0.3
+    visual_shift: float = 0.5
+    visual_continuity: float = 0.3
     word_interruption: float = 1.0  # hard; weight documents intent, rejection is absolute
     audio_jump: float = 0.5
     face_motion: float = 0.3
+    duplicate_penalty: float = 0.6
 
 
 DEFAULT_WEIGHTS: ScoreWeights = ScoreWeights()
@@ -116,9 +131,12 @@ _ALL_KEYS: list[str] = [
     "hook_position",
     "length_fit",
     "speech_density",
+    "visual_shift",
+    "visual_continuity",
     "word_interruption",
     "audio_jump",
     "face_motion",
+    "duplicate_penalty",
 ]
 
 
@@ -243,6 +261,116 @@ def _speech_density(
 
 
 # ---------------------------------------------------------------------------
+# Visual embedding helpers (VE4)
+# ---------------------------------------------------------------------------
+#
+# These operate on a *sparse* frame -> embedding map (typically 1 fps plus shot
+# boundaries) produced by the VE1/VE2 pipeline.  They are written so that an
+# empty / absent map degrades to a strictly neutral ``0.0`` contribution: when
+# ``embeddings`` is ``None`` or empty, ``frames_sorted`` is ``[]`` and every
+# function below returns ``0.0`` / ``None`` — so the new columns are all-zero,
+# their robust-z is ``0.0`` for every candidate, and ``total`` is byte-identical
+# to the pre-VE4 behaviour.
+
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity of two 1-D vectors; ``0.0`` if either is a zero vector."""
+    a_norm = float(np.linalg.norm(a))
+    b_norm = float(np.linalg.norm(b))
+    if a_norm == 0.0 or b_norm == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / (a_norm * b_norm))
+
+
+def _nearest_emb(
+    frame: int,
+    frames_sorted: list[int],
+    embeddings: dict[int, np.ndarray],
+    *,
+    side: str,
+) -> np.ndarray | None:
+    """Nearest sampled embedding at-or-before / at-or-after ``frame``.
+
+    ``side="before"`` returns the embedding of the greatest sampled frame ``<= frame``;
+    ``side="after"`` returns the embedding of the least sampled frame ``>= frame``.
+    Returns ``None`` when no embedding exists on the requested side (or at all).
+    """
+    if not frames_sorted:
+        return None
+
+    if side == "before":
+        # rightmost sampled frame <= frame
+        idx = bisect.bisect_right(frames_sorted, frame) - 1
+        if idx < 0:
+            return None
+        return embeddings.get(frames_sorted[idx])
+    if side == "after":
+        # leftmost sampled frame >= frame
+        idx = bisect.bisect_left(frames_sorted, frame)
+        if idx >= len(frames_sorted):
+            return None
+        return embeddings.get(frames_sorted[idx])
+    raise ValueError(f"side must be 'before' or 'after', got {side!r}")
+
+
+def _visual_shift_at(
+    cut: int,
+    frames_sorted: list[int],
+    embeddings: dict[int, np.ndarray],
+) -> float:
+    """``1 - cosine(before, after)`` at ``cut``; ``0.0`` when either side is missing.
+
+    A large value means the visual content changes sharply across the cut (a clean
+    visual seam); ``0`` means visually identical content (or no embedding context).
+    """
+    before = _nearest_emb(cut, frames_sorted, embeddings, side="before")
+    after = _nearest_emb(cut, frames_sorted, embeddings, side="after")
+    if before is None or after is None:
+        return 0.0
+    return 1.0 - _cosine(before, after)
+
+
+def _visual_continuity(
+    start: int,
+    end_excl: int,
+    frames_sorted: list[int],
+    embeddings: dict[int, np.ndarray],
+) -> float:
+    """Mean cosine of consecutive embeddings whose frame is in ``[start, end_excl)``.
+
+    Rewards a visually coherent short.  Returns ``0.0`` when fewer than two sampled
+    embeddings fall inside the window (no pair to compare).
+    """
+    inside = [f for f in frames_sorted if start <= f < end_excl]
+    if len(inside) < 2:
+        return 0.0
+    sims = [
+        _cosine(embeddings[inside[i]], embeddings[inside[i + 1]])
+        for i in range(len(inside) - 1)
+    ]
+    return float(sum(sims) / len(sims))
+
+
+def _segment_repr(
+    start: int,
+    end_excl: int,
+    frames_sorted: list[int],
+    embeddings: dict[int, np.ndarray],
+) -> np.ndarray | None:
+    """Mean embedding of the frames inside ``[start, end_excl)``.
+
+    Falls back to ``_nearest_emb(start, …, side="after")`` when no embedding lands
+    inside the window, and to ``None`` only when there is no embedding at all on or
+    after ``start``.  Used for the batch-level ``duplicate_penalty``.
+    """
+    inside = [f for f in frames_sorted if start <= f < end_excl]
+    if inside:
+        stacked = np.stack([embeddings[f] for f in inside], axis=0)
+        return np.asarray(stacked.mean(axis=0), dtype=np.float32)
+    return _nearest_emb(start, frames_sorted, embeddings, side="after")
+
+
+# ---------------------------------------------------------------------------
 # Per-candidate feature computation
 # ---------------------------------------------------------------------------
 
@@ -259,6 +387,8 @@ def score_candidate_features(
     speaker_frames: set[int] | None = None,
     audio_jump: float = 0.0,
     face_motion: float = 0.0,
+    embeddings: dict[int, np.ndarray] | None = None,
+    frames_sorted: list[int] | None = None,
     min_duration_s: float = 15.0,
     max_duration_s: float = 60.0,
 ) -> tuple[dict[str, float], bool, str | None]:
@@ -357,6 +487,22 @@ def score_candidate_features(
     # --- speech_density ---
     speech_density = _speech_density(start, end, words)
 
+    # --- visual_shift / visual_continuity (VE4) -----------------------------
+    # Graceful neutral: when no embeddings are supplied ``fs`` is empty and both
+    # helpers return 0.0, so these columns are all-zero across the batch and their
+    # robust-z is 0.0 — identical to the pre-VE4 behaviour. ``duplicate_penalty`` is
+    # a batch-level signal filled by :func:`score_candidates`; here it is 0.0.
+    if embeddings:
+        fs = frames_sorted if frames_sorted is not None else sorted(embeddings)
+        visual_shift = (
+            _visual_shift_at(start, fs, embeddings)
+            + _visual_shift_at(end, fs, embeddings)
+        ) / 2.0
+        visual_continuity = _visual_continuity(start, end, fs, embeddings)
+    else:
+        visual_shift = 0.0
+        visual_continuity = 0.0
+
     # Penalties (soft, subtractive)
     raw_components: dict[str, float] = {
         "transcript_safety": transcript_safety,
@@ -366,9 +512,12 @@ def score_candidate_features(
         "hook_position": hook_position,
         "length_fit": lf,
         "speech_density": speech_density,
+        "visual_shift": visual_shift,
+        "visual_continuity": visual_continuity,
         "word_interruption": 0.0,   # hard gate: 0 means "not triggered"
         "audio_jump": audio_jump,
         "face_motion": face_motion,
+        "duplicate_penalty": 0.0,   # batch-level: filled by score_candidates
     }
     return raw_components, False, None
 
@@ -390,6 +539,7 @@ def score_candidates(
     speaker_frames: set[int] | None = None,
     audio_jumps: dict[int, float] | None = None,
     face_motions: dict[int, float] | None = None,
+    embeddings: dict[int, np.ndarray] | None = None,
     weights: ScoreWeights = DEFAULT_WEIGHTS,
     min_duration_s: float = 15.0,
     max_duration_s: float = 60.0,
@@ -416,6 +566,11 @@ def score_candidates(
     if n == 0:
         return []
 
+    # Precompute the sorted sampled-frame index once. Empty (None / no embeddings) →
+    # the visual columns stay all-zero and the duplicate pass below is skipped, so
+    # the result is byte-identical to the pre-VE4 behaviour.
+    frames_sorted: list[int] = sorted(embeddings) if embeddings else []
+
     # Step 1: compute raw components for every candidate
     all_raw: list[dict[str, float]] = []
     all_rejected: list[bool] = []
@@ -435,12 +590,41 @@ def score_candidates(
             speaker_frames=speaker_frames,
             audio_jump=aj,
             face_motion=fm,
+            embeddings=embeddings,
+            frames_sorted=frames_sorted,
             min_duration_s=min_duration_s,
             max_duration_s=max_duration_s,
         )
         all_raw.append(raw)
         all_rejected.append(rejected)
         all_reasons.append(reason)
+
+    # Step 1b: batch-level duplicate_penalty. For each candidate the penalty is the
+    # max cosine similarity of its mean segment-embedding to ANY other candidate's;
+    # two near-identical shorts cannot then both rank high. Skipped entirely when no
+    # embeddings or a single candidate → penalty stays 0.0 for everyone (neutral).
+    if embeddings and n > 1:
+        reprs: list[np.ndarray | None] = [
+            _segment_repr(
+                cand.start_frame, cand.end_frame_exclusive, frames_sorted, embeddings
+            )
+            for cand in candidates
+        ]
+        for i in range(n):
+            ri = reprs[i]
+            if ri is None:
+                continue  # no representation → leave penalty at 0.0
+            best = 0.0
+            for j in range(n):
+                if j == i:
+                    continue
+                rj = reprs[j]
+                if rj is None:
+                    continue
+                sim = _cosine(ri, rj)
+                if sim > best:
+                    best = sim
+            all_raw[i]["duplicate_penalty"] = best
 
     # Step 2: robust z-normalisation per feature column
     z_by_key: dict[str, list[float]] = {}
@@ -484,14 +668,17 @@ def score_candidates(
             "hook_position",
             "length_fit",
             "speech_density",
+            "visual_shift",
+            "visual_continuity",
         ]
         for key in positive_keys:
             w = getattr(weights, key)
             total += w * breakdown[key]
 
-        # Soft subtractive penalties (audio_jump, face_motion)
+        # Soft subtractive penalties (audio_jump, face_motion, duplicate_penalty)
         total -= weights.audio_jump * breakdown["audio_jump"]
         total -= weights.face_motion * breakdown["face_motion"]
+        total -= weights.duplicate_penalty * breakdown["duplicate_penalty"]
 
         # word_interruption contributes 0 to total (it is a hard gate only)
         # Its breakdown entry is 0.0 for non-rejected candidates

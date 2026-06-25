@@ -14,8 +14,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
+from laura.analysis.embeddings_store import FrameEmbedding, SqliteVectorStore
 from laura.analysis.shorts_handlers import handle_shorts_extract
 from laura.config import Settings
 from laura.db import repos
@@ -181,6 +183,61 @@ def test_extract_persists_ranked_flattened_candidates(tmp_path: Path) -> None:
 
     assert scores == sorted(scores, reverse=True)
     assert result["kept"] == sum(1 for r in rows if r["qa_passed"])
+
+
+def test_extract_uses_frame_embeddings_when_present(tmp_path: Path) -> None:
+    """VE4: seeded frame embeddings flow into the persisted score_breakdown.
+
+    With distinct embeddings across the asset's timeline, at least one candidate's
+    breakdown must carry a non-zero visual_shift / visual_continuity (the visual
+    columns are no longer all-zero). All three VE4 keys must be present on every row.
+    """
+    db = _make_db(tmp_path)
+    _project_id, asset_id, run_id = _seed_succeeded_run_with_transcript(db)
+
+    # Dense 2-D embeddings across the 450-frame asset whose direction rotates with
+    # frame index. Samples sit at frames 10,25,40,... (offset from the candidate cut
+    # frames, which are multiples of 75) so cuts land mid-rotation → non-zero
+    # visual_shift, and different candidate windows see different interior sequences
+    # → distinct visual_continuity / segment reprs (so robust-z is not flattened).
+    store = SqliteVectorStore(db)
+    items: list[FrameEmbedding] = []
+    for frame in range(10, 460, 15):
+        theta = (frame / 450.0) * (np.pi / 2.0)  # 0 → 90° sweep across the asset
+        vec = np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+        items.append(
+            FrameEmbedding(
+                asset_id=asset_id,
+                analysis_run_id=run_id,
+                frame=frame,
+                model="test-clip",
+                vector=vec,
+            )
+        )
+    store.replace_frame_embeddings(asset_id, run_id, items)
+
+    result = handle_shorts_extract(
+        _ctx(db, {"asset_id": asset_id, "min_duration_s": 1.0, "max_duration_s": 8.0})
+    )
+    assert result["candidates"] > 0
+
+    rows = repos.list_shorts_candidates_by_asset(db, asset_id)
+    assert rows
+
+    for r in rows:
+        bd = r["score_breakdown"]
+        assert "visual_shift" in bd
+        assert "visual_continuity" in bd
+        assert "duplicate_penalty" in bd
+
+    # At least one candidate sees a non-zero visual signal (post-z, so it may be
+    # negative; what matters is that the column is not uniformly zero).
+    visual_values = [
+        r["score_breakdown"]["visual_shift"] for r in rows
+    ] + [r["score_breakdown"]["visual_continuity"] for r in rows]
+    assert any(abs(v) > 1e-9 for v in visual_values), (
+        "embeddings present but every visual breakdown value is zero"
+    )
 
 
 def test_extract_no_succeeded_run_raises(tmp_path: Path) -> None:

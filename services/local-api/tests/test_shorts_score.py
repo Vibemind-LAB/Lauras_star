@@ -385,9 +385,12 @@ def test_breakdown_is_explainable_and_complete() -> None:
         "hook_position",
         "length_fit",
         "speech_density",
+        "visual_shift",
+        "visual_continuity",
         "word_interruption",
         "audio_jump",
         "face_motion",
+        "duplicate_penalty",
     }
     assert set(s.breakdown.keys()) == expected_keys
     assert set(s.components.keys()) == expected_keys
@@ -531,9 +534,12 @@ def test_score_candidate_features_returns_correct_shape() -> None:
         "hook_position",
         "length_fit",
         "speech_density",
+        "visual_shift",
+        "visual_continuity",
         "word_interruption",
         "audio_jump",
         "face_motion",
+        "duplicate_penalty",
     }
     assert set(raw.keys()) == expected_keys
 

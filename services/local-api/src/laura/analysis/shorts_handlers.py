@@ -29,6 +29,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import numpy as np
+
 from ..db import repos
 from ..db.database import Database
 from ..jobs.runner import JobContext, JobHandler
@@ -148,6 +150,17 @@ def handle_shorts_extract(ctx: JobContext) -> dict[str, Any]:
         or None
     )
 
+    # --- Load frame embeddings (VE4) → frame→vector map (None when empty) ----
+    # Sparse map (1 fps + shot boundaries from the VE1/VE2 pipeline). An empty store
+    # yields None, which keeps the visual scorer components strictly neutral — no
+    # behaviour change relative to a run without embeddings.
+    from .embeddings_store import SqliteVectorStore
+
+    emb_items = SqliteVectorStore(db).list_frame_embeddings(asset_id, run["id"])
+    embeddings: dict[int, np.ndarray] | None = {
+        e.frame: e.vector for e in emb_items
+    } or None
+
     # --- Generate → score → QA (silence=None: MVP, no ffmpeg in the job) ----
     cands: list[ShortCandidate] = generate_candidates(
         words,
@@ -169,6 +182,7 @@ def handle_shorts_extract(ctx: JobContext) -> dict[str, Any]:
         silence=None,
         sentence_frames=sentence_frames,
         speaker_frames=speaker_frames,
+        embeddings=embeddings,
         min_duration_s=min_duration_s,
         max_duration_s=max_duration_s,
     )
