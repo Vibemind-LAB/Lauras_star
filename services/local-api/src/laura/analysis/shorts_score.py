@@ -73,6 +73,7 @@ __all__ = [
     "ScoreWeights",
     "DEFAULT_WEIGHTS",
     "IDEAL_DURATION_S",
+    "Z_CLAMP",
     "robust_z",
     "score_candidate_features",
     "score_candidates",
@@ -89,6 +90,14 @@ IDEAL_DURATION_S: float = 30.0
 # Decay constant for visual_boundary: distance in frames where the score halves.
 # At 25 fps ~12 frames ≈ 0.5 s feels natural; override-able only internally.
 _VB_HALF_LIFE_FRAMES: int = 12
+
+# Winsorize clamp for robust-z output.  Sparse features (e.g. visual_boundary when most
+# candidates are far from a shot edge → tiny MAD) can produce z-scores in the tens of
+# thousands, causing a single feature to dominate the multimodal blend.  Clamping each
+# z to [-Z_CLAMP, Z_CLAMP] bounds every feature's contribution equally regardless of
+# how sparse or concentrated the raw values are.  ±4 is a standard winsorisation level
+# (captures ~99.99 % of a Gaussian without letting outliers explode the scale).
+Z_CLAMP: float = 4.0
 
 
 # ---------------------------------------------------------------------------
@@ -146,12 +155,15 @@ _ALL_KEYS: list[str] = [
 
 
 def robust_z(values: list[float]) -> list[float]:
-    """Robust z-score: ``(v - median) / (1.4826 * MAD)`` for each value.
+    """Robust z-score: ``(v - median) / (1.4826 * MAD)`` for each value, clamped to ±Z_CLAMP.
 
     Guarantees:
     * Empty list → ``[]``.
     * Single element → ``[0.0]`` (no spread to measure).
     * MAD == 0 (all identical) → ``[0.0, …]`` (avoid division by zero).
+    * Every output is winsorised to ``[-Z_CLAMP, Z_CLAMP]`` so that sparse features
+      (e.g. ``visual_boundary`` when most candidates are far from a shot edge → tiny MAD)
+      cannot produce z-scores in the tens of thousands and dominate the blend.
     """
     n = len(values)
     if n == 0:
@@ -165,7 +177,7 @@ def robust_z(values: list[float]) -> list[float]:
         return [0.0] * n
 
     scale = 1.4826 * mad
-    return [(v - med) / scale for v in values]
+    return [max(-Z_CLAMP, min(Z_CLAMP, (v - med) / scale)) for v in values]
 
 
 # ---------------------------------------------------------------------------

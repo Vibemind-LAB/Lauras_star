@@ -113,6 +113,8 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
 
     hook_text = opts.get("hook_text")
     loudnorm = bool(opts.get("loudnorm", True))
+    reel_fit = bool(opts.get("reel_fit", False))
+    reel_blur_fill = bool(opts.get("reel_blur_fill", False))
     try:
         render_clips_mp4(
             clips,
@@ -120,6 +122,8 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
             rate_num=rate_num,
             rate_den=rate_den,
             vertical=True,
+            reel_fit=reel_fit,
+            reel_blur_fill=reel_blur_fill,
             hook_text=hook_text if isinstance(hook_text, str) else None,
             caption_ass=caption_ass,
             loudnorm=loudnorm,

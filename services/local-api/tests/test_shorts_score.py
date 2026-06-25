@@ -16,6 +16,7 @@ from laura.analysis.editorial import Word
 from laura.analysis.shorts_score import (
     DEFAULT_WEIGHTS,
     IDEAL_DURATION_S,
+    Z_CLAMP,
     robust_z,
     score_candidate_features,
     score_candidates,
@@ -347,15 +348,65 @@ def test_robust_z_handles_zero_mad() -> None:
 
 
 def test_robust_z_centers_on_median() -> None:
-    """The median element maps near 0; an outlier maps large-positive or -negative."""
+    """The median element maps near 0; an extreme outlier is clamped to Z_CLAMP.
+
+    Before winsorisation [1,2,3,4,100] would produce z≈32 for the outlier (MAD=1, so
+    scale≈1.48, z(100)≈(100-3)/1.48≈65).  After clamping the outlier lands exactly at
+    Z_CLAMP and the median is near 0, while the lowest value is negative but also bounded.
+    """
     values = [1.0, 2.0, 3.0, 4.0, 100.0]
     result = robust_z(values)
     # median is 3.0 -> result[2] should be near 0
     assert abs(result[2]) < 0.5
-    # outlier (100.0) -> large positive z
-    assert result[4] > 5.0
-    # lowest value (1.0) -> negative z
+    # outlier (100.0) -> clamped to the upper winsorisation limit
+    assert result[4] == pytest.approx(Z_CLAMP)
+    # lowest value (1.0) -> negative z (but within bounds)
     assert result[0] < 0.0
+    assert result[0] >= -Z_CLAMP
+
+
+# ---------------------------------------------------------------------------
+# Test 9b — robust_z_sparse_spike_clamped
+# ---------------------------------------------------------------------------
+
+
+def test_robust_z_sparse_spike_clamped() -> None:
+    """A sparse binary feature (all-zero + one spike) is winsorised to Z_CLAMP.
+
+    This is the real-world scenario that triggered the live-test bug: ``visual_boundary``
+    was mostly 0.0 with rare non-zero values → MAD ≈ 0 → z-scores in the tens of
+    thousands → one feature dominated the entire multimodal blend.
+
+    Contract:
+    - The spike's z is clamped to exactly Z_CLAMP (not tens of thousands).
+    - The zero cluster's z is ≥ -Z_CLAMP (also bounded).
+    - A normal-spread column (all values well within ±4 standard units) is not affected
+      by the clamp — its values remain unchanged (max |z| well within Z_CLAMP).
+    """
+    # Model visual_boundary in the live-test failure: most candidates are far from a shot
+    # edge → small non-zero values, a few closer candidates are slightly higher, and one
+    # cut lands right on a boundary → 1.0.  The tiny spread produces a very small MAD,
+    # so the raw z for the spike would be in the tens of thousands without the clamp.
+    # Use small distinct near-zero values so MAD is non-zero.
+    sparse = [0.001 * i for i in range(20)] + [1.0]
+    result_sparse = robust_z(sparse)
+
+    # The spike is at index 20 — without the clamp it would be ~thousands; clamped to Z_CLAMP.
+    assert result_sparse[20] == pytest.approx(Z_CLAMP), (
+        f"sparse spike should be clamped to Z_CLAMP={Z_CLAMP}, got {result_sparse[20]}"
+    )
+    # All values must be within bounds.
+    for z in result_sparse:
+        assert -Z_CLAMP <= z <= Z_CLAMP
+
+    # Normal-spread column: values uniformly spread → max |z| well inside ±4.
+    normal = [float(i) for i in range(10)]  # 0..9, median=4.5, MAD≈2.5
+    result_normal = robust_z(normal)
+    max_z = max(abs(z) for z in result_normal)
+    # For a uniform 0..9 column, robust-z extremes are ≈ ±3.0 — well within Z_CLAMP.
+    assert max_z < Z_CLAMP, (
+        f"normal-spread column should not hit the clamp; max |z|={max_z}"
+    )
 
 
 # ---------------------------------------------------------------------------

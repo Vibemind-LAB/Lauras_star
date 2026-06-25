@@ -180,6 +180,88 @@ def test_captions_false_skips_caption_build(
     assert calls[0]["kwargs"]["caption_ass"] is None
 
 
+def test_reel_fit_option_forwarded_to_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reel_fit=True in export options is forwarded to render_clips_mp4 as reel_fit=True."""
+    db, candidate_id, asset_id = _seed(tmp_path, with_words=False)
+    calls = _patch_render(monkeypatch)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "candidate_id": candidate_id,
+                 "captions": False, "reel_fit": True},
+    )
+    shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"].get("reel_fit") is True
+    # vertical must still be True regardless
+    assert calls[0]["kwargs"]["vertical"] is True
+
+
+def test_reel_fit_defaults_false_when_not_in_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When reel_fit is absent from options it defaults to False (center-crop path)."""
+    db, candidate_id, asset_id = _seed(tmp_path, with_words=False)
+    calls = _patch_render(monkeypatch)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "candidate_id": candidate_id, "captions": False},
+    )
+    shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"].get("reel_fit") is False
+
+
+def test_reel_blur_fill_option_forwarded_to_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reel_blur_fill=True in options is forwarded to render_clips_mp4 as reel_blur_fill=True."""
+    db, candidate_id, asset_id = _seed(tmp_path, with_words=False)
+    calls = _patch_render(monkeypatch)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "candidate_id": candidate_id,
+                 "captions": False, "reel_blur_fill": True},
+    )
+    shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"].get("reel_blur_fill") is True
+    # vertical must still be True regardless
+    assert calls[0]["kwargs"]["vertical"] is True
+
+
+def test_reel_blur_fill_defaults_false_when_not_in_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When reel_blur_fill is absent from options it defaults to False."""
+    db, candidate_id, asset_id = _seed(tmp_path, with_words=False)
+    calls = _patch_render(monkeypatch)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "candidate_id": candidate_id, "captions": False},
+    )
+    shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"].get("reel_blur_fill") is False
+
+
 def test_missing_candidate_sets_export_error_and_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

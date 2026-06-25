@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..ingest.ffmpeg import FFmpegError, probe, run_ffmpeg
 from .audio import AudioOverlay
-from .reel import reel_video_chain, resolve_font
+from .reel import reel_blur_fill_graph, reel_video_chain, resolve_font
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,8 @@ def render_clips_mp4(
     music_tracks: list[tuple[Path, int, int, int]] | None = None,
     audio_overlays: list[AudioOverlay] | None = None,
     vertical: bool = False,
+    reel_fit: bool = False,
+    reel_blur_fill: bool = False,
     hook_text: str | None = None,
     disclosure_text: str | None = None,
     caption_ass: str | None = None,
@@ -282,6 +284,21 @@ def render_clips_mp4(
     (``I=-14:TP=-1.5:LRA=11`` — the common social-media loudness target) as the
     final step of the audio graph when the output has audio.  With it off (or no
     audio) the audio graph is byte-identical to the pre-loudnorm behaviour.
+
+    ``reel_fit`` (default ``False``) switches the vertical reframe from center-crop to
+    letterbox fit when ``vertical=True``.  Use for screencasts or any content where
+    center-crop would slice off readable text.  Has no effect when ``vertical=False``.
+
+    ``reel_blur_fill`` (default ``False``) switches to *blurred-background fill* mode when
+    ``vertical=True``.  The source frame is scaled to fit 1080×1920 (no cropping), and the
+    top/bottom dead space is filled with a heavily blurred, scale-to-cover copy of the same
+    frame.  This produces the Instagram/TikTok "reel fill" look instead of black bars.
+    Precedence: ``reel_blur_fill`` > ``reel_fit`` > center-crop (default).  Has no effect
+    when ``vertical=False`` or when ``vertical=True`` but ``reel_blur_fill=False``.
+    Because the blur-fill requires a ``split``/``overlay`` sub-graph it is wired directly
+    into the ``filter_complex`` string rather than through the comma-chain returned by
+    :func:`reel_video_chain` — drawtext and ASS captions are still applied on top of the
+    composited 1080×1920 stream, so caption output is identical to the other vertical modes.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
@@ -323,8 +340,16 @@ def render_clips_mp4(
         ass_basename = ass_path.name
 
     try:
+        # Determine which vertical reframe mode is active.  Precedence:
+        #   reel_blur_fill (split/overlay) > reel_fit (letterbox) > center-crop (default).
+        # reel_blur_fill requires a split/overlay sub-graph that cannot be expressed as a
+        # simple comma chain, so it is wired directly into filter_complex (see below).
+        # reel_video_chain is called without vertical=True when blur-fill handles reframing,
+        # so it only emits the drawtext/caption chain without any crop/scale/pad filters.
+        use_blur_fill = vertical and reel_blur_fill
         reel = reel_video_chain(
-            vertical=vertical,
+            vertical=vertical and not use_blur_fill,
+            reel_fit=reel_fit,
             hook_textfile=hook_tf,
             disclosure_textfile=disc_tf,
             font=resolve_font(),
@@ -340,10 +365,23 @@ def render_clips_mp4(
                 rate_num=rate_num,
                 rate_den=rate_den,
             )
-            post = ",".join(p for p in (reel, caption_filter) if p)
-            fold_parts.append(
-                f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
-            )
+            if use_blur_fill:
+                # Insert blur-fill sub-graph between the xfade output and captions.
+                # The sub-graph takes [v_label] → [_rbout]; captions are applied after.
+                blur_in = f"[{v_label}]"
+                blur_out = "[_rbout]"
+                blur_graph = reel_blur_fill_graph(blur_in, blur_out)
+                fold_parts.append(blur_graph)
+                post_caption = ",".join(p for p in (reel, caption_filter) if p)
+                if post_caption:
+                    fold_parts.append(f"{blur_out}{post_caption}[out]")
+                else:
+                    fold_parts.append(f"{blur_out}null[out]")
+            else:
+                post = ",".join(p for p in (reel, caption_filter) if p)
+                fold_parts.append(
+                    f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
+                )
             if has_base_audio and a_label is not None:
                 fold_parts.append(f"[{a_label}]anull[abase]")
             parts = ";".join(fold_parts)
@@ -377,17 +415,50 @@ def render_clips_mp4(
             transition_chain = _video_transition_chain(
                 video_transitions, rate_num=rate_num, rate_den=rate_den
             )
-            post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
-            concat_out = "[vcat]" if post else "[out]"
-            if has_base_audio:
-                parts = (
-                    ";".join(filt)
-                    + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
-                )
+            if use_blur_fill:
+                # Blur-fill path: concat output goes to [vcat], blur-fill sub-graph takes it
+                # to [_rbout], then caption filters (drawtext/ass) are applied after.
+                # transition_chain still applies before the concat output if present.
+                pre_blur = ",".join(p for p in (transition_chain,) if p)
+                concat_out = "[vcat]"
+                if has_base_audio:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
+                    )
+                else:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+                    )
+                # Apply transition chain (e.g. fade) to vcat before blur-fill if any.
+                blur_in_label = "[vcat]"
+                if pre_blur:
+                    parts += f";[vcat]{pre_blur}[_rbtrans]"
+                    blur_in_label = "[_rbtrans]"
+                blur_graph = reel_blur_fill_graph(blur_in_label, "[_rbout]")
+                parts += f";{blur_graph}"
+                # Drawtext and ASS captions are applied on the composited 1080×1920 stream.
+                post_caption = ",".join(p for p in (reel, caption_filter) if p)
+                if post_caption:
+                    parts += f";[_rbout]{post_caption}[out]"
+                else:
+                    parts += ";[_rbout]null[out]"
             else:
-                parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
-            if post:
-                parts += f";[vcat]{post}[out]"
+                post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
+                concat_out = "[vcat]" if post else "[out]"
+                if has_base_audio:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
+                    )
+                else:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+                    )
+                if post:
+                    parts += f";[vcat]{post}[out]"
 
         audio_maps: list[str] = []
         overlays = [*_music_overlays(music_tracks), *(audio_overlays or [])]
