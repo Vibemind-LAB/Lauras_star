@@ -29,12 +29,16 @@ def reel_video_chain(
 
     Filter order:
     1. Reframe to 9:16 (1080 × 1920)              — when *vertical* is True.
-       * Default (``reel_fit=False``): center-crop (``crop=ih*9/16:ih, scale=1080:1920``).
-         Fills the frame but may cut off content that is off-center.
+       * Default (``reel_fit=False``): center-crop, clamped to the source
+         (``crop='min(iw,ih*9/16)':'min(ih,iw*16/9)', scale=1080:1920``).  Fills the frame
+         but may cut off content that is off-center.  The clamp keeps a source already
+         narrower/taller than 9:16 from requesting a crop larger than the frame.
        * Fit mode (``reel_fit=True``): scale-to-fit with letterbox padding
-         (``scale=1080:-2, pad=1080:1920:0:(1920-ih)/2:black``).  The entire source
-         frame is kept visible; dead space is filled with black bars.  Use for screencasts
-         or any content where center-crop would slice off readable text or UI.
+         (``scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,
+         pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black``).  The whole source frame is kept
+         visible; dead space is filled with black bars and the frame is centred on both
+         axes.  Use for screencasts or any content where center-crop would slice off
+         readable text or UI.
     2. Centered top ``drawtext``                   — when *hook_textfile* is set.
     3. Bottom-right ``drawtext``                   — when *disclosure_textfile* is set.
 
@@ -55,16 +59,26 @@ def reel_video_chain(
 
     if vertical:
         if reel_fit:
-            # Scale source to fit within 1080 wide (preserve aspect ratio), then pad
-            # top and bottom with black to reach full 1920 height.
-            # force_original_aspect_ratio=decrease ensures we never upscale beyond 1080
-            # wide, and -2 keeps the height divisible by 2 (required by libx264).
+            # Scale the source to fit *inside* the full 1080×1920 box (decrease on BOTH
+            # dimensions), then pad to exactly 1080×1920, centring on both axes.
+            # Fitting against the whole box (not just width) is what keeps a source that
+            # is already taller/narrower than 9:16 from overshooting 1920 in height — the
+            # earlier ``scale=1080:-2`` only constrained width, so a portrait source
+            # (e.g. 464×832) scaled to height 1936 and the subsequent ``pad`` to 1920
+            # failed ("Padded dimensions cannot be smaller than input dimensions").
+            # ``force_divisible_by=2`` keeps both dimensions even (required by libx264).
             parts.append(
-                "scale=1080:-2:force_original_aspect_ratio=decrease"
+                "scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2"
             )
-            parts.append("pad=1080:1920:0:(1920-ih)/2:black")
+            parts.append("pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black")
         else:
-            parts.append("crop=ih*9/16:ih")
+            # Center-crop to a 9:16 window, clamped to the source so a source that is
+            # already narrower than 9:16 (e.g. 464×832, taller than 9:16) does not request
+            # a crop wider/taller than the frame — that made ``crop=ih*9/16:ih`` ask for
+            # 468px of width from a 464px source and the crop filter aborted (-22). For
+            # landscape/standard sources ``min(iw, ih*9/16) == ih*9/16``, so behavior is
+            # unchanged.
+            parts.append("crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'")
             parts.append("scale=1080:1920")
 
     if hook_textfile:

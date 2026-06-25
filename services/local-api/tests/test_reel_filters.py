@@ -12,7 +12,9 @@ from laura.render.reel import reel_blur_fill_graph, reel_video_chain
 
 def test_vertical_no_text_contains_crop_and_scale() -> None:
     chain = reel_video_chain(vertical=True, font="X")
-    assert "crop=ih*9/16:ih" in chain
+    # Center-crop is clamped to the source so a source already narrower/taller than 9:16
+    # cannot request a crop larger than the frame (regression: 464×832 broke crop=ih*9/16:ih).
+    assert "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'" in chain
     assert "scale=1080:1920" in chain
     assert "drawtext=" not in chain
 
@@ -60,11 +62,11 @@ def test_reel_fit_contains_pad_not_crop() -> None:
 
 
 def test_reel_fit_false_is_unchanged_crop_chain() -> None:
-    """reel_fit=False (default) is byte-identical to the pre-fit center-crop behavior."""
+    """reel_fit=False (default) is the (clamped) center-crop chain, no letterbox pad."""
     chain_default = reel_video_chain(vertical=True, font="X")
     chain_explicit_false = reel_video_chain(vertical=True, reel_fit=False, font="X")
     assert chain_default == chain_explicit_false
-    assert "crop=ih*9/16:ih" in chain_default
+    assert "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'" in chain_default
     assert "scale=1080:1920" in chain_default
     assert "pad" not in chain_default
 
