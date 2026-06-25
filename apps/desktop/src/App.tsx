@@ -26,6 +26,7 @@ import { MediaSidebar } from "./components/MediaSidebar";
 import { NavRail } from "./components/NavRail";
 import { Player } from "./components/Player";
 import { RoughCutView } from "./components/RoughCutView";
+import { ShortsView } from "./components/ShortsView";
 import { SceneInspector } from "./components/SceneInspector";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
@@ -845,6 +846,17 @@ export function App(): ReactElement {
                 }}
               />
             </>
+          )}
+
+          {stage === "shorts" && client && (
+            <ShortsView
+              client={client}
+              asset={detailAsset}
+              seek={seek}
+              currentFrame={currentFrame}
+              onSeek={seekToFrame}
+              onFrame={(f) => setCurrentFrame(f)}
+            />
           )}
 
           {stage === "export" &&

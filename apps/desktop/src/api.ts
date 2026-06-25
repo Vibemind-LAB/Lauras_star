@@ -112,6 +112,24 @@ export interface JobStatus {
   finished_at: string | null;
 }
 
+export interface ShortsCandidate {
+  id: string;
+  asset_id: string;
+  source_timeline_id: string;
+  order_index: number;
+  start_frame: number;
+  end_frame_exclusive: number;
+  start_boundary: string;
+  end_boundary: string;
+  score: number;
+  rejected: boolean;
+  reject_reason: string | null;
+  score_breakdown: Record<string, number> | null;
+  qa_passed: boolean;
+  qa_issues: string[];
+  created_at: string;
+}
+
 export interface Waveform {
   version: number;
   sample_rate: number;
@@ -1374,5 +1392,19 @@ export class LauraClient {
 
   getHistory(timelineId: string): Promise<HistoryState> {
     return this.request<HistoryState>(`/timelines/${timelineId}/history`);
+  }
+
+  listShortsCandidates(assetId: string): Promise<ShortsCandidate[]> {
+    return this.request<ShortsCandidate[]>(`/assets/${assetId}/shorts-candidates`);
+  }
+
+  extractShorts(
+    assetId: string,
+    opts: { min_duration_s?: number; max_duration_s?: number; max_candidates?: number } = {},
+  ): Promise<{ job_id: string; analysis_run_id: string }> {
+    return this.request<{ job_id: string; analysis_run_id: string }>(
+      `/assets/${assetId}/shorts-candidates:extract`,
+      { method: "POST", body: JSON.stringify(opts) },
+    );
   }
 }
