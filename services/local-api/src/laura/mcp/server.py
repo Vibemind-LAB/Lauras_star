@@ -54,13 +54,17 @@ def main() -> None:  # pragma: no cover
     from .tools import (
         tool_batch_plan,
         tool_batch_status,
+        tool_deduplicate_shorts,
         tool_explain_candidate,
         tool_extract_shorts,
         tool_job_status,
         tool_list_short_candidates,
         tool_next_action,
         tool_recipe_from_trace,
+        tool_search_visual_moments,
+        tool_similar_segments,
         tool_start_analysis,
+        tool_visual_hook,
     )
 
     db_path = _get_db_path()
@@ -187,6 +191,68 @@ def main() -> None:  # pragma: no cover
     )
     def _explain_candidate(candidate_id: str) -> dict[str, Any]:
         return tool_explain_candidate(db, candidate_id)
+
+    # --- VE5 visual tools -----------------------------------------------------
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="get_similar_segments",
+        description=(
+            "Find the short candidates visually most similar to a given candidate "
+            "within the same asset, using the per-frame visual embeddings. "
+            "Pass asset_id and candidate_id (optional k, default 5). "
+            "Image-image: needs no model. Returns ok=True with a 'similar' list "
+            "(candidate_id, score, start_frame, end_frame_exclusive) sorted best-first, "
+            "or ok=False with a reason when frame embeddings are missing "
+            "(run shorts.embed_frames first) or the candidate is unknown."
+        ),
+    )
+    def _get_similar_segments(
+        asset_id: str, candidate_id: str, k: int = 5
+    ) -> dict[str, Any]:
+        return tool_similar_segments(db, asset_id, candidate_id, k=k)
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="deduplicate_shorts",
+        description=(
+            "Group near-identical short candidates for an asset by visual similarity "
+            "of their segment embeddings (greedy, highest-score keeper wins). "
+            "Pass asset_id (optional threshold, default 0.9). Image-image: needs no model. "
+            "Returns ok=True with groups (keep + duplicates), kept, and dropped id lists, "
+            "or ok=False with a reason when frame embeddings are missing."
+        ),
+    )
+    def _deduplicate_shorts(asset_id: str, threshold: float = 0.9) -> dict[str, Any]:
+        return tool_deduplicate_shorts(db, asset_id, threshold=threshold)
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="score_visual_hook",
+        description=(
+            "Score how strong a short candidate's visual opening is, blending the "
+            "visual shift across the start cut with the continuity of the first seconds. "
+            "Pass asset_id and candidate_id. Image-image: needs no model. "
+            "Returns ok=True with visual_shift_at_start, opening_continuity, hook_score, "
+            "and an explanation, or ok=False with a reason when frame embeddings are "
+            "missing or the candidate is unknown."
+        ),
+    )
+    def _score_visual_hook(asset_id: str, candidate_id: str) -> dict[str, Any]:
+        return tool_visual_hook(db, asset_id, candidate_id)
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="search_visual_moments",
+        description=(
+            "Search an asset's frames by a natural-language query (text->image), "
+            "ranking frames by CLIP similarity to the query. "
+            "Pass asset_id and query (optional k, default 10). "
+            "REQUIRES the optional 'semantic'/visual extra (CLIP text encoder); without it "
+            "this returns ok=False with a reason rather than failing. "
+            "Returns ok=True with a 'moments' list (frame, time_s, score) sorted best-first."
+        ),
+    )
+    def _search_visual_moments(
+        asset_id: str, query: str, k: int = 10
+    ) -> dict[str, Any]:
+        return tool_search_visual_moments(db, asset_id, query, k=k)
 
     logger.info("laura-deck MCP server starting (db=%s)", db_path)
     mcp_server.run(transport="stdio")

@@ -27,6 +27,7 @@ import logging
 from typing import Any
 
 from .. import PIPELINE_VERSION
+from ..analysis import visual_query
 from ..api.batch import batch_status, plan_batch, recipe_from_trace
 from ..api.models import AnalysisStart
 from ..api.shorts import resolve_next_action
@@ -47,6 +48,10 @@ __all__ = [
     "tool_list_short_candidates",
     "tool_job_status",
     "tool_explain_candidate",
+    "tool_similar_segments",
+    "tool_deduplicate_shorts",
+    "tool_visual_hook",
+    "tool_search_visual_moments",
 ]
 
 
@@ -342,3 +347,63 @@ def tool_explain_candidate(db: Database, candidate_id: str) -> dict[str, Any]:
         "top_factors": top_factors,
         "explanation": explanation,
     }
+
+
+# ---------------------------------------------------------------------------
+# VE5 — visual MCP tools (queryable visual timeline over frame embeddings)
+# ---------------------------------------------------------------------------
+#
+# Thin wrappers over ``laura.analysis.visual_query``. The image-image tools run
+# with NO model; ``tool_search_visual_moments`` needs the optional visual/text
+# extra and degrades gracefully (ok=False with a reason) when it is absent.
+
+
+def tool_similar_segments(
+    db: Database, asset_id: str, candidate_id: str, *, k: int = 5
+) -> dict[str, Any]:
+    """Find the candidates visually most similar to *candidate_id* (image-image).
+
+    Wraps :func:`laura.analysis.visual_query.similar_segments`. Returns
+    ``{"ok": True, "candidate_id", "similar": [...]}`` on success, or
+    ``{"ok": False, "reason": ...}`` when no frame embeddings exist or the
+    candidate is unknown.
+    """
+    return visual_query.similar_segments(db, asset_id, candidate_id, k=k)
+
+
+def tool_deduplicate_shorts(
+    db: Database, asset_id: str, *, threshold: float = 0.9
+) -> dict[str, Any]:
+    """Group near-identical short candidates for *asset_id* (image-image).
+
+    Wraps :func:`laura.analysis.visual_query.deduplicate_shorts`. Returns
+    ``{"ok": True, "groups", "kept", "dropped"}`` on success, or
+    ``{"ok": False, "reason": ...}`` when no frame embeddings exist.
+    """
+    return visual_query.deduplicate_shorts(db, asset_id, threshold=threshold)
+
+
+def tool_visual_hook(
+    db: Database, asset_id: str, candidate_id: str
+) -> dict[str, Any]:
+    """Score a candidate's visual opening strength (image-image).
+
+    Wraps :func:`laura.analysis.visual_query.visual_hook`. Returns
+    ``{"ok": True, "candidate_id", "visual_shift_at_start", "opening_continuity",
+    "hook_score", "explanation"}`` on success, or ``{"ok": False, "reason": ...}``
+    when no frame embeddings exist or the candidate is unknown.
+    """
+    return visual_query.visual_hook(db, asset_id, candidate_id)
+
+
+def tool_search_visual_moments(
+    db: Database, asset_id: str, query: str, *, k: int = 10
+) -> dict[str, Any]:
+    """Search an asset's frames by a natural-language *query* (text→image).
+
+    Wraps :func:`laura.analysis.visual_query.search_visual_moments`. Needs the
+    optional visual/text extra (CLIP text encoder); when it is absent the call
+    degrades gracefully to ``{"ok": False, "reason": ...}`` rather than raising.
+    Returns ``{"ok": True, "query", "k", "moments": [...]}`` on success.
+    """
+    return visual_query.search_visual_moments(db, asset_id, query, k=k)

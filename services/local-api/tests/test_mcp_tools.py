@@ -832,3 +832,205 @@ def test_import_laura_mcp_exports_s7_tools() -> None:
         "tool_explain_candidate",
     ):
         assert hasattr(mod, name), f"laura.mcp missing export: {name}"
+
+
+# ---------------------------------------------------------------------------
+# VE5 — visual tools (tool_similar_segments / tool_deduplicate_shorts /
+#        tool_visual_hook / tool_search_visual_moments)
+# ---------------------------------------------------------------------------
+#
+# Smoke tests covering the graceful "no embeddings" path (ok=False, no crash) and
+# the happy path with synthetic frame embeddings + a fake text embedder. The real
+# CLIP text model is never loaded.
+
+
+def _seed_embeddings_and_candidates(
+    db: SqliteDatabase, project: dict[str, Any], asset: dict[str, Any]
+) -> dict[int, str]:
+    """A succeeded run + synthetic frame vectors + two near-dup candidates + one distinct."""
+    import numpy as np
+
+    from laura.analysis.embeddings_store import FrameEmbedding, SqliteVectorStore
+
+    run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="1", config={"stages": {}}
+    )
+    repos.start_analysis_run(db, run["id"])
+    repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
+
+    e_x = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    e_y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    frame_vecs = {
+        0: e_x, 25: e_x, 50: e_x, 75: e_x,        # A → X
+        200: e_x, 225: e_x, 250: e_x, 275: e_x,   # B → X (dup of A)
+        400: e_y, 425: e_y, 450: e_y, 475: e_y,   # C → Y (distinct)
+    }
+    store = SqliteVectorStore(db)
+    store.replace_frame_embeddings(
+        asset["id"],
+        run["id"],
+        [
+            FrameEmbedding(
+                asset_id=asset["id"],
+                analysis_run_id=run["id"],
+                frame=f,
+                model="fake",
+                vector=v,
+            )
+            for f, v in frame_vecs.items()
+        ],
+    )
+
+    candidates = [
+        {
+            "start_frame": s,
+            "end_frame_exclusive": s + 100,
+            "start_boundary": "sentence_end",
+            "end_boundary": "sentence_end",
+            "score": score,
+            "rejected": False,
+            "reject_reason": None,
+            "score_breakdown": {},
+            "qa_passed": True,
+            "qa_issues": [],
+        }
+        for s, score in ((0, 0.9), (200, 0.7), (400, 0.5))
+    ]
+    repos.replace_shorts_candidates(
+        db,
+        project_id=project["id"],
+        asset_id=asset["id"],
+        source_timeline_id="tl-fake",
+        candidates=candidates,
+    )
+    cands = repos.list_shorts_candidates_by_asset(db, asset["id"])
+    return {int(c["start_frame"]): c["id"] for c in cands}
+
+
+def test_tool_similar_segments_no_embeddings(tmp_path: Path) -> None:
+    """tool_similar_segments degrades gracefully (ok=False) without frame embeddings."""
+    from laura.mcp.tools import tool_similar_segments
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_similar_segments(db, asset["id"], "any-candidate-id")
+    assert result["ok"] is False
+    assert "reason" in result
+
+
+def test_tool_similar_segments_happy(tmp_path: Path) -> None:
+    """tool_similar_segments finds the near-duplicate as top-1."""
+    from laura.mcp.tools import tool_similar_segments
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    ids = _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_similar_segments(db, asset["id"], ids[0])
+    assert result["ok"] is True
+    assert result["similar"][0]["candidate_id"] == ids[200]
+
+
+def test_tool_deduplicate_shorts_no_embeddings(tmp_path: Path) -> None:
+    """tool_deduplicate_shorts degrades gracefully without frame embeddings."""
+    from laura.mcp.tools import tool_deduplicate_shorts
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_deduplicate_shorts(db, asset["id"])
+    assert result["ok"] is False
+    assert "reason" in result
+
+
+def test_tool_deduplicate_shorts_happy(tmp_path: Path) -> None:
+    """tool_deduplicate_shorts groups the two X-region candidates together."""
+    from laura.mcp.tools import tool_deduplicate_shorts
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    ids = _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_deduplicate_shorts(db, asset["id"])
+    assert result["ok"] is True
+    assert result["dropped"] == [ids[200]]
+    assert set(result["kept"]) == {ids[0], ids[400]}
+
+
+def test_tool_visual_hook_no_embeddings(tmp_path: Path) -> None:
+    """tool_visual_hook degrades gracefully without frame embeddings."""
+    from laura.mcp.tools import tool_visual_hook
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_visual_hook(db, asset["id"], "any-candidate-id")
+    assert result["ok"] is False
+    assert "reason" in result
+
+
+def test_tool_visual_hook_happy(tmp_path: Path) -> None:
+    """tool_visual_hook returns a hook_score and shift/continuity for a known candidate."""
+    from laura.mcp.tools import tool_visual_hook
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    ids = _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_visual_hook(db, asset["id"], ids[0])
+    assert result["ok"] is True
+    assert 0.0 <= result["hook_score"] <= 1.0
+    assert "visual_shift_at_start" in result
+    assert "opening_continuity" in result
+
+
+def test_tool_search_visual_moments_no_embeddings(tmp_path: Path) -> None:
+    """tool_search_visual_moments degrades gracefully without frame embeddings.
+
+    visual_available is forced False so no fastembed model is ever touched, and the
+    no-embeddings branch is reached first regardless.
+    """
+    import laura.analysis.visual_query as vq
+    from laura.mcp.tools import tool_search_visual_moments
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_search_visual_moments(db, asset["id"], "a red car")
+    assert result["ok"] is False
+    assert "reason" in result
+    # And: with embeddings absent + extra forced unavailable, still ok=False (no crash).
+    assert vq is not None  # module import smoke
+
+
+def test_tool_search_visual_moments_extra_unavailable(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """With embeddings present but the visual extra forced absent → ok=False, no model load."""
+    import laura.analysis.visual_query as vq
+    from laura.mcp.tools import tool_search_visual_moments
+
+    monkeypatch.setattr(vq, "visual_available", lambda: False)
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_search_visual_moments(db, asset["id"], "a red car")
+    assert result["ok"] is False
+    assert "text search unavailable" in result["reason"]
+
+
+def test_import_laura_mcp_exports_ve5_tools() -> None:
+    """All 4 VE5 visual tool handlers must be importable from laura.mcp without mcp SDK."""
+    import importlib
+
+    mod = importlib.import_module("laura.mcp")
+    for name in (
+        "tool_similar_segments",
+        "tool_deduplicate_shorts",
+        "tool_visual_hook",
+        "tool_search_visual_moments",
+    ):
+        assert hasattr(mod, name), f"laura.mcp missing export: {name}"

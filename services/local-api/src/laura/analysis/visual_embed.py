@@ -36,12 +36,15 @@ _log = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_DIMS",
     "DEFAULT_FPS_SAMPLE",
+    "DEFAULT_TEXT_MODEL",
     "DEFAULT_VISUAL_MODEL",
     "FRAME_H",
     "FRAME_W",
     "Embedder",
+    "FastEmbedClipTextEmbedder",
     "FastEmbedImageEmbedder",
     "RgbFrameLoader",
+    "TextEmbedder",
     "handle_embed_frames",
     "load_rgb_frames_ffmpeg",
     "register_visual_handlers",
@@ -52,6 +55,10 @@ __all__ = [
 # Default CLIP image encoder shipped by fastembed. 512-dim, ViT-B/32.
 DEFAULT_VISUAL_MODEL = "Qdrant/clip-ViT-B-32-vision"
 DEFAULT_DIMS = 512
+
+# Matching CLIP *text* encoder — shares the 512-dim ViT-B/32 space as the vision
+# model above, so a text query embeds into the same space as the frame vectors.
+DEFAULT_TEXT_MODEL = "Qdrant/clip-ViT-B-32-text"
 
 # Decode samples at the encoder's native input size; cheap + model-friendly.
 FRAME_W = FRAME_H = 224
@@ -142,6 +149,64 @@ class FastEmbedImageEmbedder:
         if out.ndim == 2 and out.shape[1] > 0:
             self.dims = int(out.shape[1])
         return out
+
+
+# ---------------------------------------------------------------------------
+# Text embedder protocol + default fastembed CLIP-text implementation (VE5)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class TextEmbedder(Protocol):
+    """A text embedder: turns one query string into a 1-D float32 vector.
+
+    The vector lives in the *same* space as the frame embeddings (CLIP vision/text
+    share a space), so a query can be ranked against frame vectors by cosine. Tests
+    inject a deterministic fake implementing this Protocol — no model, no download.
+    """
+
+    name: str
+    dims: int
+
+    def embed_text(self, text: str) -> np.ndarray: ...
+
+
+class FastEmbedClipTextEmbedder:
+    """Default :class:`TextEmbedder` backed by ``fastembed``'s CLIP ``TextEmbedding``.
+
+    ``fastembed`` is imported **lazily** (first use), so importing this module never
+    pulls the heavy extra. Construction is cheap; the model is built on the first
+    :meth:`embed_text` call. When the extra is missing a clear :class:`RuntimeError`
+    is raised — callers gate on :func:`visual_available` to avoid ever reaching here.
+
+    The text encoder (``Qdrant/clip-ViT-B-32-text``) shares the 512-dim ViT-B/32
+    space with the vision encoder used by :class:`FastEmbedImageEmbedder`, so a text
+    query embeds into the same space as the stored frame vectors.
+    """
+
+    def __init__(self, model: str = DEFAULT_TEXT_MODEL) -> None:
+        self.name = model
+        self.dims = DEFAULT_DIMS
+        self._model: Any | None = None
+
+    def _ensure_model(self) -> Any:
+        if self._model is None:
+            try:
+                from fastembed import TextEmbedding
+            except Exception as exc:  # pragma: no cover - exercised only without extra
+                raise RuntimeError(
+                    "visual extra not installed (uv sync --extra semantic)"
+                ) from exc
+            self._model = TextEmbedding(model_name=self.name)
+        return self._model
+
+    def embed_text(self, text: str) -> np.ndarray:
+        """Embed ``text`` → a 1-D ``(dims,)`` float32 vector."""
+        model = self._ensure_model()
+        vec = np.asarray(next(iter(model.embed([text]))), dtype=np.float32)
+        if vec.ndim == 1 and vec.shape[0] > 0:
+            self.dims = int(vec.shape[0])
+        return vec
 
 
 # ---------------------------------------------------------------------------
