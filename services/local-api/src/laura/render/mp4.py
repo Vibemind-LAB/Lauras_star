@@ -251,6 +251,7 @@ def render_clips_mp4(
     disclosure_text: str | None = None,
     caption_ass: str | None = None,
     video_transitions: list[VideoTransition] | None = None,
+    loudnorm: bool = False,
 ) -> None:
     """Trim each clip by frame range (end-exclusive) and concat into one MP4.
 
@@ -276,6 +277,11 @@ def render_clips_mp4(
     the ``reel_files`` cleanup list, and removed after the render regardless of
     success or failure.  Defaults to ``None`` (no captions, byte-identical to
     the pre-R1.2 behaviour).
+
+    ``loudnorm`` (default ``False``) appends an EBU R128 ``loudnorm`` stage
+    (``I=-14:TP=-1.5:LRA=11`` — the common social-media loudness target) as the
+    final step of the audio graph when the output has audio.  With it off (or no
+    audio) the audio graph is byte-identical to the pre-loudnorm behaviour.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
@@ -442,12 +448,21 @@ def render_clips_mp4(
                 parts += f";[{idx}:a]" + ",".join(chain) + label
                 audio_labels.append(label)
 
+        # Assemble the final audio graph. With loudnorm on, the mixed/single track is folded
+        # one extra stage through an EBU R128 loudnorm filter (social standard -14 LUFS) before
+        # the [aout] map; with it off the graph is byte-identical to the pre-loudnorm behaviour.
+        apply_loudnorm = loudnorm and bool(audio_labels)
+        final_label = "[aout_pre]" if apply_loudnorm else "[aout]"
         if len(audio_labels) == 1:
-            # Single track — route directly to [aout] (no amix needed).
-            parts += f";{audio_labels[0]}anull[aout]"
+            # Single track — route directly to the final label (no amix needed).
+            parts += f";{audio_labels[0]}anull{final_label}"
         elif len(audio_labels) > 1:
             joined = "".join(audio_labels)
-            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0[aout]"
+            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0{final_label}"
+
+        if apply_loudnorm:
+            # EBU R128 two-pass-style single-pass loudnorm; I/TP/LRA are the common social target.
+            parts += f";{final_label}loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
 
         if audio_labels:
             audio_maps = ["-map", "[aout]", "-c:a", "aac"]

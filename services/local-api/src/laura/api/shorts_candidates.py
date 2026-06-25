@@ -19,7 +19,13 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
-from .models import ExtractShortsAccepted, ExtractShortsRequest, ShortsCandidateOut
+from .models import (
+    ExtractShortsAccepted,
+    ExtractShortsRequest,
+    RenderShortAccepted,
+    RenderShortRequest,
+    ShortsCandidateOut,
+)
 from .security import require_token
 
 router = APIRouter(tags=["shorts-candidates"], dependencies=[Depends(require_token)])
@@ -73,3 +79,50 @@ def list_shorts_candidates(asset_id: str, request: Request) -> list[ShortsCandid
     db = _db(request)
     rows = repos.list_shorts_candidates_by_asset(db, asset_id)
     return [ShortsCandidateOut(**row) for row in rows]
+
+
+@router.post(
+    "/shorts-candidates/{candidate_id}/render",
+    response_model=RenderShortAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def render_short(
+    candidate_id: str, body: RenderShortRequest, request: Request
+) -> RenderShortAccepted:
+    """Render one short candidate to a vertical 9:16 MP4 (captions + optional hook + loudness).
+
+    Creates the ``exports`` row up front (status ``rendering``) and enqueues a ``shorts.render``
+    job carrying its id — the worker resolves the candidate, trims the single source clip, and
+    burns captions. 404 when the candidate (or its asset) no longer exists.
+    """
+    db = _db(request)
+    candidate = repos.get_short_candidate(db, candidate_id)
+    if candidate is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "candidate not found")
+
+    asset = repos.get_asset(db, candidate["asset_id"])
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+
+    options: dict[str, Any] = {
+        "kind": "short",
+        "candidate_id": candidate_id,
+        "captions": body.captions,
+        "hook_text": body.hook_text,
+        "loudnorm": body.loudnorm,
+    }
+    exp = repos.create_export(
+        db,
+        project_id=asset["project_id"],
+        timeline_id=candidate.get("source_timeline_id"),
+        format="mp4",
+        options=options,
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("shorts.render"),
+        kind="shorts.render",
+        payload={"export_id": exp["id"]},
+        idempotency_key=f"shortrender:{exp['id']}",
+    )
+    return RenderShortAccepted(export_id=exp["id"], job_id=job_id)

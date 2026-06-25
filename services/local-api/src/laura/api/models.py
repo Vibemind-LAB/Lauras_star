@@ -1122,6 +1122,26 @@ class ExtractShortsAccepted(BaseModel):
     analysis_run_id: str
 
 
+class RenderShortRequest(BaseModel):
+    """Options for rendering one short candidate to a vertical 9:16 MP4.
+
+    ``captions`` burns the candidate's karaoke transcript (default on);
+    ``hook_text`` overlays an optional top-centre hook; ``loudnorm`` applies the
+    EBU R128 social loudness target (default on).
+    """
+
+    captions: bool = True
+    hook_text: str | None = None
+    loudnorm: bool = True
+
+
+class RenderShortAccepted(BaseModel):
+    """Returned when a ``shorts.render`` job is enqueued for a candidate."""
+
+    export_id: str
+    job_id: str
+
+
 class ShortsCandidateOut(BaseModel):
     """One persisted short candidate (a transcript-safe ``[start, end)`` window + scores)."""
 

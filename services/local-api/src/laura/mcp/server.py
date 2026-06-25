@@ -61,6 +61,7 @@ def main() -> None:  # pragma: no cover
         tool_list_short_candidates,
         tool_next_action,
         tool_recipe_from_trace,
+        tool_render_short,
         tool_search_visual_moments,
         tool_similar_segments,
         tool_start_analysis,
@@ -191,6 +192,33 @@ def main() -> None:  # pragma: no cover
     )
     def _explain_candidate(candidate_id: str) -> dict[str, Any]:
         return tool_explain_candidate(db, candidate_id)
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="render_short",
+        description=(
+            "Render one short candidate to a finished vertical 9:16 MP4 with burned-in "
+            "karaoke captions (and optional top hook text + loudness normalisation). "
+            "Pass the candidate_id (optional: captions=True, hook_text=None, loudnorm=True). "
+            "Creates an export and enqueues a shorts.render job; returns ok=True with "
+            "export_id and job_id, or ok=False when the candidate is unknown. "
+            "Poll job_status(job_id) for completion. This is the final step: "
+            "analyze_video -> extract_shorts -> list_short_candidates -> explain_candidate -> "
+            "render_short."
+        ),
+    )
+    def _render_short(
+        candidate_id: str,
+        captions: bool = True,
+        hook_text: str | None = None,
+        loudnorm: bool = True,
+    ) -> dict[str, Any]:
+        return tool_render_short(
+            db,
+            candidate_id,
+            captions=captions,
+            hook_text=hook_text,
+            loudnorm=loudnorm,
+        )
 
     # --- VE5 visual tools -----------------------------------------------------
 

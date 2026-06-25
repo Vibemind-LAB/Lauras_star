@@ -1034,3 +1034,44 @@ def test_import_laura_mcp_exports_ve5_tools() -> None:
         "tool_search_visual_moments",
     ):
         assert hasattr(mod, name), f"laura.mcp missing export: {name}"
+
+
+# ---------------------------------------------------------------------------
+# render_short (tool_render_short) — completes analyze->extract->list->explain->render
+# ---------------------------------------------------------------------------
+
+
+def test_tool_render_short_ok(tmp_path: Path) -> None:
+    """tool_render_short enqueues a shorts.render job + creates an export for a candidate."""
+    from laura.mcp.tools import tool_render_short
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_short_candidates(db, asset, project, count=1)
+    candidate_id = repos.list_shorts_candidates_by_asset(db, asset["id"])[0]["id"]
+
+    result = tool_render_short(db, candidate_id, hook_text="Hi")
+
+    assert result["ok"] is True
+    assert result["export_id"]
+    assert "job_id" in result
+
+    exp = repos.get_export(db, result["export_id"])
+    assert exp is not None
+    assert exp["options"]["candidate_id"] == candidate_id
+    assert exp["options"]["hook_text"] == "Hi"
+
+    job = repos.get_job(db, result["job_id"])
+    assert job is not None
+    assert job["kind"] == "shorts.render"
+
+
+def test_tool_render_short_candidate_not_found(tmp_path: Path) -> None:
+    """tool_render_short returns ok=False when the candidate does not exist."""
+    from laura.mcp.tools import tool_render_short
+
+    db = _make_db(tmp_path)
+    result = tool_render_short(db, "nonexistent-candidate")
+    assert result["ok"] is False
+    assert result["error"] == "candidate not found"
+    assert result["candidate_id"] == "nonexistent-candidate"

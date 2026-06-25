@@ -48,6 +48,7 @@ from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
 from .render.handlers import register_render_handlers
+from .render.shorts_render import register_shorts_render_handler
 from .telemetry import configure_tracing
 
 
@@ -65,6 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_demo_handlers(registry)
     register_shorts_handlers(registry)
     register_visual_handlers(registry)
+    register_shorts_render_handler(registry)
     runner = JobRunner(
         db, registry,
         lease_seconds=settings.lease_seconds,

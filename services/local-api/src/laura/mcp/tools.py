@@ -48,6 +48,7 @@ __all__ = [
     "tool_list_short_candidates",
     "tool_job_status",
     "tool_explain_candidate",
+    "tool_render_short",
     "tool_similar_segments",
     "tool_deduplicate_shorts",
     "tool_visual_hook",
@@ -347,6 +348,64 @@ def tool_explain_candidate(db: Database, candidate_id: str) -> dict[str, Any]:
         "top_factors": top_factors,
         "explanation": explanation,
     }
+
+
+def tool_render_short(
+    db: Database,
+    candidate_id: str,
+    *,
+    captions: bool = True,
+    hook_text: str | None = None,
+    loudnorm: bool = True,
+) -> dict[str, Any]:
+    """Render one short candidate to a vertical 9:16 MP4 and return the export/job ids.
+
+    Thin wrapper over the same logic as the ``POST /shorts-candidates/{id}/render`` API:
+    creates the ``exports`` row up front and enqueues a ``shorts.render`` job. Completes the
+    agent-drivable shorts toolset (analyze → extract → list → explain → **render**).
+
+    Returns ``{"ok": True, "export_id": ..., "job_id": ...}`` on success, or
+    ``{"ok": False, "error": "candidate not found", "candidate_id": ...}`` when the candidate
+    (or its asset) does not exist.
+    """
+    candidate = repos.get_short_candidate(db, candidate_id)
+    if candidate is None:
+        logger.debug("tool_render_short: candidate_id=%r not found", candidate_id)
+        return {"ok": False, "error": "candidate not found", "candidate_id": candidate_id}
+
+    asset = repos.get_asset(db, candidate["asset_id"])
+    if asset is None:
+        logger.debug("tool_render_short: asset for candidate_id=%r not found", candidate_id)
+        return {"ok": False, "error": "asset not found", "candidate_id": candidate_id}
+
+    options: dict[str, Any] = {
+        "kind": "short",
+        "candidate_id": candidate_id,
+        "captions": captions,
+        "hook_text": hook_text,
+        "loudnorm": loudnorm,
+    }
+    exp = repos.create_export(
+        db,
+        project_id=asset["project_id"],
+        timeline_id=candidate.get("source_timeline_id"),
+        format="mp4",
+        options=options,
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("shorts.render"),
+        kind="shorts.render",
+        payload={"export_id": exp["id"]},
+        idempotency_key=f"shortrender:{exp['id']}",
+    )
+    logger.debug(
+        "tool_render_short: candidate_id=%r export_id=%r job_id=%r",
+        candidate_id,
+        exp["id"],
+        job_id,
+    )
+    return {"ok": True, "export_id": exp["id"], "job_id": job_id}
 
 
 # ---------------------------------------------------------------------------

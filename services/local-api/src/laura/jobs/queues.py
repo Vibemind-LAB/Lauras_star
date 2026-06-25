@@ -36,6 +36,7 @@ _STAGE_QUEUE: dict[str, str] = {
     "ai.lipsync": QUEUE_ANALYSIS_GPU,
     "demo.analyze": QUEUE_ANALYSIS_CPU,
     "export.render": QUEUE_EXPORT,
+    "shorts.render": QUEUE_EXPORT,
 }
 
 
