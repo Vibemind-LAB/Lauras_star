@@ -45,6 +45,16 @@ def detect_shots(
         shots, _ = detect_shots_hybrid(video_path, threshold=threshold)
         return shots
     if detector == "transnet":
+        # Prefer a healthy analysis worker (GPU) so torch stays off the host. On any sidecar
+        # failure fall through to in-process detection — which itself raises ImportError when
+        # the scene-ml extra is absent, so _run_scene then degrades to adaptive.
+        from .sidecar import detect_shots_via_sidecar, sidecar_healthy
+
+        if sidecar_healthy():
+            try:
+                return detect_shots_via_sidecar(video_path)
+            except Exception:  # noqa: BLE001 - container hiccup -> in-process fallback
+                pass
         from .transnet import detect_shots_transnet  # lazy: torch + weights are heavy
 
         return detect_shots_transnet(video_path)

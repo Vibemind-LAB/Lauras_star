@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import asr
-from .types import SegmentResult, WordResult
+from .types import SegmentResult, ShotResult, WordResult
 
 logger = logging.getLogger(__name__)
 
@@ -187,3 +187,38 @@ class SidecarImageEmbedder:
         if out.ndim == 2 and out.shape[1] > 0:
             self.dims = int(out.shape[1])
         return out
+
+
+# ---------------------------------------------------------------------------
+# Scene detection (TransNetV2) — offload to the same worker (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def detect_shots_via_sidecar(
+    video_path: Path | str, *, url: str | None = None
+) -> list[ShotResult]:
+    """POST the video bytes to the worker's ``/scenes``; return end-exclusive ``ShotResult``s.
+
+    Raises on any transport/decode error so the caller can fall back to in-process detection.
+    """
+    base = url or _analysis_url()
+    if not base:
+        raise RuntimeError("no LAURA_ANALYSIS_URL configured")
+    data = Path(video_path).read_bytes()
+    req = urllib.request.Request(
+        f"{base}/scenes",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return [
+        ShotResult(
+            src_in_frame=int(s["src_in_frame"]),
+            src_out_frame_exclusive=int(s["src_out_frame_exclusive"]),
+            method=str(s.get("method", "transnetv2")),
+            confidence=None if s.get("confidence") is None else float(s["confidence"]),
+        )
+        for s in body.get("shots", [])
+    ]

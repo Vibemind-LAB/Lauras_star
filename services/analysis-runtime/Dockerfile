@@ -11,6 +11,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+# CUDA torch first (TransNetV2 / transnetv2-pytorch needs torch). The cu124 wheel matches the
+# base image; installing it explicitly avoids pip pulling the CPU-only torch transitively.
+RUN pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu124
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 COPY server.py .

@@ -170,3 +170,75 @@ async def embed(request: Request) -> Response:
     except Exception as exc:  # noqa: BLE001 - report so the backend can fall back
         logger.exception("embed failed")
         return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+
+# --- Scene detection (TransNetV2) --------------------------------------------
+
+_SCENE_MODEL: Any = None
+
+
+def _get_scene_model() -> Any:
+    """Mirror of laura.analysis.transnet._load_model (defensive across releases)."""
+    global _SCENE_MODEL
+    if _SCENE_MODEL is None:
+        import transnetv2_pytorch
+
+        model_cls = getattr(transnetv2_pytorch, "TransNetV2", None)
+        if model_cls is None:
+            raise RuntimeError("transnetv2_pytorch exposes no TransNetV2 class")
+        model = model_cls()
+        eval_fn = getattr(model, "eval", None)
+        if callable(eval_fn):
+            model = eval_fn() or model
+        if _cuda_available():
+            to_fn = getattr(model, "to", None)
+            if callable(to_fn):
+                with contextlib.suppress(Exception):
+                    model = to_fn("cuda") or model
+        _SCENE_MODEL = model
+    return _SCENE_MODEL
+
+
+def _scene_pairs(model: Any, video_path: str) -> list[tuple[int, int]]:
+    """Mirror of laura.analysis.transnet._scene_pairs: (start, end_inclusive) pairs."""
+    detect = getattr(model, "detect_scenes", None)
+    if callable(detect):
+        scenes_out = detect(video_path, threshold=0.5)
+        return [(int(s["start_frame"]), int(s["end_frame"])) for s in scenes_out]
+    predict = getattr(model, "predict_video", None)
+    to_scenes = getattr(model, "predictions_to_scenes", None)
+    if not callable(predict) or not callable(to_scenes):
+        raise RuntimeError("model has no detect_scenes / predict_video")
+    preds = predict(video_path, quiet=True)
+    single = preds[1] if isinstance(preds, tuple) and len(preds) >= 2 else preds
+    if hasattr(single, "detach"):
+        single = single.detach().cpu().numpy()
+    return [(int(a), int(b)) for a, b in to_scenes(single)]
+
+
+@app.post("/scenes")
+async def scenes(request: Request) -> JSONResponse:
+    """Body: video bytes. Returns ``{"shots":[{src_in_frame,src_out_frame_exclusive,method}]}``."""
+    body = await request.body()
+    if not body:
+        return JSONResponse({"error": "empty video body"}, status_code=400)
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp.write(body)
+        tmp_path = tmp.name
+    try:
+        pairs = _scene_pairs(_get_scene_model(), tmp_path)
+        shots = [
+            {
+                "src_in_frame": int(start),
+                "src_out_frame_exclusive": int(end) + 1,  # TransNetV2 end_frame is inclusive
+                "method": "transnetv2",
+            }
+            for start, end in pairs
+        ]
+        return JSONResponse({"shots": shots})
+    except Exception as exc:  # noqa: BLE001 - report so the backend can fall back
+        logger.exception("scenes failed")
+        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)

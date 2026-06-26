@@ -10,10 +10,15 @@ Eigener Subtree — **getrennt** von `services/ai-runtimes/` (Voice/Reenact/Lips
 
 | Endpoint | Modell | Status |
 | --- | --- | --- |
-| `POST /transcribe` | faster-whisper (ASR) | ✅ Phase 1 |
-| `POST /scenes` | TransNetV2 (Szenen) | geplant |
-| `POST /embed` | CLIP/SigLIP (Embeddings) | geplant |
+| `POST /transcribe` | faster-whisper (ASR) | ✅ |
+| `POST /scenes` | TransNetV2 (Szenen) | ✅ |
+| `POST /embed` | CLIP/SigLIP (Embeddings) | ✅ |
 | `GET /healthz` | — | ✅ |
+
+> **Image-Größe:** Das Szenen-Modell (TransNetV2) zieht **torch+CUDA** (~2–3 GB) → das Image wird
+> groß (~6–8 GB). ASR (CTranslate2) und Embeddings (onnxruntime) brauchen kein torch. Szenen-
+> Erkennung ist **opt-in** (nur wenn `detector="transnet"` gewählt wird); der Default `adaptive`
+> (PySceneDetect, CPU) läuft ohne Container weiter.
 
 ## Contract
 
