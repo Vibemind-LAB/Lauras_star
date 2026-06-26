@@ -30,12 +30,12 @@ from ..policy import (
 from ..semantic import get_index
 from ..util import utcnow_iso
 from .align import align_words, whisperx_available
-from .asr import faster_whisper_available, transcribe
 from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
 from .mapping import map_segment
 from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark_duplicates
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
+from .sidecar import asr_available, transcribe
 from .transition_review import default_backend, run_transition_review
 from .types import SegmentResult, ShotResult, WordResult
 
@@ -277,8 +277,8 @@ def _run_transcript(
 ) -> dict[str, Any]:
     if "audio_mono16k" not in files:
         return {"status": "skipped", "reason": "no audio extracted"}
-    if not faster_whisper_available():
-        return {"status": "skipped", "reason": "asr extra not installed"}
+    if not asr_available():
+        return {"status": "skipped", "reason": "asr unavailable (no sidecar, no local extra)"}
 
     mono_path = files["audio_mono16k"]["path"]
     try:
