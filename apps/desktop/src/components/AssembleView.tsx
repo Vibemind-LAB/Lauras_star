@@ -463,8 +463,10 @@ export function AssembleView({
           clips: seqClips,
         }
       : null;
-  const items = sequence?.items ?? [];
-  const ids = items.map((i) => i.scene_id);
+  const items = useMemo(() => sequence?.items ?? [], [sequence]);
+  const ids = useMemo(() => items.map((i) => i.scene_id), [items]);
+  // Scene ids that still exist — regenerated scenes get new ids, so the sequence can hold stale refs.
+  const validSceneIds = useMemo(() => new Set(scenes.map((s) => s.id)), [scenes]);
 
   const sceneById = (id: string): Scene | undefined => scenes.find((s) => s.id === id);
   const assetName = (id: string | null | undefined): string =>
@@ -492,12 +494,29 @@ export function AssembleView({
 
   const applySceneIds = useCallback(
     async (sceneIds: string[]): Promise<void> => {
-      await setScenes(sceneIds);
+      // Reconcile before sending: drop refs to scenes that no longer exist, so one stale id can't
+      // 422 the whole request and the storyboard stays in sync. The backend drops unknown ids too.
+      const reconciled =
+        scenes.length > 0 ? sceneIds.filter((id) => validSceneIds.has(id)) : sceneIds;
+      await setScenes(reconciled);
       reloadSeqClips();
       reloadTranscript();
     },
-    [reloadSeqClips, reloadTranscript, setScenes],
+    [reloadSeqClips, reloadTranscript, scenes.length, setScenes, validSceneIds],
   );
+
+  // Self-heal stale sequence references on load: if the sequence holds scene ids that no longer
+  // exist (regenerated scenes), drop them so the storyboard stops showing "?" without a manual op.
+  const healingRef = useRef(false);
+  useEffect(() => {
+    if (scenes.length === 0 || ids.length === 0 || healingRef.current) return;
+    if (ids.some((id) => !validSceneIds.has(id))) {
+      healingRef.current = true;
+      void applySceneIds(ids).finally(() => {
+        healingRef.current = false;
+      });
+    }
+  }, [ids, validSceneIds, scenes.length, applySceneIds]);
 
   const activeCaption = transcript.find(
     (block) => seqFrame >= block.seq_in_frame && seqFrame < block.seq_out_frame_exclusive,

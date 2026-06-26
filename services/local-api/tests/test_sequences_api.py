@@ -62,6 +62,38 @@ def _seed_two_scenes(db: SqliteDatabase) -> tuple[str, list[str]]:
 _H = {"X-Laura-Token": _TOKEN}
 
 
+def test_sequence_self_heals_stale_scene_refs_after_regeneration(tmp_path: Path) -> None:
+    """Regenerating scenes gives new ids; the sequence must drop stale refs, not 422 / show '?'."""
+    client, db = _app(tmp_path)
+    pid, scene_ids = _seed_two_scenes(db)
+    rc_id = repos.get_scene(db, scene_ids[0])["source_timeline_id"]
+    seq_id = client.get(f"/projects/{pid}/sequence", headers=_H).json()["timeline_id"]
+    assert (
+        client.put(
+            f"/sequences/{seq_id}/scenes", json={"scene_ids": scene_ids}, headers=_H
+        ).status_code
+        == 200
+    )
+
+    # Regenerate the rough cut's scenes -> brand-new ids, old rows deleted.
+    repos.replace_scenes(db, pid, rc_id, [(0, 30), (30, 60)])
+    new_ids = [s["id"] for s in repos.list_scenes(db, rc_id)]
+    assert set(new_ids).isdisjoint(set(scene_ids))
+
+    # (1) replace_scenes cleaned the orphaned sequence_items -> no stale "?" items remain.
+    seq_after = client.get(f"/projects/{pid}/sequence", headers=_H).json()
+    assert seq_after["items"] == []
+
+    # (2) set with [stale, valid] -> 200 (no 422); the stale ref is dropped, the valid one kept.
+    r = client.put(
+        f"/sequences/{seq_id}/scenes",
+        json={"scene_ids": [scene_ids[0], new_ids[0]]},
+        headers=_H,
+    )
+    assert r.status_code == 200, r.text
+    assert [it["scene_id"] for it in r.json()["items"]] == [new_ids[0]]
+
+
 def test_get_creates_sequence_then_put_orders(tmp_path: Path) -> None:
     client, db = _app(tmp_path)
     pid, scene_ids = _seed_two_scenes(db)
@@ -106,9 +138,20 @@ def test_patch_sequence_item_transition(tmp_path: Path) -> None:
     assert updated["transition_after_frames"] == 12
 
 
-def test_put_unknown_scene_422(tmp_path: Path) -> None:
+def test_put_drops_unknown_scene(tmp_path: Path) -> None:
+    """Unknown/foreign scene refs are dropped (self-healing), not 422."""
     client, db = _app(tmp_path)
-    pid, _ = _seed_two_scenes(db)
+    pid, scene_ids = _seed_two_scenes(db)
     seq_id = client.get(f"/projects/{pid}/sequence", headers=_H).json()["timeline_id"]
+    # A lone unknown id -> dropped -> empty sequence, 200 (not 422).
     r = client.put(f"/sequences/{seq_id}/scenes", json={"scene_ids": ["nope"]}, headers=_H)
-    assert r.status_code == 422
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+    # A mix keeps the valid scenes and drops the unknown one.
+    r2 = client.put(
+        f"/sequences/{seq_id}/scenes",
+        json={"scene_ids": [scene_ids[0], "nope", scene_ids[1]]},
+        headers=_H,
+    )
+    assert r2.status_code == 200, r2.text
+    assert [it["scene_id"] for it in r2.json()["items"]] == [scene_ids[0], scene_ids[1]]

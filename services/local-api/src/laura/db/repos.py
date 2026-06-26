@@ -1498,6 +1498,14 @@ def replace_scenes(
     ordered. Reassigns ids + ``order_index``; names are positional ("Szene N")."""
     now = utcnow_iso()
     with db.transaction() as conn:
+        # Drop sequence references to the scenes we're about to delete. Regenerated scenes get
+        # brand-new ids, so leaving the old sequence_items orphans them — they render as "?" and
+        # 422 a later set_sequence_scenes. Cleaning here keeps cut data in sync at the source.
+        conn.execute(
+            "DELETE FROM sequence_items WHERE scene_id IN "
+            "(SELECT id FROM scenes WHERE source_timeline_id=?)",
+            (source_timeline_id,),
+        )
         conn.execute("DELETE FROM scenes WHERE source_timeline_id=?", (source_timeline_id,))
         for i, (sin, sout) in enumerate(ranges):
             conn.execute(

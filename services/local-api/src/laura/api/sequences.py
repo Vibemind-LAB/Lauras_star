@@ -4,6 +4,7 @@ scene references in `sequence_items`, flattened on demand."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,6 +24,8 @@ from .models import (
     SetSequenceScenesRequest,
 )
 from .security import require_token
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["sequences"], dependencies=[Depends(require_token)])
 
@@ -65,14 +68,18 @@ def set_sequence_scenes(
     seq = repos.get_timeline(db, sequence_id)
     if seq is None or seq["kind"] != "sequence":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sequence not found")
+    valid_ids: list[str] = []
     for sid in body.scene_ids:
         scene = repos.get_scene(db, sid)
         if scene is None or scene["project_id"] != seq["project_id"]:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown scene: {sid}"
-            )
+            # Drop stale/foreign scene refs instead of failing the whole request. Scenes get new
+            # ids when regenerated, so a sequence can hold refs to deleted scenes; reconciling
+            # here keeps the sequence self-healing rather than dead-locking on one stale id (422).
+            _log.info("set_sequence_scenes: dropping unknown/foreign scene %s", sid)
+            continue
         materialize_scene(db, scene)
-    repos.replace_sequence_items(db, sequence_id, body.scene_ids)
+        valid_ids.append(sid)
+    repos.replace_sequence_items(db, sequence_id, valid_ids)
     rebuild_otio(db, sequence_id)
     return _sequence_out(db, seq)
 
