@@ -317,10 +317,14 @@ def handle_embed_frames(
     db = ctx.db
     asset_id: str = ctx.payload["asset_id"]
 
-    # --- graceful gate: no embedder + no extra → skip (never raise) --------
-    if embedder is None and not visual_available():
-        _log.info("shorts.embed_frames asset=%s skipped: visual extra not installed", asset_id)
-        return {"ok": False, "skipped": "visual extra not installed", "asset_id": asset_id}
+    # --- graceful gate: no embedder + no backend → skip (never raise) -------
+    # A healthy analysis worker can embed even when the local fastembed extra is absent.
+    from .sidecar import SidecarImageEmbedder, sidecar_healthy
+
+    sidecar_ok = sidecar_healthy() if embedder is None else False
+    if embedder is None and not visual_available() and not sidecar_ok:
+        _log.info("shorts.embed_frames asset=%s skipped: no visual backend", asset_id)
+        return {"ok": False, "skipped": "no visual backend", "asset_id": asset_id}
 
     asset = repos.get_asset(db, asset_id)
     if asset is None:
@@ -343,7 +347,9 @@ def handle_embed_frames(
 
     idx = sample_frame_indices(total_frames, rate_num, rate_den, boundaries)
 
-    emb: Embedder = embedder or FastEmbedImageEmbedder()
+    emb: Embedder = embedder or (
+        SidecarImageEmbedder() if sidecar_ok else FastEmbedImageEmbedder()
+    )
     store = SqliteVectorStore(db)
 
     if not idx:

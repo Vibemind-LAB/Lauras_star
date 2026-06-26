@@ -246,11 +246,12 @@ def test_embed_skips_when_extra_absent(tmp_path: Path, monkeypatch: Any) -> None
     asset_id = _seed(db)
     # Force the gate: no injected embedder + extra reported missing → skip, no rows.
     monkeypatch.setattr("laura.analysis.visual_embed.visual_available", lambda: False)
+    monkeypatch.setattr("laura.analysis.sidecar.sidecar_healthy", lambda *a, **k: False)
 
     result = handle_embed_frames(_ctx(db, {"asset_id": asset_id}))
 
     assert result["ok"] is False
-    assert result["skipped"] == "visual extra not installed"
+    assert result["skipped"] == "no visual backend"
     assert result["asset_id"] == asset_id
     # No analysis run resolved, nothing written.
     run = repos.get_latest_analysis_run(db, asset_id)

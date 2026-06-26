@@ -144,3 +144,46 @@ def transcribe(
                 raise
             logger.warning("ASR sidecar failed (%s); falling back to in-process", exc)
     return asr.transcribe(audio_path, model_size=model_size, language=language)
+
+
+# ---------------------------------------------------------------------------
+# Visual embeddings (CLIP) — offload to the same worker (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class SidecarImageEmbedder:
+    """``Embedder``-shaped adapter that offloads CLIP frame embedding to the analysis worker.
+
+    Implements the ``laura.analysis.visual_embed.Embedder`` protocol (``name`` / ``dims`` /
+    ``embed_frames``). Frames travel as one stacked ``(N, H, W, 3)`` uint8 ``.npy`` blob and the
+    response is an ``(N, dims)`` float32 ``.npy`` — a lossless numpy round-trip, no base64.
+    """
+
+    def __init__(
+        self, url: str | None = None, *, model: str = "sidecar-clip", dims: int = 512
+    ) -> None:
+        self.name = model
+        self.dims = dims
+        self._url = (url or _analysis_url() or "").rstrip("/")
+
+    def embed_frames(self, frames: list[Any]) -> Any:
+        import io
+
+        import numpy as np
+
+        if not frames:
+            return np.empty((0, self.dims), dtype=np.float32)
+        buf = io.BytesIO()
+        np.save(buf, np.stack([np.asarray(f, dtype=np.uint8) for f in frames]))
+        req = urllib.request.Request(
+            f"{self._url}/embed",
+            data=buf.getvalue(),
+            method="POST",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+            out = np.load(io.BytesIO(resp.read()))
+        out = np.asarray(out, dtype=np.float32)
+        if out.ndim == 2 and out.shape[1] > 0:
+            self.dims = int(out.shape[1])
+        return out

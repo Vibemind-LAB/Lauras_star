@@ -23,7 +23,7 @@ import tempfile
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("analysis-runtime")
@@ -128,3 +128,45 @@ async def transcribe(request: Request) -> JSONResponse:
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
+
+
+# --- Visual embeddings (CLIP) ------------------------------------------------
+
+_IMAGE_EMBEDDER: Any = None
+
+
+def _get_image_embedder() -> Any:
+    global _IMAGE_EMBEDDER
+    if _IMAGE_EMBEDDER is None:
+        from fastembed import ImageEmbedding
+
+        model = os.environ.get("LAURA_VISUAL_MODEL", "Qdrant/clip-ViT-B-32-vision")
+        logger.info("loading image embedder model=%s", model)
+        _IMAGE_EMBEDDER = ImageEmbedding(model_name=model)
+    return _IMAGE_EMBEDDER
+
+
+@app.post("/embed")
+async def embed(request: Request) -> Response:
+    """Body: a stacked ``(N, H, W, 3)`` uint8 ``.npy``. Returns ``(N, dims)`` float32 ``.npy``."""
+    import io
+
+    import numpy as np
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"error": "empty body"}, status_code=400)
+    try:
+        from PIL import Image
+
+        stack = np.load(io.BytesIO(body))
+        images = [
+            Image.fromarray(np.asarray(stack[i], dtype=np.uint8)) for i in range(stack.shape[0])
+        ]
+        vectors = list(_get_image_embedder().embed(images))
+        out = io.BytesIO()
+        np.save(out, np.asarray(vectors, dtype=np.float32))
+        return Response(content=out.getvalue(), media_type="application/octet-stream")
+    except Exception as exc:  # noqa: BLE001 - report so the backend can fall back
+        logger.exception("embed failed")
+        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
