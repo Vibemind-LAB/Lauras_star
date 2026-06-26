@@ -5,6 +5,7 @@ import { useScenes } from "../hooks/useScenes";
 import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
 import { useJobStatus } from "../hooks/useJobStatus";
 import { crossfadeFix, findFirstSameSourceEdge } from "../shared/smoothEdge";
+import { groupCutWordsByScene } from "../shared/sceneTranscript";
 import { ContinuousTranscript } from "./ContinuousTranscript";
 import { EditorialToolsBar } from "./EditorialToolsBar";
 import { SequencePlayer } from "./SequencePlayer";
@@ -158,6 +159,17 @@ export function FineCutView({
   const { scenes: scenesFromHook } = useScenes(client, roughCutId);
   const jumpScenes = rc.scenes.length > 0 ? rc.scenes : scenesFromHook;
 
+  // First few transcript words per scene, so the scene chips are scannable ("Szene 3 · also hier…")
+  // instead of generic labels. Empty until the transcript exists.
+  const sceneFirstWords = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const g of groupCutWordsByScene(rc.words, jumpScenes)) {
+      const text = g.words.slice(0, 6).map((w) => w.text).join(" ");
+      if (text) map.set(g.scene.id, text);
+    }
+    return map;
+  }, [rc.words, jumpScenes]);
+
   const clips = useMemo(() => rc.clips, [rc.clips]);
 
   // Derive synthetic-effect labels from audio clips in the timeline.
@@ -229,17 +241,23 @@ export function FineCutView({
             {jumpScenes.length === 0 ? (
               <span className="px-1 text-[11px] text-content-faint">Noch keine Szenen</span>
             ) : (
-              jumpScenes.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => onSeek(s.seq_in_frame)}
-                  title={s.name}
-                  className="shrink-0 truncate rounded bg-surface-2 px-2 py-1 text-[11px] text-content-muted hover:bg-accent/30 hover:text-content-strong"
-                >
-                  {s.name}
-                </button>
-              ))
+              jumpScenes.map((s) => {
+                const preview = sceneFirstWords.get(s.id);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => onSeek(s.seq_in_frame)}
+                    title={preview ? `${s.name} · ${preview}` : s.name}
+                    className="flex shrink-0 items-baseline gap-1 rounded bg-surface-2 px-2 py-1 text-[11px] hover:bg-accent/30"
+                  >
+                    <span className="font-medium text-content-muted">{s.name}</span>
+                    {preview && (
+                      <span className="max-w-[9rem] truncate text-content-faint">{preview}</span>
+                    )}
+                  </button>
+                );
+              })
             )}
           </div>
         )}
@@ -247,7 +265,7 @@ export function FineCutView({
 
       {/* Continuous rough-cut player + timeline + transcript (now full width). */}
       <section className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/40 p-4">
+        <div className="flex h-[42vh] min-h-[240px] shrink-0 items-center justify-center overflow-hidden bg-black/40 p-3">
           <SequencePlayer
             client={client}
             projectId={asset?.project_id ?? null}
@@ -310,16 +328,18 @@ export function FineCutView({
           />
         )}
 
-        <ContinuousTranscript
-          words={rc.words}
-          scenes={jumpScenes}
-          selection={rc.selection}
-          onSelectionChange={rc.setSelection}
-          onDeleteSelection={(a, b) => void rc.deleteRange(a, b)}
-          onCutAt={(f) => void rc.cutAt(f)}
-          onSeek={onSeek}
-          onReplaceText={(s, e, t) => void rc.replaceSpanText(s, e, t, voiceId ?? "")}
-        />
+        <div className="min-h-0 flex-1">
+          <ContinuousTranscript
+            words={rc.words}
+            scenes={jumpScenes}
+            selection={rc.selection}
+            onSelectionChange={rc.setSelection}
+            onDeleteSelection={(a, b) => void rc.deleteRange(a, b)}
+            onCutAt={(f) => void rc.cutAt(f)}
+            onSeek={onSeek}
+            onReplaceText={(s, e, t) => void rc.replaceSpanText(s, e, t, voiceId ?? "")}
+          />
+        </div>
 
         {rc.error && (
           <div className="px-3 py-1 text-xs text-status-err">{rc.error}</div>

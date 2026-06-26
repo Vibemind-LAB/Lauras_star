@@ -988,11 +988,10 @@ export function TimelineBar({
                     type="button"
                     onClick={() => onScrub?.(w.assetId, w.srcFrame)}
                     title={w.text}
-                    style={{ left: `${w.leftPct}%`, width: `${w.widthPct}%` }}
-                    className="absolute top-0 h-full overflow-hidden whitespace-nowrap border-l border-bezel/60 px-0.5 text-left text-[10px] leading-7 text-content-muted hover:bg-accent/40 hover:text-white"
-                  >
-                    {w.text}
-                  </button>
+                    aria-label={w.text}
+                    style={{ left: `${w.leftPct}%` }}
+                    className="absolute inset-y-1 w-px bg-content-faint/50 hover:w-0.5 hover:bg-accent"
+                  />
                 ))}
               </div>
             </div>
