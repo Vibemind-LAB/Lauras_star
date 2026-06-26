@@ -9,6 +9,7 @@ import { ContinuousTranscript } from "./ContinuousTranscript";
 import { EditorialToolsBar } from "./EditorialToolsBar";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
+import { TranscriptStatusBanner } from "./TranscriptStatusBanner";
 
 /**
  * Feinschnitt: edit the CONTINUOUS rough-cut directly (spec §3/§4.1). Scenes are jump markers,
@@ -28,6 +29,9 @@ export function FineCutView({
   asset,
   roughCutId,
   segments,
+  transcriptNote = null,
+  transcriptBusy = false,
+  onGenerateTranscript = () => undefined,
   currentFrame,
   seek,
   onSeek,
@@ -37,6 +41,9 @@ export function FineCutView({
   asset: Asset | null;
   roughCutId: string | null;
   segments: Segment[];
+  transcriptNote?: string | null;
+  transcriptBusy?: boolean;
+  onGenerateTranscript?: () => void;
   currentFrame: number;
   /**
    * External seek in SEQUENCE frames. A new `{ frame }` object is passed by App.tsx each time the
@@ -69,6 +76,8 @@ export function FineCutView({
   // Voice picker state — selection is the only explicit editorial choice (spec §10).
   const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
   const [voiceId, setVoiceId] = useState<string | null>(null);
+  // Collapse the scene-jump rail to widen the editor (panels hideable via click).
+  const [scenesCollapsed, setScenesCollapsed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -201,23 +210,43 @@ export function FineCutView({
   }
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-px bg-bezel">
-      {/* Left: scene jump navigation (read-only — no openScene materialization) */}
-      <aside className="flex flex-col gap-1 overflow-auto bg-surface-0 p-2">
-        {jumpScenes.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => onSeek(s.seq_in_frame)}
-            className="truncate rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-2"
-          >
-            {s.name}
-          </button>
-        ))}
-      </aside>
+    <div className="flex min-h-0 flex-1 flex-col bg-bezel">
+      {/* Scene navigation as a horizontal, scrollable slider (hideable via the toggle).
+          Replaces the tall left column so scenes don't dominate the window height and you can
+          slide through them. Click a scene chip to seek the continuous rough-cut. */}
+      <div className="flex shrink-0 items-center gap-1 border-b border-bezel bg-surface-0 px-2 py-1.5">
+        <button
+          type="button"
+          onClick={() => setScenesCollapsed((v) => !v)}
+          title={scenesCollapsed ? "Szenen einblenden" : "Szenen ausblenden"}
+          aria-label={scenesCollapsed ? "Szenen einblenden" : "Szenen ausblenden"}
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-content-faint hover:bg-surface-2 hover:text-content-strong"
+        >
+          {scenesCollapsed ? "Szenen ▸" : "Szenen ◂"}
+        </button>
+        {!scenesCollapsed && (
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {jumpScenes.length === 0 ? (
+              <span className="px-1 text-[11px] text-content-faint">Noch keine Szenen</span>
+            ) : (
+              jumpScenes.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => onSeek(s.seq_in_frame)}
+                  title={s.name}
+                  className="shrink-0 truncate rounded bg-surface-2 px-2 py-1 text-[11px] text-content-muted hover:bg-accent/30 hover:text-content-strong"
+                >
+                  {s.name}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
 
-      {/* Center: continuous rough-cut player + timeline + transcript */}
-      <section className="flex min-h-0 flex-col">
+      {/* Continuous rough-cut player + timeline + transcript (now full width). */}
+      <section className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/40 p-4">
           <SequencePlayer
             client={client}
@@ -270,7 +299,16 @@ export function FineCutView({
           onSelect={() => undefined}
           segments={segments}
           currentFrame={currentFrame}
+          currentFrameDomain="sequence"
         />
+
+        {rc.words.length === 0 && (
+          <TranscriptStatusBanner
+            note={transcriptNote}
+            busy={transcriptBusy}
+            onGenerate={onGenerateTranscript}
+          />
+        )}
 
         <ContinuousTranscript
           words={rc.words}

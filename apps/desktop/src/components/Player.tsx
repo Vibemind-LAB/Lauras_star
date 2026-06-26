@@ -206,7 +206,8 @@ export function Player({
     >
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border border-bezel bg-black">
         {loadError ? (
-          <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-status-err">`n            {loadError}
+          <div className="flex h-full w-full items-center justify-center px-6 text-center text-xs text-status-err">
+            {loadError}
           </div>
         ) : url ? (
           <video

@@ -68,6 +68,7 @@ function fpsLabel(p: Project): string {
 
 export function App(): ReactElement {
   const [stage, setStage] = useState<Stage>("import");
+  const [mediaCollapsed, setMediaCollapsed] = useState(false);
 
   const [client, setClient] = useState<LauraClient | null>(null);
   const [offline, setOffline] = useState(false);
@@ -510,6 +511,8 @@ export function App(): ReactElement {
             selectedAssetId={selectedAssetId}
             onSelect={setSelectedAssetId}
             onDelete={(id) => void onDeleteAsset(id)}
+            collapsed={mediaCollapsed}
+            onToggleCollapse={() => setMediaCollapsed((v) => !v)}
           />
         )}
 
@@ -570,6 +573,9 @@ export function App(): ReactElement {
               asset={detailAsset}
               roughCut={roughCut}
               segments={analysis.segments}
+              transcriptNote={analysis.note}
+              transcriptBusy={analysis.status === "running"}
+              onGenerateTranscript={() => void analysis.runAnalysis()}
               onRoughCutChange={async () => {
                 if (client && selectedProjectId && selectedAssetId)
                   await loadRoughCut(client, selectedProjectId, selectedAssetId);
@@ -587,6 +593,9 @@ export function App(): ReactElement {
               asset={detailAsset}
               roughCutId={roughCut?.id ?? null}
               segments={analysis.segments}
+              transcriptNote={analysis.note}
+              transcriptBusy={analysis.status === "running"}
+              onGenerateTranscript={() => void analysis.runAnalysis()}
               currentFrame={currentFrame}
               seek={seek}
               onSeek={seekToFrame}

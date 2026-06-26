@@ -313,6 +313,7 @@ export function TimelineBar({
   audioClips = [],
   segments,
   currentFrame,
+  currentFrameDomain = "source",
 }: {
   client: LauraClient;
   timeline: Timeline | null;
@@ -329,8 +330,16 @@ export function TimelineBar({
   /** Optional transcript — renders a 3rd "TX" lane with each spoken word placed at its
    *  position on the sequence (words trimmed out of the cut simply don't appear). */
   segments?: Segment[];
-  /** The player's current SOURCE frame; drawn as a playhead across all lanes. */
+  /** The player's current frame; drawn as a playhead across all lanes. Interpreted per
+   *  `currentFrameDomain`. */
   currentFrame?: number;
+  /**
+   * Domain of `currentFrame`. "source" (default, legacy) maps it onto the sequence via the
+   * base clip whose source range contains it. "sequence" (Feinschnitt's SequencePlayer, which
+   * reports continuous sequence frames) uses it directly — mapping a sequence frame through
+   * source ranges mislocates or hides the playhead.
+   */
+  currentFrameDomain?: "source" | "sequence";
 }): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -465,6 +474,10 @@ export function TimelineBar({
   const playheadFrac = (() => {
     if (currentFrame == null || total <= 0) return null;
     const cf = currentFrame;
+    // Feinschnitt's player reports continuous SEQUENCE frames — use them directly.
+    if (currentFrameDomain === "sequence") {
+      return Math.min(1, Math.max(0, cf / total));
+    }
     const clip = baseClips.find((c) => c.src_in_frame <= cf && cf < c.src_out_frame_exclusive);
     if (!clip) return null;
     const seqFrame = clip.seq_in_frame + (cf - clip.src_in_frame);

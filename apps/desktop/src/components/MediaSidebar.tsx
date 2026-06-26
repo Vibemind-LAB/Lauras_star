@@ -334,6 +334,10 @@ export interface MediaSidebarProps {
   onSelect: (assetId: string) => void;
   /** When provided, each media row gets a × delete affordance (confirms first). */
   onDelete?: (assetId: string) => void;
+  /** When true, render a thin collapsed rail instead of the full list. */
+  collapsed?: boolean;
+  /** Toggle the collapsed state (rendered as « / » buttons). Omit to hide the toggle. */
+  onToggleCollapse?: () => void;
 }
 
 export function MediaSidebar({
@@ -342,12 +346,45 @@ export function MediaSidebar({
   selectedAssetId,
   onSelect,
   onDelete,
+  collapsed = false,
+  onToggleCollapse,
 }: MediaSidebarProps): ReactElement {
+  if (collapsed) {
+    return (
+      <aside className="flex w-9 shrink-0 flex-col items-center gap-2 border-r border-bezel bg-surface-0 py-2">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          title="Medien einblenden"
+          aria-label="Medien einblenden"
+          className="rounded px-1.5 py-1 text-content-muted hover:bg-surface-2"
+        >
+          »
+        </button>
+        <span className="select-none text-[10px] text-content-faint [writing-mode:vertical-rl]">
+          Medien · {assets.length}
+        </span>
+      </aside>
+    );
+  }
   return (
     <aside className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-bezel bg-surface-0 p-2">
       <div className="flex items-center justify-between pb-1">
         <span className="text-xs font-semibold text-content-muted">Projekt-Medien</span>
-        <span className="text-[10px] text-content-faint">{assets.length}</span>
+        <span className="flex items-center gap-1">
+          <span className="text-[10px] text-content-faint">{assets.length}</span>
+          {onToggleCollapse && (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              title="Medien ausblenden"
+              aria-label="Medien ausblenden"
+              className="rounded px-1 leading-none text-content-faint hover:bg-surface-2 hover:text-content-strong"
+            >
+              «
+            </button>
+          )}
+        </span>
       </div>
       {assets.length === 0 ? (
         <p className="text-[11px] text-content-faint">
