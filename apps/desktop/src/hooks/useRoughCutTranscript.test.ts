@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useRoughCutTranscript } from "./useRoughCutTranscript";
 import { type LauraClient } from "../api";
+import { queryWrapper } from "../test-utils";
 
 const clip = {
   id: "c1", asset_id: "a1", src_in_frame: 0, src_out_frame_exclusive: 100,
@@ -35,7 +36,8 @@ describe("useRoughCutTranscript", () => {
   it("loads rough-cut clips, scenes, and projects words", async () => {
     const client = makeClient();
     const { result } = renderHook(() =>
-      useRoughCutTranscript(client, "t", segments as never));
+      useRoughCutTranscript(client, "t", segments as never),
+      { wrapper: queryWrapper() });
     await waitFor(() => expect(result.current.words.length).toBe(2));
     expect(result.current.scenes).toHaveLength(1);
     expect(result.current.words.map((w) => w.id)).toEqual(["w1", "w2"]);
@@ -44,17 +46,19 @@ describe("useRoughCutTranscript", () => {
   it("deleteRange calls deleteWords then reloads scenes", async () => {
     const client = makeClient();
     const { result } = renderHook(() =>
-      useRoughCutTranscript(client, "t", segments as never));
+      useRoughCutTranscript(client, "t", segments as never),
+      { wrapper: queryWrapper() });
     await waitFor(() => expect(result.current.words.length).toBe(2));
     await act(async () => { await result.current.deleteRange("w1", "w1"); });
     expect(client.deleteWords).toHaveBeenCalledWith("t", "w1", "w1");
-    expect(client.listScenes).toHaveBeenCalled();
+    await waitFor(() => expect(client.listScenes).toHaveBeenCalled());
   });
 
   it("cutAt applies the returned clips and scenes", async () => {
     const client = makeClient();
     const { result } = renderHook(() =>
-      useRoughCutTranscript(client, "t", segments as never));
+      useRoughCutTranscript(client, "t", segments as never),
+      { wrapper: queryWrapper() });
     await waitFor(() => expect(result.current.scenes.length).toBe(1));
     await act(async () => { await result.current.cutAt(50); });
     expect(client.cutAtFrame).toHaveBeenCalledWith("t", 50);
@@ -67,7 +71,8 @@ describe("useRoughCutTranscript", () => {
  */
 async function renderAndLoad(client: LauraClient) {
   const rendered = renderHook(() =>
-    useRoughCutTranscript(client, "t", segments as never));
+    useRoughCutTranscript(client, "t", segments as never),
+    { wrapper: queryWrapper() });
   // Wait for initial load with real timers.
   await waitFor(() => expect(rendered.result.current.words.length).toBe(2));
   // Switch to fake timers AFTER the initial async setup completes.

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useRoughCutTranscript } from "./useRoughCutTranscript";
 import { type LauraClient } from "../api";
+import { queryWrapper } from "../test-utils";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -41,6 +42,7 @@ describe("useRoughCutTranscript history", () => {
 
     const { result } = renderHook(() =>
       useRoughCutTranscript(client, "t", segments),
+      { wrapper: queryWrapper() },
     );
 
     await waitFor(() => expect(result.current.canUndo).toBe(true));
@@ -60,6 +62,7 @@ describe("useRoughCutTranscript history", () => {
 
     const { result } = renderHook(() =>
       useRoughCutTranscript(client, "t", segments),
+      { wrapper: queryWrapper() },
     );
 
     // Wait for initial load
@@ -80,6 +83,7 @@ describe("useRoughCutTranscript history", () => {
 
     const { result } = renderHook(() =>
       useRoughCutTranscript(client, "t", segments),
+      { wrapper: queryWrapper() },
     );
 
     await waitFor(() => expect(result.current.clips).toHaveLength(1));

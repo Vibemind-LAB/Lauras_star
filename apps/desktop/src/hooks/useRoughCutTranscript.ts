@@ -1,6 +1,8 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { type HistoryState, type LauraClient, type Scene, type Segment, type TimelineClip } from "../api";
+import { type HistoryState, type LauraClient, type Scene, type Segment, type Timeline, type TimelineClip } from "../api";
+import { qk } from "../cache/queryKeys";
 import { type CutWord, projectCutWords } from "../shared/transcriptProjection";
 import { buildVoiceoverCommit } from "../shared/spanReplaceCommit";
 
@@ -49,12 +51,33 @@ export function useRoughCutTranscript(
   segments: Segment[],
   assetId?: string,
 ): RoughCutTranscriptController {
-  const [clips, setClips] = useState<TimelineClip[]>([]);
-  const [scenes, setScenes] = useState<Scene[]>([]);
+  const queryClient = useQueryClient();
+
+  const enabled = client !== null && roughCutId !== null;
+
+  // Rough-cut timeline (clips). Key: ["timeline", roughCutId] — shared with any other view that
+  // reads this same timeline, so a mutation in FineCutView instantly refreshes RoughCutView.
+  const timelineQuery = useQuery<Timeline>({
+    queryKey: qk.timeline(roughCutId ?? "none"),
+    queryFn: () => client!.getTimeline(roughCutId!),
+    enabled,
+  });
+
+  // Scene markers for this rough-cut. Key: ["scenes", roughCutId] — same key as useScenes uses,
+  // so the two hooks share one cache entry and never drift.
+  const scenesQuery = useQuery<Scene[]>({
+    queryKey: qk.scenes(roughCutId ?? "none"),
+    queryFn: () => client!.listScenes(roughCutId!),
+    enabled,
+  });
+
+  const clips: TimelineClip[] = timelineQuery.data?.clips ?? [];
+  const scenes: Scene[] = scenesQuery.data ?? [];
+
   const [selection, setSelection] = useState<
     { startWordId: string; endWordId: string } | null
   >(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [lastVoJobId, setLastVoJobId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryState>({
     can_undo: false,
@@ -85,25 +108,15 @@ export function useRoughCutTranscript(
     }
   }, [client, roughCutId]);
 
+  // reload() invalidates both timeline + scenes, causing useQuery to refetch.
   const reload = useCallback(async () => {
-    if (!client || !roughCutId) {
-      setClips([]);
-      setScenes([]);
-      return;
-    }
-    try {
-      setError(null);
-      const [tl, sc] = await Promise.all([
-        client.getTimeline(roughCutId),
-        client.listScenes(roughCutId),
-      ]);
-      setClips(tl.clips);
-      setScenes(sc);
-    } catch (e) {
-      setError(String(e));
-    }
+    if (!roughCutId) return;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.timeline(roughCutId) }),
+      queryClient.invalidateQueries({ queryKey: qk.scenes(roughCutId) }),
+    ]);
     void refreshHistory();
-  }, [client, roughCutId, refreshHistory]);
+  }, [queryClient, roughCutId, refreshHistory]);
 
   const undo = useCallback(async () => {
     if (!client || !roughCutId) return;
@@ -112,7 +125,7 @@ export function useRoughCutTranscript(
       await reload();
       await refreshHistory();
     } catch (e) {
-      setError(String(e));
+      setMutationError(String(e));
     }
   }, [client, roughCutId, reload, refreshHistory]);
 
@@ -123,13 +136,14 @@ export function useRoughCutTranscript(
       await reload();
       await refreshHistory();
     } catch (e) {
-      setError(String(e));
+      setMutationError(String(e));
     }
   }, [client, roughCutId, reload, refreshHistory]);
 
+  // Initial history load (runs once per roughCutId).
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    void refreshHistory();
+  }, [refreshHistory]);
 
   const words = useMemo(
     () => projectCutWords(segments, clips, assetId),
@@ -140,28 +154,49 @@ export function useRoughCutTranscript(
     async (startWordId: string, endWordId: string) => {
       if (!client || !roughCutId) return;
       try {
-        await client.deleteWords(roughCutId, startWordId, endWordId);
+        // Cancel in-flight fetches so the stale response can't clobber our fresh write.
+        await queryClient.cancelQueries({ queryKey: qk.timeline(roughCutId) });
+        await queryClient.cancelQueries({ queryKey: qk.scenes(roughCutId) });
+        const newTimeline = await client.deleteWords(roughCutId, startWordId, endWordId);
+        // deleteWords returns the updated Timeline (clips reconciled). Push it into cache.
+        queryClient.setQueryData(qk.timeline(roughCutId), newTimeline);
+        // Scene markers were also reconciled by the backend; refetch them + transcript.
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: qk.scenes(roughCutId) }),
+          assetId
+            ? queryClient.invalidateQueries({ queryKey: qk.transcript(assetId) })
+            : Promise.resolve(),
+        ]);
         setSelection(null);
-        await reload(); // backend already reconciled scene markers; re-read clips + scenes
       } catch (e) {
-        setError(String(e));
+        setMutationError(String(e));
       }
     },
-    [client, roughCutId, reload],
+    [client, roughCutId, assetId, queryClient],
   );
 
   const cutAt = useCallback(
     async (seqFrame: number) => {
       if (!client || !roughCutId) return;
       try {
+        // Cancel in-flight fetches before writing both entries.
+        await queryClient.cancelQueries({ queryKey: qk.timeline(roughCutId) });
+        await queryClient.cancelQueries({ queryKey: qk.scenes(roughCutId) });
         const out = await client.cutAtFrame(roughCutId, seqFrame);
-        setClips(out.clips);
-        setScenes(out.scenes);
+        // Push the fresh clips+scenes directly into cache — no extra round-trip needed.
+        queryClient.setQueryData(qk.timeline(roughCutId), (prev: Timeline | undefined) =>
+          prev ? { ...prev, clips: out.clips } : prev,
+        );
+        queryClient.setQueryData(qk.scenes(roughCutId), out.scenes);
+        // cutAt changes word-to-clip mapping; invalidate transcript so dependent views refresh.
+        if (assetId) {
+          await queryClient.invalidateQueries({ queryKey: qk.transcript(assetId) });
+        }
       } catch (e) {
-        setError(String(e));
+        setMutationError(String(e));
       }
     },
-    [client, roughCutId],
+    [client, roughCutId, assetId, queryClient],
   );
 
   const replaceSpanText = useCallback(
@@ -223,7 +258,7 @@ export function useRoughCutTranscript(
             })
             .catch((e: unknown) => {
               if (mountedRef.current) {
-                setError(String(e));
+                setMutationError(String(e));
               }
             })
             .then(resolve);
@@ -233,6 +268,13 @@ export function useRoughCutTranscript(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, roughCutId, reload, words],
   );
+
+  const queryError =
+    timelineQuery.error != null
+      ? String(timelineQuery.error)
+      : scenesQuery.error != null
+        ? String(scenesQuery.error)
+        : null;
 
   return {
     words,
@@ -244,7 +286,7 @@ export function useRoughCutTranscript(
     cutAt,
     replaceSpanText,
     lastVoJobId,
-    error,
+    error: mutationError ?? queryError,
     reload,
     undo,
     redo,
