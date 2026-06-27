@@ -1,7 +1,8 @@
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Asset, type JobStatus, type LauraClient, type ShortsCandidate } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { ShortsView } from "./ShortsView";
 
 vi.mock("./Player", () => ({ Player: () => <div data-testid="player" /> }));
@@ -93,7 +94,7 @@ function makeClient(over: Partial<LauraClient> = {}): LauraClient {
 describe("ShortsView", () => {
   it("renders a guard when no asset is selected", () => {
     const c = makeClient();
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={null}
@@ -108,7 +109,7 @@ describe("ShortsView", () => {
 
   it("renders candidates with time, score, and QA badge", async () => {
     const c = makeClient();
-    const { getByText, getAllByText } = render(
+    const { getByText, getAllByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={asset}
@@ -128,7 +129,7 @@ describe("ShortsView", () => {
 
   it("shows the start timecode for each candidate", async () => {
     const c = makeClient();
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={asset}
@@ -144,7 +145,7 @@ describe("ShortsView", () => {
 
   it("shows empty state when no candidates exist", async () => {
     const c = makeClient({ listShortsCandidates: vi.fn().mockResolvedValue([]) });
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={asset}
@@ -161,7 +162,7 @@ describe("ShortsView", () => {
 
   it("calls extractShorts with the asset id when the button is clicked", async () => {
     const c = makeClient();
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={asset}
@@ -181,7 +182,7 @@ describe("ShortsView", () => {
   it("calls onSeek with start_frame when a candidate row is clicked", async () => {
     const c = makeClient();
     const onSeek = vi.fn();
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={asset}
@@ -199,7 +200,7 @@ describe("ShortsView", () => {
 
   it("shows rejected notice for a rejected candidate", async () => {
     const c = makeClient();
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <ShortsView
         client={c}
         asset={asset}
@@ -219,7 +220,7 @@ describe("ShortsView", () => {
     it("reloads candidates exactly once after the job succeeds", async () => {
       // getJob returns succeeded immediately on first poll.
       const c = makeClient();
-      const { getByText } = render(
+      const { getByText } = renderWithQuery(
         <ShortsView
           client={c}
           asset={asset}
@@ -263,7 +264,7 @@ describe("ShortsView", () => {
       const getJob = vi.fn().mockResolvedValueOnce(RUNNING_JOB).mockResolvedValue(SUCCEEDED_JOB);
       const c = makeClient({ getJob });
 
-      const { getByRole, getByText } = render(
+      const { getByRole, getByText } = renderWithQuery(
         <ShortsView
           client={c}
           asset={asset}
@@ -293,7 +294,7 @@ describe("ShortsView", () => {
       };
       const c = makeClient({ getJob: vi.fn().mockResolvedValue(FAILED_JOB) });
 
-      const { getByText, getByRole } = render(
+      const { getByText, getByRole } = renderWithQuery(
         <ShortsView
           client={c}
           asset={asset}

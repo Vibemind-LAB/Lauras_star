@@ -2,6 +2,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ImportStatus, LauraClient } from "../api";
+import { queryWrapper } from "../test-utils";
 import { useImportStatus } from "./useImportStatus";
 
 const status = (phase: ImportStatus["phase"]): ImportStatus => ({
@@ -20,7 +21,7 @@ describe("useImportStatus", () => {
       .mockResolvedValueOnce(status("ready"));
     const client = { getImportStatus } as unknown as LauraClient;
 
-    const { result } = renderHook(() => useImportStatus(client, "a1", 1000));
+    const { result } = renderHook(() => useImportStatus(client, "a1", 1000), { wrapper: queryWrapper() });
     await waitFor(() => expect(result.current?.phase).toBe("downloading"));
     await vi.advanceTimersByTimeAsync(1000);
     await waitFor(() => expect(result.current?.phase).toBe("ready"));

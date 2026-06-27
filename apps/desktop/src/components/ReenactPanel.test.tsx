@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { type ConsentRecord, type LauraClient } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { ReenactPanel } from "./ReenactPanel";
 
 function client(overrides: Partial<LauraClient>): LauraClient {
@@ -28,7 +29,7 @@ describe("ReenactPanel", () => {
     const reenact = vi.fn().mockResolvedValue({ job_id: "job-1" });
     const c = client({ reenact });
 
-    render(
+    renderWithQuery(
       <ReenactPanel
         client={c}
         projectId="project-1"
