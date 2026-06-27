@@ -312,7 +312,10 @@ export function FineCutView({
         <TimelineBar
           client={client}
           timeline={syntheticTimeline}
-          onChange={() => void rc.reload()}
+          onChange={() => {
+            void rc.reload();
+            reloadAudioClips();
+          }}
           onScrub={(_assetId, frame) => onSeek(frame)}
           onSelect={() => undefined}
           segments={segments}

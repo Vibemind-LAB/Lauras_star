@@ -165,7 +165,12 @@ export function App(): ReactElement {
   }, [client, selectedProjectId, selectedAssetId, loadRoughCut]);
 
   // Re-load the rough cut whenever the selected video changes (or clear it if none).
+  // Also drop per-video edit state (selected clip / seek / build result) on the switch so no
+  // stale reference from the previous video survives — switching a video to edit must not error.
   useEffect(() => {
+    setSelectedClipId(null);
+    setSeek(null);
+    setBuildResult(null);
     if (client && selectedProjectId && selectedAssetId) {
       void loadRoughCut(client, selectedProjectId, selectedAssetId).catch((e) =>
         setError(String(e)),
