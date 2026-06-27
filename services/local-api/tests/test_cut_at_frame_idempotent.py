@@ -100,5 +100,7 @@ def test_cut_at_frame_still_works_for_real_cut(tmp_path: Path) -> None:
 
     scenes = repos.list_scenes(db, tl["id"])
     assert len(scenes) == 3
-    boundaries = sorted({s["seq_in_frame"] for s in scenes} | {s["seq_out_frame_exclusive"] for s in scenes})
+    boundaries = sorted(
+        {s["seq_in_frame"] for s in scenes} | {s["seq_out_frame_exclusive"] for s in scenes}
+    )
     assert 15 in boundaries

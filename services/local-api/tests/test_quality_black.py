@@ -7,10 +7,8 @@ handler-level guard that prevents dropping 100 % of shots as "black".
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from laura.analysis.quality import BLACK_LUMA, BLACK_MAX, ShotMetrics, decide_keep
-
 
 # ---------------------------------------------------------------------------
 # Part 1 — ShotMetrics.from_frames: the two-condition black criterion

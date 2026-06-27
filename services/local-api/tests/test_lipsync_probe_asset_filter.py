@@ -32,7 +32,9 @@ def _make_video(path: Path) -> None:
     ])
 
 
-def _setup(tmp_path: Path) -> tuple[SqliteDatabase, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _setup(
+    tmp_path: Path,
+) -> tuple[SqliteDatabase, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Create project with two assets and a two-clip timeline (one per asset)."""
     ws = tmp_path / "ws"
     (ws / "project").mkdir(parents=True, exist_ok=True)
