@@ -314,8 +314,8 @@ function SequenceTranscriptPanel({
 
 /**
  * Zusammenfügen (assemble) — transcript-first workspace:
- *   left   = compact scene/asset bin
- *   centre = sequence player, sequence timeline, storyboard order
+ *   left   = Anordnung: ordered arrangement (sequence cards + transitions) + collapsible scene-add source
+ *   centre = sequence player, sequence timeline
  *   right  = transcript rail with Tools tab for Replace/Reenact
  */
 export function AssembleView({
@@ -347,6 +347,8 @@ export function AssembleView({
   const [captionPreview, setCaptionPreview] = useState(true);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  // Collapsible "Szenen hinzufügen" panel — open by default when there are scenes to add.
+  const [addPanelOpen, setAddPanelOpen] = useState(true);
 
   useEffect(() => {
     if (projectId === null) {
@@ -571,67 +573,176 @@ export function AssembleView({
   const assetOptions = assets.map((a) => ({ id: a.id, display_name: a.display_name }));
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)_360px] gap-px bg-surface-2">
+    <div className="grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)_360px] gap-px bg-surface-2">
+      {/* ── Left column: unified Anordnung (arrangement + add-scene source) ── */}
       <aside
-        aria-label="Szenen-Bin"
-        className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-surface-0 p-3"
+        aria-label="Anordnung"
+        className="flex min-h-0 flex-col overflow-y-auto bg-surface-0"
       >
-        <div>
-          <div className="text-xs font-semibold text-content-strong">Szenen-Bin</div>
-          <div className="text-[11px] text-content-faint">Klick hängt an die Sequenz an</div>
-        </div>
-        <input
-          value={sceneQuery}
-          onChange={(e) => setSceneQuery(e.target.value)}
-          placeholder="Szenen suchen"
-          className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint outline-none focus:border-accent"
-        />
-        {binError !== null && <div className="text-xs text-status-err">{binError}</div>}
-        {sequenceError !== null && <div className="text-xs text-status-err">{sequenceError}</div>}
-        {scenes.length === 0 ? (
-          <div className="text-xs text-content-faint">
-            Noch keine Szenen — erst im Rough Cut Szenen erzeugen.
+        {/* ── Arrangement header ── */}
+        <div className="flex items-center justify-between gap-2 border-b border-bezel/60 px-3 py-2">
+          <div>
+            <div className="text-xs font-semibold text-content-strong">Anordnung</div>
+            <div className="text-[11px] text-content-faint">Ziehen zum Umordnen · Klick wählt Szene</div>
           </div>
-        ) : groups.length === 0 ? (
-          <div className="text-xs text-content-faint">Keine Szene passt zum Filter.</div>
-        ) : (
-          groups.map((g) => (
-            <div key={g.assetId} className="flex flex-col gap-1">
-              <div className="flex items-center justify-between gap-1">
-                <div className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wide text-content-faint">
-                  {assetName(g.assetId)} · {g.scenes.length}
-                </div>
-                {g.scenes.length > 1 && (
-                  <button
-                    type="button"
-                    title={`Alle ${g.scenes.length} Szenen von „${assetName(g.assetId)}" anhängen`}
-                    onClick={() => void applySceneIds([...ids, ...g.scenes.map((s) => s.id)])}
-                    className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-accent-glow"
-                  >
-                    + alle
-                  </button>
-                )}
-              </div>
-              {g.scenes.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  title={`„${s.name}" an die Reihenfolge anhängen`}
-                  onClick={() => void applySceneIds([...ids, s.id])}
-                  className="flex items-center gap-2 rounded border border-bezel bg-surface-2/50 p-1 text-left text-xs hover:bg-surface-2"
-                >
-                  <Thumb client={client} assetId={s.asset_id ?? g.assetId} frame={s.thumb_frame ?? 0} />
-                  <span className="min-w-0 flex-1 truncate text-content-strong">{s.name}</span>
-                  <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 font-medium text-white">
-                    +
-                  </span>
-                </button>
-              ))}
-            </div>
-          ))
+          <div className="flex items-center gap-2 text-xs tabular-nums text-content-faint">
+            <span>Gesamtdauer {totalSequenceFrames} f</span>
+            <span>{items.length} Clips</span>
+          </div>
+        </div>
+
+        {/* ── Error states ── */}
+        {(binError !== null || sequenceError !== null) && (
+          <div className="px-3 pt-2 flex flex-col gap-1">
+            {binError !== null && <div className="text-xs text-status-err">{binError}</div>}
+            {sequenceError !== null && <div className="text-xs text-status-err">{sequenceError}</div>}
+          </div>
         )}
+
+        {/* ── Arranged sequence cards with transitions between ── */}
+        <div className="flex flex-col gap-0 px-3 py-2">
+          {items.length === 0 ? (
+            <div className="py-4 text-xs text-content-faint">
+              Noch keine Szenen — unten „Szene hinzufügen" nutzen.
+            </div>
+          ) : (
+            items.map((it, i) => {
+              const sc = sceneById(it.scene_id);
+              return (
+                <Fragment key={it.id}>
+                  <div
+                    draggable
+                    onDragStart={(e) => onDragStart(e, i)}
+                    onDragEnter={() => setDragOverIndex(i)}
+                    onDragOver={onDragOver}
+                    onDrop={(e) => onDrop(e, i)}
+                    onDragLeave={() => setDragOverIndex(null)}
+                    className={`flex cursor-grab items-center gap-2 rounded border bg-surface-2 p-1.5 text-xs ${
+                      dragOverIndex === i
+                        ? "border-accent shadow-[inset_3px_0_0_#38bdf8]"
+                        : activeSceneId === it.scene_id
+                          ? "border-accent ring-1 ring-accent"
+                          : "border-bezel"
+                    }`}
+                  >
+                    {dragOverIndex === i && (
+                      <span className="sr-only">Einfügemarke vor {i + 1}</span>
+                    )}
+                    <Thumb
+                      client={client}
+                      assetId={sc?.asset_id ?? null}
+                      frame={sc?.thumb_frame ?? 0}
+                      className="h-10 w-16 shrink-0"
+                    />
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSeekScene(it.scene_id);
+                          setActiveSceneId(it.scene_id);
+                        }}
+                        className="truncate text-left text-content-strong hover:text-white"
+                      >
+                        {i + 1}. {it.scene_name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void applySceneIds(ids.filter((_, j) => j !== i))}
+                        className="w-fit rounded bg-surface-2 px-1 py-0.5 text-[10px] text-content-muted hover:bg-surface-1"
+                      >
+                        entfernen
+                      </button>
+                    </div>
+                  </div>
+                  {i < items.length - 1 && (
+                    <label className="mx-2 flex items-center gap-1 py-1 text-[10px] text-content-faint">
+                      <span className="shrink-0">Übergang:</span>
+                      <select
+                        aria-label={`Transition nach Szene ${i + 1}`}
+                        value={it.transition_after_kind}
+                        onChange={(e) =>
+                          updateTransition(it.id, e.target.value as SequenceTransitionKind)}
+                        className="flex-1 rounded border border-bezel bg-surface-1 px-1 py-0.5 text-[10px] text-content-strong"
+                      >
+                        <option value="hard">Hard</option>
+                        <option value="dip_black">Dip</option>
+                        <option value="fade_black">Fade</option>
+                        <option value="crossfade">Cross</option>
+                      </select>
+                    </label>
+                  )}
+                </Fragment>
+              );
+            })
+          )}
+        </div>
+
+        {/* ── Collapsible "Szenen hinzufügen" source panel ── */}
+        <div className="mt-auto border-t border-bezel/60">
+          <button
+            type="button"
+            onClick={() => setAddPanelOpen((v) => !v)}
+            className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-content-strong hover:bg-surface-1"
+          >
+            <span>Szenen-Bin</span>
+            <span className="text-content-faint">{addPanelOpen ? "▲" : "▼"}</span>
+          </button>
+          {addPanelOpen && (
+            <div className="flex flex-col gap-2 px-3 pb-3">
+              <input
+                value={sceneQuery}
+                onChange={(e) => setSceneQuery(e.target.value)}
+                placeholder="Szenen suchen"
+                className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint outline-none focus:border-accent"
+              />
+              {scenes.length === 0 ? (
+                <div className="text-xs text-content-faint">
+                  Noch keine Szenen — erst im Rough Cut Szenen erzeugen.
+                </div>
+              ) : groups.length === 0 ? (
+                <div className="text-xs text-content-faint">Keine Szene passt zum Filter.</div>
+              ) : (
+                groups.map((g) => (
+                  <div key={g.assetId} className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wide text-content-faint">
+                        {assetName(g.assetId)} · {g.scenes.length}
+                      </div>
+                      {g.scenes.length > 1 && (
+                        <button
+                          type="button"
+                          title={`Alle ${g.scenes.length} Szenen von „${assetName(g.assetId)}" anhängen`}
+                          onClick={() => void applySceneIds([...ids, ...g.scenes.map((s) => s.id)])}
+                          className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-accent-glow"
+                        >
+                          + alle
+                        </button>
+                      )}
+                    </div>
+                    {g.scenes.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        title={`„${s.name}" an die Reihenfolge anhängen`}
+                        onClick={() => void applySceneIds([...ids, s.id])}
+                        className="flex items-center gap-2 rounded border border-bezel bg-surface-2/50 p-1 text-left text-xs hover:bg-surface-2"
+                      >
+                        <Thumb client={client} assetId={s.asset_id ?? g.assetId} frame={s.thumb_frame ?? 0} />
+                        <span className="min-w-0 flex-1 truncate text-content-strong">{s.name}</span>
+                        <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 font-medium text-white">
+                          +
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </aside>
 
+      {/* ── Centre column: player + timeline ── */}
       <section
         aria-label="Sequenz-Arbeitsfläche"
         className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-surface-0 p-3"
@@ -688,99 +799,18 @@ export function AssembleView({
           </div>
         )}
 
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <div className="text-xs font-semibold text-content-strong">Storyboard</div>
-            <div className="text-[11px] text-content-faint">Ziehen zum Umordnen, Klick springt zur Szene</div>
-          </div>
-          <div className="flex items-center gap-3 text-xs tabular-nums text-content-faint">
-            <button
-              type="button"
-              onClick={() => setCaptionPreview((v) => !v)}
-              className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-muted hover:bg-surface-2"
-            >
-              {captionPreview ? "Caption-Preview aus" : "Caption-Preview ein"}
-            </button>
-            <span>Gesamtdauer {totalSequenceFrames} f</span>
-            <span>{items.length} Clips</span>
-          </div>
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-2">
-          {items.length === 0 ? (
-            <div className="py-6 text-xs text-content-faint">
-              Links eine Szene anklicken, um sie hier anzuhängen.
-            </div>
-          ) : (
-            items.map((it, i) => {
-              const sc = sceneById(it.scene_id);
-              return (
-                <Fragment key={it.id}>
-                  <div
-                    draggable
-                    onDragStart={(e) => onDragStart(e, i)}
-                    onDragEnter={() => setDragOverIndex(i)}
-                    onDragOver={onDragOver}
-                    onDrop={(e) => onDrop(e, i)}
-                    onDragLeave={() => setDragOverIndex(null)}
-                    className={`flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border bg-surface-2 p-1 text-xs ${
-                      dragOverIndex === i
-                        ? "border-accent shadow-[inset_3px_0_0_#38bdf8]"
-                        : activeSceneId === it.scene_id
-                          ? "border-accent ring-1 ring-accent"
-                          : "border-bezel"
-                    }`}
-                  >
-                    {dragOverIndex === i && (
-                      <span className="sr-only">Einfügemarke vor {i + 1}</span>
-                    )}
-                    <Thumb
-                      client={client}
-                      assetId={sc?.asset_id ?? null}
-                      frame={sc?.thumb_frame ?? 0}
-                      className="h-14 w-full"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSeekScene(it.scene_id);
-                        setActiveSceneId(it.scene_id);
-                      }}
-                      className="truncate text-left text-content-strong hover:text-white"
-                    >
-                      {i + 1}. {it.scene_name}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applySceneIds(ids.filter((_, j) => j !== i))}
-                      className="rounded bg-surface-2 px-1 py-0.5 text-[11px] text-content-muted hover:bg-surface-2"
-                    >
-                      entfernen
-                    </button>
-                  </div>
-                  {i < items.length - 1 && (
-                    <label className="flex w-20 shrink-0 flex-col justify-center gap-1 text-[10px] text-content-faint">
-                      <span>Übergang</span>
-                      <select
-                        aria-label={`Transition nach Szene ${i + 1}`}
-                        value={it.transition_after_kind}
-                        onChange={(e) =>
-                          updateTransition(it.id, e.target.value as SequenceTransitionKind)}
-                        className="rounded border border-bezel bg-surface-1 px-1 py-1 text-[11px] text-content-strong"
-                      >
-                        <option value="hard">Hard</option>
-                        <option value="dip_black">Dip</option>
-                        <option value="fade_black">Fade</option>
-                        <option value="crossfade">Cross</option>
-                      </select>
-                    </label>
-                  )}
-                </Fragment>
-              );
-            })
-          )}
+        <div className="flex w-full max-w-3xl items-center justify-end gap-3 text-xs">
+          <button
+            type="button"
+            onClick={() => setCaptionPreview((v) => !v)}
+            className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-muted hover:bg-surface-2"
+          >
+            {captionPreview ? "Caption-Preview aus" : "Caption-Preview ein"}
+          </button>
         </div>
       </section>
 
+      {/* ── Right rail: transcript + tools ── */}
       <aside
         aria-label="Transkript und Werkzeuge"
         className="flex min-h-0 flex-col overflow-y-auto bg-surface-0 p-3"
@@ -855,6 +885,5 @@ export function AssembleView({
     </div>
   );
 }
-
 
 

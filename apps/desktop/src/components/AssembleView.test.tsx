@@ -120,13 +120,14 @@ describe("AssembleView", () => {
       }));
   });
 
-  it("renders the assemble workspace as scene bin, sequence work area, and transcript/tools rail", async () => {
+  it("renders the assemble workspace as arrangement panel, sequence work area, and transcript/tools rail", async () => {
     const c = client({});
     const { getByLabelText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.getProjectSequence).toHaveBeenCalledWith("p"));
 
-    expect(getByLabelText("Szenen-Bin")).toBeTruthy();
+    // Left column is the merged Anordnung (arrangement + collapsible scene-add source).
+    expect(getByLabelText("Anordnung")).toBeTruthy();
     expect(getByLabelText("Sequenz-Arbeitsfläche")).toBeTruthy();
     expect(getByLabelText("Transkript und Werkzeuge")).toBeTruthy();
   });
