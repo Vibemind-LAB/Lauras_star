@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type Asset,
@@ -19,6 +20,7 @@ import {
   type TimelineAudioClip,
   type TimelineClip,
 } from "../api";
+import { qk } from "../cache/queryKeys";
 import { useJobStatus } from "../hooks/useJobStatus";
 import { useSequence } from "../hooks/useSequence";
 import { log } from "../shared/log";
@@ -339,11 +341,7 @@ export function AssembleView({
   const [binError, setBinError] = useState<string | null>(null);
   const [sceneQuery, setSceneQuery] = useState("");
   const [seqClips, setSeqClips] = useState<TimelineClip[]>([]);
-  const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
-  const [transcriptReloadKey, setTranscriptReloadKey] = useState(0);
-  const [transcript, setTranscript] = useState<SequenceTranscriptBlock[]>([]);
-  const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [railTab, setRailTab] = useState<"transcript" | "tools">("transcript");
   const [seqFrame, setSeqFrame] = useState(0);
   const [captionPreview, setCaptionPreview] = useState(true);
@@ -380,26 +378,41 @@ export function AssembleView({
     projectId,
   );
 
+  const queryClient = useQueryClient();
   const sequenceId = sequence?.timeline_id ?? null;
   const reloadSeqClips = useCallback(() => {
     setReloadKey((k) => k + 1);
   }, []);
   const reloadTranscript = useCallback(() => {
-    setTranscriptReloadKey((k) => k + 1);
-  }, []);
+    if (!sequenceId) return;
+    void queryClient.invalidateQueries({ queryKey: qk.sequenceTranscript(sequenceId) });
+  }, [queryClient, sequenceId]);
   const reloadAudioClips = useCallback(() => {
-    if (!sequenceId) {
-      setAudioClips([]);
-      return;
-    }
-    client
-      .listTimelineAudioClips(sequenceId)
-      .then(setAudioClips)
-      .catch((e: unknown) => {
-        log.error("listTimelineAudioClips failed:", e instanceof Error ? e.message : String(e));
-        setAudioClips([]);
-      });
-  }, [client, sequenceId]);
+    if (!sequenceId) return;
+    void queryClient.invalidateQueries({ queryKey: qk.audioClips(sequenceId) });
+  }, [queryClient, sequenceId]);
+
+  // Audio clips for the sequence — cached under qk.audioClips(sequenceId).
+  // Invalidated by any operation that can change the A2 lane (overlay add/remove/edit,
+  // DemoAssistant apply, AudioLaneControls onChange, TimelineBar onChange).
+  const audioClipsQuery = useQuery<TimelineAudioClip[]>({
+    queryKey: qk.audioClips(sequenceId ?? "none"),
+    queryFn: () => client.listTimelineAudioClips(sequenceId!),
+    enabled: sequenceId !== null,
+  });
+  const audioClips = audioClipsQuery.data ?? [];
+
+  // Sequence transcript — cached under qk.sequenceTranscript(sequenceId).
+  // Invalidated on realignment job success (via onSaved → reloadTranscript) and on scene changes.
+  const transcriptQuery = useQuery<SequenceTranscriptBlock[], Error>({
+    queryKey: qk.sequenceTranscript(sequenceId ?? "none"),
+    queryFn: () => client.getSequenceTranscript(sequenceId!),
+    enabled: sequenceId !== null,
+  });
+  const transcript = transcriptQuery.data ?? [];
+  const transcriptError = transcriptQuery.error !== null
+    ? (transcriptQuery.error?.message ?? "Sequenz-Transkript konnte nicht geladen werden.")
+    : null;
 
   useEffect(() => {
     if (!sequenceId) {
@@ -419,38 +432,6 @@ export function AssembleView({
       cancelled = true;
     };
   }, [client, sequenceId, reloadKey]);
-
-  useEffect(() => {
-    reloadAudioClips();
-  }, [reloadAudioClips]);
-
-  useEffect(() => {
-    if (!sequenceId) {
-      setTranscript([]);
-      setTranscriptError(null);
-      return;
-    }
-    let cancelled = false;
-    client
-      .getSequenceTranscript(sequenceId)
-      .then((blocks) => {
-        if (!cancelled) {
-          setTranscript(blocks);
-          setTranscriptError(null);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setTranscript([]);
-          setTranscriptError(
-            err instanceof Error ? err.message : "Sequenz-Transkript konnte nicht geladen werden.",
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client, sequenceId, transcriptReloadKey]);
 
   const seqTimeline: Timeline | null =
     sequence !== null

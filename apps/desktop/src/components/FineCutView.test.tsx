@@ -262,8 +262,7 @@ describe("FineCutView", () => {
       />,
     );
 
-    await waitFor(() => expect(Array.isArray(fcSeqPlayerProps.audioClips)).toBe(true));
-    expect((fcSeqPlayerProps.audioClips as unknown[]).length).toBe(1);
+    await waitFor(() => expect((fcSeqPlayerProps.audioClips as unknown[]).length).toBe(1));
     expect(listTimelineAudioClips).toHaveBeenCalledWith("rc1");
   });
 

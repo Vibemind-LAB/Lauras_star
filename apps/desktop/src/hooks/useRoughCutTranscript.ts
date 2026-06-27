@@ -161,8 +161,10 @@ export function useRoughCutTranscript(
         // deleteWords returns the updated Timeline (clips reconciled). Push it into cache.
         queryClient.setQueryData(qk.timeline(roughCutId), newTimeline);
         // Scene markers were also reconciled by the backend; refetch them + transcript.
+        // Audio clips can change if deleteWords removes a word that was overlaid with VO.
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: qk.scenes(roughCutId) }),
+          queryClient.invalidateQueries({ queryKey: qk.audioClips(roughCutId) }),
           assetId
             ? queryClient.invalidateQueries({ queryKey: qk.transcript(assetId) })
             : Promise.resolve(),
@@ -188,7 +190,9 @@ export function useRoughCutTranscript(
           prev ? { ...prev, clips: out.clips } : prev,
         );
         queryClient.setQueryData(qk.scenes(roughCutId), out.scenes);
-        // cutAt changes word-to-clip mapping; invalidate transcript so dependent views refresh.
+        // cutAt changes word-to-clip mapping; invalidate transcript and audio clips (split can
+        // divide a VO-overlaid segment, changing the A-track composition).
+        await queryClient.invalidateQueries({ queryKey: qk.audioClips(roughCutId) });
         if (assetId) {
           await queryClient.invalidateQueries({ queryKey: qk.transcript(assetId) });
         }

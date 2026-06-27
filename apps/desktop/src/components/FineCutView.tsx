@@ -1,6 +1,8 @@
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { type Asset, type BoundaryIdentity, type LauraClient, type Segment, type Timeline, type TimelineAudioClip, type VoiceoverVoice } from "../api";
+import { qk } from "../cache/queryKeys";
 import { useScenes } from "../hooks/useScenes";
 import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
 import { useJobStatus } from "../hooks/useJobStatus";
@@ -116,31 +118,21 @@ export function FineCutView({
   }, [client, roughCutId, pendingEdge, reloadRc]);
 
   // Load audio clips from the rough-cut timeline so VO + music play in preview.
-  // Extracted into a useCallback so it can be re-triggered on VO job completion
-  // without changing [client, roughCutId] (Fix 1).
-  const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
-  const reloadAudioClips = useCallback(() => {
-    if (!roughCutId) {
-      setAudioClips([]);
-      return;
-    }
-    let cancelled = false;
-    client
-      .listTimelineAudioClips(roughCutId)
-      .then((cs) => {
-        if (!cancelled) setAudioClips(cs);
-      })
-      .catch(() => {
-        if (!cancelled) setAudioClips([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client, roughCutId]);
+  // Cached under qk.audioClips(roughCutId) — invalidated by every clip/edit op that can
+  // change the A-track (deleteRange, cutAt, replaceSpanText→VO) and explicitly after VO
+  // job completion (Fix 1). The same key is used by all mutation handlers via queryClient.
+  const queryClient = useQueryClient();
+  const audioClipsQuery = useQuery<TimelineAudioClip[]>({
+    queryKey: qk.audioClips(roughCutId ?? "none"),
+    queryFn: () => client.listTimelineAudioClips(roughCutId!),
+    enabled: roughCutId !== null,
+  });
+  const audioClips = audioClipsQuery.data ?? [];
 
-  useEffect(() => {
-    return reloadAudioClips();
-  }, [reloadAudioClips]);
+  const reloadAudioClips = useCallback(() => {
+    if (!roughCutId) return;
+    void queryClient.invalidateQueries({ queryKey: qk.audioClips(roughCutId) });
+  }, [queryClient, roughCutId]);
 
   // Track the most recently dispatched VO job and re-fetch audio clips when it
   // succeeds so the new VO becomes audible in preview and the disclosure strip
