@@ -108,11 +108,14 @@ export function useScenes(
       try {
         await client.renameScene(sceneId, name);
         await reload();
+        // Scene name is denormalized into the sequence (scene_name) + the project scene list,
+        // so a rename must refresh those dependent reads too.
+        await invalidateDependents();
       } catch (e) {
         setMutationError(String(e));
       }
     },
-    [client, timelineId, reload],
+    [client, timelineId, reload, invalidateDependents],
   );
 
   return {

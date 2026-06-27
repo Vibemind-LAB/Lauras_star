@@ -1,13 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 
 import type { ImportStatus, LauraClient } from "../api";
+import { qk } from "../cache/queryKeys";
 
 const TERMINAL: ReadonlySet<ImportStatus["phase"]> = new Set(["ready", "error", "cancelled"]);
-
-/** Stable query-key factory for import-status — scoped to assetId. */
-function importStatusKey(assetId: string): readonly [string, string] {
-  return ["importStatus", assetId] as const;
-}
 
 export function useImportStatus(
   client: LauraClient,
@@ -15,7 +11,7 @@ export function useImportStatus(
   intervalMs = 1000,
 ): ImportStatus | null {
   const query = useQuery({
-    queryKey: importStatusKey(assetId ?? ""),
+    queryKey: qk.importStatus(assetId ?? ""),
     queryFn: () => client.getImportStatus(assetId!),
     enabled: assetId !== null,
     refetchInterval: (query) => {

@@ -20,4 +20,5 @@ export const qk = {
   audioClips: (timelineId: string) => ["audioClips", timelineId] as const,
   exports: (projectId: string) => ["exports", projectId] as const,
   job: (jobId: string) => ["job", jobId] as const,
+  importStatus: (assetId: string) => ["importStatus", assetId] as const,
 } as const;
