@@ -260,6 +260,7 @@ def render_clips_mp4(
     hook_text: str | None = None,
     disclosure_text: str | None = None,
     caption_ass: str | None = None,
+    caption_srt: str | None = None,
     video_transitions: list[VideoTransition] | None = None,
     loudnorm: bool = False,
 ) -> None:
@@ -287,6 +288,14 @@ def render_clips_mp4(
     the ``reel_files`` cleanup list, and removed after the render regardless of
     success or failure.  Defaults to ``None`` (no captions, byte-identical to
     the pre-R1.2 behaviour).
+
+    ``caption_srt`` is an optional complete SRT document string (as returned by
+    ``sequence_transcript_to_srt``).  When set, the subtitles are burned into
+    the output using the ffmpeg ``subtitles=`` filter.  The file is written next
+    to *dest*, cleaned up afterwards, and the ``subtitles=`` filter is appended
+    after any ASS caption filter.  Defaults to ``None`` (off).  When both
+    ``caption_ass`` and ``caption_srt`` are provided, ASS takes precedence and
+    the SRT is ignored.
 
     ``loudnorm`` (default ``False``) appends an EBU R128 ``loudnorm`` stage
     (``I=-14:TP=-1.5:LRA=11`` — the common social-media loudness target) as the
@@ -347,6 +356,14 @@ def render_clips_mp4(
         reel_files.append(ass_path)
         ass_basename = ass_path.name
 
+    # SRT burn-in: only used when no ASS captions are present (ASS takes precedence).
+    srt_basename: str | None = None
+    if caption_srt and not caption_ass:
+        srt_path = dest.parent / f"{dest.stem}.export_caption.srt"
+        srt_path.write_text(caption_srt, encoding="utf-8")
+        reel_files.append(srt_path)
+        srt_basename = srt_path.name
+
     try:
         # Determine which vertical reframe mode is active.  Precedence:
         #   reel_blur_fill (split/overlay) > reel_fit (letterbox) > center-crop (default).
@@ -362,7 +379,12 @@ def render_clips_mp4(
             disclosure_textfile=disc_tf,
             font=resolve_font(),
         )
-        caption_filter = f"ass={ass_basename}" if ass_basename else ""
+        if ass_basename:
+            caption_filter = f"ass={ass_basename}"
+        elif srt_basename:
+            caption_filter = f"subtitles={srt_basename}"
+        else:
+            caption_filter = ""
         if has_crossfade:
             # Real cross-dissolve: pairwise xfade/acrossfade fold with reserve overlap.
             fold_parts, v_label, a_label = _xfade_base_graph(

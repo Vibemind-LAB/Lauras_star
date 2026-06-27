@@ -726,6 +726,10 @@ class RenderRequest(BaseModel):
     # Optional quality gate: 422 when persisted quality is computed and below this threshold.
     # None means no gate (unverified stamp applied when quality is not computed).
     min_quality: float | None = Field(default=None, ge=0.0, le=1.0)
+    # When True, burn the sequence transcript as SRT subtitles into the rendered MP4.
+    # Only effective for format="mp4"; other formats ignore this flag.
+    # Defaults to False so existing exports are byte-identical to before.
+    burn_captions: bool = False
 
 
 class ReelRenderRequest(BaseModel):

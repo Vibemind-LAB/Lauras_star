@@ -40,7 +40,18 @@ describe("ExportView", () => {
     const client = mkClient({ renderTimeline });
     render(<ExportView client={client} projectId="p1" project={null} exportTargets={[TARGET]} />);
     fireEvent.click(screen.getByRole("button", { name: /exportieren/i }));
-    await waitFor(() => expect(renderTimeline).toHaveBeenCalledWith("t1", "mp4"));
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledWith("t1", "mp4", { burnCaptions: false }));
+  });
+
+  it("passes burnCaptions=true when the checkbox is checked and MP4 is selected", async () => {
+    const renderTimeline = vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" });
+    const client = mkClient({ renderTimeline });
+    render(<ExportView client={client} projectId="p1" project={null} exportTargets={[TARGET]} />);
+    // The "Captions einbrennen" checkbox is only shown for MP4 (default format).
+    const checkbox = screen.getByRole("checkbox", { name: /Captions einbrennen/i });
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: /exportieren/i }));
+    await waitFor(() => expect(renderTimeline).toHaveBeenCalledWith("t1", "mp4", { burnCaptions: true }));
   });
 
   it("defaults to the first non-empty source (skips the empty assembled sequence)", async () => {

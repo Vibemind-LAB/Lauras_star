@@ -15,10 +15,12 @@ from ..editing.otio_sync import resolve_clip_rows
 from ..jobs.runner import JobContext, JobHandler
 from ..ledger import get_ledger_store
 from ..sequences.music import sequence_music_tracks
+from ..sequences.transcript import sequence_transcript_blocks
 from .audio import AudioOverlay
 from .captions import build_ass, group_caption_lines
 from .captions_source import timeline_caption_words
 from .mp4 import _DEFAULT_DISCLOSURE, VideoTransition, render_clips_mp4
+from .srt import sequence_transcript_to_srt
 from .sync import assert_or_fix_media_sync
 
 _log = logging.getLogger(__name__)
@@ -229,6 +231,68 @@ def _timeline_is_synthetic(
     return row is not None
 
 
+def _timeline_srt_segments(
+    db: Database,
+    timeline_id: str,
+    tl: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return sequence-projected transcript segments suitable for SRT generation.
+
+    Works for any timeline kind (sequence, rough_cut, scene) by walking the clips
+    directly and projecting each segment's source-space range into sequence space.
+    The integer affine transform is identical to the one used by
+    :func:`sequence_transcript_blocks` and :func:`timeline_caption_words`.
+
+    Returns an empty list when the timeline has no clips or no transcript data.
+    """
+    if tl["kind"] == "sequence":
+        # For sequences, use the dedicated projection that walks the flattened view.
+        return sequence_transcript_blocks(db, timeline_id)
+
+    # For rough_cut / scene timelines, walk the lane-0 base clips directly.
+    clips = [
+        c for c in repos.list_timeline_clips(db, timeline_id)
+        if int(c.get("lane") or 0) == 0 and str(c.get("role") or "base") == "base"
+    ]
+    clips.sort(key=lambda c: int(c["seq_in_frame"]))
+
+    transcript_cache: dict[str, list[dict[str, Any]]] = {}
+    segments: list[dict[str, Any]] = []
+
+    for clip in clips:
+        asset_id = str(clip["asset_id"])
+        src_in = int(clip["src_in_frame"])
+        src_out = int(clip["src_out_frame_exclusive"])
+        seq_in = int(clip["seq_in_frame"])
+
+        if asset_id not in transcript_cache:
+            run = repos.get_latest_analysis_run(db, asset_id)
+            transcript_cache[asset_id] = (
+                repos.get_transcript(db, asset_id, run["id"]) if run is not None else []
+            )
+
+        for seg in transcript_cache[asset_id]:
+            seg_start = int(seg["start_frame"])
+            seg_end = int(seg["end_frame"])
+            overlap_start = max(seg_start, src_in)
+            overlap_end = min(seg_end, src_out)
+            if overlap_start >= overlap_end:
+                continue
+            text = str(seg.get("text", "")).strip()
+            if not text:
+                continue
+            segments.append(
+                {
+                    "seq_in_frame": seq_in + (overlap_start - src_in),
+                    "seq_out_frame_exclusive": seq_in + (overlap_end - src_in),
+                    "text": text,
+                }
+            )
+
+    segments.sort(key=lambda s: (int(s["seq_in_frame"]), int(s["seq_out_frame_exclusive"])))
+    return segments
+
+
 def handle_render(ctx: JobContext) -> dict[str, Any]:
     """Claim an export row, resolve its timeline clips, run ffmpeg, mark done."""
     export_id = ctx.payload["export_id"]
@@ -341,6 +405,20 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
                 ),
             )
 
+    # Burn plain SRT captions into the standard MP4 export (non-reel path).
+    # Only activated when burn_captions=True and no ASS captions are already present
+    # (ASS captions are the reel-grade styled variant; SRT is the plain subtitle path).
+    caption_srt: str | None = None
+    if opts.get("burn_captions") and not caption_ass:
+        srt_segments = _timeline_srt_segments(ctx.db, exp["timeline_id"], tl)
+        if srt_segments:
+            srt_text = sequence_transcript_to_srt(
+                srt_segments,
+                rate_num=project["sequence_rate_num"],
+                rate_den=project["sequence_rate_den"],
+            )
+            caption_srt = srt_text or None
+
     dest = Path(project["workspace_root"]) / "exports" / f"{export_id}.mp4"
     try:
         render_clips_mp4(
@@ -354,6 +432,7 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             hook_text=opts.get("hook_text"),  # type: ignore[arg-type]
             disclosure_text=disc_text,
             caption_ass=caption_ass,
+            caption_srt=caption_srt,
             video_transitions=video_transitions if video_transitions else None,
         )
         assert_or_fix_media_sync(

@@ -1254,12 +1254,13 @@ def render_timeline(
     if tl is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     gate = evaluate_quality_gate(db, timeline_id, body.min_quality)
+    options: dict[str, object] = {**gate, "burn_captions": body.burn_captions}
     exp = repos.create_export(
         db,
         project_id=tl["project_id"],
         timeline_id=timeline_id,
         format=body.format,
-        options=gate,
+        options=options,
     )
     job_id = enqueue(
         db,

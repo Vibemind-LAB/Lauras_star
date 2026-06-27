@@ -751,10 +751,17 @@ export class LauraClient {
     });
   }
 
-  renderTimeline(timelineId: string, format: string): Promise<{ export_id: string; job_id: string }> {
+  renderTimeline(
+    timelineId: string,
+    format: string,
+    opts?: { burnCaptions?: boolean },
+  ): Promise<{ export_id: string; job_id: string }> {
     return this.request<{ export_id: string; job_id: string }>(`/timelines/${timelineId}/render`, {
       method: "POST",
-      body: JSON.stringify({ format }),
+      body: JSON.stringify({
+        format,
+        burn_captions: opts?.burnCaptions ?? false,
+      }),
     });
   }
 
