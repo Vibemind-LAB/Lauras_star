@@ -346,6 +346,7 @@ export function AssembleView({
   const [seqFrame, setSeqFrame] = useState(0);
   const [captionPreview, setCaptionPreview] = useState(true);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
 
   useEffect(() => {
     if (projectId === null) {
@@ -449,6 +450,17 @@ export function AssembleView({
   // Scene ids that still exist — regenerated scenes get new ids, so the sequence can hold stale refs.
   const validSceneIds = useMemo(() => new Set(scenes.map((s) => s.id)), [scenes]);
 
+  // Default activeSceneId to the first sequence item whenever the sequence loads or changes,
+  // but only if no scene is already active (or the active scene is no longer in the sequence).
+  useEffect(() => {
+    const firstId = items[0]?.scene_id ?? null;
+    setActiveSceneId((prev) => {
+      // Keep existing selection if it is still a valid sequence item.
+      if (prev !== null && items.some((it) => it.scene_id === prev)) return prev;
+      return firstId;
+    });
+  }, [items]);
+
   const sceneById = (id: string): Scene | undefined => scenes.find((s) => s.id === id);
   const assetName = (id: string | null | undefined): string =>
     assets.find((a) => a.id === id)?.display_name ?? "Video";
@@ -506,6 +518,18 @@ export function AssembleView({
     (max, clip) => Math.max(max, clip.seq_out_frame_exclusive),
     0,
   );
+
+  // Transcript blocks belonging to the active scene only.
+  // Filter by seq-frame range: Scene.seq_in_frame <= block.seq_in_frame < Scene.seq_out_frame_exclusive.
+  const activeScene = activeSceneId !== null ? scenes.find((s) => s.id === activeSceneId) ?? null : null;
+  const activeSceneTranscript = useMemo(() => {
+    if (activeScene === null) return transcript;
+    return transcript.filter(
+      (block) =>
+        block.seq_in_frame >= activeScene.seq_in_frame &&
+        block.seq_in_frame < activeScene.seq_out_frame_exclusive,
+    );
+  }, [transcript, activeScene]);
 
   const dragIndex = useRef<number | null>(null);
   const reorder = (from: number, to: number): void => {
@@ -699,7 +723,11 @@ export function AssembleView({
                     onDrop={(e) => onDrop(e, i)}
                     onDragLeave={() => setDragOverIndex(null)}
                     className={`flex w-28 shrink-0 cursor-grab flex-col gap-1 rounded border bg-surface-2 p-1 text-xs ${
-                      dragOverIndex === i ? "border-accent shadow-[inset_3px_0_0_#38bdf8]" : "border-bezel"
+                      dragOverIndex === i
+                        ? "border-accent shadow-[inset_3px_0_0_#38bdf8]"
+                        : activeSceneId === it.scene_id
+                          ? "border-accent ring-1 ring-accent"
+                          : "border-bezel"
                     }`}
                   >
                     {dragOverIndex === i && (
@@ -713,7 +741,10 @@ export function AssembleView({
                     />
                     <button
                       type="button"
-                      onClick={() => onSeekScene(it.scene_id)}
+                      onClick={() => {
+                        onSeekScene(it.scene_id);
+                        setActiveSceneId(it.scene_id);
+                      }}
                       className="truncate text-left text-content-strong hover:text-white"
                     >
                       {i + 1}. {it.scene_name}
@@ -777,7 +808,7 @@ export function AssembleView({
         {railTab === "transcript" ? (
           <SequenceTranscriptPanel
             client={client}
-            blocks={transcript}
+            blocks={activeSceneTranscript}
             error={transcriptError}
             activeSegmentId={activeCaption?.segment_id ?? null}
             onSaved={reloadTranscript}

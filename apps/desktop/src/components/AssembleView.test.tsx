@@ -262,4 +262,30 @@ describe("AssembleView", () => {
     // Sequence tools remain
     expect(queryByText("Demo-Draft")).not.toBeNull();
   });
+
+  it("scopes the transcript to the active scene and switches it on storyboard selection", async () => {
+    // Two scenes in the sequence (sA 0..30, sB 30..60) and one transcript block per scene range.
+    const twoBlockTranscript = [
+      { ...transcript[0], segment_id: "seg-A", seq_in_frame: 0, seq_out_frame_exclusive: 30,
+        text: "Block A", words: [] },
+      { ...transcript[0], segment_id: "seg-B", seq_in_frame: 30, seq_out_frame_exclusive: 60,
+        text: "Block B", words: [] },
+    ];
+    const c = client({
+      getProjectSequence: vi.fn().mockResolvedValue(seqTwo),
+      getSequenceTranscript: vi.fn().mockResolvedValue(twoBlockTranscript),
+    });
+    const { findByDisplayValue, getByText, queryByDisplayValue } = renderWithQuery(
+      <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
+
+    // Defaults to the first scene → Block A shown, Block B not.
+    expect(await findByDisplayValue("Block A")).toBeTruthy();
+    expect(queryByDisplayValue("Block B")).toBeNull();
+
+    // Click the second storyboard card → transcript switches to Block B.
+    fireEvent.click(getByText("2. Szene 2"));
+
+    expect(await findByDisplayValue("Block B")).toBeTruthy();
+    await waitFor(() => expect(queryByDisplayValue("Block A")).toBeNull());
+  });
 });
