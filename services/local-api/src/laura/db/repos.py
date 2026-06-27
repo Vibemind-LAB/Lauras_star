@@ -1142,7 +1142,11 @@ def get_word(db: Database, word_id: str) -> dict[str, Any] | None:
 def replace_timeline_clips(
     db: Database, timeline_id: str, rows: list[dict[str, Any]]
 ) -> None:
-    """Atomically replace all clips of a timeline (materialised edit result)."""
+    """Atomically replace all clips of a timeline (materialised edit result).
+
+    Every column including ``role`` is written from the row dict so a replace-overlay clip
+    (role="replace") never silently reverts to the DB default ("base") after an op round-trip.
+    """
     with db.transaction() as conn:
         conn.execute("DELETE FROM timeline_clips WHERE timeline_id=?", (timeline_id,))
         for r in rows:
@@ -1150,13 +1154,13 @@ def replace_timeline_clips(
                 "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
                 "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
                 "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
-                "audio_offset_samples) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "audio_offset_samples, role) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), timeline_id, r["asset_id"], r["src_in_frame"],
                  r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"],
                  r.get("lane", 0), r.get("speaker_id"), r.get("origin_word_start_id"),
                  r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1),
-                 r.get("audio_offset_samples", 0)),
+                 r.get("audio_offset_samples", 0), r.get("role", "base")),
             )
 
 

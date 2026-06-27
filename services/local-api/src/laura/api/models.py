@@ -461,6 +461,8 @@ class ClipIn(BaseModel):
     # Signed per-clip LEADING-edge audio-vs-video offset in samples (invariant #3); 0 = hard cut.
     # Restored verbatim from a snapshot so undo/redo brings back the L/J split as the live column.
     audio_offset_samples: int = 0
+    # Clip role restored verbatim from a snapshot so undo/redo preserves replace-overlay clips.
+    role: str = "base"
 
 
 class SetClipsRequest(BaseModel):

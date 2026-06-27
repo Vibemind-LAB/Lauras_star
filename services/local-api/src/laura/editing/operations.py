@@ -72,6 +72,9 @@ class EditClip:
     # shift of the cut that BEGINS this clip, (audio - video). 0 = hard cut. Carried through every
     # op so the column stays the live source of truth across edits (see module docstring).
     audio_offset_samples: int = 0
+    # Clip role: "base" (normal editorial clip) or "replace" (overlay/replace compositing clip).
+    # Carried intact through every op so a placed replace-overlay never silently reverts to "base".
+    role: str = "base"
 
     @property
     def src_length(self) -> int:
@@ -92,6 +95,7 @@ class EditClip:
             speed_num=row.get("speed_num") or 1,
             speed_den=row.get("speed_den") or 1,
             audio_offset_samples=row.get("audio_offset_samples") or 0,
+            role=row.get("role") or "base",
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -108,6 +112,7 @@ class EditClip:
             "speed_num": self.speed_num,
             "speed_den": self.speed_den,
             "audio_offset_samples": self.audio_offset_samples,
+            "role": self.role,
         }
 
 

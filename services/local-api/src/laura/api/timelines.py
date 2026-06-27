@@ -877,7 +877,7 @@ def _apply(
         seq_in = _require(body.seq_in_frame, "seq_in_frame required")
         seq_out = _require(body.seq_out_frame_exclusive, "seq_out_frame_exclusive required")
         fn = delete_range if op == "delete" else lift_range
-        return fn(current, seq_in, seq_out)
+        return fn(current, seq_in, seq_out, lane=body.lane)
 
     if op == "set_speed":
         at = _require(body.at_seq_frame, "at_seq_frame required")
