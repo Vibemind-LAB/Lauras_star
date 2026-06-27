@@ -9,6 +9,7 @@ import {
   type TimelineClip,
   type Segment,
 } from "../api";
+import { snapToNearestEdge } from "../shared/snapToNearestEdge";
 
 const EXPORT_FORMATS: { fmt: ExportFormat; label: string; ext: string }[] = [
   { fmt: "otio", label: "OTIO", ext: "otio" },
@@ -21,6 +22,8 @@ const TRIM_STEP = 5; // frames per trim click
 const SNAP_PX = 8; // snap an edge to a neighbour cut within this many pixels
 const HANDLE_PX = 6; // width of an edge-trim handle
 const AUDIO_SNAP_PX = 10; // snap the audio handle to the picture cut (0) within this many pixels
+/** Minimum number of video lanes shown when at least one overlay clip exists. */
+const MIN_VIDEO_LANES = 2;
 
 /** Which edge of the selected clip a pointer-drag is trimming. */
 type TrimEdge = "in" | "out";
@@ -72,6 +75,23 @@ interface EdgeDrag {
   srcPerPx: number;
   newSrcIn: number;
   newSrcOut: number;
+}
+
+/**
+ * Live state for an in-flight cross-lane HTML5 drag.  Tracks which clip is being
+ * dragged and which lane row it is currently hovering over so that on drop we can
+ * fire a `place_clip` op with the correct destination lane.
+ *
+ * Snap is applied at drop time using `snapToNearestEdge`.  The strip ref is shared
+ * with the V1 row (all lanes share the same horizontal geometry / `total`).
+ */
+interface CrossLaneDrag {
+  /** ID of the clip being dragged (may be on any lane). */
+  clipId: string;
+  /** Destination lane index the pointer is currently over. */
+  targetLane: number;
+  /** X-position of the dragover event (clientX), used for frame calculation on drop. */
+  dropClientX: number;
 }
 
 function ClipThumb({
@@ -355,6 +375,8 @@ export function TimelineBar({
   const [edgeDrag, setEdgeDrag] = useState<EdgeDrag | null>(null);
   // Live pointer-drag of a clip's audio leading edge on the A1 lane (L/J split); null otherwise.
   const [audioDrag, setAudioDrag] = useState<AudioDrag | null>(null);
+  // Cross-lane drag: tracks the dragged clip and its current target lane/position.
+  const [crossLaneDrag, setCrossLaneDrag] = useState<CrossLaneDrag | null>(null);
   // The timeline's audio rate (single-asset rough cuts), to project the stored sample offset onto
   // frames for the A1 lane. Read from the first clip's asset; null leaves clips drawn as hard cuts.
   const [audioRate, setAudioRate] = useState<{
@@ -435,9 +457,14 @@ export function TimelineBar({
   }
 
   const tl = timeline;
-  // Separate base (V1) clips from overlay (V2) clips so each lane renders its own set.
+  // Base (lane 0) clips and all overlay clips (lane >= 1).
   const baseClips = tl.clips.filter((c) => (c.lane ?? 0) === 0);
   const overlayClips = tl.clips.filter((c) => (c.lane ?? 0) >= 1);
+  // Compute the highest occupied lane index; always show at least MIN_VIDEO_LANES rows when
+  // any overlay exists, so there is always a visible drop target for cross-lane drags.
+  const maxLane = tl.clips.reduce((m, c) => Math.max(m, c.lane ?? 0), 0);
+  // Number of video lane rows to render (data-driven).
+  const numVideoLanes = overlayClips.length > 0 ? Math.max(maxLane + 1, MIN_VIDEO_LANES) : 1;
   // Total sequence length spans ALL clips (base + overlay share the same timeline geometry).
   const total = [...tl.clips, ...audioClips].reduce(
     (m, c) => Math.max(m, c.seq_out_frame_exclusive),
@@ -535,6 +562,43 @@ export function TimelineBar({
     setDragOverEnd(false);
     if (!d || d.seq_in_frame === toSeqFrame) return; // dropped on itself / its own slot
     await runOp({ op: "move", at_seq_frame: d.seq_in_frame, to_seq_frame: toSeqFrame });
+  }
+
+  /**
+   * Fire a `place_clip` op for a cross-lane drop.  The target sequence frame is
+   * derived from the drop X-position using the strip pixel geometry and then snapped
+   * via `snapToNearestEdge` to the nearest clip boundary across ALL lanes.
+   */
+  async function placeClipTo(drag: CrossLaneDrag): Promise<void> {
+    setCrossLaneDrag(null);
+    const src = tl.clips.find((c) => c.id === drag.clipId);
+    if (!src) return;
+
+    const stripW = stripRef.current?.getBoundingClientRect().width ?? 0;
+    const stripLeft = stripRef.current?.getBoundingClientRect().left ?? 0;
+    let toSeqFrame = 0;
+    if (stripW > 0 && total > 0) {
+      const relX = drag.dropClientX - stripLeft;
+      const rawFrame = Math.round((relX / stripW) * total);
+      // Collect all clip boundaries across all lanes as snap candidates.
+      const edges: number[] = [0, total];
+      for (const c of tl.clips) {
+        edges.push(c.seq_in_frame, c.seq_out_frame_exclusive);
+      }
+      const thresholdFrames = stripW > 0 ? Math.ceil(SNAP_PX * (total / stripW)) : 0;
+      toSeqFrame = snapToNearestEdge(rawFrame, edges, thresholdFrames);
+    }
+
+    // No-op when dropping on the same position and lane.
+    if (toSeqFrame === src.seq_in_frame && drag.targetLane === src.lane) return;
+
+    await runOp({
+      op: "place_clip",
+      at_seq_frame: src.seq_in_frame,
+      lane_src: src.lane,
+      to_seq_frame: toSeqFrame,
+      lane: drag.targetLane,
+    });
   }
 
   async function splitSelected(): Promise<void> {
@@ -786,7 +850,7 @@ export function TimelineBar({
             ))}
           <span className="text-xs text-content-faint">
             {baseClips.length} Clips · {total} frames
-            {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""}` : ""}
+            {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""} · ${numVideoLanes} Spuren` : ""}
           </span>
         </span>
       </div>
@@ -806,118 +870,184 @@ export function TimelineBar({
               style={{ left: `calc(2rem + (100% - 2rem) * ${playheadFrac})` }}
             />
           )}
-          {/* V2/Replace — overlay lane above V1; only shown when overlay clips exist. */}
-          {overlayClips.length > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-violet-400">V2</span>
-              <div
-                aria-label="Ersatz-Spur (V2/Replace)"
-                className="relative h-8 min-w-0 flex-1 overflow-hidden rounded-md bg-violet-950/40"
-              >
-                {overlayClips.map((c) => {
-                  const leftPct = total > 0 ? (c.seq_in_frame / total) * 100 : 0;
-                  const widthPct =
-                    total > 0
-                      ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100
-                      : 0;
-                  // Label and tooltip for the overlay block. TimelineBar does not receive an
-                  // `assets` prop, so we derive what we can from the clip itself: `role` is
-                  // always "replace" for lane->=1 clips; no asset.synthetic / ai_effect is
-                  // available here without a new data dependency, so we label by role only.
-                  const overlayLabel = c.role === "replace" ? "Replace" : (c.role ?? "Overlay");
-                  const overlayTitle = `${overlayLabel}-Overlay · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`;
-                  return (
+          {/* N-lane data-driven video render — lanes rendered highest first (so V1 is at bottom).
+              Lane 0 (V1) supports contiguous reorder (move op) and edge-trim.
+              Lanes ≥ 1 are free-placed overlays; dragging a clip between any two lanes issues
+              place_clip. The strip ref is on V1 (lane 0) but all lanes share the same horizontal
+              geometry (same `total`). */}
+          {Array.from({ length: numVideoLanes }, (_, laneIdx) => numVideoLanes - 1 - laneIdx).map(
+            (lane) => {
+              const laneLabel = `V${lane + 1}`;
+              const isBaseLane = lane === 0;
+              const laneClips = tl.clips.filter((c) => (c.lane ?? 0) === lane);
+              const isTargetLane = crossLaneDrag !== null && crossLaneDrag.targetLane === lane;
+              return (
+                <div key={lane} className="flex items-center gap-2">
+                  <span
+                    className={`w-6 shrink-0 text-[9px] font-medium uppercase ${
+                      isBaseLane ? "text-content-faint" : "text-violet-400"
+                    }`}
+                  >
+                    {laneLabel}
+                  </span>
+                  {isBaseLane ? (
+                    /* V1 — contiguous reorder, edge-trim, pointer-capture for trim drags. */
                     <div
-                      key={c.id}
-                      role="group"
-                      aria-label={`Overlay ${c.id} · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
-                      title={overlayTitle}
-                      style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                      className="absolute inset-y-0 flex items-center justify-between overflow-hidden rounded-sm bg-violet-700/60 ring-1 ring-inset ring-violet-400/50"
+                      ref={stripRef}
+                      className={`flex h-12 min-w-0 flex-1 gap-px overflow-hidden rounded-md ${
+                        isTargetLane ? "ring-2 ring-amber-400/60" : ""
+                      }`}
+                      onPointerMove={onEdgeMove}
+                      onPointerUp={() => void onEdgeUp()}
+                      onPointerCancel={() => void onEdgeUp()}
+                      onDragOver={(e) => {
+                        if (crossLaneDrag !== null) {
+                          e.preventDefault();
+                          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                          setCrossLaneDrag({ ...crossLaneDrag, targetLane: lane, dropClientX: e.clientX });
+                        }
+                      }}
+                      onDrop={(e) => {
+                        if (crossLaneDrag !== null && crossLaneDrag.clipId) {
+                          e.preventDefault();
+                          void placeClipTo({ ...crossLaneDrag, dropClientX: e.clientX });
+                        }
+                      }}
                     >
-                      <span className="flex min-w-0 items-center gap-0.5 truncate px-1">
-                        {/* Role badge — amber pill for replace/AI overlays, matching the KI badge
-                            style used elsewhere (MediaSidebar). */}
-                        <span className="shrink-0 rounded-full bg-amber-500/80 px-1 py-px text-[8px] font-semibold leading-none text-amber-950">
-                          {overlayLabel}
-                        </span>
-                        <span className="truncate text-[9px] leading-none text-violet-100">
-                          {c.seq_in_frame}–{c.seq_out_frame_exclusive}
-                        </span>
-                      </span>
-                      {onRemoveOverlay && (
-                        <button
-                          type="button"
-                          title="Overlay entfernen"
-                          onClick={() => onRemoveOverlay(c.id)}
-                          className="mr-0.5 shrink-0 rounded px-0.5 text-[9px] leading-none text-violet-200 hover:bg-violet-900/80 hover:text-white"
-                        >
-                          ×
-                        </button>
-                      )}
+                      {laneClips.map((c, i) => (
+                        <ClipThumb
+                          key={c.id}
+                          client={client}
+                          clip={c}
+                          index={i}
+                          total={total}
+                          selected={c.id === selected}
+                          assetDuration={c.id === selected ? assetDuration : null}
+                          dragOver={dragId !== null && dragOverId === c.id && dragId !== c.id}
+                          onSelect={() => {
+                            const next = c.id === selected ? null : c.id;
+                            setSelected(next);
+                            onSelect?.(next);
+                            onScrub?.(c.asset_id, c.src_in_frame);
+                          }}
+                          onDragStart={() => {
+                            setDragId(c.id);
+                            setCrossLaneDrag({ clipId: c.id, targetLane: c.lane ?? 0, dropClientX: 0 });
+                          }}
+                          onDragEnter={() => setDragOverId(c.id)}
+                          onDragEnd={() => {
+                            setDragId(null);
+                            setDragOverId(null);
+                            setDragOverEnd(false);
+                            setCrossLaneDrag(null);
+                          }}
+                          onDrop={() => void reorderTo(c.seq_in_frame)}
+                          onEdgeDown={(edge, e) => onEdgeDown(c, edge, e)}
+                        />
+                      ))}
+                      {/* Drop-at-end affordance: a thin zone after the last clip. */}
+                      <div
+                        aria-label="Move clip to end"
+                        title="Hierher ziehen = ans Ende"
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                          setDragOverEnd(true);
+                          if (crossLaneDrag !== null) {
+                            setCrossLaneDrag({ ...crossLaneDrag, targetLane: lane, dropClientX: e.clientX });
+                          }
+                        }}
+                        onDragLeave={() => setDragOverEnd(false)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (crossLaneDrag !== null && crossLaneDrag.clipId) {
+                            void placeClipTo({ ...crossLaneDrag, dropClientX: e.clientX });
+                          } else {
+                            void reorderTo(total);
+                          }
+                        }}
+                        className={`h-full w-2 shrink-0 ${
+                          dragId !== null && dragOverEnd ? "bg-amber-300/80" : "bg-transparent"
+                        }`}
+                      />
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                  ) : (
+                    /* Lanes ≥ 1 — absolute-position overlay clips; drop target for cross-lane drag. */
+                    <div
+                      aria-label={`Video-Spur ${laneLabel}`}
+                      className={`relative h-8 min-w-0 flex-1 overflow-hidden rounded-md ${
+                        isTargetLane
+                          ? "bg-violet-800/60 ring-2 ring-amber-400/60"
+                          : "bg-violet-950/40"
+                      }`}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                        if (crossLaneDrag !== null) {
+                          setCrossLaneDrag({ ...crossLaneDrag, targetLane: lane, dropClientX: e.clientX });
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (crossLaneDrag !== null && crossLaneDrag.clipId) {
+                          void placeClipTo({ ...crossLaneDrag, dropClientX: e.clientX });
+                        }
+                      }}
+                    >
+                      {laneClips.map((c) => {
+                        const leftPct = total > 0 ? (c.seq_in_frame / total) * 100 : 0;
+                        const widthPct =
+                          total > 0
+                            ? ((c.seq_out_frame_exclusive - c.seq_in_frame) / total) * 100
+                            : 0;
+                        const overlayLabel = c.role === "replace" ? "Replace" : (c.role ?? "Overlay");
+                        const overlayTitle = `${overlayLabel}-Overlay · V${lane + 1} · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`;
+                        return (
+                          <div
+                            key={c.id}
+                            role="group"
+                            aria-label={`Overlay ${c.id} · seq ${c.seq_in_frame}–${c.seq_out_frame_exclusive}`}
+                            title={overlayTitle}
+                            draggable
+                            style={{ left: `${leftPct}%`, width: `${Math.max(0.4, widthPct)}%` }}
+                            className="absolute inset-y-0 flex cursor-grab items-center justify-between overflow-hidden rounded-sm bg-violet-700/60 ring-1 ring-inset ring-violet-400/50 active:cursor-grabbing"
+                            onDragStart={(e) => {
+                              if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+                              setDragId(c.id);
+                              setCrossLaneDrag({ clipId: c.id, targetLane: lane, dropClientX: 0 });
+                            }}
+                            onDragEnd={() => {
+                              setDragId(null);
+                              setCrossLaneDrag(null);
+                            }}
+                          >
+                            <span className="flex min-w-0 items-center gap-0.5 truncate px-1">
+                              <span className="shrink-0 rounded-full bg-amber-500/80 px-1 py-px text-[8px] font-semibold leading-none text-amber-950">
+                                {overlayLabel}
+                              </span>
+                              <span className="truncate text-[9px] leading-none text-violet-100">
+                                {c.seq_in_frame}–{c.seq_out_frame_exclusive}
+                              </span>
+                            </span>
+                            {onRemoveOverlay && (
+                              <button
+                                type="button"
+                                title="Overlay entfernen"
+                                onClick={() => onRemoveOverlay(c.id)}
+                                className="mr-0.5 shrink-0 rounded px-0.5 text-[9px] leading-none text-violet-200 hover:bg-violet-900/80 hover:text-white"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            },
           )}
-          {/* V1 — picture lane (reorder + edge-trim); shows only base clips (lane 0). */}
-          <div className="flex items-center gap-2">
-            <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">V1</span>
-            <div
-              ref={stripRef}
-              className="flex h-12 min-w-0 flex-1 gap-px overflow-hidden rounded-md"
-              onPointerMove={onEdgeMove}
-              onPointerUp={() => void onEdgeUp()}
-              onPointerCancel={() => void onEdgeUp()}
-            >
-              {baseClips.map((c, i) => (
-                <ClipThumb
-                  key={c.id}
-                  client={client}
-                  clip={c}
-                  index={i}
-                  total={total}
-                  selected={c.id === selected}
-                  assetDuration={c.id === selected ? assetDuration : null}
-                  dragOver={dragId !== null && dragOverId === c.id && dragId !== c.id}
-                  onSelect={() => {
-                    const next = c.id === selected ? null : c.id;
-                    setSelected(next);
-                    onSelect?.(next);
-                    onScrub?.(c.asset_id, c.src_in_frame);
-                  }}
-                  onDragStart={() => setDragId(c.id)}
-                  onDragEnter={() => setDragOverId(c.id)}
-                  onDragEnd={() => {
-                    setDragId(null);
-                    setDragOverId(null);
-                    setDragOverEnd(false);
-                  }}
-                  onDrop={() => void reorderTo(c.seq_in_frame)}
-                  onEdgeDown={(edge, e) => onEdgeDown(c, edge, e)}
-                />
-              ))}
-              {/* Drop-at-end affordance: a thin zone after the last clip. */}
-              <div
-                aria-label="Move clip to end"
-                title="Hierher ziehen = ans Ende"
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                  setDragOverEnd(true);
-                }}
-                onDragLeave={() => setDragOverEnd(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  void reorderTo(total);
-                }}
-                className={`h-full w-2 shrink-0 ${
-                  dragId !== null && dragOverEnd ? "bg-amber-300/80" : "bg-transparent"
-                }`}
-              />
-            </div>
-          </div>
           {/* A1 — audio lane. Each base clip's audio leading edge is drawn offset from its picture
               cut by `audio_offset_samples` (projected to frames); the handle drags a J/L split.
               The lane shares the V1 timebase (same `total`), so the geometry lines up under V1. */}

@@ -337,7 +337,8 @@ export interface Operation {
     | "split"
     | "trim"
     | "move"
-    | "set_audio_offset";
+    | "set_audio_offset"
+    | "place_clip";
   asset_id?: string;
   src_in_frame?: number;
   src_out_frame_exclusive?: number;
@@ -346,11 +347,15 @@ export interface Operation {
   seq_in_frame?: number;
   seq_out_frame_exclusive?: number;
   at_seq_frame?: number;
+  /** place_clip: destination lane; other ops: lane selector (default 0). */
   lane?: number;
+  /** place_clip: source lane identifying the clip to move (spec §1.3); fallback = lane. */
+  lane_src?: number;
   speed_num?: number;
   speed_den?: number;
   new_src_in_frame?: number;
   new_src_out_frame_exclusive?: number;
+  /** move / place_clip: target absolute sequence position (frames). */
   to_seq_frame?: number;
   /**
    * set_audio_offset: the clip-head L/J audio offset in FRAMES (the UI's native drag unit). The

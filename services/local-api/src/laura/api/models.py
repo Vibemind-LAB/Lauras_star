@@ -418,7 +418,7 @@ class ValidateOut(BaseModel):
 
 class OperationRequest(BaseModel):
     # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move|
-    # delete_words|set_audio_offset
+    # delete_words|set_audio_offset|place_clip
     op: str
     asset_id: str | None = None
     src_in_frame: int | None = None
@@ -428,12 +428,13 @@ class OperationRequest(BaseModel):
     seq_in_frame: int | None = None
     seq_out_frame_exclusive: int | None = None
     at_seq_frame: int | None = None
-    lane: int = 0
+    lane: int = 0  # place_clip: target (destination) lane; other ops: lane selector
+    lane_src: int | None = None  # place_clip: source lane identifying the clip to move (§1.3)
     speed_num: int | None = None
     speed_den: int | None = None
     new_src_in_frame: int | None = None          # trim: new source in point
     new_src_out_frame_exclusive: int | None = None  # trim: new source out point
-    to_seq_frame: int | None = None              # move: target sequence position
+    to_seq_frame: int | None = None              # move/place_clip: target sequence position
     # set_audio_offset: the LEADING-edge L/J audio offset of the clip at at_seq_frame, expressed in
     # FRAMES (the UI's native drag unit). The backend projects it onto canonical samples via the
     # project sequence rate (invariant #3), mirroring the accept endpoint; > 0 = L-cut (audio

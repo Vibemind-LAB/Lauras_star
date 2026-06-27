@@ -33,6 +33,7 @@ from ..editing.operations import (
     lift_range,
     move_clip,
     ordered,
+    place_clip,
     set_audio_offset,
     set_speed,
     split_clip,
@@ -941,6 +942,18 @@ def _apply(
         span = _delete_words_span(db, current, body)
         return delete_range(current, span[0], span[1])
 
+    if op == "place_clip":
+        at = _require(body.at_seq_frame, "at_seq_frame required")
+        to = _require(body.to_seq_frame, "to_seq_frame required")
+        # lane_src identifies the clip's current lane; lane is the destination lane.
+        lane_src = body.lane_src if body.lane_src is not None else body.lane
+        lane_dst = body.lane
+        try:
+            return place_clip(current, at_seq_frame=at, lane_src=lane_src,
+                              to_seq_frame=to, lane_dst=lane_dst)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 
 
@@ -978,6 +991,7 @@ def apply_operation(
         "lift": "Bereich entfernt",
         "set_speed": "Geschwindigkeit geändert",
         "set_audio_offset": "Audio-Offset geändert",
+        "place_clip": "Clip platziert",
     }.get(body.op, f"Op: {body.op}")
     with timeline_checkpoint(db, timeline_id, _op_label):
         new_clips = _apply(db, current, body, row)
