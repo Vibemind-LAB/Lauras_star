@@ -8,6 +8,7 @@ import {
   type Scene,
   type Timeline,
 } from "../api";
+import { queryWrapper } from "../test-utils";
 import { DEFAULT_CUT_BIAS } from "./BiasSlider";
 import { RoughCutView } from "./RoughCutView";
 
@@ -53,6 +54,7 @@ describe("RoughCutView", () => {
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={emptyRc}
         segments={[]} onRoughCutChange={onRoughCutChange}
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
+      { wrapper: queryWrapper() },
     );
     fireEvent.click(getByText("Szenen erzeugen"));
     await waitFor(() => expect(c.generateScenes).toHaveBeenCalledTimes(2));
@@ -69,6 +71,7 @@ describe("RoughCutView", () => {
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={emptyRc}
         segments={[]} onRoughCutChange={vi.fn().mockResolvedValue(undefined)}
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
+      { wrapper: queryWrapper() },
     );
     fireEvent.click(getByText("Szenen erzeugen"));
     await waitFor(() => expect(c.generateScenes).toHaveBeenCalledWith("tl", "a"));
@@ -85,6 +88,7 @@ describe("RoughCutView", () => {
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={rc}
         segments={[]} onRoughCutChange={vi.fn().mockResolvedValue(undefined)}
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
+      { wrapper: queryWrapper() },
     );
     fireEvent.click(getByText("Szenen erzeugen"));
     await waitFor(() => expect(c.generateScenes).toHaveBeenCalled());
@@ -97,6 +101,7 @@ describe("RoughCutView", () => {
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={emptyRc}
         segments={[]} onRoughCutChange={vi.fn().mockResolvedValue(undefined)}
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
+      { wrapper: queryWrapper() },
     );
     const slider = getByLabelText(/Schnitt-Bias/);
     fireEvent.change(slider, { target: { value: "0.8" } });
@@ -131,6 +136,7 @@ describe("RoughCutView", () => {
       <RoughCutView client={c} projectId="p" asset={asset} roughCut={emptyRc}
         segments={[]} onRoughCutChange={vi.fn().mockResolvedValue(undefined)}
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
+      { wrapper: queryWrapper() },
     );
     fireEvent.click(getByText("Szenen erzeugen"));
     await waitFor(() => expect(getByTestId("quality-panel")).toBeTruthy());
