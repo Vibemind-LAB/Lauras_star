@@ -24,6 +24,8 @@ const HANDLE_PX = 6; // width of an edge-trim handle
 const AUDIO_SNAP_PX = 10; // snap the audio handle to the picture cut (0) within this many pixels
 /** Minimum number of video lanes shown when at least one overlay clip exists. */
 const MIN_VIDEO_LANES = 2;
+/** Maximum number of video lanes the user can add (lanes 0..8 → 9 rows). */
+const MAX_VIDEO_LANES = 9;
 
 /** Which edge of the selected clip a pointer-drag is trimming. */
 type TrimEdge = "in" | "out";
@@ -377,6 +379,11 @@ export function TimelineBar({
   const [audioDrag, setAudioDrag] = useState<AudioDrag | null>(null);
   // Cross-lane drag: tracks the dragged clip and its current target lane/position.
   const [crossLaneDrag, setCrossLaneDrag] = useState<CrossLaneDrag | null>(null);
+  // User-requested number of video lane rows. Starts at 1 (clean single-track look for new
+  // timelines); the numVideoLanes formula below ensures at least MIN_VIDEO_LANES rows whenever
+  // overlay clips exist. The user can raise/lower this with the +/− Spur buttons; occupied lanes
+  // are always shown (numVideoLanes never falls below maxLane + 1).
+  const [requestedVideoLanes, setRequestedVideoLanes] = useState<number>(1);
   // The timeline's audio rate (single-asset rough cuts), to project the stored sample offset onto
   // frames for the A1 lane. Read from the first clip's asset; null leaves clips drawn as hard cuts.
   const [audioRate, setAudioRate] = useState<{
@@ -460,11 +467,15 @@ export function TimelineBar({
   // Base (lane 0) clips and all overlay clips (lane >= 1).
   const baseClips = tl.clips.filter((c) => (c.lane ?? 0) === 0);
   const overlayClips = tl.clips.filter((c) => (c.lane ?? 0) >= 1);
-  // Compute the highest occupied lane index; always show at least MIN_VIDEO_LANES rows when
-  // any overlay exists, so there is always a visible drop target for cross-lane drags.
+  // Compute the highest occupied lane index; we always render at least that many rows.
   const maxLane = tl.clips.reduce((m, c) => Math.max(m, c.lane ?? 0), 0);
-  // Number of video lane rows to render (data-driven).
-  const numVideoLanes = overlayClips.length > 0 ? Math.max(maxLane + 1, MIN_VIDEO_LANES) : 1;
+  // Number of video lane rows to render.
+  // - Occupied lanes always show: floor is maxLane + 1.
+  // - When overlay clips exist, enforce MIN_VIDEO_LANES so a spare empty drop target is visible.
+  // - The user can add/remove empty rows via the +/− Spur buttons (requestedVideoLanes).
+  // - Capped at MAX_VIDEO_LANES.
+  const effectiveMinLanes = overlayClips.length > 0 ? Math.max(requestedVideoLanes, MIN_VIDEO_LANES) : requestedVideoLanes;
+  const numVideoLanes = Math.min(Math.max(maxLane + 1, effectiveMinLanes), MAX_VIDEO_LANES);
   // Total sequence length spans ALL clips (base + overlay share the same timeline geometry).
   const total = [...tl.clips, ...audioClips].reduce(
     (m, c) => Math.max(m, c.seq_out_frame_exclusive),
@@ -870,6 +881,38 @@ export function TimelineBar({
               style={{ left: `calc(2rem + (100% - 2rem) * ${playheadFrac})` }}
             />
           )}
+          {/* Lane-count controls — let the user add/remove empty video lanes before any clip
+              occupies them, breaking the chicken-and-egg: empty lanes render as valid drop
+              targets for cross-lane drags (same onDragOver / onDrop wiring as occupied lanes). */}
+          <div className="flex items-center gap-1 self-end">
+            <button
+              type="button"
+              aria-label="Videospur entfernen"
+              title="Videospur entfernen"
+              onClick={() =>
+                setRequestedVideoLanes((n) => Math.max(n - 1, maxLane + 1, 1))
+              }
+              disabled={numVideoLanes <= Math.max(maxLane + 1, 1)}
+              className="rounded bg-surface-0 px-1.5 py-0.5 text-[10px] text-content-muted hover:bg-surface-2 disabled:opacity-30"
+            >
+              −
+            </button>
+            <span className="text-[10px] text-content-faint" aria-hidden="true">
+              {numVideoLanes}V
+            </span>
+            <button
+              type="button"
+              aria-label="Videospur hinzufügen"
+              title="Videospur hinzufügen"
+              onClick={() =>
+                setRequestedVideoLanes((n) => Math.min(n + 1, MAX_VIDEO_LANES))
+              }
+              disabled={numVideoLanes >= MAX_VIDEO_LANES}
+              className="rounded bg-surface-0 px-1.5 py-0.5 text-[10px] text-content-muted hover:bg-surface-2 disabled:opacity-30"
+            >
+              +
+            </button>
+          </div>
           {/* N-lane data-driven video render — lanes rendered highest first (so V1 is at bottom).
               Lane 0 (V1) supports contiguous reorder (move op) and edge-trim.
               Lanes ≥ 1 are free-placed overlays; dragging a clip between any two lanes issues
@@ -882,8 +925,9 @@ export function TimelineBar({
               const laneClips = tl.clips.filter((c) => (c.lane ?? 0) === lane);
               const isTargetLane = crossLaneDrag !== null && crossLaneDrag.targetLane === lane;
               return (
-                <div key={lane} className="flex items-center gap-2">
+                <div key={lane} aria-label={laneLabel} className="flex items-center gap-2">
                   <span
+                    aria-hidden="true"
                     className={`w-6 shrink-0 text-[9px] font-medium uppercase ${
                       isBaseLane ? "text-content-faint" : "text-violet-400"
                     }`}
@@ -894,6 +938,7 @@ export function TimelineBar({
                     /* V1 — contiguous reorder, edge-trim, pointer-capture for trim drags. */
                     <div
                       ref={stripRef}
+                      aria-label={`Video-Spur ${laneLabel}`}
                       className={`flex h-12 min-w-0 flex-1 gap-px overflow-hidden rounded-md ${
                         isTargetLane ? "ring-2 ring-amber-400/60" : ""
                       }`}
