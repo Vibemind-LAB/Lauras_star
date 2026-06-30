@@ -56,6 +56,7 @@ from ..interchange.validate import validate_export
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from ..scenes.reconcile import reconcile_after_delete
+from ..sequences.flatten import SceneWindow, flatten_sequence, sequence_scene_windows
 from ..timebase.sampling import frame_to_sample
 from .models import (
     ApplyFixOut,
@@ -957,6 +958,148 @@ def _apply(
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown op: {op}")
 
 
+# ---------------------------------------------------------------------------
+# Lane-0 sequence-edit routing (AssembleView "Zusammenfügen")
+# ---------------------------------------------------------------------------
+#
+# The AssembleView timeline renders the FLATTENED sequence (``flatten_sequence``): its lane-0 base
+# clips live in each scene's own ``scene_timeline_id`` (re-offset by cumulative scene length) and
+# are NOT present on the sequence timeline's ``timeline_clips`` (which carries only lane-≥1
+# overlays). A lane-0 drag (move / trim / split / set_speed / set_audio_offset) therefore posts an
+# ``at_seq_frame`` taken from a flattened scene clip — but ``apply_operation`` against the sequence
+# timeline sees zero lane-0 clips and raises ``no clip starts at seq frame N`` (422). These helpers
+# route such an op back to the underlying scene timeline, translating the frames to scene-local
+# space, then return the updated flattened sequence so the AssembleView re-fetch reflects it.
+# Lane-≥1 overlays continue to apply to the sequence timeline unchanged.
+
+# Single-clip lane-0 ops identified by an exact ``at_seq_frame`` clip start. ``place_clip`` is
+# deliberately excluded: it is the free-placement / cross-lane-overlay op and stays on the sequence
+# timeline. Range ops (delete / lift / delete_words) are excluded too — they don't match on a clip
+# start (so they don't raise the 422) and a lane-0 ripple-delete across the flattened scene boundary
+# is a separate concern, not part of this fix.
+_LANE0_SCENE_ROUTABLE_OPS: frozenset[str] = frozenset(
+    {"trim", "split", "set_speed", "move", "set_audio_offset"}
+)
+
+
+def _route_lane0_seq_op_to_scene(
+    db: Database,
+    seq_row: dict[str, Any],
+    body: OperationRequest,
+) -> SceneWindow | None:
+    """Decide whether a lane-0 op on a sequence timeline must be routed to a scene timeline.
+
+    Returns the target :class:`SceneWindow` when the op is a routable lane-0 single-clip op whose
+    ``at_seq_frame`` falls inside a flattened scene window AND is not present as a lane-0 clip on
+    the sequence timeline itself; otherwise ``None`` (the op stays on the sequence-timeline path).
+    """
+    if seq_row["kind"] != "sequence":
+        return None
+    if body.op not in _LANE0_SCENE_ROUTABLE_OPS:
+        return None
+    # These ops select lane 0 only; a non-zero ``lane`` is a lane-≥1 overlay edit on the sequence
+    # timeline (today's path), never a scene clip.
+    if body.lane != 0:
+        return None
+    at = body.at_seq_frame
+    if at is None:
+        return None
+    # If a lane-0 clip with this start actually lives on the sequence timeline, edit it in place
+    # (don't reroute) — keeps any future lane-0 sequence-local clip working as before.
+    seq_clips = repos.list_timeline_clips(db, seq_row["id"])
+    if any(c.get("lane", 0) == 0 and c["seq_in_frame"] == at for c in seq_clips):
+        return None
+    window = next(
+        (w for w in sequence_scene_windows(db, seq_row["id"]) if w.contains(at)), None
+    )
+    return window
+
+
+def _scene_local_body(
+    body: OperationRequest, window: SceneWindow
+) -> OperationRequest:
+    """Translate a routable op's sequence frames to scene-local frames for ``window``.
+
+    Only frame fields keyed to the flattened SEQUENCE position are shifted (``at_seq_frame`` and,
+    for ``move``, ``to_seq_frame``); source frames are absolute to the asset and never touched. A
+    ``move`` whose translated ``to_seq_frame`` would leave this scene is rejected (cross-scene move
+    is a scene-reorder concern, not a clip move) with a specific 422 the frontend can surface.
+    """
+    off = window.offset
+    at = body.at_seq_frame
+    assert at is not None  # guaranteed by _route_lane0_seq_op_to_scene
+    fields: dict[str, Any] = {"at_seq_frame": at - off}
+    if body.op == "move":
+        to = _require(body.to_seq_frame, "to_seq_frame required")
+        # ``to`` may legitimately equal the scene end (append after the scene's last clip), so the
+        # within-scene window is end-INCLUSIVE here: [offset, offset + length].
+        if not (off <= to <= window.seq_out_frame_exclusive):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "cross-scene move is not supported on the assembled sequence: drop the clip within "
+                "its own scene, or reorder scenes in the storyboard "
+                f"(scene window [{window.seq_in_frame}, {window.seq_out_frame_exclusive}), "
+                f"target {to}).",
+            )
+        fields["to_seq_frame"] = to - off
+    return body.model_copy(update=fields)
+
+
+def _apply_lane0_scene_op(
+    db: Database,
+    seq_row: dict[str, Any],
+    window: SceneWindow,
+    body: OperationRequest,
+) -> TimelineOut:
+    """Apply a routed lane-0 op to its underlying scene timeline and return the sequence flattened.
+
+    The scene timeline goes through the SAME snapshot + OTIO-rebuild path as a direct edit (so its
+    own undo/redo and OTIO cache stay correct). The response is the freshly flattened sequence
+    shaped as a :class:`TimelineOut` on the sequence timeline id — what the AssembleView re-fetch
+    expects.
+    """
+    scene_tl_id = window.scene_timeline_id
+    scene_row = repos.get_timeline(db, scene_tl_id)
+    if scene_row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scene timeline not found")
+    local_body = _scene_local_body(body, window)
+    scene_clips = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, scene_tl_id)]
+    with timeline_checkpoint(db, scene_tl_id, _op_label_for(body.op)):
+        new_clips = _apply(db, scene_clips, local_body, scene_row)
+        repos.replace_timeline_clips(
+            db, scene_tl_id, [c.to_row() for c in ordered(new_clips)]
+        )
+        fresh_scene = repos.get_timeline(db, scene_tl_id)
+        assert fresh_scene is not None
+        repos.update_timeline_otio(db, scene_tl_id, serialize_timeline_otio(db, fresh_scene))
+    return TimelineOut(
+        id=seq_row["id"],
+        project_id=seq_row["project_id"],
+        name=seq_row["name"],
+        kind=seq_row["kind"],
+        created_at=seq_row["created_at"],
+        clips=[ClipOut(**c) for c in flatten_sequence(db, seq_row["id"])],
+    )
+
+
+_OP_LABELS: dict[str, str] = {
+    "delete_words": "Wörter gelöscht",
+    "delete": "Bereich gelöscht",
+    "append": "Clip hinzugefügt",
+    "insert": "Clip eingefügt",
+    "trim": "Clip getrimmt",
+    "move": "Clip verschoben",
+    "lift": "Bereich entfernt",
+    "set_speed": "Geschwindigkeit geändert",
+    "set_audio_offset": "Audio-Offset geändert",
+    "place_clip": "Clip platziert",
+}
+
+
+def _op_label_for(op: str) -> str:
+    return _OP_LABELS.get(op, f"Op: {op}")
+
+
 @router.post("/timelines/{timeline_id}/operations", response_model=None)
 def apply_operation(
     timeline_id: str, body: OperationRequest, request: Request
@@ -965,6 +1108,14 @@ def apply_operation(
     row = repos.get_timeline(db, timeline_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+
+    # AssembleView lane-0 routing: a lane-0 base-clip edit posted against a kind="sequence"
+    # timeline targets a FLATTENED scene clip that lives in the scene's own timeline, not here.
+    # Route it to the underlying scene timeline and return the re-flattened sequence. Lane-≥1
+    # overlays fall through to the normal sequence-timeline path below.
+    scene_window = _route_lane0_seq_op_to_scene(db, row, body)
+    if scene_window is not None:
+        return _apply_lane0_scene_op(db, row, scene_window, body)
 
     current = [EditClip.from_row(c) for c in repos.list_timeline_clips(db, timeline_id)]
 
@@ -981,19 +1132,7 @@ def apply_operation(
         if seq_in is not None and seq_out is not None:
             _audio_ripple_span = (seq_in, seq_out)
 
-    _op_label = {
-        "delete_words": "Wörter gelöscht",
-        "delete": "Bereich gelöscht",
-        "append": "Clip hinzugefügt",
-        "insert": "Clip eingefügt",
-        "trim": "Clip getrimmt",
-        "move": "Clip verschoben",
-        "lift": "Bereich entfernt",
-        "set_speed": "Geschwindigkeit geändert",
-        "set_audio_offset": "Audio-Offset geändert",
-        "place_clip": "Clip platziert",
-    }.get(body.op, f"Op: {body.op}")
-    with timeline_checkpoint(db, timeline_id, _op_label):
+    with timeline_checkpoint(db, timeline_id, _op_label_for(body.op)):
         new_clips = _apply(db, current, body, row)
 
         repos.replace_timeline_clips(db, timeline_id, [c.to_row() for c in ordered(new_clips)])
