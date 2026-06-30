@@ -77,7 +77,9 @@ def test_detect_shots_via_sidecar(scenes_worker: tuple[str, type[Any]], video: P
     assert out[0].method == "transnetv2"
 
 
-def test_seam_uses_sidecar_when_healthy(scenes_worker: tuple[str, type[Any]], video: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_seam_uses_sidecar_when_healthy(
+    scenes_worker: tuple[str, type[Any]], video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, handler = scenes_worker
     handler.scenes_body = {"shots": [{"src_in_frame": 0, "src_out_frame_exclusive": 12}]}
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
@@ -85,7 +87,9 @@ def test_seam_uses_sidecar_when_healthy(scenes_worker: tuple[str, type[Any]], vi
     assert [(s.src_in_frame, s.src_out_frame_exclusive) for s in out] == [(0, 12)]
 
 
-def test_seam_sidecar_error_falls_back_in_process(scenes_worker: tuple[str, type[Any]], video: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_seam_sidecar_error_falls_back_in_process(
+    scenes_worker: tuple[str, type[Any]], video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, handler = scenes_worker
     handler.scenes_status = 500  # /healthz still ok → sidecar chosen, then /scenes fails
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)

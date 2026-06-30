@@ -88,7 +88,9 @@ _SEGMENTS = {
 }
 
 
-def test_sidecar_success(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sidecar_success(
+    stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, handler = stub_worker
     handler.transcribe_body = _SEGMENTS
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
@@ -102,13 +104,17 @@ def test_sidecar_success(stub_worker: tuple[str, type[Any]], wav: Path, monkeypa
     assert seg.words[0].confidence == 0.9
 
 
-def test_asr_available_true_when_healthy(stub_worker: tuple[str, type[Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_asr_available_true_when_healthy(
+    stub_worker: tuple[str, type[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, _ = stub_worker
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
     assert sidecar.asr_available() is True
 
 
-def test_unhealthy_sidecar_falls_back_to_local(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unhealthy_sidecar_falls_back_to_local(
+    stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, handler = stub_worker
     handler.healthz_ok = False
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
@@ -118,7 +124,9 @@ def test_unhealthy_sidecar_falls_back_to_local(stub_worker: tuple[str, type[Any]
     assert sidecar.transcribe(wav, model_size="base", language=None) is sentinel
 
 
-def test_sidecar_error_falls_back_when_local_available(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sidecar_error_falls_back_when_local_available(
+    stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, handler = stub_worker
     handler.transcribe_status = 500
     handler.transcribe_body = {"error": "boom"}
@@ -129,7 +137,9 @@ def test_sidecar_error_falls_back_when_local_available(stub_worker: tuple[str, t
     assert sidecar.transcribe(wav, model_size="base", language=None) is sentinel
 
 
-def test_sidecar_error_raises_when_no_local(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sidecar_error_raises_when_no_local(
+    stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url, handler = stub_worker
     handler.transcribe_status = 500
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
