@@ -6,6 +6,8 @@ handler-level guard that prevents dropping 100 % of shots as "black".
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from laura.analysis.quality import BLACK_LUMA, BLACK_MAX, ShotMetrics, decide_keep
@@ -86,7 +88,7 @@ def test_mixed_frames_partial_black_ratio() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_row(*, keep: bool, drop_reason: str | None, br: float = 0.9) -> dict:
+def _make_row(*, keep: bool, drop_reason: str | None, br: float = 0.9) -> dict[str, Any]:
     """Minimal shot row for guard testing."""
     return {
         "keep": keep,
@@ -151,7 +153,7 @@ def test_guard_does_not_activate_for_other_drop_reason() -> None:
 
 def test_guard_does_not_activate_for_empty_rows() -> None:
     """Guard edge case: empty shot list must not raise."""
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     activated = False
     if rows and all(not r.get("keep") and r.get("drop_reason") == "black" for r in rows):
         activated = True

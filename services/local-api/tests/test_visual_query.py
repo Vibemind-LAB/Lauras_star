@@ -93,9 +93,9 @@ def _project_asset_run(db: SqliteDatabase) -> tuple[dict[str, Any], dict[str, An
     )
     repos.start_analysis_run(db, run["id"])
     repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
-    asset = repos.get_asset(db, asset["id"])  # refreshed with rate
-    assert asset is not None
-    return project, asset, run["id"]
+    fresh = repos.get_asset(db, asset["id"])  # refreshed with rate
+    assert fresh is not None
+    return project, fresh, run["id"]
 
 
 def _store_embeddings(

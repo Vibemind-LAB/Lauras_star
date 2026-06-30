@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import threading
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -42,7 +43,7 @@ class _EmbedHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def embed_worker():
+def embed_worker() -> Iterator[tuple[str, type[Any]]]:
     handler = type("H", (_EmbedHandler,), {})
     server = HTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -54,7 +55,7 @@ def embed_worker():
         thread.join(timeout=2)
 
 
-def test_embed_frames_roundtrip(embed_worker):
+def test_embed_frames_roundtrip(embed_worker: tuple[str, type[Any]]) -> None:
     url, handler = embed_worker
     handler.vectors = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
     emb = SidecarImageEmbedder(url, dims=3)
@@ -66,7 +67,7 @@ def test_embed_frames_roundtrip(embed_worker):
     assert emb.dims == 3  # learned from the response
 
 
-def test_embed_empty_frames_makes_no_request(embed_worker):
+def test_embed_empty_frames_makes_no_request(embed_worker: tuple[str, type[Any]]) -> None:
     url, _ = embed_worker
     emb = SidecarImageEmbedder(url, dims=7)
     out = emb.embed_frames([])  # short-circuits before any HTTP
@@ -74,7 +75,7 @@ def test_embed_empty_frames_makes_no_request(embed_worker):
     assert out.dtype == np.float32
 
 
-def test_satisfies_embedder_protocol(embed_worker):
+def test_satisfies_embedder_protocol(embed_worker: tuple[str, type[Any]]) -> None:
     url, _ = embed_worker
     emb = SidecarImageEmbedder(url)
     assert isinstance(emb, Embedder)  # name + dims + embed_frames present (runtime_checkable)

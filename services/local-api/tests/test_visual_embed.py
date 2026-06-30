@@ -157,7 +157,7 @@ def _seed(db: SqliteDatabase, *, succeeded: bool = True, duration_frames: int = 
     )
     if succeeded:
         repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
-    return asset["id"]
+    return str(asset["id"])
 
 
 # ---------------------------------------------------------------------------

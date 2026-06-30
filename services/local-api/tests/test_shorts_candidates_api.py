@@ -59,7 +59,7 @@ def _seed_asset(db: SqliteDatabase, *, succeeded: bool) -> str:
     )
     repos.start_analysis_run(db, run["id"])
     if not succeeded:
-        return asset["id"]
+        return str(asset["id"])
 
     spk = repos.insert_speaker(db, asset_id=asset["id"], run_id=run["id"], label="A")
     words: list[dict[str, Any]] = []
@@ -95,7 +95,7 @@ def _seed_asset(db: SqliteDatabase, *, succeeded: bool) -> str:
         words=words,
     )
     repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
-    return asset["id"]
+    return str(asset["id"])
 
 
 def test_extract_then_list(tmp_path: Path) -> None:

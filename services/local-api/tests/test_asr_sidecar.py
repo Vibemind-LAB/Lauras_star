@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from laura.analysis import asr, sidecar
+import laura.analysis.asr as asr
+import laura.analysis.sidecar as sidecar
 from laura.analysis.types import SegmentResult
 
 
@@ -51,7 +53,7 @@ class _StubHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def stub_worker():
+def stub_worker() -> Iterator[tuple[str, type[Any]]]:
     handler = type("H", (_StubHandler,), {})  # fresh subclass so config never leaks across tests
     server = HTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -86,7 +88,7 @@ _SEGMENTS = {
 }
 
 
-def test_sidecar_success(stub_worker, wav, monkeypatch):
+def test_sidecar_success(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     url, handler = stub_worker
     handler.transcribe_body = _SEGMENTS
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
@@ -100,13 +102,13 @@ def test_sidecar_success(stub_worker, wav, monkeypatch):
     assert seg.words[0].confidence == 0.9
 
 
-def test_asr_available_true_when_healthy(stub_worker, monkeypatch):
+def test_asr_available_true_when_healthy(stub_worker: tuple[str, type[Any]], monkeypatch: pytest.MonkeyPatch) -> None:
     url, _ = stub_worker
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
     assert sidecar.asr_available() is True
 
 
-def test_unhealthy_sidecar_falls_back_to_local(stub_worker, wav, monkeypatch):
+def test_unhealthy_sidecar_falls_back_to_local(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     url, handler = stub_worker
     handler.healthz_ok = False
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
@@ -116,7 +118,7 @@ def test_unhealthy_sidecar_falls_back_to_local(stub_worker, wav, monkeypatch):
     assert sidecar.transcribe(wav, model_size="base", language=None) is sentinel
 
 
-def test_sidecar_error_falls_back_when_local_available(stub_worker, wav, monkeypatch):
+def test_sidecar_error_falls_back_when_local_available(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     url, handler = stub_worker
     handler.transcribe_status = 500
     handler.transcribe_body = {"error": "boom"}
@@ -127,7 +129,7 @@ def test_sidecar_error_falls_back_when_local_available(stub_worker, wav, monkeyp
     assert sidecar.transcribe(wav, model_size="base", language=None) is sentinel
 
 
-def test_sidecar_error_raises_when_no_local(stub_worker, wav, monkeypatch):
+def test_sidecar_error_raises_when_no_local(stub_worker: tuple[str, type[Any]], wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     url, handler = stub_worker
     handler.transcribe_status = 500
     monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
@@ -136,7 +138,7 @@ def test_sidecar_error_raises_when_no_local(stub_worker, wav, monkeypatch):
         sidecar.transcribe(wav, model_size="base", language=None)
 
 
-def test_no_sidecar_uses_local(wav, monkeypatch):
+def test_no_sidecar_uses_local(wav: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LAURA_ANALYSIS_URL", raising=False)
     sentinel = [SegmentResult(text="local", start_sec=0.0, end_sec=1.0)]
     monkeypatch.setattr(asr, "faster_whisper_available", lambda: True)
@@ -144,7 +146,7 @@ def test_no_sidecar_uses_local(wav, monkeypatch):
     assert sidecar.transcribe(wav, model_size="base", language=None) is sentinel
 
 
-def test_asr_available_false_without_sidecar_or_local(monkeypatch):
+def test_asr_available_false_without_sidecar_or_local(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LAURA_ANALYSIS_URL", raising=False)
     monkeypatch.setattr(asr, "faster_whisper_available", lambda: False)
     assert sidecar.asr_available() is False

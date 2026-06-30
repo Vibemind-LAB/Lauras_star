@@ -178,7 +178,7 @@ def test_issue_order_is_deterministic() -> None:
 def test_issue_order_includes_non_integer_last() -> None:
     """'non_integer_boundary' appears LAST in the canonical issue order."""
     # Negative frame + on_black to get multiple issues.
-    start = dataclasses.replace(  # type: ignore[arg-type]
+    start = dataclasses.replace(
         _bm(100, on_black=True, on_freeze=False, severs_word=False), frame=-5
     )
     result = qa_gate(start, _clean_end(), _clean_editorial())
