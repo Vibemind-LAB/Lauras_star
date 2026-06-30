@@ -37,7 +37,7 @@ from laura.db.database import SqliteDatabase
 from laura.main import create_app
 from laura.timebase.sampling import frame_to_sample
 
-# Audio constants for the set_audio_offset (L/J) routing test: 48 kHz / 30 fps == 1600 samples/frame.
+# Audio constants for the set_audio_offset (L/J) routing test: 48 kHz / 30 fps == 1600 spf.
 _SAMPLE_RATE = 48_000
 _RATE_NUM, _RATE_DEN = 30, 1
 _SPF = frame_to_sample(1, _SAMPLE_RATE, _RATE_NUM, _RATE_DEN)  # 1600 samples per frame
@@ -270,7 +270,8 @@ def test_assemble_move_within_scene_succeeds(tmp_path: Path) -> None:
     """A within-scene move (a scene with TWO lane-0 clips) re-packs that scene's lane and succeeds.
 
     Scene 1 = [A(10f), B(20f)] flattened at [0,10)+[10,30); scene 2 = one 30f clip at [30,60).
-    Dragging B (flattened seq_in 10) to the front of its own scene (to 0) reorders within scene 1."""
+    Dragging B (flattened seq_in 10) to the front of its own scene (to 0) reorders within scene 1.
+    """
     client, _db, seq_id, flattened = _assemble_sequence(
         tmp_path, scene_clips=[[(100, 110), (200, 220)], [(300, 330)]]
     )
