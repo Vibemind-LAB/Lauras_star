@@ -86,7 +86,7 @@ def test_no_face_skips_lipsync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     from laura.ai.lipsync_backend import LipsyncProbe, StubLipsyncBackend
 
     class _NoFaceBackend(StubLipsyncBackend):
-        def probe(self, *, video_path: Path, audio_path: Path) -> LipsyncProbe:  # type: ignore[override]
+        def probe(self, *, video_path: Path, audio_path: Path) -> LipsyncProbe:
             return LipsyncProbe(face_detected=False, mouth_visible=False, audio_present=True,
                                 reason="no face in clip")
 

@@ -1,7 +1,8 @@
 from laura.db import repos
+from laura.db.database import Database
 
 
-def test_push_sets_undo_and_clears_redo(seeded_rough_cut):
+def test_push_sets_undo_and_clears_redo(seeded_rough_cut: tuple[Database, str, str]) -> None:
     db, tl, _ = seeded_rough_cut
     repos.push_undo_checkpoint(db, tl, "Edit A")
     st = repos.get_history_state(db, tl)
@@ -10,7 +11,7 @@ def test_push_sets_undo_and_clears_redo(seeded_rough_cut):
     assert st["can_redo"] is False
 
 
-def test_depth_cap_keeps_newest_50(seeded_rough_cut):
+def test_depth_cap_keeps_newest_50(seeded_rough_cut: tuple[Database, str, str]) -> None:
     db, tl, _ = seeded_rough_cut
     for i in range(55):
         repos.push_undo_checkpoint(db, tl, f"Edit {i}")

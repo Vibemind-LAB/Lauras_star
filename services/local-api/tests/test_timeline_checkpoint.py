@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 
 from laura.db import repos
+from laura.db.database import Database
 from laura.editing.history import timeline_checkpoint
 
 
-def test_checkpoint_pushes_pre_edit_snapshot(seeded_rough_cut):
+def test_checkpoint_pushes_pre_edit_snapshot(
+    seeded_rough_cut: tuple[Database, str, str],
+) -> None:
     db, tl, _ = seeded_rough_cut
     before = repos.capture_timeline_snapshot(db, tl)
     with timeline_checkpoint(db, tl, "Wörter gelöscht"):

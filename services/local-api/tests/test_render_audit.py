@@ -25,11 +25,8 @@ _FFMPEG_BIN = os.environ.get("LAURA_FFMPEG", "ffmpeg")
 _ffmpeg_available = shutil.which(_FFMPEG_BIN) is not None
 
 
-def _seed_render_scene(tmp_path: Path) -> tuple[Database, str, str]:
-    """Create a project + timeline + real video clip ready for export.
-
-    Returns (db, export_id, export_id) — the same export_id twice for clarity.
-    """
+def _seed_render_scene(tmp_path: Path) -> tuple[Database, str]:
+    """Create a project + timeline + real video clip ready for export."""
     media = tmp_path / "clip.mp4"
     run_ffmpeg([
         "-f", "lavfi",
@@ -80,7 +77,7 @@ def _seed_render_scene(tmp_path: Path) -> tuple[Database, str, str]:
         format="mp4",
         options={},
     )
-    return db, export["id"]
+    return db, str(export["id"])
 
 
 def _ctx(db: Database, kind: str, payload: dict[str, Any]) -> JobContext:

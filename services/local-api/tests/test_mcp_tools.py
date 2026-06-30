@@ -531,7 +531,7 @@ def _seed_short_candidates(
     db: SqliteDatabase, asset: dict[str, Any], project: dict[str, Any], count: int = 2
 ) -> None:
     """Persist *count* fake short candidates for the asset."""
-    candidates = [
+    candidates: list[dict[str, Any]] = [
         {
             "start_frame": i * 100,
             "end_frame_exclusive": i * 100 + 90,
@@ -881,7 +881,7 @@ def _seed_embeddings_and_candidates(
         ],
     )
 
-    candidates = [
+    candidates: list[dict[str, Any]] = [
         {
             "start_frame": s,
             "end_frame_exclusive": s + 100,

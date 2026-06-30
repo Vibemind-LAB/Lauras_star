@@ -6,17 +6,21 @@ Fix 4 — calling cut_at_frame with a frame that's already a scene boundary retu
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
 from laura.config import Settings
 from laura.db import repos
+from laura.db.database import SqliteDatabase
 from laura.main import create_app
 
 _TOKEN = "test-token"
 
 
-def _setup(tmp_path: Path) -> tuple[TestClient, object, object, object]:
+def _setup(
+    tmp_path: Path,
+) -> tuple[TestClient, SqliteDatabase, dict[str, Any], dict[str, Any]]:
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False, token=_TOKEN)
     app = create_app(settings)
     client = TestClient(app)

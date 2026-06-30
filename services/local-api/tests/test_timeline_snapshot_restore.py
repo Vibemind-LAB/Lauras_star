@@ -1,7 +1,8 @@
 from laura.db import repos
+from laura.db.database import Database
 
 
-def _set_nondefault_clip_columns(db, timeline_id):
+def _set_nondefault_clip_columns(db: Database, timeline_id: str) -> None:
     """Force non-default role/transition/linked columns so a column-DROPPING restore would fail."""
     clip = repos.list_timeline_clips(db, timeline_id)[0]
     with db.transaction() as conn:
@@ -12,7 +13,9 @@ def _set_nondefault_clip_columns(db, timeline_id):
         )
 
 
-def test_restore_roundtrip_is_byte_identical_including_extra_columns(seeded_rough_cut):
+def test_restore_roundtrip_is_byte_identical_including_extra_columns(
+    seeded_rough_cut: tuple[Database, str, str],
+) -> None:
     db, tl, _asset = seeded_rough_cut
     _set_nondefault_clip_columns(db, tl)
     before = repos.capture_timeline_snapshot(db, tl)
@@ -27,7 +30,7 @@ def test_restore_roundtrip_is_byte_identical_including_extra_columns(seeded_roug
     assert after == before  # full-column incl role/transition/linked_audio_group/music
 
 
-def test_restore_is_atomic_on_bad_row(seeded_rough_cut):
+def test_restore_is_atomic_on_bad_row(seeded_rough_cut: tuple[Database, str, str]) -> None:
     db, tl, _asset = seeded_rough_cut
     good = repos.capture_timeline_snapshot(db, tl)
     bad = {**good, "audio_clips": [{"id": "x", "nonexistent_col": 1}]}  # INSERT will fail

@@ -90,7 +90,7 @@ def test_lipsync_probe_restricted_to_span_asset(
     from laura.ai.lipsync_backend import LipsyncProbe, StubLipsyncBackend
 
     class _FaceBackend(StubLipsyncBackend):
-        def probe(self, *, video_path: Path, audio_path: Path) -> LipsyncProbe:  # type: ignore[override]
+        def probe(self, *, video_path: Path, audio_path: Path) -> LipsyncProbe:
             return LipsyncProbe(
                 face_detected=True, mouth_visible=True, audio_present=True, reason="ok"
             )

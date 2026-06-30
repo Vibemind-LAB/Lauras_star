@@ -66,7 +66,9 @@ def test_sequence_self_heals_stale_scene_refs_after_regeneration(tmp_path: Path)
     """Regenerating scenes gives new ids; the sequence must drop stale refs, not 422 / show '?'."""
     client, db = _app(tmp_path)
     pid, scene_ids = _seed_two_scenes(db)
-    rc_id = repos.get_scene(db, scene_ids[0])["source_timeline_id"]
+    _scene = repos.get_scene(db, scene_ids[0])
+    assert _scene is not None
+    rc_id = _scene["source_timeline_id"]
     seq_id = client.get(f"/projects/{pid}/sequence", headers=_H).json()["timeline_id"]
     assert (
         client.put(
