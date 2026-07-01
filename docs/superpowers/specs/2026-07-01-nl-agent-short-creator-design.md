@@ -76,6 +76,28 @@ Bewusste User-Entscheidung: **zuerst Magentic-One**, GraphFlow nur wenn Magentic
   Agenten + Tools** (Magentic-One ist „simply an AgentChat team"), also kostet der Fallback nur den
   Team-Zusammenbau, nicht neue Agenten.
 
+### Eskalations-Leiter: erst gratis-lokal, dann 9router
+
+Zwei Fallback-Achsen (Orchestrierung + Provider) komponiert zu **einer Kosten-Leiter** — erst alles
+Gratis-Lokale ausreizen, dann eskalieren:
+
+- **Stufe A (gratis, lokal, Provider `ollama`):** Magentic-One → bei hartem Fehlschlag GraphFlow.
+  Beides auf dem lokalen Modell → Ergebnis für 0 €.
+- **Stufe B (Eskalation, Provider `9router`):** greift, wenn Stufe A **„zu schlecht"** ist. Retry
+  der Pipeline einmal mit 9router — Magentic-One bekommt endlich das starke Modell, das es braucht.
+
+**„Zu schlecht" — wer entscheidet den A→B-Sprung:**
+- **Harter Fehlschlag → automatisch** eskalieren: Magentic-One **und** GraphFlow scheitern/terminieren
+  nicht auf Ollama. Stufe A konnte gar nichts liefern → kein Kosten-Abwägen nötig.
+- **Weiche Qualität → per Default manuell:** Pipeline läuft durch, aber das QA-Gate verwirft das
+  Ergebnis nach N Runden. Dann wird der schwache Stand + QA-Score angezeigt, der Mensch entscheidet
+  „auf 9router neu". Grund: 9router kann **Geld kosten / ein Abo mit ToS-Fragen** nutzen — **kein
+  automatisches Geldausgeben ohne Zustimmung.** Opt-in `LAURA_AGENT_AUTO_ESCALATE=1` macht auch die
+  weiche Eskalation automatisch.
+
+`orchestrator.py` kapselt beide Achsen: `run(topic, source) → Stufe A (ollama) → bei „zu schlecht"
+Stufe B (9router)`.
+
 ### Agenten-Besetzung + bestätigter Graph
 
 Jeder Agent = `AssistantAgent(name, model_client=<provider>, workbench=<Laura-MCP>)`. Die
@@ -199,7 +221,7 @@ pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4
 4. `agents.py`: die 5 Agenten + QA (gemockte Clients).
 5. `magentic.py`: `MagenticOneGroupChat` zusammenbauen (primär).
 6. `graph.py`: `GraphFlow` (Fallback) + Struktur-Tests.
-7. `orchestrator.py`: Fallback-Logik + Tests.
+7. `orchestrator.py`: Eskalations-Leiter (Magentic→GraphFlow auf Ollama; A→B auf 9router) + Tests.
 8. `handlers.py` + `api/short_creator.py`: Job + Endpoint + optional-extra-Guard.
 9. End-to-end (echter lokaler Lauf gegen ein reales Sprechvideo) + Doku + Review.
 
@@ -212,5 +234,8 @@ Jede Runde: klein, getestet, dann **deine Validierung** bevor die nächste start
 - **Ziel-Länge / Format**: fix 60s 9:16, oder Parameter (`target_seconds`, Ratio)?
 - **Input-Fokus v1**: zuerst „aus analysiertem Asset" (Scout sucht) — Rough-/Fine-Cut-Quelle als
   Runde später, oder beide gleich?
-- **9router-Modelle**: welches Orchestrator-Modell (z.B. `cc/claude-sonnet-4-5`) als Default, wenn
-  Provider `9router`?
+- **Weiche Eskalation**: bei zu schwacher Qualität per Default **manuell** (Mensch flippt auf
+  9router) oder gleich **automatisch** (`LAURA_AGENT_AUTO_ESCALATE=1`)? Harte Fehlschläge eskalieren
+  immer auto.
+- **9router-Modell** für Stufe B: `cc/claude-sonnet-4-5` (Abo-Reuse, ~0 Grenzkosten) als Default,
+  sonst GLM (billig) — was ist dir lieber?
