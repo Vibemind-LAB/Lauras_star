@@ -117,6 +117,15 @@ export function FineCutView({
       .catch(() => undefined);
   }, [client, roughCutId, pendingEdge, reloadRc]);
 
+  // Batch smooth: auto-apply the transition heuristic to every boundary, then reload.
+  const handleAutoTransitions = useCallback(() => {
+    if (!roughCutId) return;
+    void client
+      .autoTransitions(roughCutId)
+      .then(() => reloadRc())
+      .catch(() => undefined);
+  }, [client, roughCutId, reloadRc]);
+
   // Load audio clips from the rough-cut timeline so VO + music play in preview.
   // Cached under qk.audioClips(roughCutId) — invalidated by every clip/edit op that can
   // change the A-track (deleteRange, cutAt, replaceSpanText→VO) and explicitly after VO
@@ -288,6 +297,7 @@ export function FineCutView({
           onVoiceChange={setVoiceId}
           pendingEdge={pendingEdge}
           onSmooth={handleSmooth}
+          onAutoTransitions={handleAutoTransitions}
           syntheticEffects={syntheticEffects}
           currentSeqFrame={currentFrame}
           rateNum={asset?.rate_num ?? 30}

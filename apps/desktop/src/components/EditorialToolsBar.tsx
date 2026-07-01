@@ -36,6 +36,8 @@ export interface EditorialToolsBarProps {
   redoLabel?: string | null;
   onUndo?(): void;
   onRedo?(): void;
+  /** Batch-smooth: auto-apply the transition heuristic to every boundary. */
+  onAutoTransitions?(): void;
 }
 
 /**
@@ -69,6 +71,7 @@ export function EditorialToolsBar({
   redoLabel = null,
   onUndo,
   onRedo,
+  onAutoTransitions,
 }: EditorialToolsBarProps): ReactElement {
   const { active, create, revoke, error: consentError } = useConsent(client, projectId);
   const [subject, setSubject] = useState<string>("");
@@ -127,6 +130,15 @@ export function EditorialToolsBar({
           className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
         >
           Übergang glätten
+        </button>
+        <button
+          type="button"
+          onClick={onAutoTransitions ?? (() => undefined)}
+          disabled={busy}
+          title="Alle passenden Schnittkanten automatisch mit kurzen Blenden glätten"
+          className="rounded border border-bezel bg-surface-1 px-3 py-1 text-[11px] text-content-strong hover:border-accent disabled:opacity-40"
+        >
+          Alle Übergänge glätten
         </button>
         <button
           type="button"
