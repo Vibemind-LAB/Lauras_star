@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from ..ai.voiceover_backend import list_sapi_voices
 from ..db import repos
 from ..db.database import Database
+from ..editing.history import timeline_checkpoint
 from ..jobs.keys import idempotency_key_for
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
@@ -90,14 +91,18 @@ def create_voiceover(
     # and may drift); voice_id / mix_mode / ducking_percent are part of the rendered
     # output, so they must be included in the key.
     idempotency_key = idempotency_key_for("ai.voiceover", payload)
-    job_id = enqueue(
-        db,
-        queue=queue_for("ai.voiceover", default="ai"),
-        kind="ai.voiceover",
-        payload=payload,
-        max_attempts=2,
-        idempotency_key=idempotency_key,
-    )
+    # Push a pre-VO undo checkpoint so the edit is reversible. The audio clip is
+    # added asynchronously by the job; undoing restores this pre-request snapshot
+    # (and cancels the in-flight job via the history machinery).
+    with timeline_checkpoint(db, timeline_id, "Voiceover erstellt"):
+        job_id = enqueue(
+            db,
+            queue=queue_for("ai.voiceover", default="ai"),
+            kind="ai.voiceover",
+            payload=payload,
+            max_attempts=2,
+            idempotency_key=idempotency_key,
+        )
     return VoiceoverAccepted(job_id=job_id)
 
 
