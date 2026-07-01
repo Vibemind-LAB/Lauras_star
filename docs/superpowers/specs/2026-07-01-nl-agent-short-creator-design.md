@@ -1,0 +1,216 @@
+# NL-Agent Short-Creator — Design (AutoGen 0.4, Magentic-One-first)
+
+_Datum: 2026-07-01 · Status: Entwurf, Iteration 1/9 (User-Validierung) · Ziel-Branch: eigener `feat/`-Branch_
+
+## Ziel
+
+Ein Sprachbefehl — „mach mir einen 60s-Short über X" — erzeugt aus einem **hochgeladenen Video**
+_oder_ dem **Rough-/Fine-Cut** automatisch einen fertigen 9:16-Short. Ein **Multi-Agent-System auf
+AutoGen 0.4** orchestriert dafür Lauras **bereits vorhandene** Fähigkeiten (visuelle Embeddings,
+CLIP-Suche, VLM, Shorts-Scoring, Transcript, Übergänge, Render) statt sie neu zu bauen.
+
+## Nicht-Ziele (YAGNI)
+
+- **Keine neue CV/ML.** Embeddings, VLM, Scoring, Render existieren — wir orchestrieren nur.
+- **Kein Ersatz** für den manuellen Feinschnitt. Der Agent liefert einen Entwurf, den der Mensch
+  weiter bearbeitet (Ergebnis ist ein normaler Rough-Cut/Timeline + gerenderter Short).
+- **Kein Zwang zur Cloud.** Local-first bleibt Default; Cloud/Router ist opt-in.
+- **Kein Web-/Datei-Surfing** (Magentic-Ones Standard-Domäne) — unsere Agenten arbeiten nur auf
+  Lauras eigenen Tools.
+
+## Bestehende Bausteine (Wiederverwendung, nicht Neubau)
+
+| Vision-Element | Vorhandenes Laura-Modul |
+|---|---|
+| Visuelle Embeddings | `analysis/visual_embed.py`, `embeddings_store.py` (SqliteVectorStore) |
+| „Sagt was zu sehen ist" | VLM `transition_review.py` (qwen3-vl via Ollama) **+** CLIP `search_visual_moments` |
+| Szenen zu Thema X finden | `visual_query.search_visual_moments` (NL-Query → Frames) |
+| Transcript an exakter Stelle ±15s | ASR words/segments (frame-genau) |
+| Kandidaten wählen + scoren | `shorts.extract` + `shorts_score.score_candidates` (visuelle Kontinuität/Shift + Speech-Density) |
+| Übergänge via Embedding-Ähnlichkeit | `shorts_score._visual_continuity/_visual_shift_at` + `transition_review` |
+| Agent-operabel | MCP-Tools: `search_visual_moments`, `extract_shorts`, `similar_segments`, `visual_hook`, `build_roughcut`, `render_timeline`, `next_action` (in `mcp/server.py`) |
+
+**Kernerkenntnis:** ~80 % ist Orchestrierung. Der neue Code ist die Agenten-Schicht + die
+Provider-/Team-Verdrahtung.
+
+## Architektur
+
+### Optionales Extra (nicht verhandelbar)
+
+AutoGen ist ein **optionales Extra** (`pip install laura[autoshort]`). Der Backend **startet ohne
+AutoGen** und kann weiter ingest/probe/proxy/export. Alle AutoGen-Importe sind **lazy** (erst im
+Job-Handler), damit `create_app` ohne die Extra-Dependency lädt. Fehlt das Extra, liefert der
+Endpoint `503 feature_unavailable` mit Installationshinweis — wie der VLM-Pfad.
+
+### Provider-Schicht (`short_creator/providers.py`)
+
+Eine **Model-Client-Factory** löst per Env den Motor der Agenten auf. Alle Optionen sind
+OpenAI-kompatibel oder haben einen nativen AutoGen-Client:
+
+| Provider | Env | AutoGen-Client | Zweck |
+|---|---|---|---|
+| **`ollama`** (Default) | `LAURA_AGENT_PROVIDER=ollama` | `OllamaChatCompletionClient(model=…)` | local-first, offline, kostenlos |
+| **`9router`** | `LAURA_AGENT_PROVIDER=9router` | `OpenAIChatCompletionClient(base_url="http://localhost:20128/v1", api_key=…, model=…, model_info=…)` | Gateway zu 40+ Providern/100+ Modellen; stärkeres Modell für den Orchestrator |
+| **`openai-compat`** | `LAURA_AGENT_PROVIDER=openai-compat` | `OpenAIChatCompletionClient(base_url=$LAURA_AGENT_BASE_URL, …)` | generischer OpenAI-kompatibler Endpoint |
+
+- Modelle konfigurierbar: `LAURA_AGENT_MODEL` (Alltags-Agenten) und `LAURA_ORCHESTRATOR_MODEL`
+  (Magentic-One-Orchestrator, darf stärker sein — z.B. via 9router `cc/claude-sonnet-4-5`).
+- Für Nicht-OpenAI-Modelle über `OpenAIChatCompletionClient` wird `model_info` (Capabilities:
+  `function_calling`, `vision`, `json_output`) explizit gesetzt.
+- **9router ist selbst nur eine Provider-Option**, kein Zwang: Default bleibt lokal.
+
+### Orchestrierung: Magentic-One **first**, GraphFlow **fallback**
+
+Bewusste User-Entscheidung: **zuerst Magentic-One**, GraphFlow nur wenn Magentic-One versagt.
+
+- **Primär — `MagenticOneGroupChat`** (`short_creator/magentic.py`): der Orchestrator plant
+  (Task-Ledger) und delegiert Subtasks an die Spezialisten, reflektiert (Progress-Ledger) und
+  planzt bei Stillstand um. Passt exakt zur Vision („einer schaut, einer beschreibt, einer
+  Transcript"). Braucht ein **starkes Orchestrator-Modell** → dafür ist die 9router-Option da.
+- **Fallback — `GraphFlow`/`DiGraphBuilder`** (`short_creator/graph.py`): deterministischer Graph
+  (unten). Der Graph steuert die Reihenfolge, das LLM nur das Urteil pro Node → **robust mit
+  schwachem lokalem Modell**. Greift, wenn Magentic-One fehlschlägt (Exception, Nicht-Terminierung
+  bis `MaxMessageTermination`, oder leeres/ungültiges Ergebnis).
+- **`short_creator/orchestrator.py`** kapselt die Fallback-Logik:
+  `run(topic, source) → try magentic() except/invalid → graph()`. Beide Teams teilen **dieselben
+  Agenten + Tools** (Magentic-One ist „simply an AgentChat team"), also kostet der Fallback nur den
+  Team-Zusammenbau, nicht neue Agenten.
+
+### Agenten-Besetzung + bestätigter Graph
+
+Jeder Agent = `AssistantAgent(name, model_client=<provider>, workbench=<Laura-MCP>)`. Die
+**Schwerarbeit** machen Lauras MCP-Tools; die Agenten sind dünn.
+
+```
+        Scout ──▶ (pro Kandidat)  Describer ┐
+      (CLIP+shorts)                          ├─▶ Join ─▶ Director ─▶ Editor ─▶ render
+                                 Transcript ─┘         (wählt+ordnet)  (Cut+Übergänge)
+                                                            ▲                 │
+                                                            └──── QA schwach ─┘  (bedingte Kante)
+```
+
+| Agent | Tut | Nutzt (MCP-Tool / Modul) |
+|---|---|---|
+| **Scout** | findet Kandidaten-Momente zu Thema X | `search_visual_moments`, `extract_shorts` |
+| **Describer** | sagt pro Kandidat, was zu sehen ist | VLM (`transition_review`/qwen3-vl) |
+| **Transcript-Analyst** | fasst Transcript ±15s um jeden Kandidaten zusammen | ASR words/segments |
+| **Director** | wählt + ordnet Segmente zu kohärentem Short | Reasoning über Describer+Transcript |
+| **Editor** | baut Cut, richtet Übergänge (Embedding-Ähnlichkeit) aus, rendert | `build_roughcut`, `transition_review`, `render_timeline` |
+| **QA-Gate** | prüft Short gegen Thema X; „schwach" → zurück zum Director | `shorts_qa`/`qa_metrics` |
+
+- **Fan-out/Join**: Describer ∥ Transcript-Analyst laufen pro Kandidat parallel, Join sammelt.
+  (Im `GraphFlow` explizite Kanten; in Magentic-One delegiert der Orchestrator.)
+- **Bedingte Kante**: QA-Gate „schwach" → zurück zum Director (max. N Runden, dann bester Stand).
+
+### MCP-Wiederverwendung (der Clou)
+
+AutoGen-`AssistantAgent` konsumiert externe MCP-Server via `McpWorkbench` / `mcp_server_tools`.
+**Laura hat den Server schon** (`mcp/server.py`), und der injiziert bereits `db` in die `tool_*`-
+Funktionen — die MCP-exponierten Signaturen sind sauber (ohne `db`). Die Agenten rufen also
+`search_visual_moments`/`extract_shorts`/`build_roughcut`/`render_timeline` **direkt**. Neuer Glue:
+minimal.
+
+> **Zu bestätigen (Impl-Detail):** Transport des Laura-MCP-Servers (stdio vs. SSE/HTTP) → wählt
+> `StdioServerParams` vs. `StreamableHttpServerParams` im Workbench. In-Prozess-Alternative: die
+> `tool_*`-Funktionen direkt als `FunctionTool` registrieren (spart den MCP-Roundtrip, falls der
+> Server nur stdio kann).
+
+### Job- + API-Integration
+
+- **Job-Handler `short_creator.run`** (`short_creator/handlers.py`, via `register_*_handlers` in
+  `main.py.create_app` — additive Registrierung, wie die anderen). Läuft asynchron im Job-Runner
+  (langer LLM-Lauf darf den Request nicht blocken).
+- **Endpoint** `POST /assets/{asset_id}/auto-short` **oder** `POST /timelines/{id}/auto-short`
+  (`api/short_creator.py`, neu) mit `{ topic, target_seconds, source: "asset"|"roughcut"|"finecut" }`
+  → enqueued den Job, gibt `job_id`. Status über das bestehende `job`-Polling.
+- **Permission**: `timeline:edit` (wie Auto-Pilot).
+
+## Datenfluss
+
+1. **Input**: `asset_id` (analysiert: shots + embeddings + transcript vorhanden) **oder** ein
+   bestehender Rough-/Fine-Cut (Szenen als Kandidaten-Pool). Precondition-Check vorab; fehlt die
+   Analyse, klare Fehlermeldung (kein stiller Fehlschlag).
+2. **Scout** → Kandidatenliste (frame-genaue Ranges, end-exclusive).
+3. **Fan-out** Describer ∥ Transcript pro Kandidat → **Join**.
+4. **Director** → geordnete Segment-Auswahl (Ziel-Länge).
+5. **Editor** → `build_roughcut` aus den Segmenten, Übergänge via `transition_review`, `render_timeline`.
+6. **QA-Gate** → ok → fertig; „schwach" → zurück zu (4), max. N Runden.
+7. **Output**: eine Timeline/Rough-Cut (bearbeitbar) **+** gerenderter 9:16-Short. Alles über die
+   bestehenden Tabellen/Endpoints — kein neuer Projektzustand.
+
+## Fehlerbehandlung
+
+- **Magentic-One versagt** (Exception / Nicht-Terminierung / leeres Ergebnis) → automatischer
+  **GraphFlow-Fallback**; beide protokollieren, welcher Pfad lief.
+- **Tool-Fehler** (z.B. `render_timeline` schlägt fehl): der Agent meldet, der Job endet `failed`
+  mit klarer Ursache; kein Teil-Artefakt als „fertig" markiert.
+- **QA-Schleife** ist begrenzt (N Runden) → nie Endlos-Loop; danach bester Stand + Hinweis.
+- Fehlt das Extra: `503 feature_unavailable` (+ Installationshinweis).
+
+## Invarianten (nicht verhandelbar)
+
+- **Frame-genau bleibt frame-genau.** Agenten produzieren Ganzzahl-Frame-Ranges, end-exclusive;
+  keine Float-Sekunden als Zustand.
+- **OTIO bleibt Source of Truth.** Der Agent baut über `build_roughcut`/Timeline-Ops, nicht neben
+  dem Interchange.
+- **MCP-Tools unverändert.** Der Agent ruft dieselben `tool_*`; keine Signatur-Änderung.
+- **Local-first / optionales Extra.** Backend startet ohne AutoGen; Default-Provider lokal.
+- **Idempotenz** der Backend-Ops unberührt; der Agent-Lauf selbst ist nicht idempotent (LLM), aber
+  seine Outputs sind normale, reproduzierbare Timeline-Zustände.
+- **Codex-Subtree unangetastet:** kein Anfassen von `services/ai-runtimes/`, `ai/runtime_*`,
+  `api/ai_runtimes.py`. Neues Modul lebt unter **`laura/short_creator/`** (frischer Namespace);
+  `main.py`-Registrierung additiv + koordiniert.
+
+## Modulstruktur (neu, kollisionsfrei)
+
+```
+services/local-api/src/laura/short_creator/
+  __init__.py
+  providers.py       # Model-Client-Factory (ollama | 9router | openai-compat)
+  agents.py          # Scout/Describer/Transcript/Director/Editor/QA (AssistantAgent + MCP-Workbench)
+  magentic.py        # MagenticOneGroupChat (primär)
+  graph.py           # GraphFlow/DiGraphBuilder (Fallback)
+  orchestrator.py    # run(): Magentic-One → Fallback GraphFlow; teilt Agenten
+  handlers.py        # Job-Handler short_creator.run (lazy AutoGen-Import)
+services/local-api/src/laura/api/short_creator.py   # POST .../auto-short
+docs/agentic-short-creator.md                        # Setup + Provider/9router-Doku
+```
+pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4", "autogen-ext[openai,ollama]>=0.4"]`.
+
+## Tests
+
+- **providers.py**: Factory gibt pro Env den richtigen Client-Typ; `model_info` gesetzt; kein
+  Netzzugriff im Test (Client nur konstruiert, nicht gerufen).
+- **agents.py**: jeder Agent wird mit **gemocktem Model-Client** (scripted Antworten) + Fake-MCP-
+  Workbench gebaut; Tool-Auswahl korrekt (Scout ruft `search_visual_moments`, Editor `render_timeline`).
+- **graph.py**: `DiGraphBuilder` erzeugt die erwartete Struktur (Kanten Scout→{Describer,Transcript}
+  →Join→Director→Editor; bedingte QA-Kante); Entry-Point Scout.
+- **orchestrator.py**: Magentic-One-Erfolg → GraphFlow **nicht** gerufen; Magentic-One wirft/leer →
+  GraphFlow gerufen; Ergebnis identischer Typ.
+- **Kein harter Modell-/Netz-Zwang** in Tests (alle LLM-Clients gemockt); Backend-Start-Test ohne
+  Extra bleibt grün.
+- Python: mypy strikt, ruff; `uv run pytest`.
+
+## Iterationsplan (x−1 = 9 Runden, Validierung vom User)
+
+1. **Spec** (dieses Dokument) — _jetzt, warte auf deine Validierung._
+2. `providers.py` + Tests (Provider-Factory ollama/9router/openai-compat).
+3. MCP-Anbindung: `McpWorkbench` gegen Laura-MCP (Transport bestätigen) + 1 Smoke-Agent.
+4. `agents.py`: die 5 Agenten + QA (gemockte Clients).
+5. `magentic.py`: `MagenticOneGroupChat` zusammenbauen (primär).
+6. `graph.py`: `GraphFlow` (Fallback) + Struktur-Tests.
+7. `orchestrator.py`: Fallback-Logik + Tests.
+8. `handlers.py` + `api/short_creator.py`: Job + Endpoint + optional-extra-Guard.
+9. End-to-end (echter lokaler Lauf gegen ein reales Sprechvideo) + Doku + Review.
+
+Jede Runde: klein, getestet, dann **deine Validierung** bevor die nächste startet.
+
+## Offene Punkte (für deine Validierung)
+
+- **MCP-Transport** des Laura-Servers (stdio/SSE) — oder lieber `FunctionTool`-Direktregistrierung
+  (In-Prozess, spart Roundtrip)?
+- **Ziel-Länge / Format**: fix 60s 9:16, oder Parameter (`target_seconds`, Ratio)?
+- **Input-Fokus v1**: zuerst „aus analysiertem Asset" (Scout sucht) — Rough-/Fine-Cut-Quelle als
+  Runde später, oder beide gleich?
+- **9router-Modelle**: welches Orchestrator-Modell (z.B. `cc/claude-sonnet-4-5`) als Default, wenn
+  Provider `9router`?
