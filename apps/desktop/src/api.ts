@@ -1402,6 +1402,18 @@ export class LauraClient {
     );
   }
 
+  /** Auto-apply the transition heuristic to every boundary (undoable). Returns updated clips. */
+  autoTransitions(
+    timelineId: string,
+  ): Promise<{ boundaries: number; applied: number; skipped_manual: number; clips: TimelineClip[] }> {
+    return this.request<{
+      boundaries: number;
+      applied: number;
+      skipped_manual: number;
+      clips: TimelineClip[];
+    }>(`/timelines/${timelineId}/auto-transitions`, { method: "POST" });
+  }
+
   getHistory(timelineId: string): Promise<HistoryState> {
     return this.request<HistoryState>(`/timelines/${timelineId}/history`);
   }

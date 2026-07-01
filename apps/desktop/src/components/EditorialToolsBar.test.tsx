@@ -33,7 +33,7 @@ describe("EditorialToolsBar", () => {
         syntheticEffects={[]}
       />,
     );
-    expect((screen.getByRole("button", { name: /glätten/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Übergang glätten" }) as HTMLButtonElement).disabled).toBe(true);
     rerender(
       <EditorialToolsBar
         voices={voices} voiceId={null} onVoiceChange={() => {}}
@@ -41,7 +41,7 @@ describe("EditorialToolsBar", () => {
         onSmooth={onSmooth} onReenact={() => {}} syntheticEffects={[]}
       />,
     );
-    const btn = screen.getByRole("button", { name: /glätten/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: "Übergang glätten" }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(onSmooth).toHaveBeenCalledTimes(1);
