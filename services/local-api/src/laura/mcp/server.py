@@ -54,6 +54,7 @@ def main() -> None:  # pragma: no cover
     from .tools import (
         tool_batch_plan,
         tool_batch_status,
+        tool_build_roughcut,
         tool_deduplicate_shorts,
         tool_explain_candidate,
         tool_extract_shorts,
@@ -62,6 +63,7 @@ def main() -> None:  # pragma: no cover
         tool_next_action,
         tool_recipe_from_trace,
         tool_render_short,
+        tool_render_timeline,
         tool_search_visual_moments,
         tool_similar_segments,
         tool_start_analysis,
@@ -132,6 +134,33 @@ def main() -> None:  # pragma: no cover
     )
     def _analyze_video(asset_id: str) -> dict[str, Any]:
         return tool_start_analysis(db, asset_id)
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="build_roughcut",
+        description=(
+            "Build a rough cut with scenes for an asset from its succeeded analysis "
+            "(kept shots -> gapless clips -> scenes). Pass the asset_id. Idempotent: calling "
+            "twice returns the same timeline without duplicating clips. Returns ok=True with "
+            "timeline_id and scene_count, or ok=False with an error when the asset is missing "
+            "or has no succeeded analysis run. Executable counterpart of next_action's "
+            "'roughcut_from_shots' step: analyze_video -> build_roughcut -> (edit) -> render."
+        ),
+    )
+    def _build_roughcut(asset_id: str) -> dict[str, Any]:
+        return tool_build_roughcut(db, asset_id)
+
+    @mcp_server.tool(  # type: ignore[untyped-decorator]
+        name="render_timeline",
+        description=(
+            "Render a timeline (rough cut / scene / sequence) to a finished mp4 export. "
+            "Pass the timeline_id. Creates an export and enqueues an export.render job; returns "
+            "ok=True with export_id and job_id, or ok=False with an error when the timeline is "
+            "missing or has no clips. Poll job_status(job_id) for completion. This is the render "
+            "step: build_roughcut -> (edit) -> render_timeline."
+        ),
+    )
+    def _render_timeline(timeline_id: str) -> dict[str, Any]:
+        return tool_render_timeline(db, timeline_id)
 
     @mcp_server.tool(  # type: ignore[untyped-decorator]
         name="extract_shorts",

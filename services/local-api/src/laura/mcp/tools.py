@@ -8,8 +8,8 @@ and returns a JSON-serialisable dict.
 * Pure reads (no DB writes): ``tool_next_action``, ``tool_batch_plan``,
   ``tool_batch_status``, ``tool_recipe_from_trace``, ``tool_list_short_candidates``,
   ``tool_job_status``, ``tool_explain_candidate``.
-* Writers (enqueue jobs): ``tool_start_analysis``, ``tool_extract_shorts``.
-  These are the ONLY two functions in this module that mutate the database.
+* Writers: ``tool_start_analysis``, ``tool_extract_shorts``, ``tool_render_timeline``
+  (enqueue jobs); ``tool_build_roughcut`` (synchronous rough-cut/scene build).
 
 These are thin wrappers over the existing pure resolvers:
 - ``resolve_next_action``  (api.shorts)
@@ -35,6 +35,7 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..scenes.build import autobuild_asset_edit_ready
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ __all__ = [
     "tool_batch_status",
     "tool_recipe_from_trace",
     "tool_start_analysis",
+    "tool_build_roughcut",
+    "tool_render_timeline",
     "tool_extract_shorts",
     "tool_list_short_candidates",
     "tool_job_status",
@@ -169,6 +172,82 @@ def tool_start_analysis(db: Database, asset_id: str) -> dict[str, Any]:
         "ok": True,
         "asset_id": asset_id,
         "analysis_run_id": run["id"],
+        "job_id": job_id,
+    }
+
+
+def tool_build_roughcut(db: Database, asset_id: str) -> dict[str, Any]:
+    """Build a rough cut + scenes for *asset_id* from its succeeded analysis (idempotent).
+
+    Fills the asset's rough-cut timeline from kept shots and groups it into scenes — the
+    executable counterpart to ``tool_next_action``'s ``roughcut_from_shots`` step. Requires a
+    succeeded analysis run. Mutates the database synchronously (no background job).
+
+    Returns ``{"ok": True, "asset_id": ..., "timeline_id": ..., "scene_count": ...}`` on
+    success, or ``{"ok": False, "error": ..., "asset_id": ...}`` when the asset is missing or
+    has no succeeded analysis run.
+    """
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        logger.debug("tool_build_roughcut: asset_id=%r not found", asset_id)
+        return {"ok": False, "error": "asset not found", "asset_id": asset_id}
+    run = repos.get_latest_analysis_run(db, asset_id)
+    if run is None or run["status"] != "succeeded":
+        return {"ok": False, "error": "no succeeded analysis run", "asset_id": asset_id}
+    project_id = str(asset["project_id"])
+    scene_count = autobuild_asset_edit_ready(
+        db, project_id=project_id, asset_id=asset_id, run_id=str(run["id"])
+    )
+    timeline = repos.get_or_create_asset_rough_cut(db, project_id, asset_id)
+    logger.debug(
+        "tool_build_roughcut: asset_id=%r timeline_id=%r scene_count=%d",
+        asset_id,
+        timeline["id"],
+        scene_count,
+    )
+    return {
+        "ok": True,
+        "asset_id": asset_id,
+        "timeline_id": str(timeline["id"]),
+        "scene_count": scene_count,
+    }
+
+
+def tool_render_timeline(db: Database, timeline_id: str, *, format: str = "mp4") -> dict[str, Any]:
+    """Render a timeline to a finished export — the executable ``render_reel`` step.
+
+    Creates an export and enqueues an ``export.render`` job (mirrors the timeline render
+    endpoint). Requires the timeline to have clips. Enqueues a background job; poll
+    ``job_status(job_id)`` for completion.
+
+    Returns ``{"ok": True, "timeline_id": ..., "export_id": ..., "job_id": ...}`` on success,
+    or ``{"ok": False, "error": ..., "timeline_id": ...}`` when the timeline is missing or empty.
+    """
+    tl = repos.get_timeline(db, timeline_id)
+    if tl is None:
+        return {"ok": False, "error": "timeline not found", "timeline_id": timeline_id}
+    if not repos.list_timeline_clips(db, timeline_id):
+        return {"ok": False, "error": "timeline has no clips", "timeline_id": timeline_id}
+    export = repos.create_export(
+        db, project_id=str(tl["project_id"]), timeline_id=timeline_id, format=format, options={}
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("export.render"),
+        kind="export.render",
+        payload={"export_id": export["id"]},
+        idempotency_key=f"render:{export['id']}",
+    )
+    logger.debug(
+        "tool_render_timeline: timeline_id=%r export_id=%r job_id=%r",
+        timeline_id,
+        export["id"],
+        job_id,
+    )
+    return {
+        "ok": True,
+        "timeline_id": timeline_id,
+        "export_id": str(export["id"]),
         "job_id": job_id,
     }
 
