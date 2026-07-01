@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from laura.db import repos
+from laura.editing.asset_gc import gc_orphaned_synthetic_assets
 from laura.editing.otio_sync import rebuild_otio
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,23 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def timeline_checkpoint(db: Any, timeline_id: str, label: str) -> Iterator[None]:
-    """Snapshot the timeline's pre-edit editorial state onto the undo stack,
-    then run the mutation."""
+    """Snapshot the timeline's pre-edit editorial state onto the undo stack, then run the
+    mutation. After a successful edit, best-effort GC any synthetic asset that fell off the
+    history horizon (orphaned by this edit's redo-clear / depth-cap eviction)."""
     repos.push_undo_checkpoint(db, timeline_id, label)
     yield
+    _gc_orphans_after_edit(db, timeline_id)
+
+
+def _gc_orphans_after_edit(db: Any, timeline_id: str) -> None:
+    """Sweep orphaned synthetic assets for the timeline's project. Best-effort: cleanup must
+    never fail an edit (it runs after the mutation has already been committed)."""
+    try:
+        tl = repos.get_timeline(db, timeline_id)
+        if tl is not None:
+            gc_orphaned_synthetic_assets(db, project_id=str(tl["project_id"]))
+    except Exception as exc:  # cleanup is best-effort; a failure must not break the edit
+        logger.warning("post-edit synthetic-asset GC failed: %s", exc)
 
 
 class HistoryEmpty(Exception):
