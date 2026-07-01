@@ -142,7 +142,8 @@ export function App(): ReactElement {
     const waitingForProxy = assets.some((a) => a.type === "video" && !hasFile(a, "proxy"));
     if (!waitingForProxy) return;
     const t = window.setTimeout(() => {
-      void loadAssets(client, selectedProjectId);
+      // Non-fatal background refresh: a transient list failure just retries on the next poll tick.
+      void loadAssets(client, selectedProjectId).catch(() => undefined);
     }, 3000);
     return () => window.clearTimeout(t);
   }, [client, selectedProjectId, assets, loadAssets]);
@@ -520,12 +521,16 @@ export function App(): ReactElement {
             onToggleCollapse={() => setMediaCollapsed((v) => !v)}
             projectId={selectedProjectId}
             onGenerated={() => {
-              if (client && selectedProjectId) void loadAssets(client, selectedProjectId);
+              if (client && selectedProjectId) {
+                void loadAssets(client, selectedProjectId).catch((e) => setError(String(e)));
+              }
             }}
             onAutoPiloted={() => {
               if (client && selectedProjectId && selectedAssetId) {
-                void loadAssets(client, selectedProjectId);
-                void loadRoughCut(client, selectedProjectId, selectedAssetId);
+                void loadAssets(client, selectedProjectId).catch((e) => setError(String(e)));
+                void loadRoughCut(client, selectedProjectId, selectedAssetId).catch((e) =>
+                  setError(String(e)),
+                );
               }
             }}
           />
