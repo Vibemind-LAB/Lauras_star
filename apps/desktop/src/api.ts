@@ -753,6 +753,18 @@ export class LauraClient {
     });
   }
 
+  /**
+   * Advance an asset toward a target (`roughcut` | `render`) by executing next_action's tools as
+   * far as possible without blocking. Re-invoke until `status` is terminal (done / target_reached
+   * / error / max_steps) to drive past an async step.
+   */
+  autoPilot(assetId: string, target: "roughcut" | "render"): Promise<{ status: string }> {
+    return this.request<{ status: string }>(
+      `/assets/${assetId}/auto-pilot?target=${target}`,
+      { method: "POST" },
+    );
+  }
+
   deleteAsset(id: string): Promise<void> {
     return this.del(`/assets/${id}`);
   }

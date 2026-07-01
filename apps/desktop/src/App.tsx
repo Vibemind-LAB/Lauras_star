@@ -522,6 +522,12 @@ export function App(): ReactElement {
             onGenerated={() => {
               if (client && selectedProjectId) void loadAssets(client, selectedProjectId);
             }}
+            onAutoPiloted={() => {
+              if (client && selectedProjectId && selectedAssetId) {
+                void loadAssets(client, selectedProjectId);
+                void loadRoughCut(client, selectedProjectId, selectedAssetId);
+              }
+            }}
           />
         )}
 

@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 
 import { type AiProvenanceManifest, type AnalysisRun, type Asset, type LauraClient } from "../api";
 import { log } from "../shared/log";
+import { AutoPilotPanel } from "./AutoPilotPanel";
 import { GenerateVideoPanel } from "./GenerateVideoPanel";
 
 // ---------------------------------------------------------------------------
@@ -343,6 +344,8 @@ export interface MediaSidebarProps {
   projectId?: string | null;
   /** Called after a generate job succeeds so the parent can reload the asset list. */
   onGenerated?: () => void;
+  /** Called after the auto-pilot finishes so the parent can refresh assets / rough-cut. */
+  onAutoPiloted?: () => void;
 }
 
 export function MediaSidebar({
@@ -355,6 +358,7 @@ export function MediaSidebar({
   onToggleCollapse,
   projectId = null,
   onGenerated,
+  onAutoPiloted,
 }: MediaSidebarProps): ReactElement {
   if (collapsed) {
     return (
@@ -395,6 +399,9 @@ export function MediaSidebar({
       </div>
       {projectId && (
         <GenerateVideoPanel client={client} projectId={projectId} onGenerated={onGenerated} />
+      )}
+      {selectedAssetId && (
+        <AutoPilotPanel client={client} assetId={selectedAssetId} onChanged={onAutoPiloted} />
       )}
       {assets.length === 0 ? (
         <p className="text-[11px] text-content-faint">
