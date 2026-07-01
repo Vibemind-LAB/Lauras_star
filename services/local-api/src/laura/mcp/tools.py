@@ -8,8 +8,8 @@ and returns a JSON-serialisable dict.
 * Pure reads (no DB writes): ``tool_next_action``, ``tool_batch_plan``,
   ``tool_batch_status``, ``tool_recipe_from_trace``, ``tool_list_short_candidates``,
   ``tool_job_status``, ``tool_explain_candidate``.
-* Writers: ``tool_start_analysis``, ``tool_extract_shorts`` (enqueue jobs);
-  ``tool_build_roughcut`` (synchronous rough-cut/scene build).
+* Writers: ``tool_start_analysis``, ``tool_extract_shorts``, ``tool_render_timeline``
+  (enqueue jobs); ``tool_build_roughcut`` (synchronous rough-cut/scene build).
 
 These are thin wrappers over the existing pure resolvers:
 - ``resolve_next_action``  (api.shorts)
@@ -46,6 +46,7 @@ __all__ = [
     "tool_recipe_from_trace",
     "tool_start_analysis",
     "tool_build_roughcut",
+    "tool_render_timeline",
     "tool_extract_shorts",
     "tool_list_short_candidates",
     "tool_job_status",
@@ -209,6 +210,45 @@ def tool_build_roughcut(db: Database, asset_id: str) -> dict[str, Any]:
         "asset_id": asset_id,
         "timeline_id": str(timeline["id"]),
         "scene_count": scene_count,
+    }
+
+
+def tool_render_timeline(db: Database, timeline_id: str, *, format: str = "mp4") -> dict[str, Any]:
+    """Render a timeline to a finished export — the executable ``render_reel`` step.
+
+    Creates an export and enqueues an ``export.render`` job (mirrors the timeline render
+    endpoint). Requires the timeline to have clips. Enqueues a background job; poll
+    ``job_status(job_id)`` for completion.
+
+    Returns ``{"ok": True, "timeline_id": ..., "export_id": ..., "job_id": ...}`` on success,
+    or ``{"ok": False, "error": ..., "timeline_id": ...}`` when the timeline is missing or empty.
+    """
+    tl = repos.get_timeline(db, timeline_id)
+    if tl is None:
+        return {"ok": False, "error": "timeline not found", "timeline_id": timeline_id}
+    if not repos.list_timeline_clips(db, timeline_id):
+        return {"ok": False, "error": "timeline has no clips", "timeline_id": timeline_id}
+    export = repos.create_export(
+        db, project_id=str(tl["project_id"]), timeline_id=timeline_id, format=format, options={}
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("export.render"),
+        kind="export.render",
+        payload={"export_id": export["id"]},
+        idempotency_key=f"render:{export['id']}",
+    )
+    logger.debug(
+        "tool_render_timeline: timeline_id=%r export_id=%r job_id=%r",
+        timeline_id,
+        export["id"],
+        job_id,
+    )
+    return {
+        "ok": True,
+        "timeline_id": timeline_id,
+        "export_id": str(export["id"]),
+        "job_id": job_id,
     }
 
 
