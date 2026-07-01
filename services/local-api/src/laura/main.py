@@ -25,6 +25,7 @@ from .api import (
     audio,
     batch,
     demo,
+    generate,
     jobs,
     lipsync,
     orchestration,
@@ -45,6 +46,7 @@ from .api.ratelimit import RateLimiter, make_rate_limit_middleware
 from .config import Settings, ensure_workspace
 from .db.database import create_database
 from .demo.handlers import register_demo_handlers
+from .generate.handlers import register_generate_handlers
 from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
@@ -68,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_shorts_handlers(registry)
     register_visual_handlers(registry)
     register_shorts_render_handler(registry)
+    register_generate_handlers(registry)
     runner = JobRunner(
         db, registry,
         lease_seconds=settings.lease_seconds,
@@ -141,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(lipsync.router)
     app.include_router(orchestration.router)
     app.include_router(demo.router)
+    app.include_router(generate.router)
     return app
 
 
