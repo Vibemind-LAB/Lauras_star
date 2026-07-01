@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from .. import audit
 from ..analysis import cutplace, transition_review
+from ..analysis.auto_transition import auto_apply_transitions
 from ..analysis.editorial import Word
 from ..analysis.eval_cut import FrameLoader, load_gray_frames_ffmpeg
 from ..analysis.eval_quality import evaluate_rough_cut
@@ -1461,6 +1462,34 @@ def get_timeline_history(timeline_id: str, request: Request) -> HistoryStateOut:
     if repos.get_timeline(db, timeline_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     return HistoryStateOut(**repos.get_history_state(db, timeline_id))
+
+
+@router.post("/timelines/{timeline_id}/auto-transitions")
+def auto_transitions(
+    timeline_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Auto-apply the transition-review heuristic to every lane-0 boundary (undoable).
+
+    Writes a crossfade at each detected jump-cut boundary using the same ``StubVlmBackend``
+    convention as "Übergänge prüfen", preserving any manual (non-hard) transition. Reversible
+    via the undo stack.
+    """
+    db = _db(request)
+    if repos.get_timeline(db, timeline_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
+    with timeline_checkpoint(db, timeline_id, "Übergänge automatisch gesetzt"):
+        summary = auto_apply_transitions(db, timeline_id)
+        audit.record(
+            db,
+            principal,
+            "timeline.auto_transitions",
+            entity_type="timeline",
+            entity_id=timeline_id,
+        )
+    clips = repos.list_timeline_clips(db, timeline_id)
+    return {**summary, "clips": [ClipOut(**c).model_dump() for c in clips]}
 
 
 @router.get("/projects/{project_id}/exports", response_model=list[RenderExportOut])
