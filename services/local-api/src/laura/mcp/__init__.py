@@ -8,6 +8,7 @@ the MCP transport (guarded import, optional extra).
 from .tools import (
     tool_batch_plan,
     tool_batch_status,
+    tool_build_roughcut,
     tool_deduplicate_shorts,
     tool_explain_candidate,
     tool_extract_shorts,
@@ -25,6 +26,7 @@ from .tools import (
 __all__ = [
     "tool_batch_plan",
     "tool_batch_status",
+    "tool_build_roughcut",
     "tool_deduplicate_shorts",
     "tool_explain_candidate",
     "tool_extract_shorts",
