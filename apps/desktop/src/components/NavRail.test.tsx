@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { NavRail } from "./NavRail";
 describe("NavRail", () => {
-  it("renders all six stages and marks the active one", () => {
+  it("renders all seven stages and marks the active one", () => {
     render(<NavRail active="import" onSelect={vi.fn()} />);
     expect(screen.getByText("Download")).toBeTruthy();
     expect(screen.getByText("Export")).toBeTruthy();

@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import PIPELINE_VERSION, __version__
 from .ai.handlers import register_ai_handlers
 from .analysis.handlers import register_analysis_handlers
+from .analysis.shorts_handlers import register_shorts_handlers
+from .analysis.visual_embed import register_visual_handlers
 from .api import (
     admin,
     ai_runtimes,
@@ -33,6 +35,7 @@ from .api import (
     search,
     sequences,
     shorts,
+    shorts_candidates,
     timelines,
     voiceover,
 )
@@ -45,6 +48,7 @@ from .ingest.handlers import register_ingest_handlers
 from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
 from .render.handlers import register_render_handlers
+from .render.shorts_render import register_shorts_render_handler
 from .telemetry import configure_tracing
 
 
@@ -60,6 +64,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_render_handlers(registry)
     register_ai_handlers(registry)
     register_demo_handlers(registry)
+    register_shorts_handlers(registry)
+    register_visual_handlers(registry)
+    register_shorts_render_handler(registry)
     runner = JobRunner(
         db, registry,
         lease_seconds=settings.lease_seconds,
@@ -114,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(projects.router)
     app.include_router(shorts.router)
+    app.include_router(shorts_candidates.router)
     app.include_router(batch.router)
     app.include_router(assets.router)
     app.include_router(jobs.router)

@@ -102,6 +102,7 @@ export function EditorialToolsBar({
         >
           ↷ Wiederholen
         </button>
+        <span className="mx-0.5 h-5 w-px self-center bg-bezel/60" aria-hidden="true" />
         <label className="flex items-center gap-1 text-content-muted">
           <span className="text-[10px] uppercase tracking-wide">Stimme</span>
           <select
@@ -117,6 +118,7 @@ export function EditorialToolsBar({
             ))}
           </select>
         </label>
+        <span className="mx-0.5 h-5 w-px self-center bg-bezel/60" aria-hidden="true" />
         <button
           type="button"
           onClick={onSmooth ?? (() => undefined)}

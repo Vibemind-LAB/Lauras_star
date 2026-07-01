@@ -1,7 +1,9 @@
 // apps/desktop/src/hooks/useSequence.ts
-import { useCallback, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useState } from "react";
 
 import { type LauraClient, type Sequence } from "../api";
+import { qk } from "../cache/queryKeys";
 
 export interface SequenceController {
   sequence: Sequence | null;
@@ -14,37 +16,46 @@ export function useSequence(
   client: LauraClient | null,
   projectId: string | null,
 ): SequenceController {
-  const [sequence, setSequence] = useState<Sequence | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [mutationError, setMutationError] = useState<string | null>(null);
+
+  const enabled = client !== null && projectId !== null;
+  const query = useQuery({
+    queryKey: qk.sequence(projectId ?? "none"),
+    queryFn: () => client!.getProjectSequence(projectId!),
+    enabled,
+  });
 
   const reload = useCallback(async () => {
-    if (!client || !projectId) {
-      setSequence(null);
-      return;
+    if (projectId) {
+      await queryClient.invalidateQueries({ queryKey: qk.sequence(projectId) });
     }
-    try {
-      setError(null);
-      setSequence(await client.getProjectSequence(projectId));
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [client, projectId]);
+  }, [queryClient, projectId]);
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  const sequence = query.data ?? null;
 
   const setScenes = useCallback(
     async (sceneIds: string[]) => {
-      if (!client || !sequence) return;
+      if (!client || !sequence || !projectId) return;
       try {
-        setSequence(await client.setSequenceScenes(sequence.timeline_id, sceneIds));
+        // Cancel any in-flight sequence fetch up front so it resolves before — never after —
+        // our authoritative write below.
+        await queryClient.cancelQueries({ queryKey: qk.sequence(projectId) });
+        const next = await client.setSequenceScenes(sequence.timeline_id, sceneIds);
+        queryClient.setQueryData(qk.sequence(projectId), next);
+        // The flattened sequence (resolved clips) depends on the scene set.
+        await queryClient.invalidateQueries({ queryKey: ["sequenceFlattened"] });
       } catch (e) {
-        setError(String(e));
+        setMutationError(String(e));
       }
     },
-    [client, sequence],
+    [client, sequence, projectId, queryClient],
   );
 
-  return { sequence, error, setScenes, reload };
+  return {
+    sequence,
+    error: mutationError ?? (query.error ? String(query.error) : null),
+    setScenes,
+    reload,
+  };
 }

@@ -14,7 +14,7 @@ from laura.api.models import ReelRenderRequest
 
 @pytest.mark.parametrize("raw", ["", "   ", None])
 def test_blank_disclosure_becomes_default(raw: str | None) -> None:
-    req = ReelRenderRequest(disclosure_text=raw)
+    req = ReelRenderRequest(disclosure_text=raw)  # type: ignore[arg-type]
     assert req.disclosure_text == "KI · synthetisch"
 
 

@@ -26,6 +26,7 @@ import { MediaSidebar } from "./components/MediaSidebar";
 import { NavRail } from "./components/NavRail";
 import { Player } from "./components/Player";
 import { RoughCutView } from "./components/RoughCutView";
+import { ShortsView } from "./components/ShortsView";
 import { SceneInspector } from "./components/SceneInspector";
 import { TimelineBar } from "./components/TimelineBar";
 import { TranscriptBar } from "./components/TranscriptBar";
@@ -58,7 +59,7 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "60", num: 60, den: 1, drop: false },
 ];
 
-export const EXPECTED_SCHEMA_VERSION = 28;
+export const EXPECTED_SCHEMA_VERSION = 31;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
@@ -67,6 +68,7 @@ function fpsLabel(p: Project): string {
 
 export function App(): ReactElement {
   const [stage, setStage] = useState<Stage>("import");
+  const [mediaCollapsed, setMediaCollapsed] = useState(false);
 
   const [client, setClient] = useState<LauraClient | null>(null);
   const [offline, setOffline] = useState(false);
@@ -163,7 +165,12 @@ export function App(): ReactElement {
   }, [client, selectedProjectId, selectedAssetId, loadRoughCut]);
 
   // Re-load the rough cut whenever the selected video changes (or clear it if none).
+  // Also drop per-video edit state (selected clip / seek / build result) on the switch so no
+  // stale reference from the previous video survives — switching a video to edit must not error.
   useEffect(() => {
+    setSelectedClipId(null);
+    setSeek(null);
+    setBuildResult(null);
     if (client && selectedProjectId && selectedAssetId) {
       void loadRoughCut(client, selectedProjectId, selectedAssetId).catch((e) =>
         setError(String(e)),
@@ -509,6 +516,8 @@ export function App(): ReactElement {
             selectedAssetId={selectedAssetId}
             onSelect={setSelectedAssetId}
             onDelete={(id) => void onDeleteAsset(id)}
+            collapsed={mediaCollapsed}
+            onToggleCollapse={() => setMediaCollapsed((v) => !v)}
           />
         )}
 
@@ -569,6 +578,9 @@ export function App(): ReactElement {
               asset={detailAsset}
               roughCut={roughCut}
               segments={analysis.segments}
+              transcriptNote={analysis.note}
+              transcriptBusy={analysis.status === "running"}
+              onGenerateTranscript={() => void analysis.runAnalysis()}
               onRoughCutChange={async () => {
                 if (client && selectedProjectId && selectedAssetId)
                   await loadRoughCut(client, selectedProjectId, selectedAssetId);
@@ -586,6 +598,9 @@ export function App(): ReactElement {
               asset={detailAsset}
               roughCutId={roughCut?.id ?? null}
               segments={analysis.segments}
+              transcriptNote={analysis.note}
+              transcriptBusy={analysis.status === "running"}
+              onGenerateTranscript={() => void analysis.runAnalysis()}
               currentFrame={currentFrame}
               seek={seek}
               onSeek={seekToFrame}
@@ -845,6 +860,17 @@ export function App(): ReactElement {
                 }}
               />
             </>
+          )}
+
+          {stage === "shorts" && client && (
+            <ShortsView
+              client={client}
+              asset={detailAsset}
+              seek={seek}
+              currentFrame={currentFrame}
+              onSeek={seekToFrame}
+              onFrame={(f) => setCurrentFrame(f)}
+            />
           )}
 
           {stage === "export" &&

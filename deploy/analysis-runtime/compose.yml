@@ -1,0 +1,37 @@
+# Laura analysis GPU worker — offloads heavy model inference (ASR first) off the host.
+#
+#   Start:  docker compose -f deploy/analysis-runtime/compose.yml up -d --build
+#   Wire :  run the local-api backend with  LAURA_ANALYSIS_URL=http://127.0.0.1:8896
+#   Stop :  docker compose -f deploy/analysis-runtime/compose.yml down
+#
+# Without this container the backend transcribes in-process on the CPU (the local-first default).
+services:
+  analysis-runtime:
+    build:
+      context: ../../services/analysis-runtime
+    image: laura-analysis-runtime:local
+    container_name: laura-analysis-runtime
+    restart: unless-stopped
+    ports:
+      - "8896:8896"
+    environment:
+      # Force GPU; the worker auto-falls back to CPU inside the container if CUDA is unusable.
+      LAURA_ASR_DEVICE: ${LAURA_ASR_DEVICE:-cuda}
+      LAURA_ASR_VAD: ${LAURA_ASR_VAD:-1}
+      HF_HOME: /models/hf
+    volumes:
+      # Persist downloaded model weights across container restarts.
+      - ${LAURA_MODELS_ROOT:-./models}:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8896/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

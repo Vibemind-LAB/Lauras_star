@@ -1,7 +1,8 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { type Asset, type DemoDraft, type LauraClient, type Sequence } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { DemoAssistantPanel } from "./DemoAssistantPanel";
 
 function asset(id: string, type: string, name: string): Asset {
@@ -67,7 +68,7 @@ function client(overrides: Partial<LauraClient> = {}): LauraClient {
 describe("DemoAssistantPanel", () => {
   it("lists only video assets and creates a draft", async () => {
     const c = client();
-    const { findByDisplayValue, getByRole, queryByText } = render(
+    const { findByDisplayValue, getByRole, queryByText } = renderWithQuery(
       <DemoAssistantPanel
         client={c}
         assets={[asset("video-1", "video", "screen.mp4"), asset("audio-1", "audio", "voice.wav")]}
@@ -96,7 +97,7 @@ describe("DemoAssistantPanel", () => {
     const onApplied = vi.fn();
     const c = client({ updateDemoDraft, applyDemoDraft });
 
-    const { findByDisplayValue, getByLabelText, getByRole } = render(
+    const { findByDisplayValue, getByLabelText, getByRole } = renderWithQuery(
       <DemoAssistantPanel
         client={c}
         assets={[asset("video-1", "video", "screen.mp4")]}
@@ -135,7 +136,7 @@ describe("DemoAssistantPanel", () => {
       .mockResolvedValue({ id: "job-1", status: "succeeded" });
     const getDemoDraft = vi.fn().mockResolvedValue(draft);
     const c = client({ getJob, getDemoDraft });
-    const { getByRole } = render(
+    const { getByRole } = renderWithQuery(
       <DemoAssistantPanel client={c} assets={[asset("video-1", "video", "screen.mp4")]} onApplied={vi.fn()} />,
     );
 

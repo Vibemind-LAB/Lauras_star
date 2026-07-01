@@ -5,16 +5,23 @@ boundary carries a real ``crossfade`` transition the video/audio assembly switch
 pairwise fold: ``xfade``/``acrossfade`` with a **reserve overlap** (clip A is extended by the
 transition duration into its post-cut source handles), so the assembled length stays exactly
 the sum of clip content lengths (sync invariant) and B loses no content.
+
+Multi-lane compositing (§7 of the free-multitrack spec):
+When ``render_multilane_mp4`` is called with clips on multiple lanes, each lane is assembled
+as an independent segment chain (real clips interleaved with colour/transparent gap segments),
+then lanes are stacked via ``overlay=eof_action=pass`` in ascending lane order (lane 0 is the
+opaque base; lanes ≥ 1 carry ``yuva420p`` transparent gaps so lower lanes show through).
+Single-lane timelines delegate to ``render_clips_mp4`` byte-identically.
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..ingest.ffmpeg import FFmpegError, probe, run_ffmpeg
 from .audio import AudioOverlay
-from .reel import reel_video_chain, resolve_font
+from .reel import reel_blur_fill_graph, reel_video_chain, resolve_font
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +180,194 @@ def _crossfade_durations(
     return out
 
 
+@dataclass(frozen=True)
+class LaneSegment:
+    """One segment in a per-lane chain: either a real clip or a gap filler.
+
+    ``path`` is ``None`` for a gap (filled with a colour source at render time).
+    ``src_in`` / ``src_out`` are source-space frame indices (end-exclusive), meaningful only
+    when ``path`` is not ``None``.
+    ``seq_duration`` is the length of this segment **in sequence frames** (always > 0).
+    ``has_audio`` is set by the caller after probing (only relevant for real clip segments on
+    lane 0 that contribute to the base audio mix).
+    """
+
+    path: Path | None
+    src_in: int
+    src_out: int
+    seq_duration: int
+    has_audio: bool = field(default=False)
+
+
+def build_lane_segments(
+    lane_clips: list[tuple[Path, int, int, int, int]],
+    total_seq_frames: int,
+) -> list[LaneSegment]:
+    """Convert a list of per-lane clip tuples into an ordered LaneSegment list.
+
+    ``lane_clips`` is ``[(path, src_in, src_out, seq_in, seq_out_excl), ...]`` for one lane,
+    already sorted by ``seq_in``.  ``total_seq_frames`` is the full sequence length across all
+    lanes (determines where a trailing gap ends).
+
+    Gaps between clips (and before the first clip / after the last clip) become ``LaneSegment``
+    instances with ``path=None``.  Pure — no IO.
+    """
+    segments: list[LaneSegment] = []
+    playhead = 0
+    for path, src_in, src_out, seq_in, seq_out in lane_clips:
+        if seq_in > playhead:
+            # gap before this clip
+            segments.append(
+                LaneSegment(
+                    path=None,
+                    src_in=0,
+                    src_out=0,
+                    seq_duration=seq_in - playhead,
+                )
+            )
+        segments.append(
+            LaneSegment(
+                path=path,
+                src_in=src_in,
+                src_out=src_out,
+                seq_duration=seq_out - seq_in,
+            )
+        )
+        playhead = seq_out
+    # trailing gap
+    if playhead < total_seq_frames:
+        segments.append(
+            LaneSegment(
+                path=None,
+                src_in=0,
+                src_out=0,
+                seq_duration=total_seq_frames - playhead,
+            )
+        )
+    return segments
+
+
+def build_multilane_filtergraph(
+    lanes: list[list[LaneSegment]],
+    *,
+    rate_num: int,
+    rate_den: int,
+    base_input_offset: int = 0,
+) -> tuple[list[tuple[Path, int, int]], str, str]:
+    """Build a multi-lane ffmpeg filter_complex string for overlay compositing.
+
+    Strategy (per §7 of the free-multitrack spec):
+
+    **Lane 0 (base)**: real clips plus explicit opaque-black gap segments, concatenated into
+    one continuous stream that covers the full sequence length.  Lane 0 drives the timing of
+    the whole overlay stack.  Gap colour sources use ``color=c=black`` (no size — ffmpeg
+    defaults to ``320x240``; the overlay filter scales the overlay to the base resolution, so
+    size mismatches between gaps and real clips on lane 0 must be avoided by using the same
+    default).  In practice, lane-0 timelines should not have gaps (the per-lane packing policy
+    keeps lane 0 contiguous); the gap path is a safety net.
+
+    **Lanes ≥ 1 (overlay)**: **no explicit gap segments** — instead each real clip is trimmed
+    and its PTS is shifted by ``seq_in_frame / TB`` so it appears at the correct absolute
+    sequence position.  The ``overlay=eof_action=pass:repeatlast=0`` filter passes the base
+    through unchanged for timestamps where the overlay has no frames (before the clip starts
+    and after it ends).  Multiple clips on the same overlay lane are each applied as a
+    separate overlay stage (fold: ``base ← overlay_clip1 ← overlay_clip2 …``).  This avoids
+    any size-mismatch concat issue and is the standard ffmpeg pattern for sparse overlays.
+
+    Returns ``(real_clips, filter_complex, out_label)`` where:
+    - ``real_clips`` is the ordered list of ``(path, src_in, src_out)`` for ALL real clip
+      segments across all lanes, in the order the ``-i`` inputs must appear.
+    - ``filter_complex`` is the full filter string (pass to ``-filter_complex``).
+    - ``out_label`` is ``"[vout]"`` (the final composited video label).
+
+    IMPORTANT: pure function — no IO, fully unit-testable.
+
+    ``base_input_offset``: start index of real-clip inputs in the global ``-i`` list (non-zero
+    when the caller prepends other ``-i`` entries before the video clips).
+
+    Single-lane MUST NOT be routed through this function — the caller routes single-lane
+    timelines to ``render_clips_mp4`` unchanged (byte-identity invariant).
+    """
+    assert len(lanes) >= 2, "build_multilane_filtergraph requires at least 2 lanes"
+
+    parts: list[str] = []
+    real_clips: list[tuple[Path, int, int]] = []
+    input_idx = base_input_offset
+
+    # --- Lane 0: concat chain with explicit gap segments ---
+    lane0_segs = lanes[0]
+    lane0_seg_labels: list[str] = []
+    for seg_idx, seg in enumerate(lane0_segs):
+        seg_label = f"[l0s{seg_idx}]"
+        if seg.path is None:
+            # Opaque black gap — no size specified; ffmpeg defaults to 320x240.
+            dur_s = _seconds(seg.seq_duration * rate_den / rate_num)
+            parts.append(
+                f"color=c=black:r={rate_num}/{rate_den},"
+                f"trim=duration={dur_s},setpts=PTS-STARTPTS{seg_label}"
+            )
+        else:
+            real_clips.append((seg.path, seg.src_in, seg.src_out))
+            parts.append(
+                f"[{input_idx}:v]trim=start_frame={seg.src_in}:end_frame={seg.src_out},"
+                f"setpts=PTS-STARTPTS,settb=AVTB{seg_label}"
+            )
+            input_idx += 1
+        lane0_seg_labels.append(seg_label)
+
+    n0 = len(lane0_seg_labels)
+    if n0 == 1:
+        parts.append(f"{lane0_seg_labels[0]}null[lane0]")
+    else:
+        joined0 = "".join(lane0_seg_labels)
+        parts.append(f"{joined0}concat=n={n0}:v=1:a=0[lane0]")
+
+    # Collect all overlay clip segments across all overlay lanes, in order.
+    # Each entry: (lane_idx, seq_in_frame, seg) so we can build the overlay fold.
+    overlay_clips: list[tuple[int, LaneSegment]] = []
+    for lane_idx in range(1, len(lanes)):
+        seq_start = 0
+        for seg in lanes[lane_idx]:
+            if seg.path is not None:
+                overlay_clips.append((seq_start, seg))
+            seq_start += seg.seq_duration
+
+    # Sort overlay clips by their absolute seq_in_frame so the overlay fold is time-ordered.
+    overlay_clips.sort(key=lambda t: t[0])
+
+    # --- Lanes ≥ 1: PTS-offset overlay approach (no explicit gap segments) ---
+    # Each real overlay clip is trimmed, then its PTS is shifted by seq_in_frame/TB so it
+    # appears at the correct absolute sequence position.  The overlay filter's
+    # eof_action=pass:repeatlast=0 passes the base through when no overlay frame exists
+    # (before the clip starts or after it ends).  Multiple overlay clips are folded one-by-one.
+    acc_label = "[lane0]"
+    for k, (seq_in_frame, seg) in enumerate(overlay_clips):
+        assert seg.path is not None
+        real_clips.append((seg.path, seg.src_in, seg.src_out))
+        offset_s = _seconds(seq_in_frame * rate_den / rate_num)
+        clip_label = f"[ov{k}]"
+        parts.append(
+            f"[{input_idx}:v]trim=start_frame={seg.src_in}:end_frame={seg.src_out},"
+            f"setpts=PTS-STARTPTS+{offset_s}/TB,"
+            f"format=yuva420p{clip_label}"
+        )
+        input_idx += 1
+        # Intermediate labels use [ols{k}]; the final fold emits [vout] directly.
+        out_label = f"[ols{k}]" if k < len(overlay_clips) - 1 else "[vout]"
+        parts.append(
+            f"{acc_label}{clip_label}"
+            f"overlay=eof_action=pass:repeatlast=0,format=yuv420p{out_label}"
+        )
+        acc_label = out_label
+
+    # Edge case: no real overlay clips (all overlay lanes empty).
+    # Shouldn't happen when the caller validates lanes, but handle gracefully.
+    if not overlay_clips:
+        parts.append("[lane0]null[vout]")
+
+    return real_clips, ";".join(parts), "[vout]"
+
+
 def _xfade_base_graph(
     clips: list[tuple[Path, int, int]],
     *,
@@ -186,7 +381,14 @@ def _xfade_base_graph(
 
     ``xdur[i]`` is the crossfade duration (frames) for the boundary after clip ``i`` (0 = hard).
     A crossfade clip is trimmed ``xdur[i]`` frames past its out-point (reserve overlap). Returns
-    ``(parts, video_label, audio_label_or_None)``. Pure — no IO, fully unit-testable."""
+    ``(parts, video_label, audio_label_or_None)``. Pure — no IO, fully unit-testable.
+
+    Every video node carries a uniform ``settb=AVTB`` timebase. ``xfade`` rejects inputs whose
+    timebases differ ("main timebase do not match the corresponding second input link xfade
+    timebase"); in a fold that mixes ``concat`` (passes input tb 1/1000000) and ``xfade`` (emits
+    its own fps tb) the accumulator and the next raw clip otherwise disagree and the whole
+    filtergraph fails to configure (-22). Pinning each segment + each fold output to ``AVTB``
+    makes every pairwise stage see matching timebases regardless of cut/crossfade ordering."""
     n = len(clips)
     parts: list[str] = []
     lens = [fout - fin for _, fin, fout in clips]
@@ -194,7 +396,7 @@ def _xfade_base_graph(
         reserve = xdur[i] if i < n - 1 else 0
         end = fout + reserve
         parts.append(
-            f"[{i}:v]trim=start_frame={fin}:end_frame={end},setpts=PTS-STARTPTS[v{i}]"
+            f"[{i}:v]trim=start_frame={fin}:end_frame={end},setpts=PTS-STARTPTS,settb=AVTB[v{i}]"
         )
         if has_base_audio:
             if audio_flags[i]:
@@ -219,7 +421,8 @@ def _xfade_base_graph(
             dd = _seconds(d * rate_den / rate_num)
             nxt_v = f"xv{i}"
             parts.append(
-                f"[{v_acc}][v{i}]xfade=transition=fade:duration={dd}:offset={offset}[{nxt_v}]"
+                f"[{v_acc}][v{i}]xfade=transition=fade:duration={dd}:offset={offset},"
+                f"settb=AVTB[{nxt_v}]"
             )
             v_acc = nxt_v
             if has_base_audio:
@@ -228,7 +431,7 @@ def _xfade_base_graph(
                 a_acc = nxt_a
         else:
             nxt_v = f"cv{i}"
-            parts.append(f"[{v_acc}][v{i}]concat=n=2:v=1:a=0[{nxt_v}]")
+            parts.append(f"[{v_acc}][v{i}]concat=n=2:v=1:a=0,settb=AVTB[{nxt_v}]")
             v_acc = nxt_v
             if has_base_audio:
                 nxt_a = f"ca{i}"
@@ -247,10 +450,14 @@ def render_clips_mp4(
     music_tracks: list[tuple[Path, int, int, int]] | None = None,
     audio_overlays: list[AudioOverlay] | None = None,
     vertical: bool = False,
+    reel_fit: bool = False,
+    reel_blur_fill: bool = False,
     hook_text: str | None = None,
     disclosure_text: str | None = None,
     caption_ass: str | None = None,
+    caption_srt: str | None = None,
     video_transitions: list[VideoTransition] | None = None,
+    loudnorm: bool = False,
 ) -> None:
     """Trim each clip by frame range (end-exclusive) and concat into one MP4.
 
@@ -276,6 +483,34 @@ def render_clips_mp4(
     the ``reel_files`` cleanup list, and removed after the render regardless of
     success or failure.  Defaults to ``None`` (no captions, byte-identical to
     the pre-R1.2 behaviour).
+
+    ``caption_srt`` is an optional complete SRT document string (as returned by
+    ``sequence_transcript_to_srt``).  When set, the subtitles are burned into
+    the output using the ffmpeg ``subtitles=`` filter.  The file is written next
+    to *dest*, cleaned up afterwards, and the ``subtitles=`` filter is appended
+    after any ASS caption filter.  Defaults to ``None`` (off).  When both
+    ``caption_ass`` and ``caption_srt`` are provided, ASS takes precedence and
+    the SRT is ignored.
+
+    ``loudnorm`` (default ``False``) appends an EBU R128 ``loudnorm`` stage
+    (``I=-14:TP=-1.5:LRA=11`` — the common social-media loudness target) as the
+    final step of the audio graph when the output has audio.  With it off (or no
+    audio) the audio graph is byte-identical to the pre-loudnorm behaviour.
+
+    ``reel_fit`` (default ``False``) switches the vertical reframe from center-crop to
+    letterbox fit when ``vertical=True``.  Use for screencasts or any content where
+    center-crop would slice off readable text.  Has no effect when ``vertical=False``.
+
+    ``reel_blur_fill`` (default ``False``) switches to *blurred-background fill* mode when
+    ``vertical=True``.  The source frame is scaled to fit 1080×1920 (no cropping), and the
+    top/bottom dead space is filled with a heavily blurred, scale-to-cover copy of the same
+    frame.  This produces the Instagram/TikTok "reel fill" look instead of black bars.
+    Precedence: ``reel_blur_fill`` > ``reel_fit`` > center-crop (default).  Has no effect
+    when ``vertical=False`` or when ``vertical=True`` but ``reel_blur_fill=False``.
+    Because the blur-fill requires a ``split``/``overlay`` sub-graph it is wired directly
+    into the ``filter_complex`` string rather than through the comma-chain returned by
+    :func:`reel_video_chain` — drawtext and ASS captions are still applied on top of the
+    composited 1080×1920 stream, so caption output is identical to the other vertical modes.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
@@ -316,14 +551,35 @@ def render_clips_mp4(
         reel_files.append(ass_path)
         ass_basename = ass_path.name
 
+    # SRT burn-in: only used when no ASS captions are present (ASS takes precedence).
+    srt_basename: str | None = None
+    if caption_srt and not caption_ass:
+        srt_path = dest.parent / f"{dest.stem}.export_caption.srt"
+        srt_path.write_text(caption_srt, encoding="utf-8")
+        reel_files.append(srt_path)
+        srt_basename = srt_path.name
+
     try:
+        # Determine which vertical reframe mode is active.  Precedence:
+        #   reel_blur_fill (split/overlay) > reel_fit (letterbox) > center-crop (default).
+        # reel_blur_fill requires a split/overlay sub-graph that cannot be expressed as a
+        # simple comma chain, so it is wired directly into filter_complex (see below).
+        # reel_video_chain is called without vertical=True when blur-fill handles reframing,
+        # so it only emits the drawtext/caption chain without any crop/scale/pad filters.
+        use_blur_fill = vertical and reel_blur_fill
         reel = reel_video_chain(
-            vertical=vertical,
+            vertical=vertical and not use_blur_fill,
+            reel_fit=reel_fit,
             hook_textfile=hook_tf,
             disclosure_textfile=disc_tf,
             font=resolve_font(),
         )
-        caption_filter = f"ass={ass_basename}" if ass_basename else ""
+        if ass_basename:
+            caption_filter = f"ass={ass_basename}"
+        elif srt_basename:
+            caption_filter = f"subtitles={srt_basename}"
+        else:
+            caption_filter = ""
         if has_crossfade:
             # Real cross-dissolve: pairwise xfade/acrossfade fold with reserve overlap.
             fold_parts, v_label, a_label = _xfade_base_graph(
@@ -334,10 +590,23 @@ def render_clips_mp4(
                 rate_num=rate_num,
                 rate_den=rate_den,
             )
-            post = ",".join(p for p in (reel, caption_filter) if p)
-            fold_parts.append(
-                f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
-            )
+            if use_blur_fill:
+                # Insert blur-fill sub-graph between the xfade output and captions.
+                # The sub-graph takes [v_label] → [_rbout]; captions are applied after.
+                blur_in = f"[{v_label}]"
+                blur_out = "[_rbout]"
+                blur_graph = reel_blur_fill_graph(blur_in, blur_out)
+                fold_parts.append(blur_graph)
+                post_caption = ",".join(p for p in (reel, caption_filter) if p)
+                if post_caption:
+                    fold_parts.append(f"{blur_out}{post_caption}[out]")
+                else:
+                    fold_parts.append(f"{blur_out}null[out]")
+            else:
+                post = ",".join(p for p in (reel, caption_filter) if p)
+                fold_parts.append(
+                    f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
+                )
             if has_base_audio and a_label is not None:
                 fold_parts.append(f"[{a_label}]anull[abase]")
             parts = ";".join(fold_parts)
@@ -371,17 +640,50 @@ def render_clips_mp4(
             transition_chain = _video_transition_chain(
                 video_transitions, rate_num=rate_num, rate_den=rate_den
             )
-            post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
-            concat_out = "[vcat]" if post else "[out]"
-            if has_base_audio:
-                parts = (
-                    ";".join(filt)
-                    + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
-                )
+            if use_blur_fill:
+                # Blur-fill path: concat output goes to [vcat], blur-fill sub-graph takes it
+                # to [_rbout], then caption filters (drawtext/ass) are applied after.
+                # transition_chain still applies before the concat output if present.
+                pre_blur = ",".join(p for p in (transition_chain,) if p)
+                concat_out = "[vcat]"
+                if has_base_audio:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
+                    )
+                else:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+                    )
+                # Apply transition chain (e.g. fade) to vcat before blur-fill if any.
+                blur_in_label = "[vcat]"
+                if pre_blur:
+                    parts += f";[vcat]{pre_blur}[_rbtrans]"
+                    blur_in_label = "[_rbtrans]"
+                blur_graph = reel_blur_fill_graph(blur_in_label, "[_rbout]")
+                parts += f";{blur_graph}"
+                # Drawtext and ASS captions are applied on the composited 1080×1920 stream.
+                post_caption = ",".join(p for p in (reel, caption_filter) if p)
+                if post_caption:
+                    parts += f";[_rbout]{post_caption}[out]"
+                else:
+                    parts += ";[_rbout]null[out]"
             else:
-                parts = ";".join(filt) + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
-            if post:
-                parts += f";[vcat]{post}[out]"
+                post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
+                concat_out = "[vcat]" if post else "[out]"
+                if has_base_audio:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=1{concat_out}[abase]"
+                    )
+                else:
+                    parts = (
+                        ";".join(filt)
+                        + f";{concat_in}concat=n={len(clips)}:v=1:a=0{concat_out}"
+                    )
+                if post:
+                    parts += f";[vcat]{post}[out]"
 
         audio_maps: list[str] = []
         overlays = [*_music_overlays(music_tracks), *(audio_overlays or [])]
@@ -442,15 +744,33 @@ def render_clips_mp4(
                 parts += f";[{idx}:a]" + ",".join(chain) + label
                 audio_labels.append(label)
 
+        # Assemble the final audio graph. With loudnorm on, the mixed/single track is folded
+        # one extra stage through an EBU R128 loudnorm filter (social standard -14 LUFS) before
+        # the final map; with it off this stage is skipped.
+        apply_loudnorm = loudnorm and bool(audio_labels)
+        # The penultimate label feeds the mandatory format-pin stage below. loudnorm (when on)
+        # writes into it; otherwise the single-track anull / multi-track amix does.
+        format_in = "[aout_pre]"
         if len(audio_labels) == 1:
-            # Single track — route directly to [aout] (no amix needed).
-            parts += f";{audio_labels[0]}anull[aout]"
+            # Single track — route to the format-pin input (no amix needed).
+            parts += f";{audio_labels[0]}anull{format_in}"
         elif len(audio_labels) > 1:
             joined = "".join(audio_labels)
-            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0[aout]"
+            parts += f";{joined}amix=inputs={len(audio_labels)}:normalize=0{format_in}"
+
+        if apply_loudnorm:
+            # EBU R128 two-pass-style single-pass loudnorm; I/TP/LRA are the common social target.
+            # loudnorm resamples internally (often to 192k/96k), so it MUST feed the pin below.
+            parts += ";[aout_pre]loudnorm=I=-14:TP=-1.5:LRA=11[aout_loud]"
+            format_in = "[aout_loud]"
 
         if audio_labels:
-            audio_maps = ["-map", "[aout]", "-c:a", "aac"]
+            # Pin the FINAL audio stream to one encoder-safe format at the single sink, regardless
+            # of source rate (44.1k/48k/96k from loudnorm) or path (single clip, amix, acrossfade).
+            # acrossfade/loudnorm/mixed sources otherwise leave an inconsistent rate that the AAC
+            # encoder at fixed params rejects (-22 Invalid argument). aresample 48k->48k is a no-op.
+            parts += f";{format_in}aresample=48000,aformat=channel_layouts=stereo[aout]"
+            audio_maps = ["-map", "[aout]", "-c:a", "aac", "-ar", "48000", "-ac", "2"]
 
         ff_args = [
             *inputs,
@@ -472,3 +792,229 @@ def render_clips_mp4(
     finally:
         for reel_file in reel_files:
             reel_file.unlink(missing_ok=True)
+
+
+def render_multilane_mp4(
+    lane_clip_rows: list[list[tuple[Path, int, int, int, int]]],
+    dest: Path,
+    *,
+    rate_num: int,
+    rate_den: int,
+    music_tracks: list[tuple[Path, int, int, int]] | None = None,
+    audio_overlays: list[AudioOverlay] | None = None,
+    video_transitions: list[VideoTransition] | None = None,
+    loudnorm: bool = False,
+) -> None:
+    """Render a multi-lane timeline to MP4 using an overlay compositing filter graph.
+
+    ``lane_clip_rows`` is a list-of-lists indexed by lane number.  Each inner list contains
+    ``(path, src_in, src_out, seq_in, seq_out_excl)`` tuples for the clips on that lane,
+    already sorted by ``seq_in``.  The outer list must have at least 2 entries (for lane 0 and
+    at least one overlay lane); lanes with no clips should be represented as empty lists and are
+    skipped by the compositor.
+
+    **Single-lane regression:** this function is NEVER called when only lane 0 has clips — the
+    caller (``handlers.py``) routes single-lane timelines to ``render_clips_mp4`` unchanged to
+    preserve byte-identity.
+
+    Lane 0 is the opaque base chain; lanes ≥ 1 are transparent overlay chains stacked on top in
+    ascending lane order (lane 1 directly above lane 0, lane 2 above lane 1, etc.).  Gaps (time
+    spans on a lane with no clip) are filled with colour sources: opaque black for lane 0,
+    transparent black (``alpha=0``) for overlay lanes so lower lanes show through.
+
+    Audio comes only from lane-0 clips (V1) — overlay clips are silent B-roll in v1.  Music and
+    ``audio_overlays`` work exactly as in ``render_clips_mp4``.  Captions and reel features are
+    NOT exposed here (v1 scope: composite the video stack; captions/reels remain single-lane).
+    """
+    # Compute total sequence length = max seq_out across ALL lanes.
+    total_seq = max(
+        (seq_out for lane in lane_clip_rows for _, _, _, _, seq_out in lane),
+        default=0,
+    )
+    if total_seq <= 0:
+        raise ValueError("multi-lane render: total sequence length is 0")
+
+    # Drop empty lanes (keep the lane index order; only lanes with clips participate in overlay).
+    populated_lanes = [(idx, clips) for idx, clips in enumerate(lane_clip_rows) if clips]
+    if not populated_lanes:
+        raise ValueError("multi-lane render: no clips in any lane")
+
+    # Build LaneSegment lists for each populated lane.
+    lane_segments_list: list[list[LaneSegment]] = []
+    for _lane_idx, clips in populated_lanes:
+        segs = build_lane_segments(clips, total_seq)
+        lane_segments_list.append(segs)
+
+    # Gather real-clip paths for input ordering, detect base audio.
+    # Real clips across all lanes in the order build_multilane_filtergraph will reference them.
+    # We pre-scan to build the -i list in the same order.
+    lane0_clips_for_audio: list[tuple[Path, int, int]] = [
+        (p, si, so)
+        for p, si, so, _, _ in (populated_lanes[0][1] if populated_lanes else [])
+    ]
+    audio_flags = [_source_has_audio(src) for src, _, _ in lane0_clips_for_audio]
+    has_base_audio = any(audio_flags)
+
+    # Build overlay inputs list first (music_tracks + audio_overlays) so we know the count
+    # before the video inputs (which must come first to match filter indices).
+    overlays = [*_music_overlays(music_tracks), *(audio_overlays or [])]
+
+    # Build filter graph.  Real clip inputs start at index 0 in the filter (no audio-overlay
+    # inputs come before video inputs — audio overlays are separate -i entries appended AFTER
+    # the video inputs; their indices are computed after the video-input count is known).
+    real_clips, filtergraph, vout_label = build_multilane_filtergraph(
+        lane_segments_list,
+        rate_num=rate_num,
+        rate_den=rate_den,
+        base_input_offset=0,
+    )
+
+    # Video inputs: one per real clip segment, in the order they appear in the filtergraph.
+    inputs: list[str] = []
+    for path, _, _ in real_clips:
+        inputs += ["-i", str(path)]
+
+    n_video_inputs = len(real_clips)
+
+    # Reel post-processing and captions are not wired here (v1 scope).
+    # We must close the filter with [vout] -> [out] for the -map.
+    parts = filtergraph + ";[vout]null[out]"
+
+    # Audio: lane-0 clips only.  Rebuild per-segment audio chains using the same logic as
+    # render_clips_mp4 but only for the lane-0 real-clip segments (in input-index order).
+    # Lane-0 clips appear first in real_clips (build_multilane_filtergraph processes lanes
+    # in order), so input indices for lane-0 segments start at 0.
+    audio_labels: list[str] = []
+    if has_base_audio:
+        # Build audio trim chain for each lane-0 clip segment.
+        # The lane-0 clip segments occupy input indices 0 .. lane0_real_count-1.
+        lane0_input_map: list[int] = []
+        input_cursor = 0
+        for seg in lane_segments_list[0]:
+            if seg.path is not None:
+                lane0_input_map.append(input_cursor)
+                input_cursor += 1
+            # gap segments have no input
+        # Advance cursor through other lanes (not used for audio but needed for correctness check).
+
+        abase_parts: list[str] = []
+        a_idx = 0
+        for local_seg_idx, seg in enumerate(lane_segments_list[0]):
+            if seg.path is None:
+                # Gap: silent padding
+                dur_s = _seconds(seg.seq_duration * rate_den / rate_num)
+                abase_parts.append(
+                    f"anullsrc=channel_layout=stereo:sample_rate=48000,"
+                    f"atrim=duration={dur_s},asetpts=PTS-STARTPTS[aba{a_idx}]"
+                )
+                a_idx += 1
+            else:
+                input_i = lane0_input_map[sum(
+                    1 for s in lane_segments_list[0][:local_seg_idx] if s.path is not None
+                )]
+                fin = seg.src_in
+                fout = seg.src_out
+                start_s = _seconds(fin * rate_den / rate_num)
+                end_s = _seconds(fout * rate_den / rate_num)
+                dur_s = _seconds((fout - fin) * rate_den / rate_num)
+                if audio_flags[sum(
+                    1 for s in lane_segments_list[0][:local_seg_idx] if s.path is not None
+                )]:
+                    abase_parts.append(
+                        f"[{input_i}:a]atrim=start={start_s}:end={end_s},"
+                        f"asetpts=PTS-STARTPTS[aba{a_idx}]"
+                    )
+                else:
+                    abase_parts.append(
+                        f"anullsrc=channel_layout=stereo:sample_rate=48000,"
+                        f"atrim=duration={dur_s},asetpts=PTS-STARTPTS[aba{a_idx}]"
+                    )
+                a_idx += 1
+
+        # Concat all audio segments for lane 0.
+        n_asegs = a_idx
+        if n_asegs == 1:
+            parts += ";[aba0]anull[abase]"
+        else:
+            joined_a = "".join(f"[aba{k}]" for k in range(n_asegs))
+            parts += f";{joined_a}concat=n={n_asegs}:v=0:a=1[abase]"
+        for seg_part in abase_parts:
+            parts += f";{seg_part}"
+
+        base_label = "[abase]"
+        for i, overlay in enumerate(overlays):
+            ducking = (
+                0
+                if overlay.mix_mode in {"replace_original", "mute_original"}
+                else overlay.ducking_percent
+            )
+            if ducking >= 100:
+                continue
+            next_label = f"[aduck{i}]"
+            duck_start = _seconds(overlay.seq_in_frame * rate_den / rate_num)
+            duck_end = _seconds(overlay.seq_out_frame_exclusive * rate_den / rate_num)
+            parts += (
+                f";{base_label}volume=enable='between(t,{duck_start},{duck_end})'"
+                f":volume={ducking / 100}{next_label}"
+            )
+            base_label = next_label
+        audio_labels.append(base_label)
+
+    # Audio overlay inputs (music, audio clips) — appended after video inputs.
+    if overlays:
+        for i, overlay in enumerate(overlays):
+            duration_frames = overlay.seq_out_frame_exclusive - overlay.seq_in_frame
+            if duration_frames <= 0:
+                continue
+            idx = n_video_inputs + i
+            inputs += ["-i", str(overlay.path)]
+            asset_start = overlay.asset_in_frame * rate_den / rate_num
+            duration = duration_frames * rate_den / rate_num
+            start_ms = overlay.seq_in_frame * rate_den / rate_num * 1000
+            fade_in = overlay.fade_in_frames * rate_den / rate_num
+            fade_out = overlay.fade_out_frames * rate_den / rate_num
+            label = f"[a{i}]"
+            chain = [
+                f"volume={overlay.gain_percent / 100}",
+                f"atrim=start={_seconds(asset_start)}:duration={_seconds(duration)}",
+                "asetpts=PTS-STARTPTS",
+            ]
+            if fade_in > 0:
+                chain.append(f"afade=t=in:st=0:d={_seconds(fade_in)}")
+            if fade_out > 0:
+                fade_start = max(0.0, duration - fade_out)
+                chain.append(f"afade=t=out:st={_seconds(fade_start)}:d={_seconds(fade_out)}")
+            chain.append(f"adelay={start_ms:.6f}|{start_ms:.6f}")
+            parts += f";[{idx}:a]" + ",".join(chain) + label
+            audio_labels.append(label)
+
+    # Final audio mix.
+    apply_loudnorm = loudnorm and bool(audio_labels)
+    format_in = "[aout_pre]"
+    if len(audio_labels) == 1:
+        parts += f";{audio_labels[0]}anull{format_in}"
+    elif len(audio_labels) > 1:
+        joined_al = "".join(audio_labels)
+        parts += f";{joined_al}amix=inputs={len(audio_labels)}:normalize=0{format_in}"
+
+    audio_maps: list[str] = []
+    if apply_loudnorm:
+        parts += ";[aout_pre]loudnorm=I=-14:TP=-1.5:LRA=11[aout_loud]"
+        format_in = "[aout_loud]"
+
+    if audio_labels:
+        parts += f";{format_in}aresample=48000,aformat=channel_layouts=stereo[aout]"
+        audio_maps = ["-map", "[aout]", "-c:a", "aac", "-ar", "48000", "-ac", "2"]
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    ff_args = [
+        *inputs,
+        "-filter_complex", parts,
+        "-map", "[out]",
+        *audio_maps,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-r", f"{rate_num}/{rate_den}",
+        str(dest),
+    ]
+    run_ffmpeg(ff_args)

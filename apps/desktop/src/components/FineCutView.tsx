@@ -1,14 +1,18 @@
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { type Asset, type BoundaryIdentity, type LauraClient, type Segment, type Timeline, type TimelineAudioClip, type VoiceoverVoice } from "../api";
+import { qk } from "../cache/queryKeys";
 import { useScenes } from "../hooks/useScenes";
 import { useRoughCutTranscript } from "../hooks/useRoughCutTranscript";
 import { useJobStatus } from "../hooks/useJobStatus";
 import { crossfadeFix, findFirstSameSourceEdge } from "../shared/smoothEdge";
+import { groupCutWordsByScene } from "../shared/sceneTranscript";
 import { ContinuousTranscript } from "./ContinuousTranscript";
 import { EditorialToolsBar } from "./EditorialToolsBar";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
+import { TranscriptStatusBanner } from "./TranscriptStatusBanner";
 
 /**
  * Feinschnitt: edit the CONTINUOUS rough-cut directly (spec §3/§4.1). Scenes are jump markers,
@@ -28,6 +32,9 @@ export function FineCutView({
   asset,
   roughCutId,
   segments,
+  transcriptNote = null,
+  transcriptBusy = false,
+  onGenerateTranscript = () => undefined,
   currentFrame,
   seek,
   onSeek,
@@ -37,6 +44,9 @@ export function FineCutView({
   asset: Asset | null;
   roughCutId: string | null;
   segments: Segment[];
+  transcriptNote?: string | null;
+  transcriptBusy?: boolean;
+  onGenerateTranscript?: () => void;
   currentFrame: number;
   /**
    * External seek in SEQUENCE frames. A new `{ frame }` object is passed by App.tsx each time the
@@ -69,6 +79,8 @@ export function FineCutView({
   // Voice picker state — selection is the only explicit editorial choice (spec §10).
   const [voices, setVoices] = useState<VoiceoverVoice[]>([]);
   const [voiceId, setVoiceId] = useState<string | null>(null);
+  // Collapse the scene-jump rail to widen the editor (panels hideable via click).
+  const [scenesCollapsed, setScenesCollapsed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,31 +118,21 @@ export function FineCutView({
   }, [client, roughCutId, pendingEdge, reloadRc]);
 
   // Load audio clips from the rough-cut timeline so VO + music play in preview.
-  // Extracted into a useCallback so it can be re-triggered on VO job completion
-  // without changing [client, roughCutId] (Fix 1).
-  const [audioClips, setAudioClips] = useState<TimelineAudioClip[]>([]);
-  const reloadAudioClips = useCallback(() => {
-    if (!roughCutId) {
-      setAudioClips([]);
-      return;
-    }
-    let cancelled = false;
-    client
-      .listTimelineAudioClips(roughCutId)
-      .then((cs) => {
-        if (!cancelled) setAudioClips(cs);
-      })
-      .catch(() => {
-        if (!cancelled) setAudioClips([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client, roughCutId]);
+  // Cached under qk.audioClips(roughCutId) — invalidated by every clip/edit op that can
+  // change the A-track (deleteRange, cutAt, replaceSpanText→VO) and explicitly after VO
+  // job completion (Fix 1). The same key is used by all mutation handlers via queryClient.
+  const queryClient = useQueryClient();
+  const audioClipsQuery = useQuery<TimelineAudioClip[]>({
+    queryKey: qk.audioClips(roughCutId ?? "none"),
+    queryFn: () => client.listTimelineAudioClips(roughCutId!),
+    enabled: roughCutId !== null,
+  });
+  const audioClips = audioClipsQuery.data ?? [];
 
-  useEffect(() => {
-    return reloadAudioClips();
-  }, [reloadAudioClips]);
+  const reloadAudioClips = useCallback(() => {
+    if (!roughCutId) return;
+    void queryClient.invalidateQueries({ queryKey: qk.audioClips(roughCutId) });
+  }, [queryClient, roughCutId]);
 
   // Track the most recently dispatched VO job and re-fetch audio clips when it
   // succeeds so the new VO becomes audible in preview and the disclosure strip
@@ -148,6 +150,17 @@ export function FineCutView({
   // Fallback scene list from useScenes if the hook hasn't populated rc.scenes yet.
   const { scenes: scenesFromHook } = useScenes(client, roughCutId);
   const jumpScenes = rc.scenes.length > 0 ? rc.scenes : scenesFromHook;
+
+  // First few transcript words per scene, so the scene chips are scannable ("Szene 3 · also hier…")
+  // instead of generic labels. Empty until the transcript exists.
+  const sceneFirstWords = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const g of groupCutWordsByScene(rc.words, jumpScenes)) {
+      const text = g.words.slice(0, 6).map((w) => w.text).join(" ");
+      if (text) map.set(g.scene.id, text);
+    }
+    return map;
+  }, [rc.words, jumpScenes]);
 
   const clips = useMemo(() => rc.clips, [rc.clips]);
 
@@ -201,24 +214,50 @@ export function FineCutView({
   }
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-px bg-bezel">
-      {/* Left: scene jump navigation (read-only — no openScene materialization) */}
-      <aside className="flex flex-col gap-1 overflow-auto bg-surface-0 p-2">
-        {jumpScenes.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => onSeek(s.seq_in_frame)}
-            className="truncate rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-2"
-          >
-            {s.name}
-          </button>
-        ))}
-      </aside>
+    <div className="flex min-h-0 flex-1 flex-col bg-bezel">
+      {/* Scene navigation as a horizontal, scrollable slider (hideable via the toggle).
+          Replaces the tall left column so scenes don't dominate the window height and you can
+          slide through them. Click a scene chip to seek the continuous rough-cut. */}
+      <div className="flex shrink-0 items-center gap-1 border-b border-bezel bg-surface-0 px-2 py-1.5">
+        <button
+          type="button"
+          onClick={() => setScenesCollapsed((v) => !v)}
+          title={scenesCollapsed ? "Szenen einblenden" : "Szenen ausblenden"}
+          aria-label={scenesCollapsed ? "Szenen einblenden" : "Szenen ausblenden"}
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-content-faint hover:bg-surface-2 hover:text-content-strong"
+        >
+          {scenesCollapsed ? "Szenen ▸" : "Szenen ◂"}
+        </button>
+        {!scenesCollapsed && (
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {jumpScenes.length === 0 ? (
+              <span className="px-1 text-[11px] text-content-faint">Noch keine Szenen</span>
+            ) : (
+              jumpScenes.map((s) => {
+                const preview = sceneFirstWords.get(s.id);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => onSeek(s.seq_in_frame)}
+                    title={preview ? `${s.name} · ${preview}` : s.name}
+                    className="flex shrink-0 items-baseline gap-1 rounded bg-surface-2 px-2 py-1 text-[11px] hover:bg-accent/30"
+                  >
+                    <span className="font-medium text-content-muted">{s.name}</span>
+                    {preview && (
+                      <span className="max-w-[9rem] truncate text-content-faint">{preview}</span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
 
-      {/* Center: continuous rough-cut player + timeline + transcript */}
-      <section className="flex min-h-0 flex-col">
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-black/40 p-4">
+      {/* Continuous rough-cut player + timeline + transcript (now full width). */}
+      <section className="flex min-h-0 flex-1 flex-col">
+        <div className="flex h-[42vh] min-h-[240px] shrink-0 items-center justify-center overflow-hidden bg-black/40 p-3">
           <SequencePlayer
             client={client}
             projectId={asset?.project_id ?? null}
@@ -265,23 +304,37 @@ export function FineCutView({
         <TimelineBar
           client={client}
           timeline={syntheticTimeline}
-          onChange={() => void rc.reload()}
+          onChange={() => {
+            void rc.reload();
+            reloadAudioClips();
+          }}
           onScrub={(_assetId, frame) => onSeek(frame)}
           onSelect={() => undefined}
           segments={segments}
           currentFrame={currentFrame}
+          currentFrameDomain="sequence"
         />
 
-        <ContinuousTranscript
-          words={rc.words}
-          scenes={jumpScenes}
-          selection={rc.selection}
-          onSelectionChange={rc.setSelection}
-          onDeleteSelection={(a, b) => void rc.deleteRange(a, b)}
-          onCutAt={(f) => void rc.cutAt(f)}
-          onSeek={onSeek}
-          onReplaceText={(s, e, t) => void rc.replaceSpanText(s, e, t, voiceId ?? "")}
-        />
+        {rc.words.length === 0 && (
+          <TranscriptStatusBanner
+            note={transcriptNote}
+            busy={transcriptBusy}
+            onGenerate={onGenerateTranscript}
+          />
+        )}
+
+        <div className="min-h-0 flex-1">
+          <ContinuousTranscript
+            words={rc.words}
+            scenes={jumpScenes}
+            selection={rc.selection}
+            onSelectionChange={rc.setSelection}
+            onDeleteSelection={(a, b) => void rc.deleteRange(a, b)}
+            onCutAt={(f) => void rc.cutAt(f)}
+            onSeek={onSeek}
+            onReplaceText={(s, e, t) => void rc.replaceSpanText(s, e, t, voiceId ?? "")}
+          />
+        </div>
 
         {rc.error && (
           <div className="px-3 py-1 text-xs text-status-err">{rc.error}</div>

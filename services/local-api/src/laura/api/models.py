@@ -418,7 +418,7 @@ class ValidateOut(BaseModel):
 
 class OperationRequest(BaseModel):
     # append_from_words|append_clip|insert_clip|delete|lift|set_speed|split|trim|move|
-    # delete_words|set_audio_offset
+    # delete_words|set_audio_offset|place_clip
     op: str
     asset_id: str | None = None
     src_in_frame: int | None = None
@@ -428,12 +428,13 @@ class OperationRequest(BaseModel):
     seq_in_frame: int | None = None
     seq_out_frame_exclusive: int | None = None
     at_seq_frame: int | None = None
-    lane: int = 0
+    lane: int = 0  # place_clip: target (destination) lane; other ops: lane selector
+    lane_src: int | None = None  # place_clip: source lane identifying the clip to move (§1.3)
     speed_num: int | None = None
     speed_den: int | None = None
     new_src_in_frame: int | None = None          # trim: new source in point
     new_src_out_frame_exclusive: int | None = None  # trim: new source out point
-    to_seq_frame: int | None = None              # move: target sequence position
+    to_seq_frame: int | None = None              # move/place_clip: target sequence position
     # set_audio_offset: the LEADING-edge L/J audio offset of the clip at at_seq_frame, expressed in
     # FRAMES (the UI's native drag unit). The backend projects it onto canonical samples via the
     # project sequence rate (invariant #3), mirroring the accept endpoint; > 0 = L-cut (audio
@@ -460,6 +461,8 @@ class ClipIn(BaseModel):
     # Signed per-clip LEADING-edge audio-vs-video offset in samples (invariant #3); 0 = hard cut.
     # Restored verbatim from a snapshot so undo/redo brings back the L/J split as the live column.
     audio_offset_samples: int = 0
+    # Clip role restored verbatim from a snapshot so undo/redo preserves replace-overlay clips.
+    role: str = "base"
 
 
 class SetClipsRequest(BaseModel):
@@ -726,6 +729,10 @@ class RenderRequest(BaseModel):
     # Optional quality gate: 422 when persisted quality is computed and below this threshold.
     # None means no gate (unverified stamp applied when quality is not computed).
     min_quality: float | None = Field(default=None, ge=0.0, le=1.0)
+    # When True, burn the sequence transcript as SRT subtitles into the rendered MP4.
+    # Only effective for format="mp4"; other formats ignore this flag.
+    # Defaults to False so existing exports are byte-identical to before.
+    burn_captions: bool = False
 
 
 class ReelRenderRequest(BaseModel):
@@ -1102,3 +1109,61 @@ class RecipeFromTraceOut(BaseModel):
     recipe_hash: str | None
     verified: bool
     available: bool
+
+
+# --- shorts candidates (auto-cutter S5b) ------------------------------------
+
+
+class ExtractShortsRequest(BaseModel):
+    """Optional overrides for the ``shorts.extract`` job. All omitted → module defaults."""
+
+    min_duration_s: float | None = Field(default=None, gt=0)
+    max_duration_s: float | None = Field(default=None, gt=0)
+    max_candidates: int | None = Field(default=None, gt=0)
+
+
+class ExtractShortsAccepted(BaseModel):
+    """Returned when a ``shorts.extract`` job is enqueued for an asset."""
+
+    job_id: str
+    analysis_run_id: str
+
+
+class RenderShortRequest(BaseModel):
+    """Options for rendering one short candidate to a vertical 9:16 MP4.
+
+    ``captions`` burns the candidate's karaoke transcript (default on);
+    ``hook_text`` overlays an optional top-centre hook; ``loudnorm`` applies the
+    EBU R128 social loudness target (default on).
+    """
+
+    captions: bool = True
+    hook_text: str | None = None
+    loudnorm: bool = True
+
+
+class RenderShortAccepted(BaseModel):
+    """Returned when a ``shorts.render`` job is enqueued for a candidate."""
+
+    export_id: str
+    job_id: str
+
+
+class ShortsCandidateOut(BaseModel):
+    """One persisted short candidate (a transcript-safe ``[start, end)`` window + scores)."""
+
+    id: str
+    asset_id: str
+    source_timeline_id: str
+    order_index: int
+    start_frame: int
+    end_frame_exclusive: int
+    start_boundary: str
+    end_boundary: str
+    score: float
+    rejected: bool
+    reject_reason: str | None = None
+    score_breakdown: dict[str, Any] | None = None
+    qa_passed: bool
+    qa_issues: list[str] = Field(default_factory=list)
+    created_at: str

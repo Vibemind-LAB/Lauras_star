@@ -1142,7 +1142,11 @@ def get_word(db: Database, word_id: str) -> dict[str, Any] | None:
 def replace_timeline_clips(
     db: Database, timeline_id: str, rows: list[dict[str, Any]]
 ) -> None:
-    """Atomically replace all clips of a timeline (materialised edit result)."""
+    """Atomically replace all clips of a timeline (materialised edit result).
+
+    Every column including ``role`` is written from the row dict so a replace-overlay clip
+    (role="replace") never silently reverts to the DB default ("base") after an op round-trip.
+    """
     with db.transaction() as conn:
         conn.execute("DELETE FROM timeline_clips WHERE timeline_id=?", (timeline_id,))
         for r in rows:
@@ -1150,13 +1154,13 @@ def replace_timeline_clips(
                 "INSERT INTO timeline_clips (id, timeline_id, asset_id, src_in_frame, "
                 "src_out_frame_exclusive, seq_in_frame, seq_out_frame_exclusive, lane, "
                 "speaker_id, origin_word_start_id, origin_word_end_id, speed_num, speed_den, "
-                "audio_offset_samples) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "audio_offset_samples, role) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (new_id(), timeline_id, r["asset_id"], r["src_in_frame"],
                  r["src_out_frame_exclusive"], r["seq_in_frame"], r["seq_out_frame_exclusive"],
                  r.get("lane", 0), r.get("speaker_id"), r.get("origin_word_start_id"),
                  r.get("origin_word_end_id"), r.get("speed_num", 1), r.get("speed_den", 1),
-                 r.get("audio_offset_samples", 0)),
+                 r.get("audio_offset_samples", 0), r.get("role", "base")),
             )
 
 
@@ -1498,6 +1502,14 @@ def replace_scenes(
     ordered. Reassigns ids + ``order_index``; names are positional ("Szene N")."""
     now = utcnow_iso()
     with db.transaction() as conn:
+        # Drop sequence references to the scenes we're about to delete. Regenerated scenes get
+        # brand-new ids, so leaving the old sequence_items orphans them — they render as "?" and
+        # 422 a later set_sequence_scenes. Cleaning here keeps cut data in sync at the source.
+        conn.execute(
+            "DELETE FROM sequence_items WHERE scene_id IN "
+            "(SELECT id FROM scenes WHERE source_timeline_id=?)",
+            (source_timeline_id,),
+        )
         conn.execute("DELETE FROM scenes WHERE source_timeline_id=?", (source_timeline_id,))
         for i, (sin, sout) in enumerate(ranges):
             conn.execute(
@@ -1695,6 +1707,116 @@ def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
         scene["thumb_frame"] = int(match["src_in_frame"]) if match else 0
         out.append(scene)
     return out
+
+
+# --- shorts candidates -------------------------------------------------------
+
+def replace_shorts_candidates(
+    db: Database,
+    project_id: str,
+    asset_id: str,
+    source_timeline_id: str,
+    candidates: list[Any],
+) -> None:
+    """Replace all shorts candidates for *asset_id* with *candidates*.
+
+    Each element of *candidates* must expose (as attribute or dict key):
+    ``start_frame``, ``end_frame_exclusive``, ``start_boundary``, ``end_boundary``,
+    ``score``, ``rejected`` (bool), ``reject_reason`` (str | None),
+    ``score_breakdown`` (dict → JSON), ``qa_passed`` (bool),
+    ``qa_issues`` (list → JSON).
+
+    Existing rows for the asset are deleted and replaced in one transaction;
+    ``order_index`` is positional (0-based). New ``id`` and ``created_at`` are
+    assigned per row. ``source_timeline_id`` is recorded as metadata but is NOT
+    used as the delete key — deletion is keyed on ``asset_id`` so that re-extraction
+    with a different timeline (e.g. first run used asset-id fallback, later a real
+    rough_cut timeline exists) performs a true per-asset wholesale replace and never
+    accumulates stale rows from a prior ``source_timeline_id``.
+    """
+    now = utcnow_iso()
+
+    def _get(obj: Any, key: str) -> Any:
+        return obj[key] if isinstance(obj, dict) else getattr(obj, key)
+
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM shorts_candidates WHERE asset_id=?",
+            (asset_id,),
+        )
+        for i, c in enumerate(candidates):
+            conn.execute(
+                "INSERT INTO shorts_candidates ("
+                "id, project_id, asset_id, source_timeline_id, order_index, "
+                "start_frame, end_frame_exclusive, start_boundary, end_boundary, "
+                "score, rejected, reject_reason, score_breakdown, "
+                "qa_passed, qa_issues, created_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    new_id(),
+                    project_id,
+                    asset_id,
+                    source_timeline_id,
+                    i,
+                    int(_get(c, "start_frame")),
+                    int(_get(c, "end_frame_exclusive")),
+                    str(_get(c, "start_boundary")),
+                    str(_get(c, "end_boundary")),
+                    float(_get(c, "score")),
+                    int(bool(_get(c, "rejected"))),
+                    _get(c, "reject_reason"),
+                    json.dumps(_get(c, "score_breakdown")),
+                    int(bool(_get(c, "qa_passed"))),
+                    json.dumps(_get(c, "qa_issues")),
+                    now,
+                ),
+            )
+
+
+def _decode_short_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    row["rejected"] = bool(row["rejected"])
+    row["qa_passed"] = bool(row["qa_passed"])
+    row["score_breakdown"] = json.loads(row["score_breakdown"] or "null")
+    row["qa_issues"] = json.loads(row["qa_issues"] or "[]")
+    return row
+
+
+def list_shorts_candidates(
+    db: Database, source_timeline_id: str
+) -> list[dict[str, Any]]:
+    """Return all shorts candidates for *source_timeline_id*, ordered by ``order_index``."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM shorts_candidates WHERE source_timeline_id=? ORDER BY order_index",
+            (source_timeline_id,),
+        ).fetchall()
+    return [_decode_short_candidate(dict(r)) for r in rows]
+
+
+def list_shorts_candidates_by_asset(
+    db: Database, asset_id: str
+) -> list[dict[str, Any]]:
+    """Return all shorts candidates for *asset_id*, ordered by ``order_index``.
+
+    Reads via the asset index (rather than the source-timeline key) so the API can list
+    an asset's candidates without first resolving its binding timeline. Same JSON / bool
+    deserialisation as :func:`list_shorts_candidates`.
+    """
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM shorts_candidates WHERE asset_id=? ORDER BY order_index",
+            (asset_id,),
+        ).fetchall()
+    return [_decode_short_candidate(dict(r)) for r in rows]
+
+
+def get_short_candidate(db: Database, candidate_id: str) -> dict[str, Any] | None:
+    """Return one candidate by primary key, or ``None`` if not found."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM shorts_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+    return _decode_short_candidate(dict(row)) if row is not None else None
 
 
 # --- ai runtimes / personas -------------------------------------------------

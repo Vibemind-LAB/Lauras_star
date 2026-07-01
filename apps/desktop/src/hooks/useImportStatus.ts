@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import type { ImportStatus, LauraClient } from "../api";
+import { qk } from "../cache/queryKeys";
 
 const TERMINAL: ReadonlySet<ImportStatus["phase"]> = new Set(["ready", "error", "cancelled"]);
 
@@ -9,35 +10,21 @@ export function useImportStatus(
   assetId: string | null,
   intervalMs = 1000,
 ): ImportStatus | null {
-  const [status, setStatus] = useState<ImportStatus | null>(null);
+  const query = useQuery({
+    queryKey: qk.importStatus(assetId ?? ""),
+    queryFn: () => client.getImportStatus(assetId!),
+    enabled: assetId !== null,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (data !== undefined && TERMINAL.has(data.phase)) return false;
+      return intervalMs;
+    },
+    // Always fetch fresh — the import status changes rapidly while in-flight.
+    staleTime: 0,
+    // On error, keep retrying at the same interval (mirror the original catch-and-reschedule).
+    retryDelay: intervalMs,
+    retry: true,
+  });
 
-  useEffect(() => {
-    if (assetId == null) {
-      setStatus(null);
-      return;
-    }
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const poll = async (): Promise<void> => {
-      try {
-        const s = await client.getImportStatus(assetId);
-        if (!active) return;
-        setStatus(s);
-        if (!TERMINAL.has(s.phase)) {
-          timer = setTimeout(poll, intervalMs);
-        }
-      } catch {
-        if (active) timer = setTimeout(poll, intervalMs);
-      }
-    };
-    void poll();
-
-    return () => {
-      active = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [client, assetId, intervalMs]);
-
-  return status;
+  return assetId !== null ? (query.data ?? null) : null;
 }

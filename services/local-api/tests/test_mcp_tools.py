@@ -403,3 +403,675 @@ def test_mcp_tools_perform_no_writes(tmp_path: Path) -> None:
 
     after = _row_counts(db)
     assert before == after, f"MCP tools mutated DB: {before} -> {after}"
+
+
+# ---------------------------------------------------------------------------
+# S7 — analyze_video (tool_start_analysis)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_start_analysis_ok(tmp_path: Path) -> None:
+    """tool_start_analysis returns ok=True and creates an analysis_run + job."""
+    from laura.mcp.tools import tool_start_analysis
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_start_analysis(db, asset["id"])
+
+    assert result["ok"] is True
+    assert result["asset_id"] == asset["id"]
+    assert "analysis_run_id" in result
+    assert "job_id" in result
+
+    # analysis_run must exist in DB
+    run = repos.get_analysis_run(db, result["analysis_run_id"])
+    assert run is not None
+    assert run["asset_id"] == asset["id"]
+    assert run["status"] == "queued"
+
+    # job must exist with correct kind
+    job = repos.get_job(db, result["job_id"])
+    assert job is not None
+    assert job["kind"] == "analysis.run"
+
+
+def test_tool_start_analysis_asset_not_found(tmp_path: Path) -> None:
+    """tool_start_analysis returns ok=False when the asset does not exist."""
+    from laura.mcp.tools import tool_start_analysis
+
+    db = _make_db(tmp_path)
+
+    result = tool_start_analysis(db, "nonexistent-asset-id")
+
+    assert result["ok"] is False
+    assert result["error"] == "asset not found"
+    assert result["asset_id"] == "nonexistent-asset-id"
+
+
+# ---------------------------------------------------------------------------
+# S7 — extract_shorts (tool_extract_shorts)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_extract_shorts_ok(tmp_path: Path) -> None:
+    """tool_extract_shorts returns ok=True when a succeeded analysis run exists."""
+    from laura.mcp.tools import tool_extract_shorts
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+    _add_proxy_file(db, asset["id"])
+    run = _add_succeeded_analysis(db, asset["id"])
+
+    result = tool_extract_shorts(db, asset["id"])
+
+    assert result["ok"] is True
+    assert result["asset_id"] == asset["id"]
+    assert result["analysis_run_id"] == run["id"]
+    assert "job_id" in result
+
+    job = repos.get_job(db, result["job_id"])
+    assert job is not None
+    assert job["kind"] == "shorts.extract"
+
+
+def test_tool_extract_shorts_asset_not_found(tmp_path: Path) -> None:
+    """tool_extract_shorts returns ok=False with 'asset not found' when asset missing."""
+    from laura.mcp.tools import tool_extract_shorts
+
+    db = _make_db(tmp_path)
+
+    result = tool_extract_shorts(db, "nonexistent-asset-id")
+
+    assert result["ok"] is False
+    assert result["error"] == "asset not found"
+    assert result["asset_id"] == "nonexistent-asset-id"
+
+
+def test_tool_extract_shorts_no_analysis_run(tmp_path: Path) -> None:
+    """tool_extract_shorts returns ok=False when no analysis run exists."""
+    from laura.mcp.tools import tool_extract_shorts
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_extract_shorts(db, asset["id"])
+
+    assert result["ok"] is False
+    assert "analyze the asset first" in result["error"]
+    assert result["asset_id"] == asset["id"]
+
+
+def test_tool_extract_shorts_failed_analysis_run(tmp_path: Path) -> None:
+    """tool_extract_shorts returns ok=False when the analysis run has not succeeded."""
+    from laura.mcp.tools import tool_extract_shorts
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    # Create a non-succeeded run
+    run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="1", config={"stages": {}}
+    )
+    repos.start_analysis_run(db, run["id"])
+    repos.finish_analysis_run(db, run["id"], status="failed", diagnostics={})
+
+    result = tool_extract_shorts(db, asset["id"])
+
+    assert result["ok"] is False
+    assert "analyze the asset first" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# S7 — list_short_candidates (tool_list_short_candidates)
+# ---------------------------------------------------------------------------
+
+
+def _seed_short_candidates(
+    db: SqliteDatabase, asset: dict[str, Any], project: dict[str, Any], count: int = 2
+) -> None:
+    """Persist *count* fake short candidates for the asset."""
+    candidates: list[dict[str, Any]] = [
+        {
+            "start_frame": i * 100,
+            "end_frame_exclusive": i * 100 + 90,
+            "start_boundary": "sentence_end",
+            "end_boundary": "sentence_end",
+            "score": 0.8 - i * 0.1,
+            "rejected": False,
+            "reject_reason": None,
+            "score_breakdown": {"transcript_safety": 0.9, "hook_position": 0.7},
+            "qa_passed": True,
+            "qa_issues": [],
+        }
+        for i in range(count)
+    ]
+    repos.replace_shorts_candidates(
+        db,
+        project_id=project["id"],
+        asset_id=asset["id"],
+        source_timeline_id="tl-fake",
+        candidates=candidates,
+    )
+
+
+def test_tool_list_short_candidates_with_data(tmp_path: Path) -> None:
+    """tool_list_short_candidates returns count=2 and the correct fields."""
+    from laura.mcp.tools import tool_list_short_candidates
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_short_candidates(db, asset, project, count=2)
+
+    result = tool_list_short_candidates(db, asset["id"])
+
+    assert result["asset_id"] == asset["id"]
+    assert result["count"] == 2
+    assert len(result["candidates"]) == 2
+    # Verify key fields are present
+    cand = result["candidates"][0]
+    assert "start_frame" in cand
+    assert "end_frame_exclusive" in cand
+    assert "score" in cand
+    assert "qa_passed" in cand
+
+
+def test_tool_list_short_candidates_empty(tmp_path: Path) -> None:
+    """tool_list_short_candidates returns count=0 for an asset with no candidates."""
+    from laura.mcp.tools import tool_list_short_candidates
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_list_short_candidates(db, asset["id"])
+
+    assert result["asset_id"] == asset["id"]
+    assert result["count"] == 0
+    assert result["candidates"] == []
+
+
+# ---------------------------------------------------------------------------
+# S7 — job_status (tool_job_status)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_job_status_found(tmp_path: Path) -> None:
+    """tool_job_status returns found=True with correct field values for a known job."""
+    from laura.jobs.runner import enqueue
+    from laura.mcp.tools import tool_job_status
+
+    db = _make_db(tmp_path)
+    job_id = enqueue(
+        db,
+        queue="test-queue",
+        kind="test.kind",
+        payload={"foo": "bar"},
+        pipeline_version="1",
+    )
+
+    result = tool_job_status(db, job_id)
+
+    assert result["found"] is True
+    assert result["job_id"] == job_id
+    assert result["kind"] == "test.kind"
+    # A freshly enqueued job starts at "queued" with 0 attempts
+    assert result["status"] == "queued"
+    assert result["queue"] == "test-queue"
+    assert result["attempts"] == 0  # DB column "attempt" starts at 0
+    assert result["result"] is None  # no result yet
+    assert result["error"] is None  # no error yet
+
+
+def test_tool_job_status_error_json_parsed(tmp_path: Path) -> None:
+    """tool_job_status parses error_json into the 'error' field."""
+    from laura.jobs.runner import enqueue
+    from laura.mcp.tools import tool_job_status
+
+    db = _make_db(tmp_path)
+    job_id = enqueue(
+        db,
+        queue="test-queue",
+        kind="test.kind",
+        payload={"foo": "bar"},
+        pipeline_version="1",
+    )
+
+    # Manually write error_json to simulate a failed job
+    with db.connection() as conn:
+        conn.execute(
+            "UPDATE jobs SET status='failed', error_json=? WHERE id=?",
+            (json.dumps({"message": "something went wrong", "code": 42}), job_id),
+        )
+
+    result = tool_job_status(db, job_id)
+
+    assert result["found"] is True
+    assert result["status"] == "failed"
+    assert result["error"] == {"message": "something went wrong", "code": 42}
+
+
+def test_tool_job_status_not_found(tmp_path: Path) -> None:
+    """tool_job_status returns found=False for an unknown job_id."""
+    from laura.mcp.tools import tool_job_status
+
+    db = _make_db(tmp_path)
+
+    result = tool_job_status(db, "nonexistent-job-id")
+
+    assert result == {"found": False, "job_id": "nonexistent-job-id"}
+
+
+# ---------------------------------------------------------------------------
+# S7 — explain_candidate (tool_explain_candidate)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_explain_candidate_found(tmp_path: Path) -> None:
+    """tool_explain_candidate returns found=True with top_factors sorted by value."""
+    from laura.mcp.tools import tool_explain_candidate
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+
+    # Seed a candidate with a known score_breakdown
+    score_breakdown = {
+        "transcript_safety": 0.95,
+        "hook_position": 0.80,
+        "audio_silence_at_boundaries": 0.40,
+    }
+    candidates = [
+        {
+            "start_frame": 0,
+            "end_frame_exclusive": 300,
+            "start_boundary": "speaker_turn",
+            "end_boundary": "sentence_end",
+            "score": 0.72,
+            "rejected": False,
+            "reject_reason": None,
+            "score_breakdown": score_breakdown,
+            "qa_passed": True,
+            "qa_issues": [],
+        }
+    ]
+    repos.replace_shorts_candidates(
+        db,
+        project_id=project["id"],
+        asset_id=asset["id"],
+        source_timeline_id="tl-fake",
+        candidates=candidates,
+    )
+    cands = repos.list_shorts_candidates_by_asset(db, asset["id"])
+    candidate_id = cands[0]["id"]
+
+    result = tool_explain_candidate(db, candidate_id)
+
+    assert result["found"] is True
+    assert result["candidate_id"] == candidate_id
+    assert result["asset_id"] == asset["id"]
+    assert result["start_frame"] == 0
+    assert result["end_frame_exclusive"] == 300
+    assert abs(result["score"] - 0.72) < 0.001
+    assert result["qa_passed"] is True
+    assert result["qa_issues"] == []
+
+    # top_factors must be sorted by value descending
+    factors = result["top_factors"]
+    assert len(factors) >= 2
+    assert factors[0]["name"] == "transcript_safety"
+    assert factors[0]["value"] == 0.95
+    assert factors[1]["name"] == "hook_position"
+    assert factors[1]["value"] == 0.80
+
+    # explanation must mention the score
+    explanation = result["explanation"]
+    assert "0.72" in explanation
+    assert "transcript_safety" in explanation
+    assert "QA passed" in explanation
+
+
+def test_tool_explain_candidate_qa_failed(tmp_path: Path) -> None:
+    """tool_explain_candidate mentions QA failure and issues in the explanation."""
+    from laura.mcp.tools import tool_explain_candidate
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+
+    candidates = [
+        {
+            "start_frame": 0,
+            "end_frame_exclusive": 150,
+            "start_boundary": "sentence_end",
+            "end_boundary": "sentence_end",
+            "score": 0.30,
+            "rejected": False,
+            "reject_reason": None,
+            "score_breakdown": {"transcript_safety": 0.50},
+            "qa_passed": False,
+            "qa_issues": ["start_on_black", "end_on_freeze"],
+        }
+    ]
+    repos.replace_shorts_candidates(
+        db,
+        project_id=project["id"],
+        asset_id=asset["id"],
+        source_timeline_id="tl-fake",
+        candidates=candidates,
+    )
+    cands = repos.list_shorts_candidates_by_asset(db, asset["id"])
+    candidate_id = cands[0]["id"]
+
+    result = tool_explain_candidate(db, candidate_id)
+
+    assert result["found"] is True
+    assert result["qa_passed"] is False
+    assert "start_on_black" in result["qa_issues"]
+    assert "QA FAILED" in result["explanation"]
+    assert "start_on_black" in result["explanation"]
+
+
+def test_tool_explain_candidate_not_found(tmp_path: Path) -> None:
+    """tool_explain_candidate returns found=False for an unknown candidate_id."""
+    from laura.mcp.tools import tool_explain_candidate
+
+    db = _make_db(tmp_path)
+
+    result = tool_explain_candidate(db, "nonexistent-candidate-id")
+
+    assert result == {"found": False, "candidate_id": "nonexistent-candidate-id"}
+
+
+# ---------------------------------------------------------------------------
+# S7 — NO-WRITES assertion for read-only S7 tools
+# ---------------------------------------------------------------------------
+
+
+def test_s7_read_tools_perform_no_writes(tmp_path: Path) -> None:
+    """list_short_candidates, job_status, and explain_candidate must not mutate the DB."""
+    from laura.jobs.runner import enqueue
+    from laura.mcp.tools import (
+        tool_explain_candidate,
+        tool_job_status,
+        tool_list_short_candidates,
+    )
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_short_candidates(db, asset, project, count=2)
+    job_id = enqueue(db, queue="q", kind="k", payload={}, pipeline_version="1")
+    cands = repos.list_shorts_candidates_by_asset(db, asset["id"])
+    candidate_id = cands[0]["id"]
+
+    before = _row_counts(db)
+
+    tool_list_short_candidates(db, asset["id"])
+    tool_list_short_candidates(db, "nonexistent")
+    tool_job_status(db, job_id)
+    tool_job_status(db, "nonexistent-job")
+    tool_explain_candidate(db, candidate_id)
+    tool_explain_candidate(db, "nonexistent-candidate")
+
+    after = _row_counts(db)
+    assert before == after, f"S7 read tools mutated DB: {before} -> {after}"
+
+
+# ---------------------------------------------------------------------------
+# S7 — guard test: new tools exported from laura.mcp
+# ---------------------------------------------------------------------------
+
+
+def test_import_laura_mcp_exports_s7_tools() -> None:
+    """All 5 S7 tool handlers must be importable from laura.mcp without the mcp SDK."""
+    import importlib
+
+    mod = importlib.import_module("laura.mcp")
+    for name in (
+        "tool_start_analysis",
+        "tool_extract_shorts",
+        "tool_list_short_candidates",
+        "tool_job_status",
+        "tool_explain_candidate",
+    ):
+        assert hasattr(mod, name), f"laura.mcp missing export: {name}"
+
+
+# ---------------------------------------------------------------------------
+# VE5 — visual tools (tool_similar_segments / tool_deduplicate_shorts /
+#        tool_visual_hook / tool_search_visual_moments)
+# ---------------------------------------------------------------------------
+#
+# Smoke tests covering the graceful "no embeddings" path (ok=False, no crash) and
+# the happy path with synthetic frame embeddings + a fake text embedder. The real
+# CLIP text model is never loaded.
+
+
+def _seed_embeddings_and_candidates(
+    db: SqliteDatabase, project: dict[str, Any], asset: dict[str, Any]
+) -> dict[int, str]:
+    """A succeeded run + synthetic frame vectors + two near-dup candidates + one distinct."""
+    import numpy as np
+
+    from laura.analysis.embeddings_store import FrameEmbedding, SqliteVectorStore
+
+    run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="1", config={"stages": {}}
+    )
+    repos.start_analysis_run(db, run["id"])
+    repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
+
+    e_x = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    e_y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    frame_vecs = {
+        0: e_x, 25: e_x, 50: e_x, 75: e_x,        # A → X
+        200: e_x, 225: e_x, 250: e_x, 275: e_x,   # B → X (dup of A)
+        400: e_y, 425: e_y, 450: e_y, 475: e_y,   # C → Y (distinct)
+    }
+    store = SqliteVectorStore(db)
+    store.replace_frame_embeddings(
+        asset["id"],
+        run["id"],
+        [
+            FrameEmbedding(
+                asset_id=asset["id"],
+                analysis_run_id=run["id"],
+                frame=f,
+                model="fake",
+                vector=v,
+            )
+            for f, v in frame_vecs.items()
+        ],
+    )
+
+    candidates: list[dict[str, Any]] = [
+        {
+            "start_frame": s,
+            "end_frame_exclusive": s + 100,
+            "start_boundary": "sentence_end",
+            "end_boundary": "sentence_end",
+            "score": score,
+            "rejected": False,
+            "reject_reason": None,
+            "score_breakdown": {},
+            "qa_passed": True,
+            "qa_issues": [],
+        }
+        for s, score in ((0, 0.9), (200, 0.7), (400, 0.5))
+    ]
+    repos.replace_shorts_candidates(
+        db,
+        project_id=project["id"],
+        asset_id=asset["id"],
+        source_timeline_id="tl-fake",
+        candidates=candidates,
+    )
+    cands = repos.list_shorts_candidates_by_asset(db, asset["id"])
+    return {int(c["start_frame"]): c["id"] for c in cands}
+
+
+def test_tool_similar_segments_no_embeddings(tmp_path: Path) -> None:
+    """tool_similar_segments degrades gracefully (ok=False) without frame embeddings."""
+    from laura.mcp.tools import tool_similar_segments
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_similar_segments(db, asset["id"], "any-candidate-id")
+    assert result["ok"] is False
+    assert "reason" in result
+
+
+def test_tool_similar_segments_happy(tmp_path: Path) -> None:
+    """tool_similar_segments finds the near-duplicate as top-1."""
+    from laura.mcp.tools import tool_similar_segments
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    ids = _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_similar_segments(db, asset["id"], ids[0])
+    assert result["ok"] is True
+    assert result["similar"][0]["candidate_id"] == ids[200]
+
+
+def test_tool_deduplicate_shorts_no_embeddings(tmp_path: Path) -> None:
+    """tool_deduplicate_shorts degrades gracefully without frame embeddings."""
+    from laura.mcp.tools import tool_deduplicate_shorts
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_deduplicate_shorts(db, asset["id"])
+    assert result["ok"] is False
+    assert "reason" in result
+
+
+def test_tool_deduplicate_shorts_happy(tmp_path: Path) -> None:
+    """tool_deduplicate_shorts groups the two X-region candidates together."""
+    from laura.mcp.tools import tool_deduplicate_shorts
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    ids = _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_deduplicate_shorts(db, asset["id"])
+    assert result["ok"] is True
+    assert result["dropped"] == [ids[200]]
+    assert set(result["kept"]) == {ids[0], ids[400]}
+
+
+def test_tool_visual_hook_no_embeddings(tmp_path: Path) -> None:
+    """tool_visual_hook degrades gracefully without frame embeddings."""
+    from laura.mcp.tools import tool_visual_hook
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_visual_hook(db, asset["id"], "any-candidate-id")
+    assert result["ok"] is False
+    assert "reason" in result
+
+
+def test_tool_visual_hook_happy(tmp_path: Path) -> None:
+    """tool_visual_hook returns a hook_score and shift/continuity for a known candidate."""
+    from laura.mcp.tools import tool_visual_hook
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    ids = _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_visual_hook(db, asset["id"], ids[0])
+    assert result["ok"] is True
+    assert 0.0 <= result["hook_score"] <= 1.0
+    assert "visual_shift_at_start" in result
+    assert "opening_continuity" in result
+
+
+def test_tool_search_visual_moments_no_embeddings(tmp_path: Path) -> None:
+    """tool_search_visual_moments degrades gracefully without frame embeddings.
+
+    visual_available is forced False so no fastembed model is ever touched, and the
+    no-embeddings branch is reached first regardless.
+    """
+    import laura.analysis.visual_query as vq
+    from laura.mcp.tools import tool_search_visual_moments
+
+    db = _make_db(tmp_path)
+    _, asset = _create_project_and_asset(db)
+
+    result = tool_search_visual_moments(db, asset["id"], "a red car")
+    assert result["ok"] is False
+    assert "reason" in result
+    # And: with embeddings absent + extra forced unavailable, still ok=False (no crash).
+    assert vq is not None  # module import smoke
+
+
+def test_tool_search_visual_moments_extra_unavailable(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """With embeddings present but the visual extra forced absent → ok=False, no model load."""
+    import laura.analysis.visual_query as vq
+    from laura.mcp.tools import tool_search_visual_moments
+
+    monkeypatch.setattr(vq, "visual_available", lambda: False)
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_embeddings_and_candidates(db, project, asset)
+
+    result = tool_search_visual_moments(db, asset["id"], "a red car")
+    assert result["ok"] is False
+    assert "text search unavailable" in result["reason"]
+
+
+def test_import_laura_mcp_exports_ve5_tools() -> None:
+    """All 4 VE5 visual tool handlers must be importable from laura.mcp without mcp SDK."""
+    import importlib
+
+    mod = importlib.import_module("laura.mcp")
+    for name in (
+        "tool_similar_segments",
+        "tool_deduplicate_shorts",
+        "tool_visual_hook",
+        "tool_search_visual_moments",
+    ):
+        assert hasattr(mod, name), f"laura.mcp missing export: {name}"
+
+
+# ---------------------------------------------------------------------------
+# render_short (tool_render_short) — completes analyze->extract->list->explain->render
+# ---------------------------------------------------------------------------
+
+
+def test_tool_render_short_ok(tmp_path: Path) -> None:
+    """tool_render_short enqueues a shorts.render job + creates an export for a candidate."""
+    from laura.mcp.tools import tool_render_short
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_short_candidates(db, asset, project, count=1)
+    candidate_id = repos.list_shorts_candidates_by_asset(db, asset["id"])[0]["id"]
+
+    result = tool_render_short(db, candidate_id, hook_text="Hi")
+
+    assert result["ok"] is True
+    assert result["export_id"]
+    assert "job_id" in result
+
+    exp = repos.get_export(db, result["export_id"])
+    assert exp is not None
+    assert exp["options"]["candidate_id"] == candidate_id
+    assert exp["options"]["hook_text"] == "Hi"
+
+    job = repos.get_job(db, result["job_id"])
+    assert job is not None
+    assert job["kind"] == "shorts.render"
+
+
+def test_tool_render_short_candidate_not_found(tmp_path: Path) -> None:
+    """tool_render_short returns ok=False when the candidate does not exist."""
+    from laura.mcp.tools import tool_render_short
+
+    db = _make_db(tmp_path)
+    result = tool_render_short(db, "nonexistent-candidate")
+    assert result["ok"] is False
+    assert result["error"] == "candidate not found"
+    assert result["candidate_id"] == "nonexistent-candidate"

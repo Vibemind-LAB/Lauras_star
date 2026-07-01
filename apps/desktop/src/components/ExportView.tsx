@@ -107,6 +107,8 @@ export function ExportView({
   /** Re-render trigger for the job-status cache — incremented after each poll batch. */
   const [jobPollTick, setJobPollTick] = useState<number>(0);
   const [reelHook, setReelHook] = useState<string>("");
+  /** Burn captions into the standard MP4 export (off by default). */
+  const [burnCaptions, setBurnCaptions] = useState<boolean>(false);
   // reelDisclosure removed — KI disclosure is mandatory (D5 / EU AI Act).
   const [reelCaptions, setReelCaptions] = useState<boolean>(true);
   const [captionPreset, setCaptionPreset] = useState<CaptionPreset>("reels");
@@ -231,7 +233,9 @@ export function ExportView({
     if (!timelineId) return;
     setExportBusy(true);
     try {
-      const result = await client.renderTimeline(timelineId, format);
+      const result = await client.renderTimeline(timelineId, format, {
+        burnCaptions: format === "mp4" ? burnCaptions : false,
+      });
       setJobByExport((prev) => ({ ...prev, [result.export_id]: result.job_id }));
       await load();
     } catch (e) {
@@ -239,7 +243,7 @@ export function ExportView({
     } finally {
       setExportBusy(false);
     }
-  }, [client, timelineId, format, load]);
+  }, [client, timelineId, format, burnCaptions, load]);
 
   const onExportReel = useCallback(async (): Promise<void> => {
     if (!timelineId) return;
@@ -409,6 +413,18 @@ export function ExportView({
         </div>
         {format in FORMAT_HINT && (
           <p className="text-[10px] text-content-muted">{FORMAT_HINT[format]}</p>
+        )}
+        {format === "mp4" && (
+          <label className="mt-1 flex items-center gap-2 text-xs text-content-muted">
+            <input
+              type="checkbox"
+              checked={burnCaptions}
+              onChange={(e) => setBurnCaptions(e.target.checked)}
+              disabled={!timelineId}
+              className="disabled:opacity-40"
+            />
+            Captions einbrennen
+          </label>
         )}
       </div>
       {/* One-click platform presets — set caption state AND call renderReel with the correct

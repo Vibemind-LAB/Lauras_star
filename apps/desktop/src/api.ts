@@ -112,6 +112,24 @@ export interface JobStatus {
   finished_at: string | null;
 }
 
+export interface ShortsCandidate {
+  id: string;
+  asset_id: string;
+  source_timeline_id: string;
+  order_index: number;
+  start_frame: number;
+  end_frame_exclusive: number;
+  start_boundary: string;
+  end_boundary: string;
+  score: number;
+  rejected: boolean;
+  reject_reason: string | null;
+  score_breakdown: Record<string, number> | null;
+  qa_passed: boolean;
+  qa_issues: string[];
+  created_at: string;
+}
+
 export interface Waveform {
   version: number;
   sample_rate: number;
@@ -319,7 +337,8 @@ export interface Operation {
     | "split"
     | "trim"
     | "move"
-    | "set_audio_offset";
+    | "set_audio_offset"
+    | "place_clip";
   asset_id?: string;
   src_in_frame?: number;
   src_out_frame_exclusive?: number;
@@ -328,11 +347,15 @@ export interface Operation {
   seq_in_frame?: number;
   seq_out_frame_exclusive?: number;
   at_seq_frame?: number;
+  /** place_clip: destination lane; other ops: lane selector (default 0). */
   lane?: number;
+  /** place_clip: source lane identifying the clip to move (spec §1.3); fallback = lane. */
+  lane_src?: number;
   speed_num?: number;
   speed_den?: number;
   new_src_in_frame?: number;
   new_src_out_frame_exclusive?: number;
+  /** move / place_clip: target absolute sequence position (frames). */
   to_seq_frame?: number;
   /**
    * set_audio_offset: the clip-head L/J audio offset in FRAMES (the UI's native drag unit). The
@@ -733,10 +756,17 @@ export class LauraClient {
     });
   }
 
-  renderTimeline(timelineId: string, format: string): Promise<{ export_id: string; job_id: string }> {
+  renderTimeline(
+    timelineId: string,
+    format: string,
+    opts?: { burnCaptions?: boolean },
+  ): Promise<{ export_id: string; job_id: string }> {
     return this.request<{ export_id: string; job_id: string }>(`/timelines/${timelineId}/render`, {
       method: "POST",
-      body: JSON.stringify({ format }),
+      body: JSON.stringify({
+        format,
+        burn_captions: opts?.burnCaptions ?? false,
+      }),
     });
   }
 
@@ -1374,5 +1404,19 @@ export class LauraClient {
 
   getHistory(timelineId: string): Promise<HistoryState> {
     return this.request<HistoryState>(`/timelines/${timelineId}/history`);
+  }
+
+  listShortsCandidates(assetId: string): Promise<ShortsCandidate[]> {
+    return this.request<ShortsCandidate[]>(`/assets/${assetId}/shorts-candidates`);
+  }
+
+  extractShorts(
+    assetId: string,
+    opts: { min_duration_s?: number; max_duration_s?: number; max_candidates?: number } = {},
+  ): Promise<{ job_id: string; analysis_run_id: string }> {
+    return this.request<{ job_id: string; analysis_run_id: string }>(
+      `/assets/${assetId}/shorts-candidates:extract`,
+      { method: "POST", body: JSON.stringify(opts) },
+    );
   }
 }

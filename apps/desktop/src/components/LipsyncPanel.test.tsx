@@ -1,7 +1,8 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { type Asset, type LauraClient } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { LipsyncPanel } from "./LipsyncPanel";
 
 function asset(id: string, type: string, name: string): Asset {
@@ -50,7 +51,7 @@ function client(overrides: Partial<LauraClient> = {}): LauraClient {
 describe("LipsyncPanel", () => {
   it("keeps lipsync disabled until consent and license are confirmed", async () => {
     const c = client();
-    const { getByLabelText, getByRole } = render(
+    const { getByLabelText, getByRole } = renderWithQuery(
       <LipsyncPanel
         client={c}
         projectId="p"
@@ -79,7 +80,7 @@ describe("LipsyncPanel", () => {
     const lipsync = vi.fn().mockResolvedValue({ job_id: "lip-job-1" });
     const onChange = vi.fn();
     const c = client({ lipsync });
-    const { getByLabelText, getByRole, findByText } = render(
+    const { getByLabelText, getByRole, findByText } = renderWithQuery(
       <LipsyncPanel
         client={c}
         projectId="p"
@@ -130,7 +131,7 @@ describe("LipsyncPanel", () => {
       .mockResolvedValue({ id: "lip-job-1", status: "succeeded" });
     const onChange = vi.fn();
     const c = client({ getJob });
-    const { getByLabelText, getByRole } = render(
+    const { getByLabelText, getByRole } = renderWithQuery(
       <LipsyncPanel
         client={c}
         projectId="p"

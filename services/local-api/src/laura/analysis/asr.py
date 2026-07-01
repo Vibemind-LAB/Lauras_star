@@ -17,6 +17,7 @@ from .types import SegmentResult, WordResult
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "base"
+VAD_FILTER: bool = os.getenv("LAURA_ASR_VAD", "1") not in {"0", "false", "False"}
 
 
 def resolve_asr_device(device: str | None = None) -> str:
@@ -42,7 +43,9 @@ def _run(
     compute_type = "float16" if device == "cuda" else "int8"
     logger.info("ASR device=%s compute_type=%s model=%s", device, compute_type, model_size)
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    segments, _info = model.transcribe(str(audio_path), word_timestamps=True, language=language)
+    segments, _info = model.transcribe(
+        str(audio_path), word_timestamps=True, language=language, vad_filter=VAD_FILTER
+    )
 
     results: list[SegmentResult] = []
     for seg in segments:  # encoding (and any GPU load) happens lazily while iterating

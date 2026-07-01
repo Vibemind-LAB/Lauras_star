@@ -519,3 +519,42 @@ describe("LauraClient timeline audio clip methods", () => {
     );
   });
 });
+
+describe("LauraClient shorts methods", () => {
+  it("listShortsCandidates GETs the correct URL", async () => {
+    const fn = mockFetch([]);
+    const c = new LauraClient("http://h", "tok");
+    await c.listShortsCandidates("asset-1");
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/assets/asset-1/shorts-candidates",
+      expect.anything(),
+    );
+  });
+
+  it("extractShorts POSTs to the :extract action with opts in the body", async () => {
+    const fn = mockFetch({ job_id: "j1", analysis_run_id: "r1" });
+    const c = new LauraClient("http://h", "tok");
+    await c.extractShorts("asset-2", { min_duration_s: 15, max_duration_s: 60, max_candidates: 5 });
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/assets/asset-2/shorts-candidates:extract",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      min_duration_s: 15,
+      max_duration_s: 60,
+      max_candidates: 5,
+    });
+  });
+
+  it("extractShorts POSTs an empty body when no opts are given", async () => {
+    const fn = mockFetch({ job_id: "j2", analysis_run_id: "r2" });
+    const c = new LauraClient("http://h", "tok");
+    const result = await c.extractShorts("asset-3");
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/assets/asset-3/shorts-candidates:extract",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({}) }),
+    );
+    expect(result.job_id).toBe("j2");
+  });
+});

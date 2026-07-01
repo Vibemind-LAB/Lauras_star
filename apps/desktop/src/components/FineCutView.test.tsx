@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { type Asset, type LauraClient, type Scene, type Timeline, type TimelineAudioClip, type TimelineClip } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { FineCutView } from "./FineCutView";
 
 // Capture the props forwarded from FineCutView to SequencePlayer.
@@ -155,7 +156,7 @@ describe("FineCutView", () => {
     const openScene = vi.fn();
     const c = makeClient({ getTimeline, listScenes, openScene });
 
-    render(
+    renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -180,7 +181,7 @@ describe("FineCutView", () => {
       listScenes: vi.fn().mockResolvedValue([sceneA, sceneB]),
     });
 
-    render(
+    renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -206,7 +207,7 @@ describe("FineCutView", () => {
     const deleteWords = vi.fn().mockResolvedValue(rcTimeline);
     const c = makeClient({ deleteWords });
 
-    render(
+    renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -229,7 +230,7 @@ describe("FineCutView", () => {
 
   it("shows the empty-state message when roughCutId is null", () => {
     const c = makeClient();
-    const { getByText } = render(
+    const { getByText } = renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -248,7 +249,7 @@ describe("FineCutView", () => {
     const listTimelineAudioClips = vi.fn().mockResolvedValue([oneAudioClip]);
     const c = makeClient({ listTimelineAudioClips });
 
-    render(
+    renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -261,14 +262,13 @@ describe("FineCutView", () => {
       />,
     );
 
-    await waitFor(() => expect(Array.isArray(fcSeqPlayerProps.audioClips)).toBe(true));
-    expect((fcSeqPlayerProps.audioClips as unknown[]).length).toBe(1);
+    await waitFor(() => expect((fcSeqPlayerProps.audioClips as unknown[]).length).toBe(1));
     expect(listTimelineAudioClips).toHaveBeenCalledWith("rc1");
   });
 
   it("renders the EditorialToolsBar with a voice picker under the player", async () => {
     const c = makeClient();
-    const { findByLabelText } = render(
+    const { findByLabelText } = renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -292,7 +292,7 @@ describe("FineCutView", () => {
     } as unknown as Asset;
     const c = makeClient();
 
-    render(
+    renderWithQuery(
       <FineCutView
         client={c}
         asset={assetWith25fps}
@@ -320,7 +320,7 @@ describe("FineCutView", () => {
     const listTimelineAudioClips = vi.fn().mockResolvedValue([]);
     const c = makeClient({ listTimelineAudioClips });
 
-    const { rerender } = render(
+    const { rerender } = renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}
@@ -377,7 +377,7 @@ describe("FineCutView", () => {
     // Full end-to-end video generation is manuell zu prüfen (live CDP 9222).
     const c = makeClient();
 
-    render(
+    renderWithQuery(
       <FineCutView
         client={c}
         asset={asset}

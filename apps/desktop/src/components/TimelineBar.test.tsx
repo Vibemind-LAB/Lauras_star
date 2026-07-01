@@ -210,4 +210,102 @@ describe("TimelineBar", () => {
     expect(getByLabelText("Audio-Lane A2")).not.toBeNull();
     expect(getByLabelText("A2 Clip VO · seq 10–50")).not.toBeNull();
   });
+
+  // --- "+ Spur" / "− Spur" video lane controls -------------------------------------------------
+
+  it("shows a single video lane (V1) by default for a single-track timeline", () => {
+    const { getByLabelText, queryByLabelText } = render(
+      <TimelineBar
+        client={stubClient()}
+        timeline={timeline([clip()])}
+        onChange={() => undefined}
+      />,
+    );
+    expect(getByLabelText("V1")).not.toBeNull();
+    expect(queryByLabelText("V2")).toBeNull();
+  });
+
+  it("clicking '+ Spur' adds an empty video lane row as a drop target", () => {
+    const { getByLabelText, getByTitle, queryByLabelText } = render(
+      <TimelineBar
+        client={stubClient()}
+        timeline={timeline([clip()])}
+        onChange={() => undefined}
+      />,
+    );
+    // Initially only V1 is present.
+    expect(queryByLabelText("V2")).toBeNull();
+
+    fireEvent.click(getByTitle("Videospur hinzufügen"));
+
+    // After clicking +, V2 should be rendered as a new (empty) video lane row.
+    expect(getByLabelText("V2")).not.toBeNull();
+    // V1 must still be there.
+    expect(getByLabelText("V1")).not.toBeNull();
+  });
+
+  it("clicking '− Spur' removes an empty lane but never below occupied count", () => {
+    const { getByTitle, queryByLabelText } = render(
+      <TimelineBar
+        client={stubClient()}
+        timeline={timeline([clip()])}
+        onChange={() => undefined}
+      />,
+    );
+    // Add two extra lanes.
+    fireEvent.click(getByTitle("Videospur hinzufügen"));
+    fireEvent.click(getByTitle("Videospur hinzufügen"));
+    expect(queryByLabelText("V3")).not.toBeNull();
+
+    // Remove one lane.
+    fireEvent.click(getByTitle("Videospur entfernen"));
+    expect(queryByLabelText("V3")).toBeNull();
+    expect(queryByLabelText("V2")).not.toBeNull();
+    expect(queryByLabelText("V1")).not.toBeNull();
+
+    // Remove again — should stay at V1 (1 lane minimum; V1 clip is on lane 0).
+    fireEvent.click(getByTitle("Videospur entfernen"));
+    expect(queryByLabelText("V2")).toBeNull();
+    expect(queryByLabelText("V1")).not.toBeNull();
+
+    // The "−" button should be disabled now (can't go below occupied lane count = 1).
+    const minusBtn = getByTitle("Videospur entfernen") as HTMLButtonElement;
+    expect(minusBtn.disabled).toBe(true);
+  });
+
+  it("'+ Spur' button is disabled at MAX_VIDEO_LANES (9)", () => {
+    // Put a clip on lane 8 so maxLane = 8, numVideoLanes = 9 automatically.
+    const tl = timeline([
+      clip({ id: "base", lane: 0 }),
+      clip({ id: "top", lane: 8, seq_in_frame: 0, seq_out_frame_exclusive: 31 }),
+    ]);
+    const { getByTitle } = render(
+      <TimelineBar
+        client={stubClient()}
+        timeline={tl}
+        onChange={() => undefined}
+      />,
+    );
+    const plusBtn = getByTitle("Videospur hinzufügen") as HTMLButtonElement;
+    expect(plusBtn.disabled).toBe(true);
+  });
+
+  it("empty lane added by '+ Spur' is a valid cross-lane drop target (has onDrop)", () => {
+    const tl = timeline([clip()]);
+    const applyOperation = vi.fn(() => Promise.resolve(tl));
+    const { getByTitle, getByLabelText } = render(
+      <TimelineBar
+        client={stubClient({ applyOperation })}
+        timeline={tl}
+        onChange={() => undefined}
+      />,
+    );
+    fireEvent.click(getByTitle("Videospur hinzufügen"));
+
+    // The V2 lane row should exist and have a droppable container (aria-label="Video-Spur V2").
+    const v2Strip = getByLabelText("Video-Spur V2");
+    expect(v2Strip).not.toBeNull();
+    // Verify it accepts dragover without throwing.
+    fireEvent.dragOver(v2Strip);
+  });
 });

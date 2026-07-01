@@ -5,11 +5,9 @@ one, so editing the same span twice doesn't stack two replace_original clips.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from laura.config import Settings
@@ -59,7 +57,11 @@ def _seed(db: Database, tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any],
 
 
 def _post_voiceover(
-    client: TestClient, timeline_id: str, *, text: str = "Hallo Laura", mix_mode: str = "replace_original"
+    client: TestClient,
+    timeline_id: str,
+    *,
+    text: str = "Hallo Laura",
+    mix_mode: str = "replace_original",
 ) -> Any:
     return client.post(
         f"/timelines/{timeline_id}/voiceover",

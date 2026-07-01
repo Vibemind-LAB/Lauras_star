@@ -96,6 +96,11 @@ def _offsets_by_seq_cut(splits: list[AcceptedSplit]) -> dict[int, int]:
     return {s.seq_cut: s.offset for s in splits if not s.is_hard()}
 
 
+def _lane_clips(tl: Timeline, lane: int) -> list[Clip]:
+    """Return the clips on ``lane`` sorted by seq_in_frame (mirrors operations.clips_on_lane)."""
+    return sorted((c for c in tl.clips if c.lane == lane), key=lambda c: c.seq_in_frame)
+
+
 def apply_split_cuts(
     tl: Timeline,
     splits: list[AcceptedSplit],
@@ -104,34 +109,40 @@ def apply_split_cuts(
 ) -> str:
     """Serialise ``tl`` to OTIO with accepted L/J splits as a separate audio track.
 
-    Builds the canonical single video track Laura builds today (V1) and, when any meaningful split
-    is accepted, a parallel audio track (A1) whose inter-clip boundaries are shifted by the accepted
-    per-cut ``offset`` frames. The accepted offsets are recorded on the timeline metadata so the
-    blob fully describes its own split state and round-trips.
+    Builds one video track per occupied lane (V1 for lane 0, V2 for lane 1, …) and, when any
+    meaningful split is accepted, a parallel audio track (A1) whose inter-clip boundaries are
+    shifted by the accepted per-cut ``offset`` frames.  The audio track is always Lane-0-only
+    (spec §4.4 — only Lane-0 clips carry L/J offsets).
 
-    The audio boundary frame is also projected to a SAMPLE (invariant #3) when ``audio_sample_rate``
-    is given, and the exact samples are stored in each audio clip's ``metadata["laura"]`` so the
-    sound edit is sample-accurate and the frame boundary is just the UI projection of it.
-
-    With ``splits`` empty (or all hard) NO audio track is emitted and the output is byte-for-byte
-    the video-only OTIO Laura builds today — the representation is purely additive.
+    With only lane 0 occupied AND ``splits`` empty (or all hard) the output is byte-for-byte
+    the single-track OTIO Laura built before multi-lane support — the representation is purely
+    additive (single-lane backcompat gate, spec §4.4/§9.1-R1).
     """
     rate = tl.rate_num / tl.rate_den
     offsets = _offsets_by_seq_cut(splits)
 
     timeline = otio.schema.Timeline(name=tl.name)
-    video_track = otio.schema.Track(name="V1", kind=otio.schema.TrackKind.Video)
-    timeline.tracks.append(video_track)
 
-    clips = tl.ordered()
-    _fill_video_track(video_track, clips, rate)
+    # Determine occupied video lanes in ascending order.
+    occupied_lanes = sorted({c.lane for c in tl.clips})
+    if not occupied_lanes:
+        occupied_lanes = [0]
 
+    # Emit one video track per occupied lane (V1, V2, …).
+    for lane in occupied_lanes:
+        track_name = f"V{lane + 1}"
+        video_track = otio.schema.Track(name=track_name, kind=otio.schema.TrackKind.Video)
+        timeline.tracks.append(video_track)
+        _fill_video_track(video_track, _lane_clips(tl, lane), rate)
+
+    # Audio track (A1) uses Lane-0 clips only — L/J splits are a Lane-0 concept (spec §4.4).
+    lane0_clips = _lane_clips(tl, 0)
     if offsets:
         audio_track = otio.schema.Track(name="A1", kind=otio.schema.TrackKind.Audio)
         timeline.tracks.append(audio_track)
         _fill_audio_track(
             audio_track,
-            clips,
+            lane0_clips,
             offsets,
             rate=rate,
             rate_num=tl.rate_num,
@@ -151,7 +162,7 @@ def apply_split_cuts(
 
 
 def _fill_video_track(track: Any, clips: list[Any], rate: float) -> None:
-    """Append the video clips/gaps — identical to the single-track OTIO Laura builds today."""
+    """Append the video clips/gaps for a single lane — identical to the single-track OTIO logic."""
     playhead = 0
     for clip in clips:
         if clip.seq_in_frame > playhead:
@@ -340,7 +351,8 @@ def split_audio_clips(
     if not offsets:
         return []
 
-    clips = tl.ordered()
+    # L/J splits are Lane-0-only (spec §4.4 — only Lane-0 clips carry inter-clip offsets).
+    clips = _lane_clips(tl, 0)
     n = len(clips)
     out: list[AudioClip] = []
     for i, clip in enumerate(clips):

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { LauraClient } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { EditorialToolsBar } from "./EditorialToolsBar";
 
 // Note: @testing-library/jest-dom is not installed in this project.
@@ -64,7 +65,7 @@ describe("EditorialToolsBar", () => {
       listVoiceoverVoices: vi.fn().mockResolvedValue([]),
       listConsent: vi.fn().mockResolvedValue([]),
     } as unknown as LauraClient;
-    const { getByRole, queryByText } = render(
+    const { getByRole, queryByText } = renderWithQuery(
       <EditorialToolsBar
         client={c}
         projectId="p"

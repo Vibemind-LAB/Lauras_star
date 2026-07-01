@@ -1,6 +1,7 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type LauraClient, type Scene, type Sequence } from "../api";
+import { renderWithQuery } from "../test-utils";
 import { AssembleView } from "./AssembleView";
 
 // Capture props passed to SequencePlayer so tests can assert on them.
@@ -83,7 +84,7 @@ describe("AssembleView", () => {
 
   it("adds a bin scene to the sequence (PUT with appended id)", async () => {
     const c = client({});
-    const { getByTitle } = render(
+    const { getByTitle } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.getProjectSequence).toHaveBeenCalledWith("p"));
     await waitFor(() => expect(c.listProjectScenes).toHaveBeenCalledWith("p"));
@@ -95,7 +96,7 @@ describe("AssembleView", () => {
     const c = client({
       getProjectSequence: vi.fn().mockResolvedValue({ timeline_id: "seq", project_id: "p", items: [] }),
     });
-    const { getByTitle } = render(
+    const { getByTitle } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.listProjectScenes).toHaveBeenCalledWith("p"));
     fireEvent.click(getByTitle(/Alle 2 Szenen/));
@@ -105,7 +106,7 @@ describe("AssembleView", () => {
   it("updates the transition chip between storyboard scenes", async () => {
     const updateSequenceTransition = vi.fn().mockResolvedValue(seq);
     const c = client({ getProjectSequence: vi.fn().mockResolvedValue(seqTwo), updateSequenceTransition });
-    const { findByLabelText } = render(
+    const { findByLabelText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     fireEvent.change(await findByLabelText("Transition nach Szene 1"), {
@@ -119,20 +120,21 @@ describe("AssembleView", () => {
       }));
   });
 
-  it("renders the assemble workspace as scene bin, sequence work area, and transcript/tools rail", async () => {
+  it("renders the assemble workspace as arrangement panel, sequence work area, and transcript/tools rail", async () => {
     const c = client({});
-    const { getByLabelText } = render(
+    const { getByLabelText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.getProjectSequence).toHaveBeenCalledWith("p"));
 
-    expect(getByLabelText("Szenen-Bin")).toBeTruthy();
+    // Left column is the merged Anordnung (arrangement + collapsible scene-add source).
+    expect(getByLabelText("Anordnung")).toBeTruthy();
     expect(getByLabelText("Sequenz-Arbeitsfläche")).toBeTruthy();
     expect(getByLabelText("Transkript und Werkzeuge")).toBeTruthy();
   });
 
   it("edits a sequence transcript block and starts realignment for its source asset", async () => {
     const c = client({ getSequenceTranscript: vi.fn().mockResolvedValue(transcript) });
-    const { findByDisplayValue, getByRole } = render(
+    const { findByDisplayValue, getByRole } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     const input = await findByDisplayValue("Original line");
@@ -155,7 +157,7 @@ describe("AssembleView", () => {
         alignment_error: "no audio_mono16k extracted; cannot realign transcript",
       }]),
     });
-    const { findByText } = render(
+    const { findByText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByText("Alignment fehlgeschlagen")).toBeTruthy();
@@ -167,7 +169,7 @@ describe("AssembleView", () => {
     const c = client({
       getSequenceTranscript: vi.fn().mockRejectedValue(new Error('404: {"detail":"Not Found"}')),
     });
-    const { findByText, queryByText } = render(
+    const { findByText, queryByText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByText("Sequenz-Transkript ist noch nicht verfügbar.")).toBeTruthy();
@@ -179,7 +181,7 @@ describe("AssembleView", () => {
       getSequenceTranscript: vi.fn().mockResolvedValue(transcript),
       getJob: vi.fn().mockResolvedValue({ id: "job-1", status: "succeeded" }),
     });
-    const { findByDisplayValue, findByText, getByRole } = render(
+    const { findByDisplayValue, findByText, getByRole } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     fireEvent.change(await findByDisplayValue("Original line"), { target: { value: "Better line" } });
@@ -191,7 +193,7 @@ describe("AssembleView", () => {
 
   it("keeps only sequence tools in Zusammenfügen — no VO/Lipsync/Reenact", async () => {
     const c = client({});
-    const { queryByText, findByRole } = render(
+    const { queryByText, findByRole } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId={null} onSeekScene={vi.fn()} />,
     );
     fireEvent.click(await findByRole("button", { name: "Tools" }));
@@ -203,7 +205,7 @@ describe("AssembleView", () => {
 
   it("transcript rail in Zusammenfügen has no voiceover button", async () => {
     const c = client({});
-    const { queryByRole, findByText } = render(
+    const { queryByRole, findByText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId={null} onSeekScene={vi.fn()} />,
     );
     await findByText(/Szenen-Bin/);
@@ -212,7 +214,7 @@ describe("AssembleView", () => {
 
   it("lets editors hide the caption preview overlay without disabling transcript editing", async () => {
     const c = client({ getSequenceTranscript: vi.fn().mockResolvedValue(transcript) });
-    const { findByLabelText, getByRole, queryByLabelText } = render(
+    const { findByLabelText, getByRole, queryByLabelText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByLabelText("Caption-Preview")).toBeTruthy();
@@ -232,7 +234,7 @@ describe("AssembleView", () => {
     const c = client({
       listTimelineAudioClips: vi.fn().mockResolvedValue([audioClip]),
     });
-    render(<AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} rateNum={30} rateDen={1} />);
+    renderWithQuery(<AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} rateNum={30} rateDen={1} />);
     await waitFor(() => expect(Array.isArray(seqPlayerProps.audioClips)).toBe(true));
     expect(seqPlayerProps.rateNum).toBe(30);
   });
@@ -250,7 +252,7 @@ describe("AssembleView", () => {
           speed_den: 1, audio_offset_samples: 0 },
       ]),
     });
-    const { findByText, getByRole, queryByText } = render(
+    const { findByText, getByRole, queryByText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByText("Gesamtdauer 75 f")).toBeTruthy();
@@ -260,5 +262,31 @@ describe("AssembleView", () => {
     expect(queryByText("KI-Status")).toBeNull();
     // Sequence tools remain
     expect(queryByText("Demo-Draft")).not.toBeNull();
+  });
+
+  it("scopes the transcript to the active scene and switches it on storyboard selection", async () => {
+    // Two scenes in the sequence (sA 0..30, sB 30..60) and one transcript block per scene range.
+    const twoBlockTranscript = [
+      { ...transcript[0], segment_id: "seg-A", seq_in_frame: 0, seq_out_frame_exclusive: 30,
+        text: "Block A", words: [] },
+      { ...transcript[0], segment_id: "seg-B", seq_in_frame: 30, seq_out_frame_exclusive: 60,
+        text: "Block B", words: [] },
+    ];
+    const c = client({
+      getProjectSequence: vi.fn().mockResolvedValue(seqTwo),
+      getSequenceTranscript: vi.fn().mockResolvedValue(twoBlockTranscript),
+    });
+    const { findByDisplayValue, getByText, queryByDisplayValue } = renderWithQuery(
+      <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
+
+    // Defaults to the first scene → Block A shown, Block B not.
+    expect(await findByDisplayValue("Block A")).toBeTruthy();
+    expect(queryByDisplayValue("Block B")).toBeNull();
+
+    // Click the second storyboard card → transcript switches to Block B.
+    fireEvent.click(getByText("2. Szene 2"));
+
+    expect(await findByDisplayValue("Block B")).toBeTruthy();
+    await waitFor(() => expect(queryByDisplayValue("Block A")).toBeNull());
   });
 });

@@ -1,19 +1,49 @@
-"""Derive karaoke caption words from a timeline for the ASS builder.
+"""Derive karaoke caption words from a timeline (or a single source range) for the ASS builder.
 
-Maps transcript words (source frames) to sequence frames using the same integer
+Maps transcript words (source frames) to the target frame space using the same integer
 affine transform that the desktop timeline bar applies, then merges punctuation
 tokens into the preceding word.
+
+Two entry points share one merge helper:
+
+* :func:`timeline_caption_words` — walks every clip of a timeline and maps each word
+  to *sequence* frames (the assembled multi-clip timeline space).
+* :func:`candidate_caption_words` — maps the words of one ``[start, end)`` source range of
+  a single asset to *clip-local* frames (frame 0 == the candidate's first frame). Used by
+  the shorts renderer, where the output is exactly one trimmed clip.
 
 Invariant: all frame values are integer end-exclusive (CLAUDE.md §1-2).
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..db import repos
 from ..db.database import Database
 
-# (text, seq_start_frame, seq_end_frame) — end-exclusive
+# (text, start_frame, end_frame) — end-exclusive. For timeline_caption_words these are
+# sequence frames; for candidate_caption_words they are clip-local frames.
 Word = tuple[str, int, int]
+
+
+def _append_word(
+    result: list[Word], *, text: str, start: int, end: int, is_punct: bool
+) -> None:
+    """Append a mapped word to *result*, merging punctuation into the preceding token.
+
+    A punctuation token (``is_punct``) is appended to the last kept word's text and
+    extends that word's end if larger; punctuation with no preceding word is dropped.
+    A normal word is appended as a new token. Shared by both public functions so the
+    merge rule stays identical.
+    """
+    if is_punct:
+        if result:
+            prev_text, prev_start, prev_end = result[-1]
+            result[-1] = (prev_text + text, prev_start, max(prev_end, end))
+        # else: punctuation with no preceding word — drop silently.
+    else:
+        result.append((text, start, end))
 
 
 def timeline_caption_words(db: Database, timeline_id: str) -> list[Word]:
@@ -53,7 +83,6 @@ def timeline_caption_words(db: Database, timeline_id: str) -> list[Word]:
         for w in words:
             w_start: int = int(w["start_frame"])
             w_end: int = int(w["end_frame"])
-            is_punct: bool = bool(w["is_punctuation"])
 
             # Only include words whose start falls inside the clip's source range.
             if not (src_in <= w_start < src_out):
@@ -64,16 +93,68 @@ def timeline_caption_words(db: Database, timeline_id: str) -> list[Word]:
             src_end_clamped: int = min(w_end, src_out)
             seq_end: int = seq_in + (src_end_clamped - src_in)
 
-            text: str = w["text"]
+            _append_word(
+                result,
+                text=w["text"],
+                start=seq_start,
+                end=seq_end,
+                is_punct=bool(w["is_punctuation"]),
+            )
 
-            if is_punct:
-                if result:
-                    # Merge into preceding word: append text, extend end if later.
-                    prev_text, prev_start, prev_end = result[-1]
-                    new_end = max(prev_end, seq_end)
-                    result[-1] = (prev_text + text, prev_start, new_end)
-                # else: punctuation with no preceding word — drop silently.
-            else:
-                result.append((text, seq_start, seq_end))
+    return result
+
+
+def candidate_caption_words(
+    db: Database,
+    asset_id: str,
+    run_id: str,
+    start_frame: int,
+    end_frame_exclusive: int,
+) -> list[Word]:
+    """Caption words for one ``[start_frame, end_frame_exclusive)`` source range, clip-local.
+
+    The shorts renderer trims a single clip ``(source, start_frame, end_frame_exclusive)`` and
+    burns captions onto it, so word timings must be expressed relative to the *trimmed clip*
+    (frame 0 == ``start_frame``), not the source.
+
+    Algorithm:
+    1. Fetch all transcript words for ``(asset_id, run_id)`` (flat, source-ordered).
+    2. Keep words whose ``start_frame`` falls inside ``[start_frame, end_frame_exclusive)``.
+    3. Offset to clip-local frames (``local = src - start_frame``) and clamp to ``[0, dur)``
+       where ``dur = end_frame_exclusive - start_frame``.
+    4. Merge punctuation into the preceding word (same rule as
+       :func:`timeline_caption_words`).
+    Returns the words in clip-local start order (already sorted: source words are ordered and
+    the offset is monotonic). Empty when no run/words overlap the range.
+    """
+    duration: int = end_frame_exclusive - start_frame
+    if duration <= 0:
+        return []
+
+    words: list[dict[str, Any]] = repos.list_words_for_run(db, asset_id, run_id)
+    result: list[Word] = []
+
+    for w in words:
+        w_start: int = int(w["start_frame"])
+        w_end: int = int(w["end_frame"])
+
+        # Only include words whose start falls inside the candidate's source range.
+        if not (start_frame <= w_start < end_frame_exclusive):
+            continue
+
+        # SRC → clip-local (frame 0 == start_frame), end clamped to the clip length.
+        local_start: int = w_start - start_frame
+        local_end: int = min(w_end, end_frame_exclusive) - start_frame
+        # Clamp into [0, duration]; start can never be < 0 given the filter above.
+        local_start = max(0, min(local_start, duration))
+        local_end = max(0, min(local_end, duration))
+
+        _append_word(
+            result,
+            text=w["text"],
+            start=local_start,
+            end=local_end,
+            is_punct=bool(w["is_punctuation"]),
+        )
 
     return result

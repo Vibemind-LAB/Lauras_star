@@ -296,6 +296,18 @@ export function SequencePlayer({
     return asset ? hasFile(asset, "proxy") : false;
   };
 
+  // Show the first clip's opening frame as a PAUSED preview as soon as clips + proxy are
+  // ready, so the player is not a blank black box before the user presses play (the source
+  // Player loads its frame on mount; this brings the sequence player to parity). Skipped once
+  // a src is already set (after a play or an external seek) so it never fights interaction.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || clips.length === 0 || !proxyReady(0)) return;
+    if (v.src && v.src !== window.location.href) return;
+    loadClip(0, clips[0].src_in_frame / assetFps(0), false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clips, assetsById]);
+
   // ---------------------------------------------------------------------------
   // Video event handlers
   // ---------------------------------------------------------------------------

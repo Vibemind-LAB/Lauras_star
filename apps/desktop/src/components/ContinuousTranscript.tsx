@@ -89,7 +89,7 @@ export function ContinuousTranscript({
 
   return (
     <div
-      className="flex flex-col gap-2 overflow-auto p-2 text-sm"
+      className="flex h-full flex-col gap-2 overflow-auto p-3 text-sm"
       data-testid="continuous-transcript"
     >
       {selection && replaceText === null && (
@@ -155,11 +155,10 @@ export function ContinuousTranscript({
                   type="button"
                   aria-label={`Schnitt vor ${w.text}`}
                   data-testid={`caret-${w.id}`}
-                  className="mx-0.5 inline-block w-1 cursor-col-resize align-middle text-content-faint hover:text-accent"
+                  title="Hier schneiden"
+                  className="mx-0.5 inline-block h-3.5 w-0.5 cursor-col-resize rounded-sm bg-transparent align-middle hover:bg-accent"
                   onClick={() => onCutAt(w.seqStart)}
-                >
-                  |
-                </button>
+                />
                 <span
                   role="button"
                   tabIndex={0}

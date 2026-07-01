@@ -1,8 +1,11 @@
 """Tests for repos.capture_timeline_snapshot (Task 3 — Undo/Redo)."""
 from laura.db import repos
+from laura.db.database import Database
 
 
-def test_capture_has_four_groups_and_full_columns(seeded_rough_cut):
+def test_capture_has_four_groups_and_full_columns(
+    seeded_rough_cut: tuple[Database, str, str],
+) -> None:
     db, timeline_id, _asset = seeded_rough_cut
     snap = repos.capture_timeline_snapshot(db, timeline_id)
     assert set(snap) == {"clips", "scenes", "audio_clips", "transitions"}

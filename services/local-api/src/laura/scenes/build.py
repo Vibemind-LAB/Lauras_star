@@ -11,13 +11,26 @@ scene edits survive a re-analysis)."""
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from typing import Any
 
 from ..analysis import cutplace
+from ..analysis.transition_review import (
+    FrameExtractor,
+    StubVlmBackend,
+    SuggestedFix,
+    apply_fix,
+    default_backend,
+    extract_frames,
+    run_transition_review,
+)
 from ..db import repos
 from ..db.database import Database
 from .grouping import group_into_scenes
+
+logger = logging.getLogger(__name__)
 
 
 def default_gap_frames(asset: dict[str, Any]) -> int:
@@ -211,6 +224,58 @@ def group_timeline_scenes(
     repos.replace_scenes(db, project_id, timeline_id, ranges)
 
 
+def auto_smooth_timeline(db: Database, timeline_id: str, *, k: int = 6) -> dict[str, int | str]:
+    """Review every boundary of ``timeline_id`` and apply heuristic crossfades.
+
+    Gate: ``LAURA_AUTO_SMOOTH=0`` (or ``false``/``False``) skips all smoothing.
+    Backend: uses the real VLM when ``LAURA_VLM_MODEL`` is set; otherwise falls back to
+    :class:`~laura.analysis.transition_review.StubVlmBackend` with a no-op frame extractor
+    (no ffmpeg, no proxy required — the heuristic only needs the boundary metadata).
+
+    Returns ``{"boundaries": N, "crossfades_applied": M}`` or ``{"skipped": 1}``."""
+    raw = os.getenv("LAURA_AUTO_SMOOTH", "1")
+    if raw.strip().lower() in {"0", "false", "no", "off"}:
+        return {"skipped": 1}
+
+    try:
+        backend = default_backend()
+        frame_extractor: FrameExtractor
+        if backend is None:
+            backend = StubVlmBackend()
+            frame_extractor = lambda *a, **kw: []  # noqa: E731
+        else:
+            frame_extractor = extract_frames
+
+        run_transition_review(
+            db, timeline_id, backend=backend, k=k, frame_extractor=frame_extractor
+        )
+
+        reviews = repos.list_transition_reviews(db, timeline_id)
+        crossfades_applied = 0
+        for row in reviews:
+            try:
+                fix_dict = json.loads(str(row["suggested_fix_json"]))
+                fix = SuggestedFix(**fix_dict)
+            except Exception:
+                continue
+            if fix.kind != "transition":
+                continue
+            identity: dict[str, Any] = {
+                "asset_a": row["asset_a"],
+                "asset_b": row["asset_b"],
+                "src_out_a": int(row["src_out_a"]),
+                "src_in_b": int(row["src_in_b"]),
+            }
+            result = apply_fix(db, timeline_id=timeline_id, identity=identity, fix=fix)
+            if result.get("status") == "ok":
+                crossfades_applied += 1
+
+        return {"boundaries": len(reviews), "crossfades_applied": crossfades_applied}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("auto_smooth_timeline failed (smoothing skipped): %s", exc)
+        return {"boundaries": 0, "crossfades_applied": 0, "error": str(exc)[:200]}
+
+
 def autobuild_asset_edit_ready(db: Database, *, project_id: str, asset_id: str, run_id: str) -> int:
     """Idempotently make an asset edit-ready: ensure its rough-cut timeline exists, fill it
     from kept shots, group into scenes. Returns the scene count.
@@ -245,6 +310,11 @@ def autobuild_asset_edit_ready(db: Database, *, project_id: str, asset_id: str, 
             pad=_env_ms_to_frames("LAURA_TIGHTEN_PAD_MS", 300, asset),
             min_gap=_env_ms_to_frames("LAURA_TIGHTEN_MIN_GAP_MS", 900, asset),
         )
+    # Smart handling: apply heuristic (or VLM) crossfades at contiguous same-source boundaries
+    # so the zero-click auto-build lands with smooth transitions already applied.
+    # Additive and idempotent; most shot-rough-cut boundaries are same-asset-with-gap → no change.
+    # Opt out with LAURA_AUTO_SMOOTH=0.
+    auto_smooth_timeline(db, timeline_id)
     group_timeline_scenes(
         db,
         project_id=project_id,

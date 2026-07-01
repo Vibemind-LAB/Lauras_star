@@ -14,6 +14,7 @@ import { Player } from "./Player";
 import { QualityPanel } from "./QualityPanel";
 import { SceneStrip } from "./SceneStrip";
 import { SplitCutList } from "./SplitCutList";
+import { TranscriptStatusBanner } from "./TranscriptStatusBanner";
 
 export function RoughCutView({
   client,
@@ -21,6 +22,9 @@ export function RoughCutView({
   asset,
   roughCut,
   segments,
+  transcriptNote = null,
+  transcriptBusy = false,
+  onGenerateTranscript = () => undefined,
   onRoughCutChange,
   seek,
   currentFrame,
@@ -32,6 +36,9 @@ export function RoughCutView({
   asset: Asset | null;
   roughCut: Timeline | null;
   segments: Segment[];
+  transcriptNote?: string | null;
+  transcriptBusy?: boolean;
+  onGenerateTranscript?: () => void;
   onRoughCutChange: () => Promise<void>;
   seek: { frame: number } | null;
   currentFrame: number;
@@ -137,6 +144,13 @@ export function RoughCutView({
           />
         )}
       </div>
+      {segments.length === 0 && (
+        <TranscriptStatusBanner
+          note={transcriptNote}
+          busy={transcriptBusy}
+          onGenerate={onGenerateTranscript}
+        />
+      )}
       <div className="border-t border-bezel">
         <SceneStrip
           client={client}

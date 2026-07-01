@@ -30,12 +30,12 @@ from ..policy import (
 from ..semantic import get_index
 from ..util import utcnow_iso
 from .align import align_words, whisperx_available
-from .asr import faster_whisper_available, transcribe
 from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
 from .mapping import map_segment
 from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark_duplicates
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
+from .sidecar import asr_available, transcribe
 from .transition_review import default_backend, run_transition_review
 from .types import SegmentResult, ShotResult, WordResult
 
@@ -245,6 +245,22 @@ def _run_scene(
             "drop_reason": reason,
         })
     mark_duplicates(rows)
+
+    # Guard: never drop 100 % of an asset's shots as "black" — that would produce an empty
+    # rough cut. When every shot is flagged black (e.g. dark-stage poetry-slam footage with
+    # a spotlight), keep them all and log a warning; the black-filter is being over-eager.
+    if rows and all(
+        not r.get("keep") and r.get("drop_reason") == "black" for r in rows
+    ):
+        _log.warning(
+            "asset %s: all %d shots flagged black; keeping anyway — likely dark footage",
+            asset["id"],
+            len(rows),
+        )
+        for r in rows:
+            r["keep"] = True
+            r["drop_reason"] = None
+
     repos.insert_shots(db, asset_id=asset["id"], run_id=run_id, shots=rows)
     result: dict[str, Any] = {"status": "ok", "count": len(rows), "detector": detector}
     result.update(notes)  # e.g. {"transnet": "skipped: ImportError: ..."} on fallback
@@ -261,8 +277,8 @@ def _run_transcript(
 ) -> dict[str, Any]:
     if "audio_mono16k" not in files:
         return {"status": "skipped", "reason": "no audio extracted"}
-    if not faster_whisper_available():
-        return {"status": "skipped", "reason": "asr extra not installed"}
+    if not asr_available():
+        return {"status": "skipped", "reason": "asr unavailable (no sidecar, no local extra)"}
 
     mono_path = files["audio_mono16k"]["path"]
     try:
