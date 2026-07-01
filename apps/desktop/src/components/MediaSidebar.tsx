@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 
 import { type AiProvenanceManifest, type AnalysisRun, type Asset, type LauraClient } from "../api";
 import { log } from "../shared/log";
+import { GenerateVideoPanel } from "./GenerateVideoPanel";
 
 // ---------------------------------------------------------------------------
 // Per-item thumbnail with object-URL lifecycle (mirrors ShotStrip.tsx pattern)
@@ -338,6 +339,10 @@ export interface MediaSidebarProps {
   collapsed?: boolean;
   /** Toggle the collapsed state (rendered as « / » buttons). Omit to hide the toggle. */
   onToggleCollapse?: () => void;
+  /** Current project — enables the "generate B-roll" control when set. */
+  projectId?: string | null;
+  /** Called after a generate job succeeds so the parent can reload the asset list. */
+  onGenerated?: () => void;
 }
 
 export function MediaSidebar({
@@ -348,6 +353,8 @@ export function MediaSidebar({
   onDelete,
   collapsed = false,
   onToggleCollapse,
+  projectId = null,
+  onGenerated,
 }: MediaSidebarProps): ReactElement {
   if (collapsed) {
     return (
@@ -386,6 +393,9 @@ export function MediaSidebar({
           )}
         </span>
       </div>
+      {projectId && (
+        <GenerateVideoPanel client={client} projectId={projectId} onGenerated={onGenerated} />
+      )}
       {assets.length === 0 ? (
         <p className="text-[11px] text-content-faint">
           Keine Videos — in Download/Import hinzufügen.

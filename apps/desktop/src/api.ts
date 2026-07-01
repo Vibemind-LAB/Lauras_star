@@ -741,6 +741,18 @@ export class LauraClient {
     });
   }
 
+  /** Enqueue a generate.video job: produce a clip for `prompt` and register it as a project asset. */
+  generateVideo(
+    projectId: string,
+    prompt: string,
+    durationFrames: number,
+  ): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>(`/projects/${projectId}/generate-video`, {
+      method: "POST",
+      body: JSON.stringify({ prompt, duration_frames: durationFrames }),
+    });
+  }
+
   deleteAsset(id: string): Promise<void> {
     return this.del(`/assets/${id}`);
   }

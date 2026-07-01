@@ -518,6 +518,10 @@ export function App(): ReactElement {
             onDelete={(id) => void onDeleteAsset(id)}
             collapsed={mediaCollapsed}
             onToggleCollapse={() => setMediaCollapsed((v) => !v)}
+            projectId={selectedProjectId}
+            onGenerated={() => {
+              if (client && selectedProjectId) void loadAssets(client, selectedProjectId);
+            }}
           />
         )}
 
