@@ -248,7 +248,7 @@ pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4
     `transcript_window` (±Frame-Fenster über `get_transcript`) → Describer/Transcript verdrahtet. ✅
 5. `magentic.py`: `MagenticOneGroupChat` (Roster + Orchestrator-Client, max_turns-Cap). ✅
 6. `graph.py`: `GraphFlow` (Fallback, DiGraph mit Fan-out/Join + QA-Loop) + Struktur-Tests. ✅
-7. `orchestrator.py`: Eskalations-Leiter (Magentic→GraphFlow auf Ollama; A→B auf 9router) + Tests.
+7. `orchestrator.py`: Eskalations-Leiter (Magentic→GraphFlow auf Ollama; A→B auf 9router) + Tests. ✅
 8. `handlers.py` + `api/short_creator.py`: Job + Endpoint + optional-extra-Guard.
 9. End-to-end (echter lokaler Lauf gegen ein reales Sprechvideo) + Doku + Review.
 
