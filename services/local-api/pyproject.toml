@@ -42,6 +42,9 @@ semantic = [
 # MCP stdio server — exposes the build graph as agent-operable tools.
 # Requires: uv sync --extra mcp  (or pip install laura-local-api[mcp]).
 mcp = ["mcp>=1.0"]
+# NL-agent short-creator (AutoGen 0.4 multi-agent). Optional: the backend starts
+# without it; only the auto-short job needs it. Requires: uv sync --extra autoshort.
+autoshort = ["autogen-agentchat>=0.4", "autogen-ext[openai,ollama]>=0.4"]
 
 [project.scripts]
 laura-api = "laura.main:run"
@@ -93,6 +96,7 @@ module = [
     "opentimelineio.*", "celery.*", "qdrant_client.*", "psycopg.*", "opentelemetry.*",
     "torch.*", "numpy.*", "fastembed.*", "transnetv2_pytorch.*", "yt_dlp.*",
     "mcp.*", "ctranslate2.*", "PIL.*",
+    "autogen_agentchat.*", "autogen_ext.*", "autogen_core.*",
 ]
 ignore_missing_imports = true
 
