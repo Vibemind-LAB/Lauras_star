@@ -94,9 +94,12 @@ export function ChatPanel({ client, assetId, onEvent }: ChatPanelProps): ReactEl
       onEvent?.(event);
       if (event.type === "done" || event.type === "error") setRunning(false);
     };
-    void client.streamAutoShort(assetId, { topic: text }, append).catch((e: unknown) => {
-      append({ type: "error", message: String(e) });
-    });
+    void client
+      .streamAutoShort(assetId, { topic: text }, append)
+      .catch((e: unknown) => {
+        append({ type: "error", message: String(e) });
+      })
+      .finally(() => setRunning(false)); // safety net: reset even if the stream ends abruptly
   };
 
   return (

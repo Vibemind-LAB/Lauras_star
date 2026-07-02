@@ -39,6 +39,22 @@ describe("ChatPanel", () => {
     expect(screen.getByText(/Short fertig/)).toBeTruthy();
   });
 
+  it("resets running when the stream ends without a terminal event", async () => {
+    // Abrupt end: the stream promise resolves without ever emitting done/error.
+    let resolve!: () => void;
+    const streamAutoShort = vi.fn(() => new Promise<void>((r) => (resolve = r)));
+    render(<ChatPanel client={mockClient(streamAutoShort)} assetId="a1" />);
+
+    fireEvent.change(screen.getByLabelText("Anfrage"), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Los" }));
+    expect((screen.getByLabelText("Anfrage") as HTMLInputElement).disabled).toBe(true);
+
+    resolve();
+    await waitFor(() =>
+      expect((screen.getByLabelText("Anfrage") as HTMLInputElement).disabled).toBe(false),
+    );
+  });
+
   it("forwards every event to onEvent (for live view refresh)", async () => {
     const streamAutoShort = vi.fn(
       (_assetId: string, _req: { topic: string }, onEvent: (e: AgentEvent) => void) => {

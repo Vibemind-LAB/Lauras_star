@@ -765,7 +765,16 @@ export class LauraClient {
     let buffer = "";
     const flush = (line: string): void => {
       const trimmed = line.trim();
-      if (trimmed) onEvent(JSON.parse(trimmed) as AgentEvent);
+      if (trimmed === "") return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        // A malformed line must not abort the whole stream — surface it and keep reading.
+        onEvent({ type: "error", message: `Ungültige Stream-Zeile: ${trimmed.slice(0, 80)}` });
+        return;
+      }
+      onEvent(parsed as AgentEvent);
     };
     let result = await reader.read();
     while (!result.done) {
