@@ -684,6 +684,30 @@ export interface HistoryState {
   redo_label: string | null;
 }
 
+/** One normalized event from the live short-creator stream (see the backend event model). */
+export type AgentEvent =
+  | { type: "stage"; stage: string; team: string }
+  | { type: "agent"; agent: string; text?: string }
+  | { type: "tool_call"; agent: string; tool: string; args: Record<string, unknown> }
+  | { type: "tool_result"; tool: string; ok: boolean; summary: string }
+  | { type: "artifact"; kind: string; id: string }
+  | { type: "escalated"; to: string }
+  | {
+      type: "done";
+      ok: boolean;
+      stage: string;
+      team: string;
+      weak: boolean;
+      escalated: boolean;
+      summary: string;
+    }
+  | { type: "error"; message: string };
+
+export interface AutoShortRequest {
+  topic: string;
+  target_seconds?: number;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -713,6 +737,48 @@ export class LauraClient {
     if (!res.ok) {
       throw new Error(`${res.status}: ${await res.text()}`);
     }
+  }
+
+  /**
+   * Run the short-creator live for an asset and stream normalized agent events. Reads the NDJSON
+   * response body via fetch (sets the auth header, unlike EventSource) and calls `onEvent` per line.
+   * Resolves when the stream ends; rejects on a non-OK status. Pass `signal` to abort the run.
+   */
+  async streamAutoShort(
+    assetId: string,
+    req: AutoShortRequest,
+    onEvent: (event: AgentEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/assets/${assetId}/auto-short/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Laura-Token": this.token },
+      body: JSON.stringify(req),
+      signal,
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+    if (!res.body) return;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const flush = (line: string): void => {
+      const trimmed = line.trim();
+      if (trimmed) onEvent(JSON.parse(trimmed) as AgentEvent);
+    };
+    let result = await reader.read();
+    while (!result.done) {
+      buffer += decoder.decode(result.value, { stream: true });
+      let nl = buffer.indexOf("\n");
+      while (nl >= 0) {
+        flush(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+        nl = buffer.indexOf("\n");
+      }
+      result = await reader.read();
+    }
+    flush(buffer);
   }
 
   health(): Promise<Health> {
