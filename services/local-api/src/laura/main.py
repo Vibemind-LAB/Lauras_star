@@ -36,6 +36,7 @@ from .api import (
     scenes,
     search,
     sequences,
+    short_creator,
     shorts,
     shorts_candidates,
     timelines,
@@ -52,6 +53,7 @@ from .jobs import JobRunner, default_registry
 from .metrics import metrics_middleware, metrics_response
 from .render.handlers import register_render_handlers
 from .render.shorts_render import register_shorts_render_handler
+from .short_creator.handlers import register_short_creator_handlers
 from .telemetry import configure_tracing
 
 
@@ -71,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_visual_handlers(registry)
     register_shorts_render_handler(registry)
     register_generate_handlers(registry)
+    register_short_creator_handlers(registry)
     runner = JobRunner(
         db, registry,
         lease_seconds=settings.lease_seconds,
@@ -145,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(orchestration.router)
     app.include_router(demo.router)
     app.include_router(generate.router)
+    app.include_router(short_creator.router)
     return app
 
 

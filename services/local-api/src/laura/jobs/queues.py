@@ -37,6 +37,7 @@ _STAGE_QUEUE: dict[str, str] = {
     "demo.analyze": QUEUE_ANALYSIS_CPU,
     "export.render": QUEUE_EXPORT,
     "shorts.render": QUEUE_EXPORT,
+    "short_creator.run": QUEUE_ANALYSIS_CPU,  # NL-agent orchestration (CPU; calls local Ollama)
 }
 
 
