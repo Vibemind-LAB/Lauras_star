@@ -25,14 +25,19 @@ DEFAULT_WINDOW_FRAMES = 450  # ~15s at 30fps
 def _segments_in_window(
     segments: Sequence[dict[str, Any]], center_frame: int, window_frames: int
 ) -> list[dict[str, Any]]:
-    """Segments whose [start_frame, end_frame] overlaps [center-window, center+window]. Pure."""
+    """Segments whose half-open ``[start_frame, end_frame)`` overlaps ``[lo, hi]``. Pure.
+
+    ``end_frame`` is end-exclusive (the frame after the last spoken sample), so a segment
+    overlaps iff ``start_frame <= hi`` and ``end_frame > lo`` (a segment ending exactly at ``lo``
+    covers only up to ``lo-1`` and is outside the window).
+    """
     lo, hi = center_frame - window_frames, center_frame + window_frames
     out: list[dict[str, Any]] = []
     for seg in segments:
         start_frame, end_frame = seg.get("start_frame"), seg.get("end_frame")
         if start_frame is None or end_frame is None:
             continue
-        if int(end_frame) >= lo and int(start_frame) <= hi:
+        if int(end_frame) > lo and int(start_frame) <= hi:
             out.append(seg)
     return out
 

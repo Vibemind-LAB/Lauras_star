@@ -63,12 +63,12 @@ def _default_execute(
     """Build + run the real AutoGen team for *kind* at *stage*; any failure is a hard fail."""
     import asyncio  # local: only the real run needs the event loop
 
-    team = (
-        magentic.build_magentic_team(db, config, stage=stage)
-        if kind == "magentic"
-        else graph.build_graph_team(db, config, stage=stage)
-    )
     try:
+        team = (
+            magentic.build_magentic_team(db, config, stage=stage)
+            if kind == "magentic"
+            else graph.build_graph_team(db, config, stage=stage)
+        )
         result = asyncio.run(_run_team(team, task))
     except Exception as exc:
         logger.warning("%s team failed at stage %s: %s", kind, stage, exc)
@@ -78,20 +78,38 @@ def _default_execute(
     return _parse_result(result, kind=kind, stage=stage)
 
 
+def _safe_execute(
+    execute: ExecuteFn,
+    db: Database,
+    config: AgentConfig,
+    stage: Stage,
+    kind: TeamKind,
+    task: str,
+) -> StageOutcome:
+    """Run *execute*, converting any exception into a hard-fail outcome (never raises)."""
+    try:
+        return execute(db, config, stage, kind, task)
+    except Exception as exc:
+        logger.warning("%s team raised at stage %s: %s", kind, stage, exc)
+        return StageOutcome(
+            status="hard_fail", weak=False, summary=str(exc), team=kind, stage=stage
+        )
+
+
 def _run_stage(
     db: Database, config: AgentConfig, stage: Stage, task: str, execute: ExecuteFn
 ) -> StageOutcome:
-    """Magentic-One for this stage, falling back to GraphFlow on a hard failure or exception."""
+    """Magentic-One for this stage, falling back to GraphFlow on a hard failure or exception.
+
+    Never raises: any team exception is converted to a hard-fail outcome (via :func:`_safe_execute`)
+    so the escalation ladder in :func:`run_short_creator` always runs.
+    """
     if config.orchestration == "graph":
-        return execute(db, config, stage, "graph", task)
-    try:
-        outcome = execute(db, config, stage, "magentic", task)
-    except Exception as exc:
-        logger.warning("magentic raised at stage %s: %s; falling back to graph", stage, exc)
-        return execute(db, config, stage, "graph", task)
-    if outcome.status == "hard_fail":
-        return execute(db, config, stage, "graph", task)
-    return outcome
+        return _safe_execute(execute, db, config, stage, "graph", task)
+    magentic_outcome = _safe_execute(execute, db, config, stage, "magentic", task)
+    if magentic_outcome.status == "hard_fail":
+        return _safe_execute(execute, db, config, stage, "graph", task)
+    return magentic_outcome
 
 
 def _task_prompt(asset_id: str, topic: str, target_seconds: int) -> str:

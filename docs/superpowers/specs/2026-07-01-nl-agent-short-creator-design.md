@@ -1,6 +1,6 @@
 # NL-Agent Short-Creator — Design (AutoGen 0.4, Magentic-One-first)
 
-_Datum: 2026-07-01 · Status: Entwurf, Iteration 1/9 (User-Validierung) · Ziel-Branch: eigener `feat/`-Branch_
+_Datum: 2026-07-01 · Status: Implementiert (Iterationen 1–9); End-to-end-Lauf manuell zu verifizieren (Ollama/Modell)_
 
 ## Ziel
 
@@ -250,7 +250,8 @@ pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4
 6. `graph.py`: `GraphFlow` (Fallback, DiGraph mit Fan-out/Join + QA-Loop) + Struktur-Tests. ✅
 7. `orchestrator.py`: Eskalations-Leiter (Magentic→GraphFlow auf Ollama; A→B auf 9router) + Tests. ✅
 8. `handlers.py` + `api/short_creator.py`: Job + `POST /assets/{id}/auto-short` + 503-Extra-Guard, in `main.py` verdrahtet. ✅
-9. End-to-end (echter lokaler Lauf gegen ein reales Sprechvideo) + Doku + Review.
+9. Doku (`docs/agentic-short-creator.md`) + Review (Full-Suite grün; 2 Important-Findings gefixt —
+   end-exclusive Frame-Fenster + exception-sicherer Fallback). End-to-end-Lauf **manuell**. ✅
 
 Jede Runde: klein, getestet, dann **deine Validierung** bevor die nächste startet.
 

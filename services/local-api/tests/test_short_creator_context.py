@@ -41,6 +41,16 @@ def test_segments_in_window_excludes_outside() -> None:
     assert got == []
 
 
+def test_segments_in_window_end_frame_is_exclusive_at_boundary() -> None:
+    # center=100, window=50 -> lo=50. A segment with end_frame == lo covers only up to 49,
+    # so it is OUTSIDE the window (end_frame is end-exclusive).
+    assert context._segments_in_window([_seg(0, 50, "ends at lo")], 100, 50) == []
+    # ...but end_frame == lo + 1 covers frame 50 -> included.
+    assert context._segments_in_window([_seg(0, 51, "reaches lo")], 100, 50)[0]["text"] == (
+        "reaches lo"
+    )
+
+
 def test_segments_in_window_skips_rows_without_frames() -> None:
     segs: list[dict[str, Any]] = [{"text": "no frames"}, _seg(100, 110, "ok")]
     got = context._segments_in_window(segs, center_frame=105, window_frames=50)

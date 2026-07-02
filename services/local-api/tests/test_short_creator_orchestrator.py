@@ -96,6 +96,23 @@ def test_both_hardfail_escalates_to_stage_b(db: Database) -> None:
     assert ("B", "magentic") in calls
 
 
+def test_graph_exception_at_stage_a_becomes_hardfail_and_escalates(db: Database) -> None:
+    # Both teams RAISE at Stage A — _safe_execute converts each to hard_fail so the ladder still
+    # escalates to Stage B (previously the graph exception propagated and bypassed escalation).
+    result, calls = _run(
+        db,
+        {
+            ("A", "magentic"): RuntimeError("m"),
+            ("A", "graph"): RuntimeError("g"),
+            ("B", "magentic"): ("ok", False),
+        },
+    )
+    assert result["ok"] is True
+    assert result["stage"] == "B"
+    assert result["escalated"] is True
+    assert calls == [("A", "magentic"), ("A", "graph"), ("B", "magentic")]
+
+
 def test_soft_weak_without_auto_escalate_stays_stage_a(db: Database) -> None:
     result, calls = _run(db, {("A", "magentic"): ("ok", True)})
     assert result["ok"] is True
