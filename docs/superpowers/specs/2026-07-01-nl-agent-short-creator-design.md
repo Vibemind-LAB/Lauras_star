@@ -148,18 +148,16 @@ Jeder Agent = `AssistantAgent(name, model_client=<provider>, workbench=<Laura-MC
   (Im `GraphFlow` explizite Kanten; in Magentic-One delegiert der Orchestrator.)
 - **Bedingte Kante**: QA-Gate „schwach" → zurück zum Director (max. N Runden, dann bester Stand).
 
-### MCP-Wiederverwendung (der Clou)
+### Tool-Wiederverwendung — in-Prozess `FunctionTool` (entschieden, Iteration 3)
 
-AutoGen-`AssistantAgent` konsumiert externe MCP-Server via `McpWorkbench` / `mcp_server_tools`.
-**Laura hat den Server schon** (`mcp/server.py`), und der injiziert bereits `db` in die `tool_*`-
-Funktionen — die MCP-exponierten Signaturen sind sauber (ohne `db`). Die Agenten rufen also
-`search_visual_moments`/`extract_shorts`/`build_roughcut`/`render_timeline` **direkt**. Neuer Glue:
-minimal.
-
-> **Zu bestätigen (Impl-Detail):** Transport des Laura-MCP-Servers (stdio vs. SSE/HTTP) → wählt
-> `StdioServerParams` vs. `StreamableHttpServerParams` im Workbench. In-Prozess-Alternative: die
-> `tool_*`-Funktionen direkt als `FunctionTool` registrieren (spart den MCP-Roundtrip, falls der
-> Server nur stdio kann).
+Die Agenten laufen im **selben Backend-Prozess** wie `db` + die `tool_*`-Funktionen. Statt den
+stdio-MCP-Server (`mcp/server.py`) zu starten und über eine Pipe zu round-trippen, wrappen wir
+dieselben `tool_*`-Funktionen **in-Prozess** als AutoGen-`FunctionTool`s — mit `db`-Injektion genau
+wie der MCP-Server (`short_creator/toolset.py`, spiegelt dessen Wrapper). `build_tool_specs(db)` ist
+**pur** (kein autogen, getestet gegen echte In-Memory-DB); `build_function_tools(db)` importiert das
+Extra lazy. Die Agenten rufen `search_visual_moments`/`extract_shorts`/`build_roughcut`/
+`render_timeline` etc. **direkt** — kein Roundtrip, kein Subprozess. (Der externe MCP-Server bleibt
+für externe Clients wie Claude Desktop; er ist von diesem Pfad unabhängig.)
 
 ### Job- + API-Integration
 
@@ -213,7 +211,8 @@ minimal.
 services/local-api/src/laura/short_creator/
   __init__.py
   providers.py       # Model-Client-Factory (ollama | 9router | openai-compat)
-  agents.py          # Scout/Describer/Transcript/Director/Editor/QA (AssistantAgent + MCP-Workbench)
+  toolset.py         # in-Prozess FunctionTool-Bridge zu Lauras tool_* (db-injiziert)
+  agents.py          # Scout/Describer/Transcript/Director/Editor/QA (AssistantAgent + Tools)
   magentic.py        # MagenticOneGroupChat (primär)
   graph.py           # GraphFlow/DiGraphBuilder (Fallback)
   orchestrator.py    # run(): Magentic-One → Fallback GraphFlow; teilt Agenten
@@ -241,7 +240,7 @@ pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4
 
 1. **Spec** (dieses Dokument) — _jetzt, warte auf deine Validierung._
 2. `providers.py` + Tests (Provider-Factory ollama/9router/openai-compat).
-3. MCP-Anbindung: `McpWorkbench` gegen Laura-MCP (Transport bestätigen) + 1 Smoke-Agent.
+3. In-Prozess Tool-Bridge (`toolset.py`): `tool_*` → `FunctionTool` (db-injiziert) + Smoke-Test gegen echte DB. ✅
 4. `agents.py`: die 5 Agenten + QA (gemockte Clients).
 5. `magentic.py`: `MagenticOneGroupChat` zusammenbauen (primär).
 6. `graph.py`: `GraphFlow` (Fallback) + Struktur-Tests.
@@ -253,8 +252,6 @@ Jede Runde: klein, getestet, dann **deine Validierung** bevor die nächste start
 
 ## Offene Punkte (für deine Validierung)
 
-- **MCP-Transport** des Laura-Servers (stdio/SSE) — oder lieber `FunctionTool`-Direktregistrierung
-  (In-Prozess, spart Roundtrip)?
 - **Ziel-Länge / Format**: fix 60s 9:16, oder Parameter (`target_seconds`, Ratio)?
 - **Input-Fokus v1**: zuerst „aus analysiertem Asset" (Scout sucht) — Rough-/Fine-Cut-Quelle als
   Runde später, oder beide gleich?
