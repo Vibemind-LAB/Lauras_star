@@ -1,6 +1,6 @@
 # Live-Agent-Chat — Design
 
-_Datum: 2026-07-02 · Status: Richtung freigegeben, Umsetzung in 4 Tasks · Branch: `feat/generate-ui`_
+_Datum: 2026-07-02 · Status: **Umgesetzt** (Tasks 1–4 + Review-Fixes, commits d860190…7123bf9); End-to-end-Lauf manuell (Ollama/Modell) · Branch: `feat/generate-ui`_
 
 ## Ziel
 
