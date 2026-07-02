@@ -7,6 +7,8 @@ asset-not-found guard and the happy path via an injected ``execute`` (no autogen
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -88,3 +90,50 @@ def test_handle_short_creator_happy_with_injected_execute(db: Database) -> None:
     out = handlers.handle_short_creator_run(ctx, execute=fake_execute)  # type: ignore[arg-type]
     assert out["ok"] is True
     assert out["stage"] == "A"
+
+
+# --- streaming endpoint ----------------------------------------------------------------------
+
+
+async def _fake_stream(
+    db: Database,
+    config: providers.AgentConfig,
+    *,
+    asset_id: str,
+    topic: str,
+    target_seconds: int = 60,
+    execute_stream: Any = None,
+) -> AsyncIterator[dict[str, Any]]:
+    yield {"type": "stage", "stage": "A", "team": "magentic"}
+    yield {"type": "agent", "agent": "scout", "text": "searching"}
+    yield {
+        "type": "done", "ok": True, "stage": "A", "team": "magentic",
+        "weak": False, "escalated": False, "summary": "",
+    }
+
+
+def test_auto_short_stream_unknown_asset_404(client: TestClient) -> None:
+    r = client.post("/assets/nope/auto-short/stream", json={"topic": "cats"})
+    assert r.status_code == 404
+
+
+def test_auto_short_stream_missing_extra_503(
+    client: TestClient, db: Database, monkeypatch: Any
+) -> None:
+    aid = _asset(db, _project(db))
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: False)
+    r = client.post(f"/assets/{aid}/auto-short/stream", json={"topic": "cats"})
+    assert r.status_code == 503
+
+
+def test_auto_short_stream_streams_ndjson_events(
+    client: TestClient, db: Database, monkeypatch: Any
+) -> None:
+    aid = _asset(db, _project(db))
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr("laura.short_creator.stream.run_short_creator_stream", _fake_stream)
+    r = client.post(f"/assets/{aid}/auto-short/stream", json={"topic": "cats"})
+    assert r.status_code == 200, r.text
+    events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
+    assert [e["type"] for e in events] == ["stage", "agent", "done"]
+    assert events[-1]["ok"] is True

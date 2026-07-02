@@ -7,9 +7,12 @@ about *topic* from the asset via the multi-agent escalation ladder. Requires the
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..auth import Principal, require_permission
@@ -70,3 +73,41 @@ def auto_short(
         max_attempts=1,
     )
     return {"job_id": job_id}
+
+
+@router.post("/assets/{asset_id}/auto-short/stream")
+def auto_short_stream(
+    asset_id: str,
+    body: AutoShortRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> StreamingResponse:
+    """Run the short-creator live and stream normalized NDJSON events (one JSON object per line).
+
+    The run is bound to this connection (closing it stops the run) — that is the "watch it live"
+    behavior. 404 (asset) is checked before 503 (missing extra), both before streaming starts.
+    """
+    db = _db(request)
+    if repos.get_asset(db, asset_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    if not _autoshort_available():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The 'autoshort' extra is not installed. Run: uv sync --extra autoshort",
+        )
+    from ..short_creator.providers import resolve_from_env
+    from ..short_creator.stream import run_short_creator_stream
+
+    config = resolve_from_env()
+    topic, target_seconds = body.topic, body.target_seconds
+
+    async def events() -> AsyncIterator[bytes]:
+        try:
+            async for event in run_short_creator_stream(
+                db, config, asset_id=asset_id, topic=topic, target_seconds=target_seconds
+            ):
+                yield (json.dumps(event) + "\n").encode("utf-8")
+        except Exception as exc:  # never leak a raw 500 mid-stream — emit a final error event
+            yield (json.dumps({"type": "error", "message": str(exc)}) + "\n").encode("utf-8")
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
