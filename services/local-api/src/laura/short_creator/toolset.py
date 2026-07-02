@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..db.database import Database
 from ..mcp import tools as t
+from . import context
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
     from autogen_core.tools import FunctionTool
@@ -91,6 +92,16 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         """Check a background job's status and result by job_id."""
         return t.tool_job_status(db, job_id)
 
+    def describe_moment(asset_id: str, frame: int) -> dict[str, Any]:
+        """Describe what is visibly happening at a candidate frame (VLM; empty if no model)."""
+        return context.describe_moment(db, asset_id, frame)
+
+    def transcript_window(
+        asset_id: str, center_frame: int, window_frames: int = 450
+    ) -> dict[str, Any]:
+        """Summarize what is said around a candidate frame (+/- window) from the transcript."""
+        return context.transcript_window(db, asset_id, center_frame, window_frames)
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         next_action,
         search_visual_moments,
@@ -102,6 +113,8 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         build_roughcut,
         render_timeline,
         job_status,
+        describe_moment,
+        transcript_window,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

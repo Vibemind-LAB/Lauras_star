@@ -35,6 +35,8 @@ def test_agent_specs_key_tool_assignments() -> None:
     assert "build_roughcut" in by_name["editor"].tool_names
     assert "render_timeline" in by_name["editor"].tool_names
     assert "get_similar_segments" in by_name["director"].tool_names
+    assert "describe_moment" in by_name["describer"].tool_names
+    assert "transcript_window" in by_name["transcript_analyst"].tool_names
 
 
 def test_every_agent_tool_exists_in_toolset(db: Database) -> None:

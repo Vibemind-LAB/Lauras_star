@@ -28,6 +28,8 @@ EXPECTED_TOOLS = {
     "build_roughcut",
     "render_timeline",
     "job_status",
+    "describe_moment",
+    "transcript_window",
 }
 
 

@@ -212,6 +212,8 @@ services/local-api/src/laura/short_creator/
   __init__.py
   providers.py       # Model-Client-Factory (ollama | 9router | openai-compat)
   toolset.py         # in-Prozess FunctionTool-Bridge zu Lauras tool_* (db-injiziert)
+  describe.py        # optionaler VLM-Describe-Backend (Ollama, graceful ohne Modell)
+  context.py         # transcript_window (±Frame-Fenster) + describe_moment (Frame-VLM)
   agents.py          # Scout/Describer/Transcript/Director/Editor/QA (AssistantAgent + Tools)
   magentic.py        # MagenticOneGroupChat (primär)
   graph.py           # GraphFlow/DiGraphBuilder (Fallback)
@@ -242,8 +244,8 @@ pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4
 2. `providers.py` + Tests (Provider-Factory ollama/9router/openai-compat).
 3. In-Prozess Tool-Bridge (`toolset.py`): `tool_*` → `FunctionTool` (db-injiziert) + Smoke-Test gegen echte DB. ✅
 4. `agents.py`: Roster (`agent_specs`, pur) + `build_agents` (lazy), an die 10 Tools verdrahtet. ✅
-4b. Spezial-Tools: `describe_moment` (VLM-Frame-Beschreibung) + `transcript_window` (±15s, über
-    `get_words_in_range`) → Describer/Transcript-Analyst neu verdrahten.
+4b. Spezial-Tools: `describe_moment` (VLM-Frame-Beschreibung, injizierbar/graceful) +
+    `transcript_window` (±Frame-Fenster über `get_transcript`) → Describer/Transcript verdrahtet. ✅
 5. `magentic.py`: `MagenticOneGroupChat` zusammenbauen (primär).
 6. `graph.py`: `GraphFlow` (Fallback) + Struktur-Tests.
 7. `orchestrator.py`: Eskalations-Leiter (Magentic→GraphFlow auf Ollama; A→B auf 9router) + Tests.

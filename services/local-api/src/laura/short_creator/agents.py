@@ -57,20 +57,22 @@ def agent_specs() -> list[AgentSpec]:
             description="Describes what is visually happening in each candidate.",
             system_message=(
                 "You are the Describer. For each candidate moment, describe what is visually "
-                "happening. Use score_visual_hook and explain_candidate to gauge each candidate's "
-                "visual character. Return a short visual description per candidate id."
+                "happening. Use describe_moment on a representative frame to get a VLM "
+                "description, and score_visual_hook to gauge the visual opening. Return a short "
+                "visual description per candidate id."
             ),
-            tool_names=("score_visual_hook", "explain_candidate"),
+            tool_names=("describe_moment", "score_visual_hook"),
         ),
         AgentSpec(
             name="transcript_analyst",
             description="Summarizes what is said around each candidate (±15s).",
             system_message=(
-                "You are the Transcript Analyst. For each candidate, summarize what is being said "
-                "around it (about ±15 seconds) so the Director knows the spoken context. Report "
-                "concisely what happens in words per candidate id."
+                "You are the Transcript Analyst. For each candidate, use transcript_window on its "
+                "center frame to read what is being said around it (about ±15 seconds), so the "
+                "Director knows the spoken context. Report concisely what happens in words per "
+                "candidate id."
             ),
-            tool_names=(),
+            tool_names=("transcript_window",),
         ),
         AgentSpec(
             name="director",
