@@ -1,0 +1,180 @@
+"""Streaming variant of the escalation ladder for the Live-Agent-Chat.
+
+``run_short_creator_stream`` drives the ladder as an async event stream: Stage A (magentic → graph
+on hard-fail) then, if too bad, escalate to Stage B — yielding normalized events (``stage`` /
+``agent`` / ``tool_call`` / ``tool_result`` / ``artifact`` / ``escalated`` / ``done`` / ``error``).
+Team execution is injectable (``execute_stream``, an async generator) so the ladder is tested
+without an LLM; the default executor drives the real AutoGen ``team.run_stream`` (manual-to-verify).
+
+Internal ``_outcome`` events carry a team's status/weak between the ladder helpers and are NEVER
+forwarded to the client.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncIterator, Callable
+from typing import Any
+
+from ..db.database import Database
+from . import graph, magentic
+from .orchestrator import TeamKind, _task_prompt
+from .providers import AgentConfig, Stage
+
+logger = logging.getLogger(__name__)
+
+_OUTCOME = "_outcome"
+
+AsyncExecuteStream = Callable[
+    [Database, AgentConfig, Stage, TeamKind, str], AsyncIterator[dict[str, Any]]
+]
+
+
+def _outcome_event(status: str, weak: bool, *, team: TeamKind, stage: Stage, summary: str = "") -> (
+    dict[str, Any]
+):
+    return {
+        "type": _OUTCOME,
+        "status": status,
+        "weak": weak,
+        "team": team,
+        "stage": stage,
+        "summary": summary,
+    }
+
+
+def _done(outcome: dict[str, Any], *, escalated: bool) -> dict[str, Any]:
+    return {
+        "type": "done",
+        "ok": outcome["status"] == "ok",
+        "stage": outcome["stage"],
+        "team": outcome["team"],
+        "weak": outcome["weak"],
+        "escalated": escalated,
+        "summary": outcome.get("summary", ""),
+    }
+
+
+async def _safe_stream(
+    run: AsyncExecuteStream,
+    db: Database,
+    config: AgentConfig,
+    stage: Stage,
+    kind: TeamKind,
+    task: str,
+) -> AsyncIterator[dict[str, Any]]:
+    """Run one team's event stream; convert any exception into an ``error`` + hard-fail outcome."""
+    try:
+        async for event in run(db, config, stage, kind, task):
+            yield event
+    except Exception as exc:
+        logger.warning("%s stream raised at stage %s: %s", kind, stage, exc)
+        yield {"type": "error", "message": str(exc)}
+        yield _outcome_event("hard_fail", False, team=kind, stage=stage, summary=str(exc))
+
+
+async def _run_stage_stream(
+    db: Database, config: AgentConfig, stage: Stage, task: str, run: AsyncExecuteStream
+) -> AsyncIterator[dict[str, Any]]:
+    """Magentic-One for this stage, falling back to GraphFlow on a hard failure.
+
+    Emits a ``stage`` event per team run and forwards exactly one terminal ``_outcome`` (the
+    stage's final one).
+    """
+    if config.orchestration == "graph":
+        yield {"type": "stage", "stage": stage, "team": "graph"}
+        async for event in _safe_stream(run, db, config, stage, "graph", task):
+            yield event
+        return
+
+    yield {"type": "stage", "stage": stage, "team": "magentic"}
+    magentic_outcome: dict[str, Any] | None = None
+    async for event in _safe_stream(run, db, config, stage, "magentic", task):
+        if event.get("type") == _OUTCOME:
+            magentic_outcome = event
+            if event["status"] != "hard_fail":
+                yield event  # magentic succeeded → its outcome is the stage's
+        else:
+            yield event
+    if magentic_outcome is not None and magentic_outcome["status"] == "hard_fail":
+        yield {"type": "stage", "stage": stage, "team": "graph"}
+        async for event in _safe_stream(run, db, config, stage, "graph", task):
+            yield event
+
+
+async def run_short_creator_stream(
+    db: Database,
+    config: AgentConfig,
+    *,
+    asset_id: str,
+    topic: str,
+    target_seconds: int = 60,
+    execute_stream: AsyncExecuteStream | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Stream the escalation ladder as normalized events (see the design spec's event model)."""
+    run = execute_stream if execute_stream is not None else _default_execute_stream
+    task = _task_prompt(asset_id, topic, target_seconds)
+
+    a_outcome = _outcome_event("hard_fail", False, team="magentic", stage="A")
+    async for event in _run_stage_stream(db, config, "A", task, run):
+        if event.get("type") == _OUTCOME:
+            a_outcome = event
+        else:
+            yield event
+
+    if a_outcome["status"] == "ok" and not a_outcome["weak"]:
+        yield _done(a_outcome, escalated=False)
+        return
+    if a_outcome["status"] == "hard_fail" or (config.auto_escalate and a_outcome["weak"]):
+        yield {"type": "escalated", "to": config.escalate_provider}
+        b_outcome = _outcome_event("hard_fail", False, team="magentic", stage="B")
+        async for event in _run_stage_stream(db, config, "B", task, run):
+            if event.get("type") == _OUTCOME:
+                b_outcome = event
+            else:
+                yield event
+        yield _done(b_outcome, escalated=True)
+        return
+    yield _done(a_outcome, escalated=False)  # soft-weak: manual escalation left to the user
+
+
+def _map_event(raw: Any, kind: TeamKind) -> dict[str, Any] | None:
+    """Best-effort map of an AutoGen ``run_stream`` message to a normalized event.
+
+    Recognizes agent text messages and tool-call events; the final ``TaskResult`` is handled by the
+    caller. Unknown raw events are dropped (never passed through raw). Manual-to-verify.
+    """
+    name = type(raw).__name__
+    if name == "TaskResult":
+        return None
+    source = getattr(raw, "source", None)
+    content = getattr(raw, "content", None)
+    if isinstance(content, str) and source is not None:
+        return {"type": "agent", "agent": str(source), "text": content}
+    if "ToolCall" in name:
+        return {"type": "tool_call", "agent": str(source or ""), "tool": name, "args": {}}
+    return None
+
+
+async def _default_execute_stream(
+    db: Database, config: AgentConfig, stage: Stage, kind: TeamKind, task: str
+) -> AsyncIterator[dict[str, Any]]:
+    """Drive the real AutoGen ``team.run_stream`` for *kind*, mapping raw events → normalized ones
+    plus a terminal ``_outcome``. Manual-to-verify (no model in CI; tests inject a fake)."""
+    team = (
+        magentic.build_magentic_team(db, config, stage=stage)
+        if kind == "magentic"
+        else graph.build_graph_team(db, config, stage=stage)
+    )
+    texts: list[str] = []
+    async for raw in team.run_stream(task=task):
+        mapped = _map_event(raw, kind)
+        if mapped is None:
+            continue
+        if mapped.get("type") == "agent":
+            texts.append(str(mapped.get("text", "")))
+        yield mapped
+    joined = " ".join(texts)
+    yield _outcome_event(
+        "ok", "weak" in joined.lower(), team=kind, stage=stage, summary=joined[:2000]
+    )
