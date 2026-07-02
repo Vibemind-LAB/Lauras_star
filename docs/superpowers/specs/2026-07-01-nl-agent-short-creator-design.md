@@ -98,6 +98,30 @@ Gratis-Lokale ausreizen, dann eskalieren:
 `orchestrator.py` kapselt beide Achsen: `run(topic, source) → Stufe A (ollama) → bei „zu schlecht"
 Stufe B (9router)`.
 
+### Konfiguration — alles über Env (Zero-Config-Default)
+
+Läuft **ohne eine einzige Env-Variable** (Default: lokal, gratis, manuelle Eskalation). Jede Env
+überschreibt nur; nichts ist hart im Code verdrahtet:
+
+| Env | Default | Wirkung |
+|---|---|---|
+| `LAURA_AGENT_PROVIDER` | `ollama` | Stufe-A-Provider: `ollama` \| `9router` \| `openai-compat` |
+| `LAURA_AGENT_MODEL` | `qwen2.5` | Modell der Alltags-Agenten (Scout/Director/Transcript/Editor-Reasoning) |
+| `LAURA_ORCHESTRATOR_MODEL` | = `LAURA_AGENT_MODEL` | Modell des Magentic-One-Orchestrators (darf stärker sein) |
+| `LAURA_AGENT_ORCHESTRATION` | `magentic` | Orchestrierung erzwingen: `magentic` (primär) \| `graph` (nur GraphFlow) |
+| `LAURA_AGENT_ESCALATE_PROVIDER` | `9router` | Stufe-B-Provider bei „zu schlecht" |
+| `LAURA_AGENT_ESCALATE_MODEL` | `cc/claude-sonnet-4-5` | Stufe-B-Modell (Abo-Reuse; sonst z.B. GLM) |
+| `LAURA_AGENT_AUTO_ESCALATE` | `0` | `1` = auch *weiche* Qualität automatisch eskalieren (hart eskaliert immer) |
+| `LAURA_AGENT_QA_MAX_ROUNDS` | `2` | QA-Runden bevor „weich zu schlecht" gilt |
+| `LAURA_9ROUTER_BASE_URL` | `http://localhost:20128/v1` | 9router-Endpoint (OpenAI-kompatibel) |
+| `LAURA_9ROUTER_API_KEY` | — | 9router-Key (aus dem Dashboard) |
+| `LAURA_AGENT_BASE_URL` / `LAURA_AGENT_API_KEY` | — | generischer `openai-compat`-Endpoint/Key |
+
+- Der **VLM-Describer** nutzt weiter den bestehenden `LAURA_VLM_MODEL` (qwen3-vl via Ollama) — nicht
+  doppelt konfigurieren.
+- Alle Werte werden **einmal beim Job-Start** über `providers.resolve_from_env()` gelesen — so ist
+  wirklich jeder Schalter per Env erreichbar, ohne Code-Änderung.
+
 ### Agenten-Besetzung + bestätigter Graph
 
 Jeder Agent = `AssistantAgent(name, model_client=<provider>, workbench=<Laura-MCP>)`. Die
