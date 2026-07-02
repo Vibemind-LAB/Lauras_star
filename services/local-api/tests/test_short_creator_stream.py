@@ -136,3 +136,107 @@ def test_exception_emits_error_event_then_falls_back(db: Database) -> None:
     )
     assert "error" in _types(events)
     assert events[-1]["ok"] is True and events[-1]["team"] == "graph"
+
+
+# --- _terminal_outcome: turn/message exhaustion is a hard fail, not success ------------------
+
+
+def test_terminal_outcome_max_turns_is_hard_fail() -> None:
+    out = stream._terminal_outcome(
+        "Maximum number of turns 30 reached.", ["planning", "looping"], team="magentic", stage="A"
+    )
+    assert out["status"] == "hard_fail"
+
+
+def test_terminal_outcome_max_messages_is_hard_fail() -> None:
+    out = stream._terminal_outcome(
+        "Maximum number of messages 60 reached, current message count: 60",
+        [],
+        team="graph",
+        stage="A",
+    )
+    assert out["status"] == "hard_fail"
+
+
+def test_terminal_outcome_normal_completion_is_ok_and_reads_weak() -> None:
+    out = stream._terminal_outcome(
+        "The task has been completed.", ["the result is WEAK on topic"], team="magentic", stage="A"
+    )
+    assert out["status"] == "ok"
+    assert out["weak"] is True
+
+
+def test_terminal_outcome_none_stop_reason_is_ok() -> None:
+    out = stream._terminal_outcome(None, ["fine"], team="magentic", stage="A")
+    assert out["status"] == "ok"
+    assert out["weak"] is False
+
+
+# --- _map_event: real tool names + tool results (duck-typed like autogen 0.4) ----------------
+
+
+class _FunctionCall:
+    def __init__(self, name: str, arguments: str) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _FunctionExecutionResult:
+    def __init__(self, content: str, is_error: bool = False, name: str = "") -> None:
+        self.content = content
+        self.is_error = is_error
+        self.name = name
+
+
+class ToolCallRequestEvent:  # class NAME is what _map_event dispatches on
+    def __init__(self, source: str, content: list[_FunctionCall]) -> None:
+        self.source = source
+        self.content = content
+
+
+class ToolCallExecutionEvent:
+    def __init__(self, source: str, content: list[_FunctionExecutionResult]) -> None:
+        self.source = source
+        self.content = content
+
+
+def test_map_event_tool_call_uses_real_tool_name_and_args() -> None:
+    raw = ToolCallRequestEvent(
+        "scout", [_FunctionCall("search_visual_moments", '{"query": "ipod"}')]
+    )
+    mapped = stream._map_event(raw, "magentic")
+    assert mapped == {
+        "type": "tool_call",
+        "agent": "scout",
+        "tool": "search_visual_moments",
+        "args": {"query": "ipod"},
+    }
+
+
+def test_map_event_tool_call_bad_args_fall_back_to_empty() -> None:
+    raw = ToolCallRequestEvent("scout", [_FunctionCall("extract_shorts", "not-json")])
+    mapped = stream._map_event(raw, "magentic")
+    assert mapped is not None
+    assert mapped["tool"] == "extract_shorts"
+    assert mapped["args"] == {}
+
+
+def test_map_event_tool_execution_becomes_tool_result() -> None:
+    raw = ToolCallExecutionEvent(
+        "scout",
+        [_FunctionExecutionResult("{'ok': True, 'count': 512}", name="list_short_candidates")],
+    )
+    mapped = stream._map_event(raw, "magentic")
+    assert mapped is not None
+    assert mapped["type"] == "tool_result"
+    assert mapped["tool"] == "list_short_candidates"
+    assert mapped["ok"] is True
+    assert "512" in mapped["summary"]
+
+
+def test_map_event_tool_execution_error_flags_not_ok() -> None:
+    raw = ToolCallExecutionEvent("scout", [_FunctionExecutionResult("boom", is_error=True)])
+    mapped = stream._map_event(raw, "magentic")
+    assert mapped is not None
+    assert mapped["type"] == "tool_result"
+    assert mapped["ok"] is False

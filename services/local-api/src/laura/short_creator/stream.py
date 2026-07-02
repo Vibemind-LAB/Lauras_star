@@ -138,11 +138,47 @@ async def run_short_creator_stream(
     yield _done(a_outcome, escalated=False)  # soft-weak: manual escalation left to the user
 
 
+def _tool_call_event(source: Any, calls: list[Any]) -> dict[str, Any]:
+    """A ``tool_call`` event from an AutoGen ToolCallRequestEvent's FunctionCall list."""
+    import json as _json
+
+    names = [str(getattr(c, "name", "") or "") for c in calls]
+    args: dict[str, Any] = {}
+    raw_args = getattr(calls[0], "arguments", None) if calls else None
+    if isinstance(raw_args, str):
+        try:
+            parsed = _json.loads(raw_args)
+            if isinstance(parsed, dict):
+                args = parsed
+        except ValueError:
+            pass
+    return {
+        "type": "tool_call",
+        "agent": str(source or ""),
+        "tool": "+".join(n for n in names if n) or "tool",
+        "args": args,
+    }
+
+
+def _tool_result_event(results: list[Any]) -> dict[str, Any]:
+    """A ``tool_result`` event from an AutoGen ToolCallExecutionEvent's result list."""
+    first = results[0] if results else None
+    summary = str(getattr(first, "content", "") or "")[:200]
+    ok = not any(bool(getattr(r, "is_error", False)) for r in results)
+    return {
+        "type": "tool_result",
+        "tool": str(getattr(first, "name", "") or "") or "tool",
+        "ok": ok,
+        "summary": summary,
+    }
+
+
 def _map_event(raw: Any, kind: TeamKind) -> dict[str, Any] | None:
     """Best-effort map of an AutoGen ``run_stream`` message to a normalized event.
 
-    Recognizes agent text messages and tool-call events; the final ``TaskResult`` is handled by the
-    caller. Unknown raw events are dropped (never passed through raw). Manual-to-verify.
+    Recognizes agent text messages and tool call/execution events; the final ``TaskResult`` is
+    handled by the caller (its ``stop_reason`` decides the outcome). Unknown raw events are
+    dropped (never passed through raw). Duck-typed on class name + attributes.
     """
     name = type(raw).__name__
     if name == "TaskResult":
@@ -151,9 +187,33 @@ def _map_event(raw: Any, kind: TeamKind) -> dict[str, Any] | None:
     content = getattr(raw, "content", None)
     if isinstance(content, str) and source is not None:
         return {"type": "agent", "agent": str(source), "text": content}
+    if name == "ToolCallRequestEvent" and isinstance(content, list):
+        return _tool_call_event(source, content)
+    if name == "ToolCallExecutionEvent" and isinstance(content, list):
+        return _tool_result_event(content)
     if "ToolCall" in name:
         return {"type": "tool_call", "agent": str(source or ""), "tool": name, "args": {}}
     return None
+
+
+def _terminal_outcome(
+    stop_reason: str | None, texts: list[str], *, team: TeamKind, stage: Stage
+) -> dict[str, Any]:
+    """The stage outcome from a finished team run.
+
+    A run that ended because it exhausted its turn/message budget produced nothing useful —
+    that is a hard fail (so the ladder falls back / escalates), NOT a success. ``weak`` reads
+    the QA gate's verdict from the transcript.
+    """
+    joined = " ".join(texts)
+    exhausted = "maximum number of" in (stop_reason or "").lower()
+    return _outcome_event(
+        "hard_fail" if exhausted else "ok",
+        "weak" in joined.lower(),
+        team=team,
+        stage=stage,
+        summary=(joined or (stop_reason or ""))[:2000],
+    )
 
 
 async def _default_execute_stream(
@@ -167,14 +227,16 @@ async def _default_execute_stream(
         else graph.build_graph_team(db, config, stage=stage)
     )
     texts: list[str] = []
+    stop_reason: str | None = None
     async for raw in team.run_stream(task=task):
+        if type(raw).__name__ == "TaskResult":
+            reason = getattr(raw, "stop_reason", None)
+            stop_reason = str(reason) if reason is not None else None
+            continue
         mapped = _map_event(raw, kind)
         if mapped is None:
             continue
         if mapped.get("type") == "agent":
             texts.append(str(mapped.get("text", "")))
         yield mapped
-    joined = " ".join(texts)
-    yield _outcome_event(
-        "ok", "weak" in joined.lower(), team=kind, stage=stage, summary=joined[:2000]
-    )
+    yield _terminal_outcome(stop_reason, texts, team=kind, stage=stage)
