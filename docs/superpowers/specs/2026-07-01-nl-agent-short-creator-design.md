@@ -241,7 +241,9 @@ pyproject: `[project.optional-dependencies] autoshort = ["autogen-agentchat>=0.4
 1. **Spec** (dieses Dokument) — _jetzt, warte auf deine Validierung._
 2. `providers.py` + Tests (Provider-Factory ollama/9router/openai-compat).
 3. In-Prozess Tool-Bridge (`toolset.py`): `tool_*` → `FunctionTool` (db-injiziert) + Smoke-Test gegen echte DB. ✅
-4. `agents.py`: die 5 Agenten + QA (gemockte Clients).
+4. `agents.py`: Roster (`agent_specs`, pur) + `build_agents` (lazy), an die 10 Tools verdrahtet. ✅
+4b. Spezial-Tools: `describe_moment` (VLM-Frame-Beschreibung) + `transcript_window` (±15s, über
+    `get_words_in_range`) → Describer/Transcript-Analyst neu verdrahten.
 5. `magentic.py`: `MagenticOneGroupChat` zusammenbauen (primär).
 6. `graph.py`: `GraphFlow` (Fallback) + Struktur-Tests.
 7. `orchestrator.py`: Eskalations-Leiter (Magentic→GraphFlow auf Ollama; A→B auf 9router) + Tests.
