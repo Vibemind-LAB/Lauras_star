@@ -32,6 +32,7 @@ EXPECTED_TOOLS = {
     "transcript_window",
     "transcript_overview",
     "render_short",
+    "check_voice_alignment",
 }
 
 

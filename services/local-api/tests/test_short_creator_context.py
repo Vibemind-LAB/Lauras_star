@@ -105,6 +105,38 @@ def test_transcript_window_no_run_is_graceful(db: Database) -> None:
     assert out["text"] == ""
 
 
+# --- voice alignment: cuts must not clip words ----------------------------------------------
+
+
+def _word(start: int, end: int, text: str) -> dict[str, Any]:
+    return {"start_frame": start, "end_frame": end, "text": text}
+
+
+def test_voice_alignment_clean_cut_is_aligned() -> None:
+    words = [_word(100, 120, "hallo"), _word(125, 160, "welt"), _word(300, 320, "danach")]
+    out = context._voice_alignment(words, start_frame=90, end_frame_exclusive=200)
+    assert out["aligned"] is True
+    assert out["clipped_words"] == []
+    assert out["lead_in_frames"] == 10  # 100 - 90
+    assert out["tail_frames"] == 40  # 200 - 160
+
+
+def test_voice_alignment_detects_clipped_words_at_both_cuts() -> None:
+    words = [
+        _word(80, 110, "anfang"),  # spans the start cut (100)
+        _word(120, 150, "mitte"),
+        _word(190, 230, "ende"),  # spans the end cut (200)
+    ]
+    out = context._voice_alignment(words, start_frame=100, end_frame_exclusive=200)
+    assert out["aligned"] is False
+    assert out["clipped_words"] == ["anfang", "ende"]
+
+
+def test_check_voice_alignment_unknown_candidate_graceful(db: Database) -> None:
+    out = context.check_voice_alignment(db, "no-such-candidate")
+    assert out["ok"] is False
+
+
 # --- describe_moment: injectable, graceful --------------------------------------------------
 
 

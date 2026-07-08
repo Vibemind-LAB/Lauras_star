@@ -112,6 +112,10 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         """Render ONE chosen candidate as a vertical 9:16 short with karaoke captions."""
         return t.tool_render_short(db, candidate_id, captions=captions, hook_text=hook_text)
 
+    def check_voice_alignment(candidate_id: str) -> dict[str, Any]:
+        """Verify the candidate's cut clips no word (voice aligned to the scene)."""
+        return context.check_voice_alignment(db, candidate_id)
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         next_action,
         search_visual_moments,
@@ -127,6 +131,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         transcript_window,
         transcript_overview,
         render_short,
+        check_voice_alignment,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

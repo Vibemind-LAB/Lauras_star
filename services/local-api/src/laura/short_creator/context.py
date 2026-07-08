@@ -105,6 +105,62 @@ def transcript_overview(db: Database, asset_id: str, blocks: int = 8) -> dict[st
     return {"ok": True, "asset_id": asset_id, "blocks": grouped}
 
 
+def _voice_alignment(
+    words: Sequence[dict[str, Any]], *, start_frame: int, end_frame_exclusive: int
+) -> dict[str, Any]:
+    """Does the cut ``[start_frame, end_frame_exclusive)`` respect word boundaries? Pure.
+
+    A word is *clipped* when a cut lands inside it (word starts before the cut and ends after
+    it). ``lead_in_frames``/``tail_frames`` measure silence padding between the cuts and the
+    first/last fully-contained word — useful to judge breathing room.
+    """
+    clipped: list[str] = []
+    inside: list[dict[str, Any]] = []
+    for w in words:
+        w_start, w_end = int(w["start_frame"]), int(w["end_frame"])
+        if w_start < start_frame < w_end or w_start < end_frame_exclusive < w_end:
+            clipped.append(str(w.get("text") or "").strip())
+        elif start_frame <= w_start and w_end <= end_frame_exclusive:
+            inside.append(w)
+    lead_in = int(inside[0]["start_frame"]) - start_frame if inside else 0
+    tail = end_frame_exclusive - int(inside[-1]["end_frame"]) if inside else 0
+    return {
+        "aligned": not clipped,
+        "clipped_words": clipped,
+        "lead_in_frames": lead_in,
+        "tail_frames": tail,
+        "words_inside": len(inside),
+    }
+
+
+def check_voice_alignment(db: Database, candidate_id: str) -> dict[str, Any]:
+    """Verify a candidate's cut keeps every word intact (voice aligned to the scene).
+
+    Objective ground for the QA gate: sentence-snapped candidates should never clip words; if
+    this reports clipped words, the short's voice is cut mid-word and the verdict must be weak.
+    """
+    candidate = repos.get_short_candidate(db, candidate_id)
+    if candidate is None:
+        return {"ok": False, "reason": "candidate not found", "aligned": False}
+    asset_id = str(candidate["asset_id"])
+    run = repos.get_latest_analysis_run(db, asset_id)
+    if run is None:
+        return {"ok": False, "reason": "no analysis run", "aligned": False}
+    words = repos.list_words_for_run(db, asset_id, str(run["id"]))
+    result = _voice_alignment(
+        words,
+        start_frame=int(candidate["start_frame"]),
+        end_frame_exclusive=int(candidate["end_frame_exclusive"]),
+    )
+    return {
+        "ok": True,
+        "candidate_id": candidate_id,
+        "start_boundary": candidate.get("start_boundary"),
+        "end_boundary": candidate.get("end_boundary"),
+        **result,
+    }
+
+
 FrameExtractor = Callable[[Database, str, int], list[bytes]]
 
 

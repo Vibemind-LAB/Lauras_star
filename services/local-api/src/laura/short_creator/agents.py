@@ -121,13 +121,15 @@ def agent_specs() -> list[AgentSpec]:
             name="qa",
             description="Judges whether the short matches the topic and is coherent.",
             system_message=(
-                "You are the QA gate. Judge whether the produced short matches the topic and is "
-                "coherent. If the Editor did NOT report a real timeline_id and export_id, the "
-                "verdict is weak — nothing was produced. Respond with a verdict (good or weak) "
-                "and a short reason; if weak, say what to improve."
+                "You are the QA gate. Answer in the task's language — never switch languages. "
+                "Judge whether the produced short matches the topic and is coherent. If the "
+                "Editor did NOT report a real export_id, the verdict is weak — nothing was "
+                "produced. If a candidate was rendered, call check_voice_alignment on it: clipped "
+                "words mean the voice is cut mid-word — verdict weak. Respond with a verdict "
+                "(good or weak) and a short reason; if weak, say what to improve."
             ),
-            tool_names=("explain_candidate", "score_visual_hook"),
-            max_tool_iterations=2,
+            tool_names=("explain_candidate", "score_visual_hook", "check_voice_alignment"),
+            max_tool_iterations=3,
         ),
     ]
 
