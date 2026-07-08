@@ -58,15 +58,26 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
         raise ValueError(f"export not found: {export_id}")
 
     opts: dict[str, Any] = exp.get("options") or {}
-    candidate_id = opts.get("candidate_id")
-    if not candidate_id:
+    raw_ids = opts.get("candidate_ids") or (
+        [opts["candidate_id"]] if opts.get("candidate_id") else []
+    )
+    candidate_ids = [str(c) for c in raw_ids if c]
+    if not candidate_ids:
         repos.set_export_error(ctx.db, export_id, "options missing candidate_id")
         raise ValueError("options missing candidate_id")
 
-    candidate = repos.get_short_candidate(ctx.db, str(candidate_id))
-    if candidate is None:
-        repos.set_export_error(ctx.db, export_id, f"candidate not found: {candidate_id}")
-        raise ValueError(f"candidate not found: {candidate_id}")
+    candidates: list[dict[str, Any]] = []
+    for cid in candidate_ids:
+        row = repos.get_short_candidate(ctx.db, cid)
+        if row is None:
+            repos.set_export_error(ctx.db, export_id, f"candidate not found: {cid}")
+            raise ValueError(f"candidate not found: {cid}")
+        candidates.append(row)
+    if len({str(c["asset_id"]) for c in candidates}) != 1:
+        repos.set_export_error(ctx.db, export_id, "candidates span multiple assets")
+        raise ValueError("candidates span multiple assets")
+    candidate = candidates[0]
+    candidate_id = candidate_ids[0]
 
     asset = repos.get_asset(ctx.db, candidate["asset_id"])
     if asset is None:
@@ -80,25 +91,37 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
 
     rate_num = int(project["sequence_rate_num"])
     rate_den = int(project["sequence_rate_den"])
-    start_frame = int(candidate["start_frame"])
-    end_frame = int(candidate["end_frame_exclusive"])
 
-    # The whole short is exactly one trimmed source clip (end-exclusive, integer frames).
+    # The short is the ordered concat of the candidates' trimmed source segments
+    # (end-exclusive, integer frames). One candidate == the classic single-clip short.
     clips: list[tuple[Path, int, int]] = [
-        (Path(asset["source_path"]), start_frame, end_frame)
+        (
+            Path(asset["source_path"]),
+            int(c["start_frame"]),
+            int(c["end_frame_exclusive"]),
+        )
+        for c in candidates
     ]
+    total_frames = sum(int(c["end_frame_exclusive"]) - int(c["start_frame"]) for c in candidates)
 
-    # Captions (default on): map the candidate's words to CLIP-LOCAL frames so the burned ASS
-    # lines up with the trimmed clip (frame 0 == start_frame). Missing run / no words is NOT an
-    # error — we render the clip without captions.
+    # Captions (default on): each segment's words are CLIP-LOCAL to its own trim; offset every
+    # segment by the cumulative duration of the segments before it so the burned ASS stays
+    # aligned across cuts. Missing run / no words is NOT an error — render without captions.
     caption_ass: str | None = None
     if opts.get("captions", True):
         run = repos.get_latest_analysis_run(ctx.db, asset["id"])
         if run is not None and run.get("status") == "succeeded":
-            words = candidate_caption_words(
-                ctx.db, asset["id"], run["id"], start_frame, end_frame
-            )
-            lines = group_caption_lines(words)
+            all_words: list[tuple[str, int, int]] = []
+            offset = 0
+            for c in candidates:
+                seg_start = int(c["start_frame"])
+                seg_end = int(c["end_frame_exclusive"])
+                words = candidate_caption_words(
+                    ctx.db, asset["id"], run["id"], seg_start, seg_end
+                )
+                all_words.extend((t, s + offset, e + offset) for (t, s, e) in words)
+                offset += seg_end - seg_start
+            lines = group_caption_lines(all_words)
             if lines:
                 caption_ass = build_ass(
                     lines,
@@ -137,17 +160,20 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
 
     repos.set_export_done(ctx.db, export_id, path=str(dest), size_bytes=size_bytes)
     _log.info(
-        "shorts.render done export_id=%s candidate_id=%s frames=%d captions=%s",
+        "shorts.render done export_id=%s candidate_id=%s segments=%d frames=%d captions=%s",
         export_id,
         candidate_id,
-        end_frame - start_frame,
+        len(candidates),
+        total_frames,
         bool(caption_ass),
     )
     return {
         "export_id": export_id,
         "path": str(dest),
         "candidate_id": str(candidate_id),
-        "frames": end_frame - start_frame,
+        "candidate_ids": candidate_ids,
+        "segments": len(candidates),
+        "frames": total_frames,
         "captions": bool(caption_ass),
     }
 

@@ -284,3 +284,64 @@ def test_missing_candidate_sets_export_error_and_raises(
     assert errored is not None
     assert errored["status"] == "error"
     assert "candidate not found" in (errored["error"] or "")
+
+
+def test_multi_candidate_render_concats_segments_and_offsets_captions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """candidate_ids renders several scenes as ONE short: clips concat in order, captions of the
+    second segment shifted by the first segment's duration (voice stays aligned per scene)."""
+    db, _cid, asset_id = _seed(tmp_path)  # candidate [0,30) + words 0..30
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    run = repos.get_latest_analysis_run(db, asset_id)
+    assert run is not None
+
+    # Words for the SECOND scene [60, 90) — offsetting must land them at local frames 30..60.
+    words2: list[dict[str, Any]] = []
+    for i in range(6):
+        sf = 60 + i * _WORD_FRAMES
+        words2.append(
+            {"idx": i, "start_sample": sf * 1600, "end_sample": (sf + _WORD_FRAMES) * 1600,
+             "start_frame": sf, "end_frame": sf + _WORD_FRAMES,
+             "text": f"late{i}", "confidence": 1.0, "is_punctuation": False}
+        )
+    repos.insert_segment_with_words(
+        db, asset_id=asset_id, run_id=run["id"], speaker_id=None,
+        segment={"start_sample": 60 * 1600, "end_sample": 90 * 1600,
+                 "start_frame": 60, "end_frame": 90, "text": "b", "confidence": 1.0},
+        words=words2,
+    )
+    candidate = repos.list_shorts_candidates_by_asset(db, asset_id)[0]
+    repos.replace_shorts_candidates(
+        db, asset["project_id"], asset_id, candidate["source_timeline_id"],
+        [
+            {"start_frame": 0, "end_frame_exclusive": 30,
+             "start_boundary": "word", "end_boundary": "word", "score": 0.9,
+             "rejected": False, "reject_reason": None, "score_breakdown": {},
+             "qa_passed": True, "qa_issues": []},
+            {"start_frame": 60, "end_frame_exclusive": 90,
+             "start_boundary": "word", "end_boundary": "word", "score": 0.8,
+             "rejected": False, "reject_reason": None, "score_breakdown": {},
+             "qa_passed": True, "qa_issues": []},
+        ],
+    )
+    c1, c2 = repos.list_shorts_candidates_by_asset(db, asset_id)[:2]
+    calls = _patch_render(monkeypatch)
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "candidate_ids": [c1["id"], c2["id"]],
+                 "captions": True, "reel_fit": True, "reel_blur_fill": True},
+    )
+    out = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    assert out["segments"] == 2
+    assert out["frames"] == 60
+    clips = calls[0]["clips"]
+    assert [(c[1], c[2]) for c in clips] == [(0, 30), (60, 90)]
+    assert calls[0]["kwargs"].get("reel_fit") is True
+    assert calls[0]["kwargs"].get("reel_blur_fill") is True
+    # Second scene's captions start at local frame 30 == 1.0s -> the ASS carries a 0:00:01 cue.
+    ass = calls[0]["kwargs"].get("caption_ass")
+    assert ass and "0:00:01" in ass

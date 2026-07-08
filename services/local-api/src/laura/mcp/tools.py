@@ -436,33 +436,56 @@ def tool_render_short(
     captions: bool = True,
     hook_text: str | None = None,
     loudnorm: bool = True,
+    candidate_ids: list[str] | None = None,
+    fit: str = "crop",
 ) -> dict[str, Any]:
-    """Render one short candidate to a vertical 9:16 MP4 and return the export/job ids.
+    """Render one or more short candidates to a vertical 9:16 MP4 (export/job ids returned).
 
     Thin wrapper over the same logic as the ``POST /shorts-candidates/{id}/render`` API:
     creates the ``exports`` row up front and enqueues a ``shorts.render`` job. Completes the
     agent-drivable shorts toolset (analyze → extract → list → explain → **render**).
 
+    ``candidate_ids`` (ordered, same asset) renders a MULTI-SEGMENT short — several scenes cut
+    together with captions aligned per segment. ``fit="blur"`` letterboxes the source onto a
+    blurred background instead of center-cropping (for screen recordings / UI content, where a
+    9:16 crop cuts the picture off).
+
     Returns ``{"ok": True, "export_id": ..., "job_id": ...}`` on success, or
-    ``{"ok": False, "error": "candidate not found", "candidate_id": ...}`` when the candidate
+    ``{"ok": False, "error": "candidate not found", "candidate_id": ...}`` when a candidate
     (or its asset) does not exist.
     """
-    candidate = repos.get_short_candidate(db, candidate_id)
-    if candidate is None:
-        logger.debug("tool_render_short: candidate_id=%r not found", candidate_id)
-        return {"ok": False, "error": "candidate not found", "candidate_id": candidate_id}
+    ids = [str(c) for c in (candidate_ids or [candidate_id]) if c]
+    if not ids:
+        return {"ok": False, "error": "no candidate ids", "candidate_id": candidate_id}
+
+    first_asset_id: str | None = None
+    candidate: dict[str, Any] | None = None
+    for cid in ids:
+        row = repos.get_short_candidate(db, cid)
+        if row is None:
+            logger.debug("tool_render_short: candidate_id=%r not found", cid)
+            return {"ok": False, "error": "candidate not found", "candidate_id": cid}
+        if first_asset_id is None:
+            first_asset_id = str(row["asset_id"])
+            candidate = row
+        elif str(row["asset_id"]) != first_asset_id:
+            return {"ok": False, "error": "candidates span multiple assets", "candidate_id": cid}
+    assert candidate is not None  # ids is non-empty and every row was found
 
     asset = repos.get_asset(db, candidate["asset_id"])
     if asset is None:
-        logger.debug("tool_render_short: asset for candidate_id=%r not found", candidate_id)
-        return {"ok": False, "error": "asset not found", "candidate_id": candidate_id}
+        logger.debug("tool_render_short: asset for candidate_id=%r not found", ids[0])
+        return {"ok": False, "error": "asset not found", "candidate_id": ids[0]}
 
     options: dict[str, Any] = {
         "kind": "short",
-        "candidate_id": candidate_id,
+        "candidate_id": ids[0],
+        "candidate_ids": ids,
         "captions": captions,
         "hook_text": hook_text,
         "loudnorm": loudnorm,
+        "reel_fit": fit == "blur",
+        "reel_blur_fill": fit == "blur",
     }
     exp = repos.create_export(
         db,

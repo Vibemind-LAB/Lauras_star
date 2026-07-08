@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "render_short",
     "check_voice_alignment",
     "pick_best_candidate",
+    "pick_best_candidates",
 }
 
 
@@ -116,6 +117,37 @@ def test_pick_best_candidate_prefers_score_near_target_length(
     assert out["ok"] is True
     assert out["candidate_id"] == "fit"
     assert out["duration_s"] == 21.0
+
+
+def test_pick_best_candidates_multi_scene_chronological(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Greedy by score, non-overlapping, stops near the target, returns STORY order.
+    fps = 30
+    rows = [
+        {"id": "late", "score": 5.0, "rejected": False,
+         "start_frame": 9000, "end_frame_exclusive": 9000 + 8 * fps},   # 8s, best score
+        {"id": "early", "score": 4.0, "rejected": False,
+         "start_frame": 100, "end_frame_exclusive": 100 + 7 * fps},     # 7s
+        {"id": "overlap", "score": 4.5, "rejected": False,
+         "start_frame": 9100, "end_frame_exclusive": 9100 + 6 * fps},   # overlaps "late"
+        {"id": "mid", "score": 3.0, "rejected": False,
+         "start_frame": 5000, "end_frame_exclusive": 5000 + 6 * fps},   # 6s
+        {"id": "rej", "score": 9.0, "rejected": True,
+         "start_frame": 200, "end_frame_exclusive": 200 + 5 * fps},
+    ]
+    monkeypatch.setattr(
+        toolset.t,
+        "tool_list_short_candidates",
+        lambda _db, _aid: {"count": len(rows), "candidates": rows},
+    )
+    monkeypatch.setattr(toolset, "_asset_fps", lambda _db, _aid: float(fps))
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+    out = specs["pick_best_candidates"].func("a1", 20)
+    assert out["ok"] is True
+    # late(8s) + early(7s) + mid(6s) = 21s >= 20; overlap + rejected excluded; story order:
+    assert out["candidate_ids"] == ["early", "mid", "late"]
+    assert out["total_seconds"] == 21.0
 
 
 def test_pick_best_candidate_no_candidates_graceful(

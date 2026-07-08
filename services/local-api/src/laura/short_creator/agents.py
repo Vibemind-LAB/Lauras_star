@@ -107,16 +107,19 @@ def agent_specs() -> list[AgentSpec]:
             description="Assembles the chosen segments and renders the short.",
             system_message=(
                 "You are the Editor. You MUST use your tools — never answer in prose only. "
-                "If the task asks for a SHORT of a target length: Step 1 — if the Director gave a "
-                "CHOSEN candidate id use it, otherwise call pick_best_candidate(asset_id, "
-                "target_seconds) and take its candidate_id. Step 2 — call render_short with that "
-                "candidate_id (9:16 with captions). Reply exactly: EDITED export_id=<id>. "
-                "Only for full-video tasks WITHOUT a target length: call build_roughcut with the "
-                "asset_id, then render_timeline with its timeline_id, and reply: EDITED "
-                "timeline_id=<id> export_id=<id>. If a call fails, report the error — do not "
-                "pretend."
+                "If the task asks for a SHORT of a target length: Step 1 — if the Director gave "
+                "CHOSEN candidate ids use them, otherwise call pick_best_candidates(asset_id, "
+                "target_seconds) and take its candidate_ids (several scenes across the video). "
+                "Step 2 — call render_short with those candidate_ids. IMPORTANT: if the Describer "
+                "saw screen content / UI (apps, browser, code), pass fit='blur' so nothing is "
+                "cropped off; only real camera footage uses the default crop. Reply exactly: "
+                "EDITED export_id=<id>. Only for full-video tasks WITHOUT a target length: call "
+                "build_roughcut with the asset_id, then render_timeline with its timeline_id, "
+                "and reply: EDITED timeline_id=<id> export_id=<id>. If a call fails, report the "
+                "error — do not pretend."
             ),
             tool_names=(
+                "pick_best_candidates",
                 "pick_best_candidate",
                 "render_short",
                 "build_roughcut",

@@ -154,10 +154,26 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         return context.transcript_overview(db, asset_id, blocks)
 
     def render_short(
-        candidate_id: str, captions: bool = True, hook_text: str | None = None
+        candidate_id: str = "",
+        candidate_ids: list[str] | None = None,
+        captions: bool = True,
+        hook_text: str | None = None,
+        fit: str = "crop",
     ) -> dict[str, Any]:
-        """Render ONE chosen candidate as a vertical 9:16 short with karaoke captions."""
-        return t.tool_render_short(db, candidate_id, captions=captions, hook_text=hook_text)
+        """Render chosen candidate(s) as one vertical 9:16 short with karaoke captions.
+
+        Pass candidate_ids (ordered) for a multi-scene short. fit="blur" letterboxes onto a
+        blurred background — use it for screen recordings / UI content (a crop cuts them off).
+        """
+        first = candidate_id or (candidate_ids[0] if candidate_ids else "")
+        return t.tool_render_short(
+            db,
+            first,
+            candidate_ids=candidate_ids,
+            captions=captions,
+            hook_text=hook_text,
+            fit=fit,
+        )
 
     def check_voice_alignment(candidate_id: str) -> dict[str, Any]:
         """Verify the candidate's cut clips no word (voice aligned to the scene)."""
@@ -188,6 +204,57 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
             "end_frame_exclusive": int(best["end_frame_exclusive"]),
         }
 
+    def pick_best_candidates(
+        asset_id: str, target_seconds: int = 20, max_segments: int = 4
+    ) -> dict[str, Any]:
+        """Several top scenes ACROSS the video for a multi-scene short (deterministic).
+
+        Greedy by score: take non-overlapping candidates until the total reaches the target
+        length (or max_segments), then return them in CHRONOLOGICAL order — the story order the
+        Editor should render.
+        """
+        listing = t.tool_list_short_candidates(db, asset_id)
+        rows = [c for c in listing.get("candidates", []) if not c.get("rejected")]
+        if not rows:
+            return {"ok": False, "reason": "no candidates; run extract_shorts first"}
+        fps = _asset_fps(db, asset_id)
+        target = max(1, int(target_seconds))
+
+        chosen: list[dict[str, Any]] = []
+        total_s = 0.0
+        for c in sorted(rows, key=lambda r: float(r.get("score") or 0.0), reverse=True):
+            start, end = int(c["start_frame"]), int(c["end_frame_exclusive"])
+            if any(
+                start < int(p["end_frame_exclusive"]) and int(p["start_frame"]) < end
+                for p in chosen
+            ):
+                continue  # overlaps an already chosen scene
+            duration_s = (end - start) / fps
+            if total_s + duration_s > target * 1.25 and chosen:
+                continue  # would overshoot the target noticeably — try shorter ones
+            chosen.append(c)
+            total_s += duration_s
+            if total_s >= target or len(chosen) >= max(1, int(max_segments)):
+                break
+        chosen.sort(key=lambda c: int(c["start_frame"]))  # story order
+        return {
+            "ok": True,
+            "candidate_ids": [str(c["id"]) for c in chosen],
+            "segments": [
+                {
+                    "candidate_id": str(c["id"]),
+                    "start_frame": int(c["start_frame"]),
+                    "end_frame_exclusive": int(c["end_frame_exclusive"]),
+                    "duration_s": round(
+                        (int(c["end_frame_exclusive"]) - int(c["start_frame"])) / fps, 2
+                    ),
+                    "score": float(c.get("score") or 0.0),
+                }
+                for c in chosen
+            ],
+            "total_seconds": round(total_s, 2),
+        }
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         next_action,
         search_visual_moments,
@@ -205,6 +272,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         render_short,
         check_voice_alignment,
         pick_best_candidate,
+        pick_best_candidates,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs
