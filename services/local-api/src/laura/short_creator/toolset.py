@@ -13,6 +13,7 @@ is the only autogen-touching function and imports the optional extra lazily.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,29 @@ from . import context
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
     from autogen_core.tools import FunctionTool
+
+# Injectable for tests; the extract wait polls with this sleeper.
+_sleep: Callable[[float], None] = time.sleep
+EXTRACT_WAIT_SECONDS = 120
+_EXTRACT_POLL_INTERVAL = 2.0
+
+
+def _wait_for_job(db: Database, job_id: str, *, timeout_s: float) -> str:
+    """Poll a job until it reaches a terminal status (or timeout). Returns the last status.
+
+    Agents cannot sleep, but tools can: extraction is an async job, and a scout that lists
+    candidates immediately after enqueueing sees an empty list (live-run finding on a freshly
+    imported recording).
+    """
+    deadline = time.monotonic() + timeout_s
+    status = "unknown"
+    while time.monotonic() < deadline:
+        job = t.tool_job_status(db, job_id)
+        status = str(job.get("status") or "unknown")
+        if status in ("succeeded", "failed", "canceled"):
+            return status
+        _sleep(_EXTRACT_POLL_INTERVAL)
+    return status
 
 
 @dataclass(frozen=True)
@@ -55,14 +79,20 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         max_duration_s: float | None = None,
         max_candidates: int | None = None,
     ) -> dict[str, Any]:
-        """Enqueue a shorts.extract job to find short-form clip candidates in an asset."""
-        return t.tool_extract_shorts(
+        """Find short-form clip candidates in an asset (waits until they are ready)."""
+        result = t.tool_extract_shorts(
             db,
             asset_id,
             min_duration_s=min_duration_s,
             max_duration_s=max_duration_s,
             max_candidates=max_candidates,
         )
+        job_id = result.get("job_id")
+        if result.get("ok") and job_id:
+            status = _wait_for_job(db, str(job_id), timeout_s=EXTRACT_WAIT_SECONDS)
+            listing = t.tool_list_short_candidates(db, asset_id)
+            return {**result, "job_final_status": status, "count": listing.get("count", 0)}
+        return result
 
     def list_short_candidates(asset_id: str) -> dict[str, Any]:
         """List persisted short candidates for an asset, best score first."""

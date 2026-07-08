@@ -60,6 +60,30 @@ def test_job_status_wrapper_calls_through_to_real_tool(db: Database) -> None:
     assert result.get("found") is False
 
 
+def test_extract_shorts_waits_for_the_job_then_reports_count(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Async extraction: the wrapper must poll the job to terminal and re-list, so the scout
+    # never sees an empty candidate list right after enqueueing (live-run finding).
+    statuses = iter(["queued", "running", "succeeded"])
+    monkeypatch.setattr(toolset, "_sleep", lambda _s: None)
+    monkeypatch.setattr(
+        toolset.t,
+        "tool_extract_shorts",
+        lambda _db, _aid, **_kw: {"ok": True, "job_id": "j1", "asset_id": _aid},
+    )
+    monkeypatch.setattr(
+        toolset.t, "tool_job_status", lambda _db, _jid: {"found": True, "status": next(statuses)}
+    )
+    monkeypatch.setattr(
+        toolset.t, "tool_list_short_candidates", lambda _db, _aid: {"count": 42, "candidates": []}
+    )
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+    out = specs["extract_shorts"].func("a1")
+    assert out["job_final_status"] == "succeeded"
+    assert out["count"] == 42
+
+
 def test_build_function_tools_missing_extra_raises(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
