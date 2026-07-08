@@ -452,6 +452,7 @@ def render_clips_mp4(
     vertical: bool = False,
     reel_fit: bool = False,
     reel_blur_fill: bool = False,
+    out_size: tuple[int, int] | None = None,
     hook_text: str | None = None,
     disclosure_text: str | None = None,
     caption_ass: str | None = None,
@@ -567,12 +568,16 @@ def render_clips_mp4(
         # reel_video_chain is called without vertical=True when blur-fill handles reframing,
         # so it only emits the drawtext/caption chain without any crop/scale/pad filters.
         use_blur_fill = vertical and reel_blur_fill
+        # Target canvas for any reframe mode; default is the classic 1080×1920 reel.
+        out_w, out_h = out_size if out_size is not None else (1080, 1920)
         reel = reel_video_chain(
             vertical=vertical and not use_blur_fill,
             reel_fit=reel_fit,
             hook_textfile=hook_tf,
             disclosure_textfile=disc_tf,
             font=resolve_font(),
+            out_w=out_w,
+            out_h=out_h,
         )
         if ass_basename:
             caption_filter = f"ass={ass_basename}"
@@ -595,7 +600,7 @@ def render_clips_mp4(
                 # The sub-graph takes [v_label] → [_rbout]; captions are applied after.
                 blur_in = f"[{v_label}]"
                 blur_out = "[_rbout]"
-                blur_graph = reel_blur_fill_graph(blur_in, blur_out)
+                blur_graph = reel_blur_fill_graph(blur_in, blur_out, out_w=out_w, out_h=out_h)
                 fold_parts.append(blur_graph)
                 post_caption = ",".join(p for p in (reel, caption_filter) if p)
                 if post_caption:
@@ -661,7 +666,9 @@ def render_clips_mp4(
                 if pre_blur:
                     parts += f";[vcat]{pre_blur}[_rbtrans]"
                     blur_in_label = "[_rbtrans]"
-                blur_graph = reel_blur_fill_graph(blur_in_label, "[_rbout]")
+                blur_graph = reel_blur_fill_graph(
+                    blur_in_label, "[_rbout]", out_w=out_w, out_h=out_h
+                )
                 parts += f";{blur_graph}"
                 # Drawtext and ASS captions are applied on the composited 1080×1920 stream.
                 post_caption = ",".join(p for p in (reel, caption_filter) if p)

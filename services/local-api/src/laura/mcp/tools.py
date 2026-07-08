@@ -52,6 +52,7 @@ __all__ = [
     "tool_job_status",
     "tool_explain_candidate",
     "tool_render_short",
+    "tool_render_segments",
     "tool_similar_segments",
     "tool_deduplicate_shorts",
     "tool_visual_hook",
@@ -508,6 +509,62 @@ def tool_render_short(
         job_id,
     )
     return {"ok": True, "export_id": exp["id"], "job_id": job_id}
+
+
+def tool_render_segments(
+    db: Database,
+    asset_id: str,
+    segments: list[tuple[int, int]] | list[list[int]],
+    *,
+    captions: bool = True,
+    hook_text: str | None = None,
+    loudnorm: bool = True,
+    fit: str = "crop",
+    vertical: bool = True,
+    out_size: tuple[int, int] = (1080, 1920),
+) -> dict[str, Any]:
+    """Render raw source segments of one asset to a short (export/job ids returned).
+
+    The generic sibling of :func:`tool_render_short`: instead of persisted candidates it takes
+    explicit ``[start_frame, end_frame_exclusive)`` ranges — e.g. rough-cut scenes picked by
+    number. ``vertical``/``out_size`` select the canvas (1080×1920 reel, 1080×1080 square, or
+    ``vertical=False`` for the native 16:9 pass-through); ``fit="blur"`` letterboxes onto a
+    blurred background.
+    """
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return {"ok": False, "error": "asset not found", "asset_id": asset_id}
+    ranges = [(int(s), int(e)) for (s, e) in segments if int(e) > int(s)]
+    if not ranges:
+        return {"ok": False, "error": "no segments", "asset_id": asset_id}
+
+    options: dict[str, Any] = {
+        "kind": "short",
+        "asset_id": asset_id,
+        "segments": [[s, e] for (s, e) in ranges],
+        "captions": captions,
+        "hook_text": hook_text,
+        "loudnorm": loudnorm,
+        "reel_fit": fit == "blur",
+        "reel_blur_fill": fit == "blur",
+        "vertical": vertical,
+        "out_size": [int(out_size[0]), int(out_size[1])],
+    }
+    exp = repos.create_export(
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options=options,
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("shorts.render"),
+        kind="shorts.render",
+        payload={"export_id": exp["id"]},
+        idempotency_key=f"shortrender:{exp['id']}",
+    )
+    return {"ok": True, "export_id": exp["id"], "job_id": job_id, "segments": len(ranges)}
 
 
 # ---------------------------------------------------------------------------

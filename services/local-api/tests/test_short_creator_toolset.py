@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import sys
 import types
+from typing import Any
 
 import pytest
 
 from laura.db.database import Database
+from laura.mcp import tools as mcp_tools
 from laura.short_creator import toolset
 
 EXPECTED_TOOLS = {
@@ -37,7 +39,34 @@ EXPECTED_TOOLS = {
     "pick_best_candidates",
     "scene_transcripts",
     "rank_scenes_by_topic",
+    "render_scenes",
 }
+
+
+def test_render_scenes_fans_out_one_export_per_format(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_segments(_db: Database, _aid: str, numbers: list[int]) -> list[tuple[int, int]]:
+        assert numbers == [1, 2]
+        return [(0, 100), (300, 400)]
+
+    def fake_render(
+        _db: Database, asset_id: str, segments: Any, **kw: Any
+    ) -> dict[str, Any]:
+        calls.append({"asset_id": asset_id, "segments": segments, **kw})
+        return {"ok": True, "export_id": f"e{len(calls)}", "job_id": f"j{len(calls)}"}
+
+    monkeypatch.setattr(toolset, "_scene_segments", fake_segments)
+    monkeypatch.setattr(mcp_tools, "tool_render_segments", fake_render)
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+    out = specs["render_scenes"].func("a1", [1, 2], ["insta", "x", "linkedin"], None, "blur")
+    assert out["ok"] is True
+    assert [r["format"] for r in out["renders"]] == ["insta", "x", "linkedin"]
+    assert [c["vertical"] for c in calls] == [True, False, True]
+    assert [c["out_size"] for c in calls] == [(1080, 1920), (1920, 1080), (1080, 1080)]
+    assert all(c["fit"] == "blur" for c in calls)
 
 
 def test_build_tool_specs_exposes_expected_tools(db: Database) -> None:
@@ -72,15 +101,15 @@ def test_extract_shorts_waits_for_the_job_then_reports_count(
     statuses = iter(["queued", "running", "succeeded"])
     monkeypatch.setattr(toolset, "_sleep", lambda _s: None)
     monkeypatch.setattr(
-        toolset.t,
+        mcp_tools,
         "tool_extract_shorts",
         lambda _db, _aid, **_kw: {"ok": True, "job_id": "j1", "asset_id": _aid},
     )
     monkeypatch.setattr(
-        toolset.t, "tool_job_status", lambda _db, _jid: {"found": True, "status": next(statuses)}
+        mcp_tools, "tool_job_status", lambda _db, _jid: {"found": True, "status": next(statuses)}
     )
     monkeypatch.setattr(
-        toolset.t, "tool_list_short_candidates", lambda _db, _aid: {"count": 42, "candidates": []}
+        mcp_tools, "tool_list_short_candidates", lambda _db, _aid: {"count": 42, "candidates": []}
     )
     specs = {s.name: s for s in toolset.build_tool_specs(db)}
     out = specs["extract_shorts"].func("a1")
@@ -107,7 +136,7 @@ def test_pick_best_candidate_prefers_score_near_target_length(
          "start_frame": 0, "end_frame_exclusive": 20 * fps},
     ]
     monkeypatch.setattr(
-        toolset.t,
+        mcp_tools,
         "tool_list_short_candidates",
         lambda _db, _aid: {"count": len(candidates), "candidates": candidates},
     )
@@ -139,7 +168,7 @@ def test_pick_best_candidates_multi_scene_chronological(
          "start_frame": 200, "end_frame_exclusive": 200 + 5 * fps},
     ]
     monkeypatch.setattr(
-        toolset.t,
+        mcp_tools,
         "tool_list_short_candidates",
         lambda _db, _aid: {"count": len(rows), "candidates": rows},
     )
@@ -156,7 +185,7 @@ def test_pick_best_candidate_no_candidates_graceful(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        toolset.t, "tool_list_short_candidates", lambda _db, _aid: {"count": 0, "candidates": []}
+        mcp_tools, "tool_list_short_candidates", lambda _db, _aid: {"count": 0, "candidates": []}
     )
     specs = {s.name: s for s in toolset.build_tool_specs(db)}
     out = specs["pick_best_candidate"].func("a1", 20)

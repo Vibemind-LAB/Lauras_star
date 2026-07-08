@@ -345,3 +345,30 @@ def test_multi_candidate_render_concats_segments_and_offsets_captions(
     # Second scene's captions start at local frame 30 == 1.0s -> the ASS carries a 0:00:01 cue.
     ass = calls[0]["kwargs"].get("caption_ass")
     assert ass and "0:00:01" in ass
+
+
+def test_raw_segments_mode_renders_scene_ranges_with_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """options.segments (+asset_id) renders raw ranges — the render_scenes path — honoring the
+    format canvas (vertical/out_size), without any persisted candidate."""
+    db, _cid, asset_id = _seed(tmp_path, with_words=False)
+    calls = _patch_render(monkeypatch)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "asset_id": asset_id,
+                 "segments": [[0, 10], [20, 30]], "captions": False,
+                 "vertical": True, "out_size": [1080, 1080]},
+    )
+    out = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    assert out["segments"] == 2
+    assert out["frames"] == 20
+    assert out["candidate_id"] is None
+    clips = calls[0]["clips"]
+    assert [(c[1], c[2]) for c in clips] == [(0, 10), (20, 30)]
+    assert calls[0]["kwargs"].get("vertical") is True
+    assert calls[0]["kwargs"].get("out_size") == (1080, 1080)

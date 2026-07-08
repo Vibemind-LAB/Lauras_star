@@ -58,31 +58,47 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
         raise ValueError(f"export not found: {export_id}")
 
     opts: dict[str, Any] = exp.get("options") or {}
-    raw_ids = opts.get("candidate_ids") or (
-        [opts["candidate_id"]] if opts.get("candidate_id") else []
-    )
-    candidate_ids = [str(c) for c in raw_ids if c]
-    if not candidate_ids:
-        repos.set_export_error(ctx.db, export_id, "options missing candidate_id")
-        raise ValueError("options missing candidate_id")
 
-    candidates: list[dict[str, Any]] = []
-    for cid in candidate_ids:
-        row = repos.get_short_candidate(ctx.db, cid)
-        if row is None:
-            repos.set_export_error(ctx.db, export_id, f"candidate not found: {cid}")
-            raise ValueError(f"candidate not found: {cid}")
-        candidates.append(row)
-    if len({str(c["asset_id"]) for c in candidates}) != 1:
-        repos.set_export_error(ctx.db, export_id, "candidates span multiple assets")
-        raise ValueError("candidates span multiple assets")
-    candidate = candidates[0]
-    candidate_id = candidate_ids[0]
+    # Source segments come either from persisted candidates (candidate_ids) or as raw
+    # ``segments`` ranges (+ asset_id) — e.g. rough-cut scenes picked by number.
+    candidate_ids: list[str] = []
+    segment_ranges: list[tuple[int, int]]
+    raw_segments = opts.get("segments")
+    if raw_segments:
+        asset_id = str(opts.get("asset_id") or "")
+        if not asset_id:
+            repos.set_export_error(ctx.db, export_id, "segments need asset_id")
+            raise ValueError("segments need asset_id")
+        segment_ranges = [(int(s), int(e)) for (s, e) in raw_segments]
+        candidate_id: str | None = None
+    else:
+        raw_ids = opts.get("candidate_ids") or (
+            [opts["candidate_id"]] if opts.get("candidate_id") else []
+        )
+        candidate_ids = [str(c) for c in raw_ids if c]
+        if not candidate_ids:
+            repos.set_export_error(ctx.db, export_id, "options missing candidate_id")
+            raise ValueError("options missing candidate_id")
+        candidates: list[dict[str, Any]] = []
+        for cid in candidate_ids:
+            row = repos.get_short_candidate(ctx.db, cid)
+            if row is None:
+                repos.set_export_error(ctx.db, export_id, f"candidate not found: {cid}")
+                raise ValueError(f"candidate not found: {cid}")
+            candidates.append(row)
+        if len({str(c["asset_id"]) for c in candidates}) != 1:
+            repos.set_export_error(ctx.db, export_id, "candidates span multiple assets")
+            raise ValueError("candidates span multiple assets")
+        asset_id = str(candidates[0]["asset_id"])
+        candidate_id = candidate_ids[0]
+        segment_ranges = [
+            (int(c["start_frame"]), int(c["end_frame_exclusive"])) for c in candidates
+        ]
 
-    asset = repos.get_asset(ctx.db, candidate["asset_id"])
+    asset = repos.get_asset(ctx.db, asset_id)
     if asset is None:
-        repos.set_export_error(ctx.db, export_id, f"asset not found: {candidate['asset_id']}")
-        raise ValueError(f"asset not found: {candidate['asset_id']}")
+        repos.set_export_error(ctx.db, export_id, f"asset not found: {asset_id}")
+        raise ValueError(f"asset not found: {asset_id}")
 
     project = repos.get_project(ctx.db, asset["project_id"])
     if project is None:
@@ -92,17 +108,19 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
     rate_num = int(project["sequence_rate_num"])
     rate_den = int(project["sequence_rate_den"])
 
-    # The short is the ordered concat of the candidates' trimmed source segments
-    # (end-exclusive, integer frames). One candidate == the classic single-clip short.
+    # Output format: vertical (default) renders onto an out_size canvas (default 1080×1920);
+    # vertical=False is the native 16:9 pass-through (X/Twitter preset). Square (LinkedIn) is
+    # vertical=True with out_size 1080×1080 — same clamp/fit/blur machinery.
+    vertical = bool(opts.get("vertical", True))
+    raw_size = opts.get("out_size") or [1080, 1920]
+    out_size = (int(raw_size[0]), int(raw_size[1]))
+
+    # The short is the ordered concat of the trimmed source segments (end-exclusive, integer
+    # frames). One segment == the classic single-clip short.
     clips: list[tuple[Path, int, int]] = [
-        (
-            Path(asset["source_path"]),
-            int(c["start_frame"]),
-            int(c["end_frame_exclusive"]),
-        )
-        for c in candidates
+        (Path(asset["source_path"]), start, end) for (start, end) in segment_ranges
     ]
-    total_frames = sum(int(c["end_frame_exclusive"]) - int(c["start_frame"]) for c in candidates)
+    total_frames = sum(end - start for (start, end) in segment_ranges)
 
     # Captions (default on): each segment's words are CLIP-LOCAL to its own trim; offset every
     # segment by the cumulative duration of the segments before it so the burned ASS stays
@@ -113,9 +131,7 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
         if run is not None and run.get("status") == "succeeded":
             all_words: list[tuple[str, int, int]] = []
             offset = 0
-            for c in candidates:
-                seg_start = int(c["start_frame"])
-                seg_end = int(c["end_frame_exclusive"])
+            for seg_start, seg_end in segment_ranges:
                 words = candidate_caption_words(
                     ctx.db, asset["id"], run["id"], seg_start, seg_end
                 )
@@ -123,12 +139,13 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
                 offset += seg_end - seg_start
             lines = group_caption_lines(all_words)
             if lines:
+                play_w, play_h = out_size if vertical else (1920, 1080)
                 caption_ass = build_ass(
                     lines,
                     rate_num=rate_num,
                     rate_den=rate_den,
-                    play_w=_PLAY_W,
-                    play_h=_PLAY_H,
+                    play_w=play_w,
+                    play_h=play_h,
                 )
 
     # Same dest scheme as handle_render: <workspace_root>/exports/<export_id>.mp4
@@ -144,9 +161,10 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
             dest,
             rate_num=rate_num,
             rate_den=rate_den,
-            vertical=True,
+            vertical=vertical,
             reel_fit=reel_fit,
             reel_blur_fill=reel_blur_fill,
+            out_size=out_size,
             hook_text=hook_text if isinstance(hook_text, str) else None,
             caption_ass=caption_ass,
             loudnorm=loudnorm,
@@ -163,16 +181,16 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
         "shorts.render done export_id=%s candidate_id=%s segments=%d frames=%d captions=%s",
         export_id,
         candidate_id,
-        len(candidates),
+        len(segment_ranges),
         total_frames,
         bool(caption_ass),
     )
     return {
         "export_id": export_id,
         "path": str(dest),
-        "candidate_id": str(candidate_id),
+        "candidate_id": str(candidate_id) if candidate_id else None,
         "candidate_ids": candidate_ids,
-        "segments": len(candidates),
+        "segments": len(segment_ranges),
         "frames": total_frames,
         "captions": bool(caption_ass),
     }

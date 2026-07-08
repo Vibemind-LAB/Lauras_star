@@ -36,6 +36,41 @@ _EXTRACT_POLL_INTERVAL = 2.0
 # (relative length deviation × weight). 2.0 lets a strong-but-far candidate lose to a good fit.
 _LENGTH_FIT_WEIGHT = 2.0
 
+# Platform format presets: (vertical, (out_w, out_h)). "x" is the native 16:9 pass-through.
+FORMAT_PRESETS: dict[str, tuple[bool, tuple[int, int]]] = {
+    "insta": (True, (1080, 1920)),
+    "x": (False, (1920, 1080)),
+    "linkedin": (True, (1080, 1080)),
+}
+
+
+def _scene_segments(
+    db: Database, asset_id: str, scene_numbers: list[int]
+) -> list[tuple[int, int]] | None:
+    """SOURCE segments for 1-based rough-cut scene numbers, in the given order. None = no scenes."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return None
+    timeline = repos.get_or_create_asset_rough_cut(db, str(asset["project_id"]), asset_id)
+    scenes = repos.list_scenes(db, str(timeline["id"]))
+    if not scenes:
+        return None
+    by_number = {int(s["order_index"]) + 1: s for s in scenes}
+    clips = repos.list_timeline_clips(db, str(timeline["id"]))
+    segments: list[tuple[int, int]] = []
+    for number in scene_numbers:
+        scene = by_number.get(int(number))
+        if scene is None:
+            continue
+        segments.extend(
+            context._scene_src_ranges(
+                clips,
+                seq_in=int(scene["seq_in_frame"]),
+                seq_out_exclusive=int(scene["seq_out_frame_exclusive"]),
+            )
+        )
+    return segments
+
 
 def _asset_fps(db: Database, asset_id: str) -> float:
     """The asset's frame rate (probed, or the project's sequence rate); 30.0 when unknown."""
@@ -161,6 +196,44 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         """The scenes most relevant to a topic, ranked by their transcript text."""
         return context.rank_scenes_by_topic(db, asset_id, topic, k)
 
+    def render_scenes(
+        asset_id: str,
+        scene_numbers: list[int],
+        formats: list[str] | None = None,
+        hook_text: str | None = None,
+        fit: str = "crop",
+    ) -> dict[str, Any]:
+        """Render chosen rough-cut scenes (1-based numbers, in order) — one export PER format.
+
+        formats: any of "insta" (9:16), "x" (16:9), "linkedin" (1:1); default ["insta"].
+        fit="blur" letterboxes onto a blurred background (screen recordings / UI content).
+        """
+        segments = _scene_segments(db, asset_id, [int(n) for n in scene_numbers])
+        if segments is None:
+            return {"ok": False, "reason": "no scenes; build_roughcut first"}
+        if not segments:
+            return {"ok": False, "reason": "scene numbers matched nothing"}
+        wanted = [f.lower() for f in (formats or ["insta"])]
+        renders: list[dict[str, Any]] = []
+        for name in wanted:
+            preset = FORMAT_PRESETS.get(name)
+            if preset is None:
+                renders.append({"format": name, "ok": False, "error": "unknown format"})
+                continue
+            vertical, out_size = preset
+            result = t.tool_render_segments(
+                db,
+                asset_id,
+                segments,
+                hook_text=hook_text,
+                fit=fit,
+                vertical=vertical,
+                out_size=out_size,
+            )
+            renders.append({"format": name, **result})
+        ok = any(r.get("ok") for r in renders)
+        return {"ok": ok, "segments": len(segments), "renders": renders}
+
     def render_short(
         candidate_id: str = "",
         candidate_ids: list[str] | None = None,
@@ -283,6 +356,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         pick_best_candidates,
         scene_transcripts,
         rank_scenes_by_topic,
+        render_scenes,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

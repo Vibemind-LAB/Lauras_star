@@ -14,6 +14,8 @@ metacharacters — callers control it, so we keep this builder pure.
 """
 from __future__ import annotations
 
+from math import gcd
+
 
 def reel_video_chain(
     *,
@@ -22,6 +24,8 @@ def reel_video_chain(
     disclosure_textfile: str | None = None,
     font: str,
     reel_fit: bool = False,
+    out_w: int = 1080,
+    out_h: int = 1920,
 ) -> str:
     """Build a comma-joined ffmpeg video-filter string for a reel export.
 
@@ -48,38 +52,45 @@ def reel_video_chain(
     (:func:`laura.render.mp4.render_clips_mp4`) for how it is wired in.
 
     Args:
-        vertical:             Reframe to 9:16 (1080 × 1920).
+        vertical:             Reframe to the target canvas (default 9:16, 1080 × 1920).
         hook_textfile:        Basename of a UTF-8 file with the top-centre hook text.
         disclosure_textfile:  Basename of a UTF-8 file with the bottom-right disclosure.
         font:                 Resolved fontfile path passed verbatim to drawtext.
         reel_fit:             When True (and *vertical* is True) use letterbox fit instead
                               of center-crop.  Default ``False`` — existing behavior.
+        out_w / out_h:        Target canvas when *vertical* is True. Defaults keep the
+                              classic 1080×1920 reel byte-identical; 1080×1080 gives the
+                              square (LinkedIn) preset through the same clamp/fit logic.
     """
     parts: list[str] = []
 
     if vertical:
         if reel_fit:
-            # Scale the source to fit *inside* the full 1080×1920 box (decrease on BOTH
-            # dimensions), then pad to exactly 1080×1920, centring on both axes.
+            # Scale the source to fit *inside* the full out_w×out_h box (decrease on BOTH
+            # dimensions), then pad to exactly out_w×out_h, centring on both axes.
             # Fitting against the whole box (not just width) is what keeps a source that
-            # is already taller/narrower than 9:16 from overshooting 1920 in height — the
+            # is already taller/narrower than the target from overshooting in height — the
             # earlier ``scale=1080:-2`` only constrained width, so a portrait source
             # (e.g. 464×832) scaled to height 1936 and the subsequent ``pad`` to 1920
             # failed ("Padded dimensions cannot be smaller than input dimensions").
             # ``force_divisible_by=2`` keeps both dimensions even (required by libx264).
             parts.append(
-                "scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2"
+                f"scale={out_w}:{out_h}"
+                ":force_original_aspect_ratio=decrease:force_divisible_by=2"
             )
-            parts.append("pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black")
+            parts.append(f"pad={out_w}:{out_h}:({out_w}-iw)/2:({out_h}-ih)/2:black")
         else:
-            # Center-crop to a 9:16 window, clamped to the source so a source that is
-            # already narrower than 9:16 (e.g. 464×832, taller than 9:16) does not request
-            # a crop wider/taller than the frame — that made ``crop=ih*9/16:ih`` ask for
-            # 468px of width from a 464px source and the crop filter aborted (-22). For
-            # landscape/standard sources ``min(iw, ih*9/16) == ih*9/16``, so behavior is
-            # unchanged.
-            parts.append("crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'")
-            parts.append("scale=1080:1920")
+            # Center-crop to an out_w:out_h window, clamped to the source so a source that
+            # is already narrower than the target (e.g. 464×832, taller than 9:16) does not
+            # request a crop wider/taller than the frame — that made ``crop=ih*9/16:ih``
+            # ask for 468px of width from a 464px source and the crop filter aborted (-22).
+            # For landscape/standard sources the min() clamp resolves to the exact ratio,
+            # so behavior is unchanged. The ratio is gcd-reduced so the default canvas
+            # emits the classic ``ih*9/16`` form byte-identically.
+            g = gcd(out_w, out_h) or 1
+            rw, rh = out_w // g, out_h // g
+            parts.append(f"crop='min(iw,ih*{rw}/{rh})':'min(ih,iw*{rh}/{rw})'")
+            parts.append(f"scale={out_w}:{out_h}")
 
     if hook_textfile:
         parts.append(
@@ -98,7 +109,9 @@ def reel_video_chain(
     return ",".join(parts)
 
 
-def reel_blur_fill_graph(in_label: str, out_label: str) -> str:
+def reel_blur_fill_graph(
+    in_label: str, out_label: str, *, out_w: int = 1080, out_h: int = 1920
+) -> str:
     """Return the semicolon-joined ffmpeg filtergraph fragment for blurred-background fill.
 
     Produces a 1080 × 1920 (9:16) output from an arbitrary-aspect-ratio input by:
@@ -137,16 +150,16 @@ def reel_blur_fill_graph(in_label: str, out_label: str) -> str:
     parts = [
         # 1. Split input into background and foreground copies.
         f"{in_label}split=2{bg_split}{fg_split}",
-        # 2. Background: scale to COVER 1080×1920 (may overshoot), crop exactly to canvas,
+        # 2. Background: scale to COVER the canvas (may overshoot), crop exactly to canvas,
         #    then apply a strong Gaussian blur so it reads as a soft colour fill.
         (
-            f"{bg_split}scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,"
+            f"{bg_split}scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{out_h},"
             f"boxblur=20:2{bg_blurred}"
         ),
-        # 3. Foreground: scale to FIT within 1080×1920 (never overflows canvas).
+        # 3. Foreground: scale to FIT within the canvas (never overflows).
         (
-            f"{fg_split}scale=1080:1920:force_original_aspect_ratio=decrease{fg_scaled}"
+            f"{fg_split}scale={out_w}:{out_h}:force_original_aspect_ratio=decrease{fg_scaled}"
         ),
         # 4. Overlay foreground centred on blurred background.
         f"{bg_blurred}{fg_scaled}overlay=(W-w)/2:(H-h)/2{out_label}",
