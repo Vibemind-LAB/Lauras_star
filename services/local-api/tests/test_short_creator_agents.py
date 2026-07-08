@@ -50,6 +50,8 @@ def test_editor_must_chain_build_then_render() -> None:
     assert editor.system_message.index("build_roughcut") < editor.system_message.index(
         "render_timeline"
     )
+    assert "render_short" in editor.tool_names  # short-form path: render the CHOSEN candidate
+    assert "render_short" in editor.system_message
     assert editor.max_tool_iterations >= 4
     # Every tool-bearing agent gets at least a couple of iterations.
     for spec in agents.agent_specs():

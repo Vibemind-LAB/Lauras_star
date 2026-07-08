@@ -102,6 +102,16 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         """Summarize what is said around a candidate frame (+/- window) from the transcript."""
         return context.transcript_window(db, asset_id, center_frame, window_frames)
 
+    def transcript_overview(asset_id: str, blocks: int = 8) -> dict[str, Any]:
+        """The whole transcript grouped into time blocks — summarize the video per section."""
+        return context.transcript_overview(db, asset_id, blocks)
+
+    def render_short(
+        candidate_id: str, captions: bool = True, hook_text: str | None = None
+    ) -> dict[str, Any]:
+        """Render ONE chosen candidate as a vertical 9:16 short with karaoke captions."""
+        return t.tool_render_short(db, candidate_id, captions=captions, hook_text=hook_text)
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         next_action,
         search_visual_moments,
@@ -115,6 +125,8 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         job_status,
         describe_moment,
         transcript_window,
+        transcript_overview,
+        render_short,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

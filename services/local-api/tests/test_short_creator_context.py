@@ -77,6 +77,27 @@ def test_frame_rate_prefers_asset_rate_then_project_sequence_rate(db: Database) 
     assert context._frame_rate(db, {**asset, "rate_num": 25, "rate_den": 1}) == (25, 1)
 
 
+def test_group_segments_into_blocks_summarizable_chunks() -> None:
+    segs = [_seg(i * 100, (i + 1) * 100, f"satz {i}") for i in range(8)]
+    blocks = context._group_segments_into_blocks(segs, blocks=4)
+    assert len(blocks) == 4
+    assert blocks[0]["start_frame"] == 0 and blocks[0]["end_frame"] == 200
+    assert blocks[0]["text"] == "satz 0 satz 1"
+    assert blocks[-1]["text"] == "satz 6 satz 7"
+
+
+def test_group_segments_into_blocks_fewer_segments_than_blocks() -> None:
+    segs = [_seg(0, 10, "a"), _seg(10, 20, "b")]
+    blocks = context._group_segments_into_blocks(segs, blocks=8)
+    assert len(blocks) == 2  # never emits empty blocks
+
+
+def test_transcript_overview_no_run_is_graceful(db: Database) -> None:
+    out = context.transcript_overview(db, "no-such-asset")
+    assert out["ok"] is False
+    assert out["blocks"] == []
+
+
 def test_transcript_window_no_run_is_graceful(db: Database) -> None:
     out = context.transcript_window(db, "no-such-asset", 100)
     assert out["ok"] is False

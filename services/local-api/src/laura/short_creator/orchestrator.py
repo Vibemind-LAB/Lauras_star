@@ -125,10 +125,11 @@ def _run_stage(
 def _task_prompt(asset_id: str, topic: str, target_seconds: int) -> str:
     return (
         f"Create a ~{target_seconds}s vertical short about: {topic}.\n"
-        f"Work on asset_id='{asset_id}'. Scout candidate moments, describe them visually, read the "
-        f"transcript around them; the Director selects and orders segments; the Editor builds the "
-        f"rough cut and renders it; the QA gate judges it against the topic (say 'weak' if it does "
-        f"not match)."
+        f"Work on asset_id='{asset_id}'. Scout candidate moments near {target_seconds}s; the "
+        f"Transcript Analyst summarizes the video per block and reads around candidates; the "
+        f"Describer says what is visible; the Director picks the ONE best candidate for the topic "
+        f"and target length (CHOSEN: <id>); the Editor renders that candidate with render_short; "
+        f"the QA gate judges the result against the topic (say 'weak' if it does not match)."
     )
 
 

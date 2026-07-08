@@ -74,12 +74,13 @@ def agent_specs() -> list[AgentSpec]:
             name="transcript_analyst",
             description="Summarizes what is said around each candidate (±15s).",
             system_message=(
-                "You are the Transcript Analyst. For each candidate, use transcript_window on its "
-                "center frame to read what is being said around it. window_frames is in FRAMES, "
-                "not seconds — leave it at the default 450 (±15s at 30fps). Report concisely what "
-                "happens in words per candidate id."
+                "You are the Transcript Analyst. FIRST call transcript_overview to see the whole "
+                "video in blocks, and summarize each block in one line — that map guides the "
+                "Director. Then, for specific candidates, use transcript_window on their center "
+                "frame. window_frames is in FRAMES, not seconds — leave it at the default 450 "
+                "(±15s at 30fps)."
             ),
-            tool_names=("transcript_window",),
+            tool_names=("transcript_overview", "transcript_window"),
             max_tool_iterations=4,
         ),
         AgentSpec(
@@ -97,6 +98,7 @@ def agent_specs() -> list[AgentSpec]:
                 "explain_candidate",
                 "score_visual_hook",
                 "get_similar_segments",
+                "transcript_overview",
             ),
             max_tool_iterations=4,
         ),
@@ -105,12 +107,14 @@ def agent_specs() -> list[AgentSpec]:
             description="Assembles the chosen segments and renders the short.",
             system_message=(
                 "You are the Editor. You MUST use your tools — never answer in prose only. "
-                "Step 1: call build_roughcut with the asset_id from the task. Step 2: take the "
-                "timeline_id from its result and call render_timeline with it. Only after BOTH "
-                "calls succeeded, reply with exactly: EDITED timeline_id=<id> export_id=<id>. If "
-                "a call fails, report the error instead — do not pretend."
+                "If the task asks for a SHORT of a target length and the Director gave a CHOSEN "
+                "candidate id: call render_short with that candidate_id (9:16 with captions) and "
+                "reply exactly: EDITED export_id=<id>. Otherwise: Step 1 call build_roughcut with "
+                "the asset_id, Step 2 take the timeline_id from its result and call "
+                "render_timeline with it, then reply exactly: EDITED timeline_id=<id> "
+                "export_id=<id>. If a call fails, report the error instead — do not pretend."
             ),
-            tool_names=("build_roughcut", "render_timeline", "job_status"),
+            tool_names=("render_short", "build_roughcut", "render_timeline", "job_status"),
             max_tool_iterations=8,
         ),
         AgentSpec(

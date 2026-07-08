@@ -30,6 +30,8 @@ EXPECTED_TOOLS = {
     "job_status",
     "describe_moment",
     "transcript_window",
+    "transcript_overview",
+    "render_short",
 }
 
 

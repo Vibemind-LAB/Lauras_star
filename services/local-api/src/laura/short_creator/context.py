@@ -69,6 +69,42 @@ def transcript_window(
     }
 
 
+def _group_segments_into_blocks(
+    segments: Sequence[dict[str, Any]], *, blocks: int
+) -> list[dict[str, Any]]:
+    """Group ordered transcript segments into ≤ *blocks* contiguous chunks. Pure.
+
+    Each block carries its frame range and the joined text — a compact per-section view of the
+    video that an agent can summarize (the user's "Transkript pro Szene zusammenfassen" idea).
+    Never emits empty blocks (fewer segments than blocks → one block per segment).
+    """
+    rows = [s for s in segments if s.get("start_frame") is not None]
+    if not rows or blocks < 1:
+        return []
+    per_block = max(1, -(-len(rows) // blocks))  # ceil division
+    out: list[dict[str, Any]] = []
+    for i in range(0, len(rows), per_block):
+        chunk = rows[i : i + per_block]
+        out.append(
+            {
+                "start_frame": int(chunk[0]["start_frame"]),
+                "end_frame": int(chunk[-1]["end_frame"]),
+                "text": " ".join(str(s.get("text") or "").strip() for s in chunk).strip(),
+            }
+        )
+    return out
+
+
+def transcript_overview(db: Database, asset_id: str, blocks: int = 8) -> dict[str, Any]:
+    """The whole transcript grouped into ≤ *blocks* time blocks — the video at a glance."""
+    run = repos.get_latest_analysis_run(db, asset_id)
+    if run is None:
+        return {"ok": False, "reason": "no analysis run", "blocks": []}
+    segs = repos.get_transcript(db, asset_id, str(run["id"]))
+    grouped = _group_segments_into_blocks(segs, blocks=blocks)
+    return {"ok": True, "asset_id": asset_id, "blocks": grouped}
+
+
 FrameExtractor = Callable[[Database, str, int], list[bytes]]
 
 
