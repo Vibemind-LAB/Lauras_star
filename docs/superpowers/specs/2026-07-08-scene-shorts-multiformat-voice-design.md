@@ -34,7 +34,7 @@ _Datum: 2026-07-08 · Status: Richtung vom User freigegeben (Formate + Voice-Sco
   Screen-Content bleibt.
 - Captions: wie heute pro Segment versetzt; ASS-PlayRes pro Format.
 
-### Slice 3 — Transcript Master + ElevenLabs (Voice-Neufassung)
+### Slice 3 — Transcript Master + ElevenLabs (Voice-Neufassung) ✅ (7096606)
 
 - **Neuer Agent `transcript_master`**: schreibt aus den gewählten Szenen-Transkripten ein neues,
   dichtes Skript in der Task-Sprache; die **User-Richtung** (Ton, Länge, CTA) kommt als Teil des
@@ -47,6 +47,8 @@ _Datum: 2026-07-08 · Status: Richtung vom User freigegeben (Formate + Voice-Sco
   wird NICHT — v1: Video schneidet auf Voice-Länge bzw. Voice kürzer als Video ist ok, Rest stumm
   mit sanftem Fade). Captions v1: Zeilen-Captions aus dem neuen Skript (gleichmäßig verteilt);
   Karaoke-Worttimings via ElevenLabs-Timestamps als Ausbaustufe.
+  *Umgesetzt als ffmpeg `-shortest` post-mux (`_replace_audio`): der kürzere Stream beendet den
+  Short; kein Fade in v1.*
 - Provenance: Export mit `ai_effect="voiceover_elevenlabs"` kennzeichnen (KI-Kennzeichnungspflicht
   der Export-Pipeline bleibt).
 
