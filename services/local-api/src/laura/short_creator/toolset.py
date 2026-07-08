@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..db import repos
 from ..db.database import Database
 from ..mcp import tools as t
 from . import context
@@ -29,6 +30,22 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 _sleep: Callable[[float], None] = time.sleep
 EXTRACT_WAIT_SECONDS = 120
 _EXTRACT_POLL_INTERVAL = 2.0
+
+
+# Weight of the length-fit penalty when ranking candidates for a target duration: score minus
+# (relative length deviation × weight). 2.0 lets a strong-but-far candidate lose to a good fit.
+_LENGTH_FIT_WEIGHT = 2.0
+
+
+def _asset_fps(db: Database, asset_id: str) -> float:
+    """The asset's frame rate (probed, or the project's sequence rate); 30.0 when unknown."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return 30.0
+    rate = context._frame_rate(db, asset)
+    if rate is None or rate[1] == 0:
+        return 30.0
+    return rate[0] / rate[1]
 
 
 def _wait_for_job(db: Database, job_id: str, *, timeout_s: float) -> str:
@@ -146,6 +163,31 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         """Verify the candidate's cut clips no word (voice aligned to the scene)."""
         return context.check_voice_alignment(db, candidate_id)
 
+    def pick_best_candidate(asset_id: str, target_seconds: int = 20) -> dict[str, Any]:
+        """The best non-rejected candidate near the target length (deterministic ranking)."""
+        listing = t.tool_list_short_candidates(db, asset_id)
+        rows = [c for c in listing.get("candidates", []) if not c.get("rejected")]
+        if not rows:
+            return {"ok": False, "reason": "no candidates; run extract_shorts first"}
+        fps = _asset_fps(db, asset_id)
+        target = max(1, int(target_seconds))
+
+        def ranked(c: dict[str, Any]) -> float:
+            duration_s = (int(c["end_frame_exclusive"]) - int(c["start_frame"])) / fps
+            fit_penalty = abs(duration_s - target) / target * _LENGTH_FIT_WEIGHT
+            return float(c.get("score") or 0.0) - fit_penalty
+
+        best = max(rows, key=ranked)
+        duration_s = (int(best["end_frame_exclusive"]) - int(best["start_frame"])) / fps
+        return {
+            "ok": True,
+            "candidate_id": str(best["id"]),
+            "score": float(best.get("score") or 0.0),
+            "duration_s": round(duration_s, 2),
+            "start_frame": int(best["start_frame"]),
+            "end_frame_exclusive": int(best["end_frame_exclusive"]),
+        }
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         next_action,
         search_visual_moments,
@@ -162,6 +204,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         transcript_overview,
         render_short,
         check_voice_alignment,
+        pick_best_candidate,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

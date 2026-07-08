@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "transcript_overview",
     "render_short",
     "check_voice_alignment",
+    "pick_best_candidate",
 }
 
 
@@ -82,6 +83,50 @@ def test_extract_shorts_waits_for_the_job_then_reports_count(
     out = specs["extract_shorts"].func("a1")
     assert out["job_final_status"] == "succeeded"
     assert out["count"] == 42
+
+
+def test_pick_best_candidate_prefers_score_near_target_length(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deterministic choice: among non-rejected candidates, prefer high score but stay near the
+    # target length (live-run finding: a 7B Director does not reliably emit CHOSEN, so the
+    # editor needs a dependable default; the Director's explicit choice can still override).
+    fps = 30
+    candidates = [
+        # 60s long, top score -> length penalty should beat it for a 20s target
+        {"id": "long", "score": 5.0, "rejected": False,
+         "start_frame": 0, "end_frame_exclusive": 60 * fps},
+        # 21s, good score -> best fit
+        {"id": "fit", "score": 4.0, "rejected": False,
+         "start_frame": 0, "end_frame_exclusive": 21 * fps},
+        # 20s, but rejected -> excluded
+        {"id": "rej", "score": 9.0, "rejected": True,
+         "start_frame": 0, "end_frame_exclusive": 20 * fps},
+    ]
+    monkeypatch.setattr(
+        toolset.t,
+        "tool_list_short_candidates",
+        lambda _db, _aid: {"count": len(candidates), "candidates": candidates},
+    )
+    monkeypatch.setattr(
+        toolset, "_asset_fps", lambda _db, _aid: float(fps)
+    )
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+    out = specs["pick_best_candidate"].func("a1", 20)
+    assert out["ok"] is True
+    assert out["candidate_id"] == "fit"
+    assert out["duration_s"] == 21.0
+
+
+def test_pick_best_candidate_no_candidates_graceful(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        toolset.t, "tool_list_short_candidates", lambda _db, _aid: {"count": 0, "candidates": []}
+    )
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+    out = specs["pick_best_candidate"].func("a1", 20)
+    assert out["ok"] is False
 
 
 def test_build_function_tools_missing_extra_raises(

@@ -107,14 +107,22 @@ def agent_specs() -> list[AgentSpec]:
             description="Assembles the chosen segments and renders the short.",
             system_message=(
                 "You are the Editor. You MUST use your tools — never answer in prose only. "
-                "If the task asks for a SHORT of a target length and the Director gave a CHOSEN "
-                "candidate id: call render_short with that candidate_id (9:16 with captions) and "
-                "reply exactly: EDITED export_id=<id>. Otherwise: Step 1 call build_roughcut with "
-                "the asset_id, Step 2 take the timeline_id from its result and call "
-                "render_timeline with it, then reply exactly: EDITED timeline_id=<id> "
-                "export_id=<id>. If a call fails, report the error instead — do not pretend."
+                "If the task asks for a SHORT of a target length: Step 1 — if the Director gave a "
+                "CHOSEN candidate id use it, otherwise call pick_best_candidate(asset_id, "
+                "target_seconds) and take its candidate_id. Step 2 — call render_short with that "
+                "candidate_id (9:16 with captions). Reply exactly: EDITED export_id=<id>. "
+                "Only for full-video tasks WITHOUT a target length: call build_roughcut with the "
+                "asset_id, then render_timeline with its timeline_id, and reply: EDITED "
+                "timeline_id=<id> export_id=<id>. If a call fails, report the error — do not "
+                "pretend."
             ),
-            tool_names=("render_short", "build_roughcut", "render_timeline", "job_status"),
+            tool_names=(
+                "pick_best_candidate",
+                "render_short",
+                "build_roughcut",
+                "render_timeline",
+                "job_status",
+            ),
             max_tool_iterations=8,
         ),
         AgentSpec(
