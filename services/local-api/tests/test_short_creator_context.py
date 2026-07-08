@@ -57,6 +57,26 @@ def test_segments_in_window_skips_rows_without_frames() -> None:
     assert [s["text"] for s in got] == ["ok"]
 
 
+def test_frame_rate_prefers_asset_rate_then_project_sequence_rate(db: Database) -> None:
+    from laura.db import repos
+
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=str(project["id"]),
+        type="video",
+        display_name="v",
+        source_path="/tmp/v.mp4",
+    )
+    # Freshly created asset has no probed rate -> falls back to the project's SEQUENCE rate
+    # (projects store sequence_rate_num, not rate_num — live-run finding).
+    assert context._frame_rate(db, asset) == (30, 1)
+    # A probed asset rate wins.
+    assert context._frame_rate(db, {**asset, "rate_num": 25, "rate_den": 1}) == (25, 1)
+
+
 def test_transcript_window_no_run_is_graceful(db: Database) -> None:
     out = context.transcript_window(db, "no-such-asset", 100)
     assert out["ok"] is False

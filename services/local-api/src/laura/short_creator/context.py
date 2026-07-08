@@ -79,20 +79,32 @@ def _proxy_path(db: Database, asset_id: str) -> str | None:
     return None
 
 
+def _frame_rate(db: Database, asset: dict[str, Any]) -> tuple[int, int] | None:
+    """The asset's own probed rate, falling back to the project's sequence rate.
+
+    Projects store ``sequence_rate_num``/``sequence_rate_den`` (NOT ``rate_num`` —
+    live-run finding); assets carry ``rate_num``/``rate_den`` from probe, which may be NULL.
+    """
+    num, den = asset.get("rate_num"), asset.get("rate_den")
+    if num and den:
+        return int(num), int(den)
+    project = repos.get_project(db, str(asset["project_id"]))
+    if project is None:
+        return None
+    return int(project["sequence_rate_num"]), int(project["sequence_rate_den"])
+
+
 def _default_extract(db: Database, asset_id: str, frame: int) -> list[bytes]:
-    """Extract one JPEG for (asset, frame) from the asset's proxy at the project rate."""
+    """Extract one JPEG for (asset, frame) from the asset's proxy at the asset/project rate."""
     asset = repos.get_asset(db, asset_id)
     if asset is None:
         return []
-    project = repos.get_project(db, str(asset["project_id"]))
     proxy = _proxy_path(db, asset_id)
-    if project is None or proxy is None:
+    rate = _frame_rate(db, asset)
+    if proxy is None or rate is None:
         return []
     return extract_frames(
-        {asset_id: proxy},
-        [(asset_id, frame)],
-        rate_num=int(project["rate_num"]),
-        rate_den=int(project["rate_den"]),
+        {asset_id: proxy}, [(asset_id, frame)], rate_num=rate[0], rate_den=rate[1]
     )
 
 
