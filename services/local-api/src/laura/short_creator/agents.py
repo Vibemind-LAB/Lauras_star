@@ -27,12 +27,17 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 
 @dataclass(frozen=True)
 class AgentSpec:
-    """One team member: a name, a one-line description, a system prompt, and tool names."""
+    """One team member: a name, a one-line description, a system prompt, and tool names.
+
+    ``max_tool_iterations`` — tool rounds per turn. AssistantAgent defaults to ONE, which cannot
+    chain build_roughcut → render_timeline within a single graph turn (live-run finding).
+    """
 
     name: str
     description: str
     system_message: str
     tool_names: tuple[str, ...]
+    max_tool_iterations: int = 1
 
 
 def agent_specs() -> list[AgentSpec]:
@@ -51,6 +56,7 @@ def agent_specs() -> list[AgentSpec]:
                 "candidate ids and frame ranges that best match the topic."
             ),
             tool_names=("search_visual_moments", "extract_shorts", "list_short_candidates"),
+            max_tool_iterations=4,
         ),
         AgentSpec(
             name="describer",
@@ -62,17 +68,19 @@ def agent_specs() -> list[AgentSpec]:
                 "visual description per candidate id."
             ),
             tool_names=("describe_moment", "score_visual_hook"),
+            max_tool_iterations=4,
         ),
         AgentSpec(
             name="transcript_analyst",
             description="Summarizes what is said around each candidate (±15s).",
             system_message=(
                 "You are the Transcript Analyst. For each candidate, use transcript_window on its "
-                "center frame to read what is being said around it (about ±15 seconds), so the "
-                "Director knows the spoken context. Report concisely what happens in words per "
-                "candidate id."
+                "center frame to read what is being said around it. window_frames is in FRAMES, "
+                "not seconds — leave it at the default 450 (±15s at 30fps). Report concisely what "
+                "happens in words per candidate id."
             ),
             tool_names=("transcript_window",),
+            max_tool_iterations=4,
         ),
         AgentSpec(
             name="director",
@@ -81,8 +89,8 @@ def agent_specs() -> list[AgentSpec]:
                 "You are the Director. Given the visual descriptions and transcript summaries, "
                 "select and order the best segments into a coherent short about the topic within "
                 "the target length. Use list_short_candidates, explain_candidate, "
-                "score_visual_hook and get_similar_segments to compare and choose. Output an "
-                "ordered list of chosen candidate ids."
+                "score_visual_hook and get_similar_segments to compare and choose. End with "
+                "exactly one line: CHOSEN: <candidate_id>, <candidate_id>, ... in play order."
             ),
             tool_names=(
                 "list_short_candidates",
@@ -90,27 +98,32 @@ def agent_specs() -> list[AgentSpec]:
                 "score_visual_hook",
                 "get_similar_segments",
             ),
+            max_tool_iterations=4,
         ),
         AgentSpec(
             name="editor",
             description="Assembles the chosen segments and renders the short.",
             system_message=(
-                "You are the Editor. Assemble the chosen segments into a cut and render it. Use "
-                "build_roughcut to create the timeline and render_timeline to produce the final "
-                "vertical short; poll job_status for completion. Report the resulting timeline id "
-                "and export id."
+                "You are the Editor. You MUST use your tools — never answer in prose only. "
+                "Step 1: call build_roughcut with the asset_id from the task. Step 2: take the "
+                "timeline_id from its result and call render_timeline with it. Only after BOTH "
+                "calls succeeded, reply with exactly: EDITED timeline_id=<id> export_id=<id>. If "
+                "a call fails, report the error instead — do not pretend."
             ),
             tool_names=("build_roughcut", "render_timeline", "job_status"),
+            max_tool_iterations=8,
         ),
         AgentSpec(
             name="qa",
             description="Judges whether the short matches the topic and is coherent.",
             system_message=(
                 "You are the QA gate. Judge whether the produced short matches the topic and is "
-                "coherent. Use explain_candidate and score_visual_hook to assess quality. Respond "
-                "with a verdict (good or weak) and a short reason; if weak, say what to improve."
+                "coherent. If the Editor did NOT report a real timeline_id and export_id, the "
+                "verdict is weak — nothing was produced. Respond with a verdict (good or weak) "
+                "and a short reason; if weak, say what to improve."
             ),
             tool_names=("explain_candidate", "score_visual_hook"),
+            max_tool_iterations=2,
         ),
     ]
 
@@ -141,6 +154,7 @@ def build_agents(
             tools=[tools_by_name[n] for n in spec.tool_names if n in tools_by_name],
             description=spec.description,
             system_message=spec.system_message,
+            max_tool_iterations=spec.max_tool_iterations,
         )
         for spec in agent_specs()
     ]

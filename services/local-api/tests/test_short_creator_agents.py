@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import types
+from typing import Any
 
 import pytest
 
@@ -37,6 +38,23 @@ def test_agent_specs_key_tool_assignments() -> None:
     assert "get_similar_segments" in by_name["director"].tool_names
     assert "describe_moment" in by_name["describer"].tool_names
     assert "transcript_window" in by_name["transcript_analyst"].tool_names
+
+
+def test_editor_must_chain_build_then_render() -> None:
+    # Live-run finding: a 7B editor TALKS through the task; its prompt must demand the tool
+    # chain, and it needs >1 tool iteration to chain build_roughcut -> render_timeline in one
+    # graph turn (AssistantAgent defaults to a single tool round).
+    by_name = {s.name: s for s in agents.agent_specs()}
+    editor = by_name["editor"]
+    assert "MUST" in editor.system_message
+    assert editor.system_message.index("build_roughcut") < editor.system_message.index(
+        "render_timeline"
+    )
+    assert editor.max_tool_iterations >= 4
+    # Every tool-bearing agent gets at least a couple of iterations.
+    for spec in agents.agent_specs():
+        if spec.tool_names:
+            assert spec.max_tool_iterations >= 2, spec.name
 
 
 def test_every_agent_tool_exists_in_toolset(db: Database) -> None:
@@ -73,12 +91,14 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> list[object]:
             tools: tuple[object, ...] = (),
             description: str = "",
             system_message: str = "",
+            max_tool_iterations: int = 1,
         ) -> None:
             self.name = name
             self.model_client = model_client
             self.tools = list(tools)
             self.description = description
             self.system_message = system_message
+            self.max_tool_iterations = max_tool_iterations
             created.append(self)
 
     ollama = types.ModuleType("autogen_ext.models.ollama")
@@ -104,9 +124,10 @@ def test_build_agents_constructs_full_roster(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_autogen(monkeypatch)
-    built = agents.build_agents(db, providers.resolve_from_env({}))
+    built: list[Any] = list(agents.build_agents(db, providers.resolve_from_env({})))
     assert {a.name for a in built} == EXPECTED_AGENTS
-    by_name = {a.name: a for a in built}
-    # Scout got its three tools; every agent got a model client.
+    by_name: dict[str, Any] = {a.name: a for a in built}
+    # Scout got its three tools; every agent got a model client; the editor can chain tools.
     assert len(by_name["scout"].tools) == 3
     assert all(a.model_client is not None for a in built)
+    assert by_name["editor"].max_tool_iterations >= 4
