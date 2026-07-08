@@ -90,7 +90,10 @@ async function waitForHealth(baseUrl: string, token: string, timeoutMs = 30000):
 export async function startService(): Promise<{ info: ServiceInfo; stop: () => void }> {
   const token = randomUUID();
   const baseUrl = `http://127.0.0.1:${PORT}`;
-  const workspace = path.join(app.getPath("userData"), "workspace");
+  // Dev override: an existing LAURA_WORKSPACE env points the app at another workspace
+  // (e.g. a live-test one) without touching the default userData location.
+  const workspace =
+    process.env.LAURA_WORKSPACE ?? path.join(app.getPath("userData"), "workspace");
 
   const command = resolveServiceCommand();
   // Packaged: point the backend at the bundled ffmpeg/ffprobe (extraResource
