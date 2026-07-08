@@ -3,7 +3,8 @@
 The graph steers the order — the LLM only judges per node — so it is robust with a weak local
 model. Used when Magentic-One fails/under-performs (see ``orchestrator.py``). Shape::
 
-    scout -> {describer, transcript_analyst} -> director -> editor -> qa   (qa is the leaf)
+    scout -> {describer, transcript_analyst} -> director -> transcript_master -> editor -> qa
+    (qa is the leaf; the transcript_master SKIPs itself unless the task asks to re-voice)
 
 The Director joins the Describer + Transcript-Analyst branches; the QA gate's verdict lands in
 the transcript, where the LADDER reads it (weak -> manual/auto escalation) — a qa->director loop
@@ -53,7 +54,8 @@ def build_graph_team(db: Database, config: AgentConfig, *, stage: Stage = "A") -
     builder.add_edge(by_name["scout"], by_name["transcript_analyst"])  # fan-out
     builder.add_edge(by_name["describer"], by_name["director"])
     builder.add_edge(by_name["transcript_analyst"], by_name["director"])  # join
-    builder.add_edge(by_name["director"], by_name["editor"])
+    builder.add_edge(by_name["director"], by_name["transcript_master"])
+    builder.add_edge(by_name["transcript_master"], by_name["editor"])
     builder.add_edge(by_name["editor"], by_name["qa"])  # qa is the leaf (verdict read by ladder)
     builder.set_entry_point(by_name["scout"])
     return GraphFlow(

@@ -16,12 +16,15 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..db import repos
 from ..db.database import Database
 from ..mcp import tools as t
+from ..util import new_id
 from . import context
+from .voice import resolve_voice_backend
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
     from autogen_core.tools import FunctionTool
@@ -202,11 +205,15 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         formats: list[str] | None = None,
         hook_text: str | None = None,
         fit: str = "crop",
+        voiceover_path: str | None = None,
+        voiceover_text: str | None = None,
     ) -> dict[str, Any]:
         """Render chosen rough-cut scenes (1-based numbers, in order) — one export PER format.
 
         formats: any of "insta" (9:16), "x" (16:9), "linkedin" (1:1); default ["insta"].
         fit="blur" letterboxes onto a blurred background (screen recordings / UI content).
+        voiceover_path (+voiceover_text) replaces the original audio with a synthesized voice
+        (see synthesize_voiceover); captions then follow the new script.
         """
         segments = _scene_segments(db, asset_id, [int(n) for n in scene_numbers])
         if segments is None:
@@ -229,10 +236,37 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
                 fit=fit,
                 vertical=vertical,
                 out_size=out_size,
+                voiceover_path=voiceover_path,
+                voiceover_text=voiceover_text,
             )
             renders.append({"format": name, **result})
         ok = any(r.get("ok") for r in renders)
         return {"ok": ok, "segments": len(segments), "renders": renders}
+
+    def synthesize_voiceover(asset_id: str, script: str) -> dict[str, Any]:
+        """Speak a new script with the configured ElevenLabs voice; returns the audio path.
+
+        Graceful without LAURA_ELEVENLABS_API_KEY (ok=False with a reason). Pass the returned
+        voiceover_path (+ the script as voiceover_text) to render_scenes to replace the
+        original audio.
+        """
+        backend = resolve_voice_backend()
+        if backend is None:
+            return {"ok": False, "reason": "no LAURA_ELEVENLABS_API_KEY configured"}
+        text = script.strip()
+        if not text:
+            return {"ok": False, "reason": "empty script"}
+        asset = repos.get_asset(db, asset_id)
+        if asset is None:
+            return {"ok": False, "reason": "asset not found"}
+        project = repos.get_project(db, str(asset["project_id"]))
+        if project is None:
+            return {"ok": False, "reason": "project not found"}
+        out_path = Path(str(project["workspace_root"])) / "voiceovers" / f"{new_id()}.mp3"
+        result = backend.synthesize(text, out_path)
+        if not result.get("ok"):
+            return {"ok": False, "reason": str(result.get("reason") or "synthesis failed")}
+        return {"ok": True, "voiceover_path": str(out_path), "chars": len(text)}
 
     def render_short(
         candidate_id: str = "",
@@ -357,6 +391,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         scene_transcripts,
         rank_scenes_by_topic,
         render_scenes,
+        synthesize_voiceover,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

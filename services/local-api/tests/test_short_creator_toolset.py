@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from laura.db import repos
 from laura.db.database import Database
 from laura.mcp import tools as mcp_tools
 from laura.short_creator import toolset
@@ -40,6 +42,7 @@ EXPECTED_TOOLS = {
     "scene_transcripts",
     "rank_scenes_by_topic",
     "render_scenes",
+    "synthesize_voiceover",
 }
 
 
@@ -52,9 +55,7 @@ def test_render_scenes_fans_out_one_export_per_format(
         assert numbers == [1, 2]
         return [(0, 100), (300, 400)]
 
-    def fake_render(
-        _db: Database, asset_id: str, segments: Any, **kw: Any
-    ) -> dict[str, Any]:
+    def fake_render(_db: Database, asset_id: str, segments: Any, **kw: Any) -> dict[str, Any]:
         calls.append({"asset_id": asset_id, "segments": segments, **kw})
         return {"ok": True, "export_id": f"e{len(calls)}", "job_id": f"j{len(calls)}"}
 
@@ -67,6 +68,73 @@ def test_render_scenes_fans_out_one_export_per_format(
     assert [c["vertical"] for c in calls] == [True, False, True]
     assert [c["out_size"] for c in calls] == [(1080, 1920), (1920, 1080), (1080, 1080)]
     assert all(c["fit"] == "blur" for c in calls)
+
+
+def test_synthesize_voiceover_graceful_without_backend(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(toolset, "resolve_voice_backend", lambda: None)
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["synthesize_voiceover"].func("any-asset", "Skript")
+
+    assert out["ok"] is False
+    assert "LAURA_ELEVENLABS_API_KEY" in out["reason"]
+
+
+def test_synthesize_voiceover_writes_into_project_workspace(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = repos.create_project(
+        db,
+        name="p",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(tmp_path / "proj"),
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a",
+        source_path=str(tmp_path / "a.mp4"),
+    )
+    received: dict[str, Any] = {}
+
+    class FakeBackend:
+        def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
+            received["text"] = text
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(b"MP3")
+            return {"ok": True, "path": str(out_path), "bytes": 3}
+
+    monkeypatch.setattr(toolset, "resolve_voice_backend", lambda: FakeBackend())
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["synthesize_voiceover"].func(asset["id"], "  Volle Energie!  ")
+
+    assert out["ok"] is True
+    path = Path(out["voiceover_path"])
+    assert path.exists() and path.suffix == ".mp3"
+    assert path.parent == tmp_path / "proj" / "voiceovers"
+    assert received["text"] == "Volle Energie!"  # stripped before synthesis
+    assert out["chars"] == len("Volle Energie!")
+
+
+def test_synthesize_voiceover_rejects_empty_script(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeBackend:
+        def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
+            raise AssertionError("must not be called for an empty script")
+
+    monkeypatch.setattr(toolset, "resolve_voice_backend", lambda: FakeBackend())
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["synthesize_voiceover"].func("any-asset", "   ")
+
+    assert out == {"ok": False, "reason": "empty script"}
 
 
 def test_build_tool_specs_exposes_expected_tools(db: Database) -> None:
@@ -126,23 +194,36 @@ def test_pick_best_candidate_prefers_score_near_target_length(
     fps = 30
     candidates = [
         # 60s long, top score -> length penalty should beat it for a 20s target
-        {"id": "long", "score": 5.0, "rejected": False,
-         "start_frame": 0, "end_frame_exclusive": 60 * fps},
+        {
+            "id": "long",
+            "score": 5.0,
+            "rejected": False,
+            "start_frame": 0,
+            "end_frame_exclusive": 60 * fps,
+        },
         # 21s, good score -> best fit
-        {"id": "fit", "score": 4.0, "rejected": False,
-         "start_frame": 0, "end_frame_exclusive": 21 * fps},
+        {
+            "id": "fit",
+            "score": 4.0,
+            "rejected": False,
+            "start_frame": 0,
+            "end_frame_exclusive": 21 * fps,
+        },
         # 20s, but rejected -> excluded
-        {"id": "rej", "score": 9.0, "rejected": True,
-         "start_frame": 0, "end_frame_exclusive": 20 * fps},
+        {
+            "id": "rej",
+            "score": 9.0,
+            "rejected": True,
+            "start_frame": 0,
+            "end_frame_exclusive": 20 * fps,
+        },
     ]
     monkeypatch.setattr(
         mcp_tools,
         "tool_list_short_candidates",
         lambda _db, _aid: {"count": len(candidates), "candidates": candidates},
     )
-    monkeypatch.setattr(
-        toolset, "_asset_fps", lambda _db, _aid: float(fps)
-    )
+    monkeypatch.setattr(toolset, "_asset_fps", lambda _db, _aid: float(fps))
     specs = {s.name: s for s in toolset.build_tool_specs(db)}
     out = specs["pick_best_candidate"].func("a1", 20)
     assert out["ok"] is True
@@ -156,16 +237,41 @@ def test_pick_best_candidates_multi_scene_chronological(
     # Greedy by score, non-overlapping, stops near the target, returns STORY order.
     fps = 30
     rows = [
-        {"id": "late", "score": 5.0, "rejected": False,
-         "start_frame": 9000, "end_frame_exclusive": 9000 + 8 * fps},   # 8s, best score
-        {"id": "early", "score": 4.0, "rejected": False,
-         "start_frame": 100, "end_frame_exclusive": 100 + 7 * fps},     # 7s
-        {"id": "overlap", "score": 4.5, "rejected": False,
-         "start_frame": 9100, "end_frame_exclusive": 9100 + 6 * fps},   # overlaps "late"
-        {"id": "mid", "score": 3.0, "rejected": False,
-         "start_frame": 5000, "end_frame_exclusive": 5000 + 6 * fps},   # 6s
-        {"id": "rej", "score": 9.0, "rejected": True,
-         "start_frame": 200, "end_frame_exclusive": 200 + 5 * fps},
+        {
+            "id": "late",
+            "score": 5.0,
+            "rejected": False,
+            "start_frame": 9000,
+            "end_frame_exclusive": 9000 + 8 * fps,
+        },  # 8s, best score
+        {
+            "id": "early",
+            "score": 4.0,
+            "rejected": False,
+            "start_frame": 100,
+            "end_frame_exclusive": 100 + 7 * fps,
+        },  # 7s
+        {
+            "id": "overlap",
+            "score": 4.5,
+            "rejected": False,
+            "start_frame": 9100,
+            "end_frame_exclusive": 9100 + 6 * fps,
+        },  # overlaps "late"
+        {
+            "id": "mid",
+            "score": 3.0,
+            "rejected": False,
+            "start_frame": 5000,
+            "end_frame_exclusive": 5000 + 6 * fps,
+        },  # 6s
+        {
+            "id": "rej",
+            "score": 9.0,
+            "rejected": True,
+            "start_frame": 200,
+            "end_frame_exclusive": 200 + 5 * fps,
+        },
     ]
     monkeypatch.setattr(
         mcp_tools,

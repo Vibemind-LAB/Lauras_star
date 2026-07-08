@@ -112,7 +112,10 @@ def agent_specs() -> list[AgentSpec]:
                 "You are the Editor. You MUST use your tools — never answer in prose only. "
                 "If the task names SCENE NUMBERS (e.g. 'Szene 1, 2, 19') or PLATFORMS "
                 "(insta/x/linkedin): call render_scenes(asset_id, scene_numbers, formats) — one "
-                "export per format. Else, for a SHORT of a target length: Step 1 — use the "
+                "export per format. If the Transcript Master reported 'VOICEOVER path=...', pass "
+                "voiceover_path=<that path> and voiceover_text=<its SCRIPT> to render_scenes so "
+                "the new voice replaces the original audio. Else, for a SHORT of a target "
+                "length: Step 1 — use the "
                 "Director's CHOSEN candidate ids, otherwise call pick_best_candidates(asset_id, "
                 "target_seconds). Step 2 — call render_short with those candidate_ids. "
                 "IMPORTANT: if the Describer saw screen content / UI (apps, browser, code), pass "
@@ -132,6 +135,22 @@ def agent_specs() -> list[AgentSpec]:
                 "job_status",
             ),
             max_tool_iterations=8,
+        ),
+        AgentSpec(
+            name="transcript_master",
+            description="Rewrites the script from the chosen scenes and voices it (ElevenLabs).",
+            system_message=(
+                "You are the Transcript Master. ONLY act when the task asks to re-voice / neu "
+                "einsprechen / new voiceover — otherwise reply exactly: SKIP. When active: read "
+                "the chosen scenes' words via scene_transcripts, then write a tight, ENERGETIC "
+                "script in the language of the task/video (German etc.) — NEVER in English — "
+                "following the user's direction (tone, length, CTA) from the task. Then call "
+                "synthesize_voiceover(asset_id, script). Reply exactly: "
+                "VOICEOVER path=<voiceover_path>\nSCRIPT: <the script>. If synthesis fails, "
+                "report the reason instead."
+            ),
+            tool_names=("scene_transcripts", "synthesize_voiceover"),
+            max_tool_iterations=4,
         ),
         AgentSpec(
             name="qa",

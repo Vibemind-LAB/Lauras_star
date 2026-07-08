@@ -522,6 +522,8 @@ def tool_render_segments(
     fit: str = "crop",
     vertical: bool = True,
     out_size: tuple[int, int] = (1080, 1920),
+    voiceover_path: str | None = None,
+    voiceover_text: str | None = None,
 ) -> dict[str, Any]:
     """Render raw source segments of one asset to a short (export/job ids returned).
 
@@ -550,6 +552,11 @@ def tool_render_segments(
         "vertical": vertical,
         "out_size": [int(out_size[0]), int(out_size[1])],
     }
+    if voiceover_path:
+        # New synthesized voice replaces the original audio; captions follow the new script.
+        options["voiceover_path"] = voiceover_path
+        options["voiceover_text"] = voiceover_text
+        options["ai_effect"] = "voiceover_elevenlabs"
     exp = repos.create_export(
         db,
         project_id=asset["project_id"],

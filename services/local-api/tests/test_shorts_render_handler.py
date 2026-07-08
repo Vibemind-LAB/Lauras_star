@@ -372,3 +372,42 @@ def test_raw_segments_mode_renders_scene_ranges_with_format(
     assert [(c[1], c[2]) for c in clips] == [(0, 10), (20, 30)]
     assert calls[0]["kwargs"].get("vertical") is True
     assert calls[0]["kwargs"].get("out_size") == (1080, 1080)
+
+
+def test_voiceover_mode_uses_script_captions_and_replaces_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """voiceover_path+voiceover_text: captions come from the NEW script (evenly spread),
+    not the original transcript, and the audio is replaced after the render."""
+    db, candidate_id, asset_id = _seed(tmp_path)  # seeded transcript words word0..word5
+    calls = _patch_render(monkeypatch)
+    replaced: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        shorts_render, "_replace_audio",
+        lambda voice, dest: replaced.append((voice, dest)),
+    )
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    voice_mp3 = tmp_path / "voice.mp3"
+    voice_mp3.write_bytes(b"MP3")
+
+    exp = repos.create_export(
+        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        options={"kind": "short", "candidate_id": candidate_id, "captions": True,
+                 "voiceover_path": str(voice_mp3),
+                 "voiceover_text": "Volle Energie fuer dein Video"},
+    )
+
+    result = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
+
+    ass = calls[0]["kwargs"]["caption_ass"]
+    assert ass is not None
+    assert "Energie" in ass  # new-script words burned in
+    assert "word0" not in ass  # original transcript words NOT used
+    assert replaced == [(voice_mp3, calls[0]["dest"])]
+    assert result["captions"] is True
+
+
+def test_voiceover_replace_audio_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="voiceover file not found"):
+        shorts_render._replace_audio(tmp_path / "nope.mp3", tmp_path / "out.mp4")

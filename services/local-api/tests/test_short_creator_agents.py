@@ -18,7 +18,15 @@ import pytest
 from laura.db.database import Database
 from laura.short_creator import agents, providers, toolset
 
-EXPECTED_AGENTS = {"scout", "describer", "transcript_analyst", "director", "editor", "qa"}
+EXPECTED_AGENTS = {
+    "scout",
+    "describer",
+    "transcript_analyst",
+    "director",
+    "editor",
+    "transcript_master",
+    "qa",
+}
 
 
 def test_agent_specs_roster() -> None:

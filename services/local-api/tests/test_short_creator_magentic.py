@@ -74,6 +74,6 @@ def test_build_magentic_team_wires_roster(
 ) -> None:
     _install_fake_autogen(monkeypatch)
     team = magentic.build_magentic_team(db, providers.resolve_from_env({}))
-    assert len(team.participants) == 6
+    assert len(team.participants) == 7
     assert team.model_client is not None
     assert team.max_turns == magentic.MAX_TURNS

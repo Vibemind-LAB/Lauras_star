@@ -41,6 +41,38 @@ _PLAY_W = 1080
 _PLAY_H = 1920
 
 
+def _replace_audio(voice_path: Path, dest: Path) -> None:
+    """Replace *dest*'s audio track with *voice_path* (video stream copied, no re-encode).
+
+    ``-shortest`` trims to the shorter stream: a voice shorter than the video ends the short
+    there; a longer voice is cut at the video's end — v1 semantics for the re-voiced short.
+    """
+    if not voice_path.is_file():
+        raise ValueError(f"voiceover file not found: {voice_path}")
+    from ..ingest.ffmpeg import run_ffmpeg
+
+    tmp = dest.with_suffix(".voiced.mp4")
+    run_ffmpeg(
+        [
+            "-i",
+            str(dest),
+            "-i",
+            str(voice_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(tmp),
+        ]
+    )
+    tmp.replace(dest)
+
+
 def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
     """Render the candidate referenced by ``ctx.payload['export_id']`` to a 9:16 MP4.
 
@@ -122,19 +154,36 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
     ]
     total_frames = sum(end - start for (start, end) in segment_ranges)
 
+    # Voiceover mode: a synthesized voice replaces the original audio (post-mux below); the
+    # captions then come from the NEW script, its words spread evenly across the video (v1 —
+    # word-exact timings from TTS timestamps are a later refinement).
+    voiceover_path = opts.get("voiceover_path")
+    voiceover_text = opts.get("voiceover_text")
+
+    caption_ass: str | None = None
+    if opts.get("captions", True) and voiceover_path and isinstance(voiceover_text, str):
+        script_words = [w for w in voiceover_text.split() if w.strip()]
+        if script_words and total_frames > 0:
+            step = max(1, total_frames // len(script_words))
+            all_words: list[tuple[str, int, int]] = [
+                (w, i * step, min((i + 1) * step, total_frames)) for i, w in enumerate(script_words)
+            ]
+            lines = group_caption_lines(all_words)
+            if lines:
+                play_w, play_h = out_size if vertical else (1920, 1080)
+                caption_ass = build_ass(
+                    lines, rate_num=rate_num, rate_den=rate_den, play_w=play_w, play_h=play_h
+                )
     # Captions (default on): each segment's words are CLIP-LOCAL to its own trim; offset every
     # segment by the cumulative duration of the segments before it so the burned ASS stays
     # aligned across cuts. Missing run / no words is NOT an error — render without captions.
-    caption_ass: str | None = None
-    if opts.get("captions", True):
+    elif opts.get("captions", True):
         run = repos.get_latest_analysis_run(ctx.db, asset["id"])
         if run is not None and run.get("status") == "succeeded":
-            all_words: list[tuple[str, int, int]] = []
+            all_words = []
             offset = 0
             for seg_start, seg_end in segment_ranges:
-                words = candidate_caption_words(
-                    ctx.db, asset["id"], run["id"], seg_start, seg_end
-                )
+                words = candidate_caption_words(ctx.db, asset["id"], run["id"], seg_start, seg_end)
                 all_words.extend((t, s + offset, e + offset) for (t, s, e) in words)
                 offset += seg_end - seg_start
             lines = group_caption_lines(all_words)
@@ -169,6 +218,8 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
             caption_ass=caption_ass,
             loudnorm=loudnorm,
         )
+        if voiceover_path:
+            _replace_audio(Path(str(voiceover_path)), dest)
         size_bytes = os.path.getsize(dest)
     except Exception as e:  # noqa: BLE001 - persist the failure, drop partial output, re-raise
         repos.set_export_error(ctx.db, export_id, str(e)[-500:])

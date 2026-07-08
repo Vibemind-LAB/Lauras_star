@@ -118,10 +118,11 @@ def test_build_graph_team_encodes_pipeline(
     assert ("scout", "transcript_analyst") in edges  # fan-out
     assert ("describer", "director") in edges
     assert ("transcript_analyst", "director") in edges  # join
-    assert ("director", "editor") in edges
+    assert ("director", "transcript_master") in edges
+    assert ("transcript_master", "editor") in edges
     assert ("editor", "qa") in edges
     assert builder.entry.name == "scout"
     # qa is the LEAF: no outgoing edges (AutoGen's DiGraph validation requires >=1 leaf; a
     # qa->director loop made the graph cyclic with none — live-run finding).
     assert not any(s.name == "qa" for (s, _t, _c) in builder.edges)
-    assert len(team.participants) == 6
+    assert len(team.participants) == 7
