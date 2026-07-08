@@ -3,12 +3,13 @@
 The graph steers the order — the LLM only judges per node — so it is robust with a weak local
 model. Used when Magentic-One fails/under-performs (see ``orchestrator.py``). Shape::
 
-    scout -> {describer, transcript_analyst} -> director -> editor -> qa
-    qa --("weak")--> director            (bounded overall by MAX_MESSAGES)
+    scout -> {describer, transcript_analyst} -> director -> editor -> qa   (qa is the leaf)
 
-The Director joins the Describer + Transcript-Analyst branches; the QA gate loops back to the
-Director only when its verdict reads as "weak". Runtime join/loop semantics are manual-to-verify
-(no LLM in CI); the graph STRUCTURE is asserted in tests.
+The Director joins the Describer + Transcript-Analyst branches; the QA gate's verdict lands in
+the transcript, where the LADDER reads it (weak -> manual/auto escalation) — a qa->director loop
+edge is deliberately absent: AutoGen's DiGraph validation requires at least one leaf node, and a
+cyclic graph has none (live-run finding). Runtime join semantics are manual-to-verify (no LLM in
+CI); the graph STRUCTURE is asserted in tests.
 """
 
 from __future__ import annotations
@@ -24,12 +25,6 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 
 # Overall message budget across the (cyclic) graph — a runaway-loop backstop.
 MAX_MESSAGES = 60
-
-
-def _qa_weak(message: Any) -> bool:
-    """QA verdict routes back to the Director only when it reads as 'weak'."""
-    text = message.to_model_text() if hasattr(message, "to_model_text") else str(message)
-    return "weak" in text.lower()
 
 
 def build_graph_team(db: Database, config: AgentConfig, *, stage: Stage = "A") -> GraphFlow:
@@ -59,8 +54,7 @@ def build_graph_team(db: Database, config: AgentConfig, *, stage: Stage = "A") -
     builder.add_edge(by_name["describer"], by_name["director"])
     builder.add_edge(by_name["transcript_analyst"], by_name["director"])  # join
     builder.add_edge(by_name["director"], by_name["editor"])
-    builder.add_edge(by_name["editor"], by_name["qa"])
-    builder.add_edge(by_name["qa"], by_name["director"], condition=_qa_weak)  # conditional loop
+    builder.add_edge(by_name["editor"], by_name["qa"])  # qa is the leaf (verdict read by ladder)
     builder.set_entry_point(by_name["scout"])
     return GraphFlow(
         participants=agents,

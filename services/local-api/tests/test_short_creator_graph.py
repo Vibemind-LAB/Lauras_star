@@ -18,19 +18,6 @@ from laura.db.database import Database
 from laura.short_creator import graph, providers
 
 
-class _Msg:
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def to_model_text(self) -> str:
-        return self._text
-
-
-def test_qa_weak_routes_only_on_weak() -> None:
-    assert graph._qa_weak(_Msg("The short is WEAK and off-topic")) is True
-    assert graph._qa_weak(_Msg("good — matches the topic and flows well")) is False
-
-
 def test_build_graph_missing_extra_raises(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -133,9 +120,8 @@ def test_build_graph_team_encodes_pipeline(
     assert ("transcript_analyst", "director") in edges  # join
     assert ("director", "editor") in edges
     assert ("editor", "qa") in edges
-    assert ("qa", "director") in edges  # conditional loop
     assert builder.entry.name == "scout"
-    # The qa -> director loop carries a routing condition; forward edges do not.
-    qa_edge = next(e for e in builder.edges if e[0].name == "qa" and e[1].name == "director")
-    assert qa_edge[2] is not None
+    # qa is the LEAF: no outgoing edges (AutoGen's DiGraph validation requires >=1 leaf; a
+    # qa->director loop made the graph cyclic with none — live-run finding).
+    assert not any(s.name == "qa" for (s, _t, _c) in builder.edges)
     assert len(team.participants) == 6
