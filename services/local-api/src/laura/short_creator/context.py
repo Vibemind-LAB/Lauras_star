@@ -11,6 +11,7 @@ Both return JSON-serialisable dicts. The window filter is pure; frame extraction
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -103,6 +104,131 @@ def transcript_overview(db: Database, asset_id: str, blocks: int = 8) -> dict[st
     segs = repos.get_transcript(db, asset_id, str(run["id"]))
     grouped = _group_segments_into_blocks(segs, blocks=blocks)
     return {"ok": True, "asset_id": asset_id, "blocks": grouped}
+
+
+def _scene_src_ranges(
+    clips: Sequence[dict[str, Any]], *, seq_in: int, seq_out_exclusive: int
+) -> list[tuple[int, int]]:
+    """SOURCE frame ranges covered by a scene's SEQUENCE range, via the lane-0 clips. Pure.
+
+    Scenes carry sequence positions on the rough cut; transcript segments live in source
+    frames. Each clip maps ``seq -> src`` linearly (speed 1); the scene's overlap with a clip
+    projects to ``src_in + (overlap_start - clip.seq_in)``. Integer frames, end-exclusive.
+    """
+    out: list[tuple[int, int]] = []
+    for c in clips:
+        if int(c.get("lane") or 0) != 0:
+            continue
+        c_seq_in = int(c["seq_in_frame"])
+        c_seq_out = int(c["seq_out_frame_exclusive"])
+        lo = max(seq_in, c_seq_in)
+        hi = min(seq_out_exclusive, c_seq_out)
+        if hi <= lo:
+            continue
+        src_in = int(c["src_in_frame"])
+        out.append((src_in + (lo - c_seq_in), src_in + (hi - c_seq_in)))
+    out.sort()
+    return out
+
+
+def _segments_in_ranges(
+    segments: Sequence[dict[str, Any]], ranges: Sequence[tuple[int, int]]
+) -> list[dict[str, Any]]:
+    """Segments whose half-open ``[start_frame, end_frame)`` overlaps ANY source range. Pure."""
+    out: list[dict[str, Any]] = []
+    for seg in segments:
+        start_frame, end_frame = seg.get("start_frame"), seg.get("end_frame")
+        if start_frame is None or end_frame is None:
+            continue
+        s, e = int(start_frame), int(end_frame)
+        if any(e > lo and s < hi for (lo, hi) in ranges):
+            out.append(seg)
+    return out
+
+
+_TOKEN = re.compile(r"[a-zA-ZäöüÄÖÜß0-9]{3,}")
+
+
+def _rank_texts(
+    topic: str, texts: Sequence[tuple[int, str]]
+) -> list[tuple[int, float, str]]:
+    """Rank ``(number, text)`` pairs by lexical overlap with *topic*. Pure.
+
+    Score = matched unique topic tokens + a small term-frequency bonus, length-normalized so a
+    long rambling scene does not beat a short on-topic one. Returns ``(number, score, snippet)``
+    sorted best-first; zero-score entries are dropped.
+    """
+    topic_tokens = {t.lower() for t in _TOKEN.findall(topic)}
+    if not topic_tokens:
+        return []
+    ranked: list[tuple[int, float, str]] = []
+    for number, text in texts:
+        words = [t.lower() for t in _TOKEN.findall(text)]
+        if not words:
+            continue
+        matched = {w for w in words if w in topic_tokens}
+        if not matched:
+            continue
+        tf = sum(1 for w in words if w in topic_tokens)
+        score = len(matched) + tf / (1.0 + len(words) / 25.0) * 0.1
+        snippet = text.strip()[:160]
+        ranked.append((number, round(score, 4), snippet))
+    ranked.sort(key=lambda r: r[1], reverse=True)
+    return ranked
+
+
+def scene_transcripts(db: Database, asset_id: str) -> dict[str, Any]:
+    """Per rough-cut scene (1-based number): its source-mapped transcript text."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return {"ok": False, "reason": "asset not found", "scenes": []}
+    timeline = repos.get_or_create_asset_rough_cut(db, str(asset["project_id"]), asset_id)
+    scenes = repos.list_scenes(db, str(timeline["id"]))
+    if not scenes:
+        return {"ok": False, "reason": "no scenes; build_roughcut first", "scenes": []}
+    run = repos.get_latest_analysis_run(db, asset_id)
+    segments = (
+        repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
+    )
+    clips = repos.list_timeline_clips(db, str(timeline["id"]))
+    out: list[dict[str, Any]] = []
+    for scene in scenes:
+        ranges = _scene_src_ranges(
+            clips,
+            seq_in=int(scene["seq_in_frame"]),
+            seq_out_exclusive=int(scene["seq_out_frame_exclusive"]),
+        )
+        in_scene = _segments_in_ranges(segments, ranges)
+        text = " ".join(str(seg.get("text") or "").strip() for seg in in_scene).strip()
+        out.append(
+            {
+                "scene_number": int(scene["order_index"]) + 1,
+                "seq_in_frame": int(scene["seq_in_frame"]),
+                "seq_out_frame_exclusive": int(scene["seq_out_frame_exclusive"]),
+                "text": text,
+            }
+        )
+    return {"ok": True, "asset_id": asset_id, "scenes": out}
+
+
+def rank_scenes_by_topic(
+    db: Database, asset_id: str, topic: str, k: int = 10
+) -> dict[str, Any]:
+    """The rough-cut scenes most relevant to *topic*, by their transcript text."""
+    scenes = scene_transcripts(db, asset_id)
+    if not scenes.get("ok"):
+        return {"ok": False, "reason": scenes.get("reason", "no scenes"), "ranked": []}
+    ranked = _rank_texts(
+        topic, [(s["scene_number"], str(s["text"])) for s in scenes["scenes"]]
+    )
+    return {
+        "ok": True,
+        "topic": topic,
+        "ranked": [
+            {"scene_number": n, "score": score, "snippet": snippet}
+            for (n, score, snippet) in ranked[: max(1, int(k))]
+        ],
+    }
 
 
 def _voice_alignment(

@@ -153,6 +153,14 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         """The whole transcript grouped into time blocks — summarize the video per section."""
         return context.transcript_overview(db, asset_id, blocks)
 
+    def scene_transcripts(asset_id: str) -> dict[str, Any]:
+        """Per rough-cut scene (1-based number): what is said in it (needs build_roughcut)."""
+        return context.scene_transcripts(db, asset_id)
+
+    def rank_scenes_by_topic(asset_id: str, topic: str, k: int = 10) -> dict[str, Any]:
+        """The scenes most relevant to a topic, ranked by their transcript text."""
+        return context.rank_scenes_by_topic(db, asset_id, topic, k)
+
     def render_short(
         candidate_id: str = "",
         candidate_ids: list[str] | None = None,
@@ -273,6 +281,8 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         check_voice_alignment,
         pick_best_candidate,
         pick_best_candidates,
+        scene_transcripts,
+        rank_scenes_by_topic,
     ]
     return [
         ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs

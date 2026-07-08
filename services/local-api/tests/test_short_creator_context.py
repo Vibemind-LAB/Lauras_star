@@ -105,6 +105,67 @@ def test_transcript_window_no_run_is_graceful(db: Database) -> None:
     assert out["text"] == ""
 
 
+# --- scene relevance: transcript per scene + topic ranking (Slice 1) -------------------------
+
+
+def _clip(seq_in: int, seq_out: int, src_in: int, src_out: int) -> dict[str, Any]:
+    return {
+        "lane": 0,
+        "seq_in_frame": seq_in,
+        "seq_out_frame_exclusive": seq_out,
+        "src_in_frame": src_in,
+        "src_out_frame_exclusive": src_out,
+    }
+
+
+def test_scene_src_ranges_maps_seq_to_source_across_clips() -> None:
+    # Rough cut: clip A seq[0,100) = src[50,150); clip B seq[100,200) = src[300,400).
+    clips = [_clip(0, 100, 50, 150), _clip(100, 200, 300, 400)]
+    # Scene spans seq[80,120): 20 frames from A's tail + 20 from B's head.
+    ranges = context._scene_src_ranges(clips, seq_in=80, seq_out_exclusive=120)
+    assert ranges == [(130, 150), (300, 320)]
+
+
+def test_segments_in_ranges_end_exclusive_overlap() -> None:
+    segs = [
+        _seg(100, 130, "ends at lo"),  # end-exclusive: touches [130,150) but covers only ..129
+        _seg(100, 140, "in a"),  # overlaps [130,150)
+        _seg(150, 160, "between"),  # starts AT a's exclusive end -> outside both
+        _seg(305, 330, "in b"),
+        _seg(400, 420, "after"),  # starts AT b's exclusive end -> outside
+    ]
+    got = context._segments_in_ranges(segs, [(130, 150), (300, 400)])
+    assert [s["text"] for s in got] == ["in a", "in b"]
+
+
+def test_rank_texts_by_topic_overlap() -> None:
+    texts = [
+        (1, "wir zeigen die agenten und das dashboard"),
+        (2, "hier geht es um business daten und agenten"),
+        (3, "intro musik ohne inhalt"),
+    ]
+    ranked = context._rank_texts("Agenten für Business Daten", texts)
+    assert [n for n, _score, _snip in ranked[:2]] == [2, 1]
+    assert ranked[0][1] > ranked[1][1] > 0.0
+
+
+def test_rank_scenes_by_topic_graceful_without_scenes(db: Database) -> None:
+    from laura.db import repos
+
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=str(project["id"]),
+        type="video",
+        display_name="v",
+        source_path="/tmp/v.mp4",
+    )
+    out = context.rank_scenes_by_topic(db, str(asset["id"]), "irgendwas")
+    assert out["ok"] is False
+
+
 # --- voice alignment: cuts must not clip words ----------------------------------------------
 
 

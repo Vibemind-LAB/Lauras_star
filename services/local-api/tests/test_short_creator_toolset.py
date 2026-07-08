@@ -35,6 +35,8 @@ EXPECTED_TOOLS = {
     "check_voice_alignment",
     "pick_best_candidate",
     "pick_best_candidates",
+    "scene_transcripts",
+    "rank_scenes_by_topic",
 }
 
 
