@@ -43,6 +43,7 @@ EXPECTED_TOOLS = {
     "rank_scenes_by_topic",
     "render_scenes",
     "synthesize_voiceover",
+    "export_status",
 }
 
 
@@ -285,6 +286,124 @@ def test_pick_best_candidates_multi_scene_chronological(
     # late(8s) + early(7s) + mid(6s) = 21s >= 20; overlap + rejected excluded; story order:
     assert out["candidate_ids"] == ["early", "mid", "late"]
     assert out["total_seconds"] == 21.0
+
+
+def test_pick_best_candidates_trims_segments_to_max_segment_seconds(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "15 Szenen à 4s" tasks: long candidates get trimmed (frame-accurate, end-exclusive)
+    # so MANY short scenes fill the target instead of a few long ones.
+    fps = 30
+    rows = [
+        {
+            "id": "c1",
+            "score": 5.0,
+            "rejected": False,
+            "start_frame": 0,
+            "end_frame_exclusive": 600,
+        },  # 20s long
+        {
+            "id": "c2",
+            "score": 4.0,
+            "rejected": False,
+            "start_frame": 1000,
+            "end_frame_exclusive": 1600,
+        },
+        {
+            "id": "c3",
+            "score": 3.0,
+            "rejected": False,
+            "start_frame": 2000,
+            "end_frame_exclusive": 2600,
+        },
+    ]
+    monkeypatch.setattr(
+        mcp_tools,
+        "tool_list_short_candidates",
+        lambda _db, _aid: {"count": len(rows), "candidates": rows},
+    )
+    monkeypatch.setattr(toolset, "_asset_fps", lambda _db, _aid: float(fps))
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["pick_best_candidates"].func("a1", 12, 5, 4.0)
+
+    assert out["ok"] is True
+    assert out["candidate_ids"] == ["c1", "c2", "c3"]  # all fit once trimmed; story order
+    for seg in out["segments"]:
+        assert seg["end_frame_exclusive"] - seg["start_frame"] == 4 * fps
+        assert seg["trimmed"] is True
+    assert out["total_seconds"] == 12.0
+
+
+def test_render_short_auto_pick_mode_renders_trimmed_segments(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # AUTO mode: asset_id + target/max_segments/max_segment_seconds picks deterministically
+    # and renders via tool_render_segments — no candidate-id copying by the LLM.
+    fps = 30
+    rows = [
+        {"id": "c1", "score": 5.0, "rejected": False, "start_frame": 0, "end_frame_exclusive": 600},
+        {
+            "id": "c2",
+            "score": 4.0,
+            "rejected": False,
+            "start_frame": 1000,
+            "end_frame_exclusive": 1600,
+        },
+        {
+            "id": "c3",
+            "score": 3.0,
+            "rejected": False,
+            "start_frame": 2000,
+            "end_frame_exclusive": 2600,
+        },
+    ]
+    monkeypatch.setattr(
+        mcp_tools,
+        "tool_list_short_candidates",
+        lambda _db, _aid: {"count": len(rows), "candidates": rows},
+    )
+    monkeypatch.setattr(toolset, "_asset_fps", lambda _db, _aid: float(fps))
+    calls: list[dict[str, Any]] = []
+
+    def fake_render(_db: Database, asset_id: str, segments: Any, **kw: Any) -> dict[str, Any]:
+        calls.append({"asset_id": asset_id, "segments": segments, **kw})
+        return {"ok": True, "export_id": "e1", "job_id": "j1"}
+
+    monkeypatch.setattr(mcp_tools, "tool_render_segments", fake_render)
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["render_short"].func("", None, True, None, "blur", "a1", 12, 5, 4.0)
+
+    assert out["ok"] is True
+    assert out["export_id"] == "e1"
+    assert out["picked_candidate_ids"] == ["c1", "c2", "c3"]
+    assert calls[0]["segments"] == [(0, 120), (1000, 1120), (2000, 2120)]
+    assert calls[0]["fit"] == "blur"
+
+
+def test_export_status_found_and_missing(db: Database, tmp_path: Path) -> None:
+    # The QA gate verifies the Editor's EDITED export_id with this — an export id is NOT a
+    # candidate id (live-run finding: QA fed the export id to explain_candidate -> false weak).
+    project = repos.create_project(
+        db,
+        name="p",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(tmp_path / "proj"),
+    )
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=None, format="mp4", options={"kind": "short"}
+    )
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    found = specs["export_status"].func(exp["id"])
+    assert found["found"] is True
+    assert found["status"] == "rendering"
+
+    missing = specs["export_status"].func("no-such-export")
+    assert missing["found"] is False
 
 
 def test_pick_best_candidate_no_candidates_graceful(

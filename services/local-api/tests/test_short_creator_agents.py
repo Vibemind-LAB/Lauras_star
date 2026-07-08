@@ -67,6 +67,49 @@ def test_editor_must_chain_build_then_render() -> None:
             assert spec.max_tool_iterations >= 2, spec.name
 
 
+def test_qa_verifies_exports_with_export_status() -> None:
+    # Live-run finding: QA fed the EDITED export_id into explain_candidate (candidate ids
+    # only) and judged a produced short as "nothing was produced". It must verify exports
+    # with export_status and know rendering still counts as produced.
+    by_name = {s.name: s for s in agents.agent_specs()}
+    qa = by_name["qa"]
+    assert "export_status" in qa.tool_names
+    assert "EDITED export_id" in qa.system_message
+    assert "never pass an export id" in qa.system_message
+
+
+def test_transcript_master_triggers_on_new_transcript_phrases() -> None:
+    # Live-run finding: the user wrote "transkipt new" and the agent SKIPped — the trigger
+    # list must cover new-script/new-transcript phrasings (and common misspellings).
+    by_name = {s.name: s for s in agents.agent_specs()}
+    msg = by_name["transcript_master"].system_message
+    for phrase in (
+        "neu einsprechen",
+        "new voiceover",
+        "neues skript",
+        "transkript neu",
+        "transcript new",
+        "transkipt",
+    ):
+        assert phrase in msg, phrase
+    assert "SKIP" in msg
+
+
+def test_editor_auto_pick_for_scene_count_tasks() -> None:
+    # Live-run finding: "~60s, 15 Szenen à 4s" produced 4 long segments — the editor must
+    # forward scene count / per-scene length into render_short's deterministic auto mode.
+    by_name = {s.name: s for s in agents.agent_specs()}
+    msg = by_name["editor"].system_message
+    assert "max_segments" in msg
+    assert "max_segment_seconds" in msg
+
+
+def test_scout_answers_in_task_language() -> None:
+    # Live-run finding: the 7B scout drifted into Chinese prose mid-run.
+    by_name = {s.name: s for s in agents.agent_specs()}
+    assert "task's language" in by_name["scout"].system_message
+
+
 def test_every_agent_tool_exists_in_toolset(db: Database) -> None:
     toolnames = {s.name for s in toolset.build_tool_specs(db)}
     for spec in agents.agent_specs():
@@ -130,9 +173,7 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     return created
 
 
-def test_build_agents_constructs_full_roster(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_build_agents_constructs_full_roster(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_autogen(monkeypatch)
     built: list[Any] = list(agents.build_agents(db, providers.resolve_from_env({})))
     assert {a.name for a in built} == EXPECTED_AGENTS

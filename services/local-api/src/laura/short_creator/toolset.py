@@ -86,6 +86,65 @@ def _asset_fps(db: Database, asset_id: str) -> float:
     return rate[0] / rate[1]
 
 
+def _pick_best_segments(
+    db: Database,
+    asset_id: str,
+    target_seconds: int = 20,
+    max_segments: int = 4,
+    max_segment_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Deterministic multi-scene pick: greedy top-score, non-overlapping, ~target, chronological.
+
+    With *max_segment_seconds*, each chosen candidate is trimmed to at most that length
+    (integer frames from its start, end-exclusive) — so many SHORT scenes fit a target
+    ("15 Szenen à 4s" tasks) instead of a few long ones. Overlap is checked against the
+    candidates' ORIGINAL ranges (conservative).
+    """
+    listing = t.tool_list_short_candidates(db, asset_id)
+    rows = [c for c in listing.get("candidates", []) if not c.get("rejected")]
+    if not rows:
+        return {"ok": False, "reason": "no candidates; run extract_shorts first"}
+    fps = _asset_fps(db, asset_id)
+    target = max(1, int(target_seconds))
+    trim_frames: int | None = None
+    if max_segment_seconds is not None and float(max_segment_seconds) > 0:
+        trim_frames = max(1, round(float(max_segment_seconds) * fps))
+
+    chosen: list[dict[str, Any]] = []
+    total_s = 0.0
+    for c in sorted(rows, key=lambda r: float(r.get("score") or 0.0), reverse=True):
+        start, end = int(c["start_frame"]), int(c["end_frame_exclusive"])
+        if any(start < p["end"] and p["start"] < end for p in chosen):
+            continue  # overlaps an already chosen scene
+        end_eff = min(end, start + trim_frames) if trim_frames else end
+        duration_s = (end_eff - start) / fps
+        if total_s + duration_s > target * 1.25 and chosen:
+            continue  # would overshoot the target noticeably — try shorter ones
+        chosen.append(
+            {"row": c, "start": start, "end": end, "end_eff": end_eff, "duration_s": duration_s}
+        )
+        total_s += duration_s
+        if total_s >= target or len(chosen) >= max(1, int(max_segments)):
+            break
+    chosen.sort(key=lambda p: int(p["start"]))  # story order
+    return {
+        "ok": True,
+        "candidate_ids": [str(p["row"]["id"]) for p in chosen],
+        "segments": [
+            {
+                "candidate_id": str(p["row"]["id"]),
+                "start_frame": int(p["start"]),
+                "end_frame_exclusive": int(p["end_eff"]),
+                "duration_s": round(float(p["duration_s"]), 2),
+                "score": float(p["row"].get("score") or 0.0),
+                "trimmed": int(p["end_eff"]) < int(p["end"]),
+            }
+            for p in chosen
+        ],
+        "total_seconds": round(total_s, 2),
+    }
+
+
 def _wait_for_job(db: Database, job_id: str, *, timeout_s: float) -> str:
     """Poll a job until it reaches a terminal status (or timeout). Returns the last status.
 
@@ -274,12 +333,42 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         captions: bool = True,
         hook_text: str | None = None,
         fit: str = "crop",
+        asset_id: str = "",
+        target_seconds: int | None = None,
+        max_segments: int | None = None,
+        max_segment_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Render chosen candidate(s) as one vertical 9:16 short with karaoke captions.
+        """Render a vertical 9:16 short with captions — from chosen candidates OR auto-picked.
 
-        Pass candidate_ids (ordered) for a multi-scene short. fit="blur" letterboxes onto a
-        blurred background — use it for screen recordings / UI content (a crop cuts them off).
+        Mode 1: pass candidate_ids (ordered) from the Director / pick tools. Mode 2 (AUTO):
+        pass asset_id + target_seconds (+ max_segments, + max_segment_seconds) and the best
+        non-overlapping scenes are picked deterministically — e.g. "~60s, 15 Szenen à 4s" →
+        render_short(asset_id=..., target_seconds=60, max_segments=15, max_segment_seconds=4).
+        fit="blur" letterboxes onto a blurred background — use it for screen recordings / UI
+        content (a crop cuts them off).
         """
+        if not candidate_id and not candidate_ids and asset_id and target_seconds:
+            picked = _pick_best_segments(
+                db,
+                asset_id,
+                target_seconds=int(target_seconds),
+                max_segments=int(max_segments or 4),
+                max_segment_seconds=max_segment_seconds,
+            )
+            if not picked.get("ok"):
+                return picked
+            segments = [
+                (int(s["start_frame"]), int(s["end_frame_exclusive"])) for s in picked["segments"]
+            ]
+            result = t.tool_render_segments(
+                db, asset_id, segments, captions=captions, hook_text=hook_text, fit=fit
+            )
+            return {
+                **result,
+                "picked_candidate_ids": picked["candidate_ids"],
+                "segments": len(segments),
+                "total_seconds": picked["total_seconds"],
+            }
         first = candidate_id or (candidate_ids[0] if candidate_ids else "")
         return t.tool_render_short(
             db,
@@ -289,6 +378,23 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
             hook_text=hook_text,
             fit=fit,
         )
+
+    def export_status(export_id: str) -> dict[str, Any]:
+        """Check a rendered export by export_id: found, status (rendering/ready/error), path.
+
+        For the QA gate: verify the Editor's "EDITED export_id=..." here — status ready OR
+        rendering BOTH mean a short was produced (rendering finishes in the background).
+        """
+        row = repos.get_export(db, export_id)
+        if row is None:
+            return {"found": False, "export_id": export_id}
+        return {
+            "found": True,
+            "export_id": export_id,
+            "status": str(row.get("status") or ""),
+            "path": row.get("path"),
+            "error": row.get("error"),
+        }
 
     def check_voice_alignment(candidate_id: str) -> dict[str, Any]:
         """Verify the candidate's cut clips no word (voice aligned to the scene)."""
@@ -320,55 +426,25 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         }
 
     def pick_best_candidates(
-        asset_id: str, target_seconds: int = 20, max_segments: int = 4
+        asset_id: str,
+        target_seconds: int = 20,
+        max_segments: int = 4,
+        max_segment_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Several top scenes ACROSS the video for a multi-scene short (deterministic).
 
         Greedy by score: take non-overlapping candidates until the total reaches the target
         length (or max_segments), then return them in CHRONOLOGICAL order — the story order the
-        Editor should render.
+        Editor should render. max_segment_seconds trims each scene to at most that length
+        (frame-accurate) — use it for "N Szenen à M Sekunden" tasks.
         """
-        listing = t.tool_list_short_candidates(db, asset_id)
-        rows = [c for c in listing.get("candidates", []) if not c.get("rejected")]
-        if not rows:
-            return {"ok": False, "reason": "no candidates; run extract_shorts first"}
-        fps = _asset_fps(db, asset_id)
-        target = max(1, int(target_seconds))
-
-        chosen: list[dict[str, Any]] = []
-        total_s = 0.0
-        for c in sorted(rows, key=lambda r: float(r.get("score") or 0.0), reverse=True):
-            start, end = int(c["start_frame"]), int(c["end_frame_exclusive"])
-            if any(
-                start < int(p["end_frame_exclusive"]) and int(p["start_frame"]) < end
-                for p in chosen
-            ):
-                continue  # overlaps an already chosen scene
-            duration_s = (end - start) / fps
-            if total_s + duration_s > target * 1.25 and chosen:
-                continue  # would overshoot the target noticeably — try shorter ones
-            chosen.append(c)
-            total_s += duration_s
-            if total_s >= target or len(chosen) >= max(1, int(max_segments)):
-                break
-        chosen.sort(key=lambda c: int(c["start_frame"]))  # story order
-        return {
-            "ok": True,
-            "candidate_ids": [str(c["id"]) for c in chosen],
-            "segments": [
-                {
-                    "candidate_id": str(c["id"]),
-                    "start_frame": int(c["start_frame"]),
-                    "end_frame_exclusive": int(c["end_frame_exclusive"]),
-                    "duration_s": round(
-                        (int(c["end_frame_exclusive"]) - int(c["start_frame"])) / fps, 2
-                    ),
-                    "score": float(c.get("score") or 0.0),
-                }
-                for c in chosen
-            ],
-            "total_seconds": round(total_s, 2),
-        }
+        return _pick_best_segments(
+            db,
+            asset_id,
+            target_seconds=target_seconds,
+            max_segments=max_segments,
+            max_segment_seconds=max_segment_seconds,
+        )
 
     funcs: list[Callable[..., dict[str, Any]]] = [
         next_action,
@@ -392,10 +468,9 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         rank_scenes_by_topic,
         render_scenes,
         synthesize_voiceover,
+        export_status,
     ]
-    return [
-        ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs
-    ]
+    return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]
 
 
 def build_function_tools(db: Database) -> list[FunctionTool]:

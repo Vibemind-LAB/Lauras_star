@@ -50,7 +50,8 @@ def agent_specs() -> list[AgentSpec]:
             name="scout",
             description="Finds candidate moments in the analyzed video for the topic.",
             system_message=(
-                "You are the Scout. Given a topic, find the most relevant candidate moments in "
+                "You are the Scout. Answer in the task's language — never switch languages. "
+                "Given a topic, find the most relevant candidate moments in "
                 "the analyzed video. Use search_visual_moments (text->frame) and extract_shorts to "
                 "surface candidates, then list_short_candidates to read them back. Return the "
                 "candidate ids and frame ranges that best match the topic."
@@ -115,7 +116,10 @@ def agent_specs() -> list[AgentSpec]:
                 "export per format. If the Transcript Master reported 'VOICEOVER path=...', pass "
                 "voiceover_path=<that path> and voiceover_text=<its SCRIPT> to render_scenes so "
                 "the new voice replaces the original audio. Else, for a SHORT of a target "
-                "length: Step 1 — use the "
+                "length: if the task ALSO names a scene count or per-scene length (e.g. "
+                "'15 Szenen à 4s'), call render_short(asset_id=..., target_seconds=..., "
+                "max_segments=<count>, max_segment_seconds=<seconds per scene>) — it picks the "
+                "best scenes itself. Otherwise Step 1 — use the "
                 "Director's CHOSEN candidate ids, otherwise call pick_best_candidates(asset_id, "
                 "target_seconds). Step 2 — call render_short with those candidate_ids. "
                 "IMPORTANT: if the Describer saw screen content / UI (apps, browser, code), pass "
@@ -140,8 +144,11 @@ def agent_specs() -> list[AgentSpec]:
             name="transcript_master",
             description="Rewrites the script from the chosen scenes and voices it (ElevenLabs).",
             system_message=(
-                "You are the Transcript Master. ONLY act when the task asks to re-voice / neu "
-                "einsprechen / new voiceover — otherwise reply exactly: SKIP. When active: read "
+                "You are the Transcript Master. ONLY act when the task asks for a new voice or a "
+                "new script/transcript — trigger phrases include: re-voice, neu einsprechen, new "
+                "voiceover, neue stimme, neues skript, new script, transkript neu, transcript "
+                "new (misspellings like 'transkipt new' count too). "
+                "Otherwise reply exactly: SKIP. When active: read "
                 "the chosen scenes' words via scene_transcripts, then write a tight, ENERGETIC "
                 "script in the language of the task/video (German etc.) — NEVER in English — "
                 "following the user's direction (tone, length, CTA) from the task. Then call "
@@ -157,21 +164,29 @@ def agent_specs() -> list[AgentSpec]:
             description="Judges whether the short matches the topic and is coherent.",
             system_message=(
                 "You are the QA gate. Answer in the task's language — never switch languages. "
-                "Judge whether the produced short matches the topic and is coherent. If the "
-                "Editor did NOT report a real export_id, the verdict is weak — nothing was "
-                "produced. If a candidate was rendered, call check_voice_alignment on it: clipped "
-                "words mean the voice is cut mid-word — verdict weak. Respond with a verdict "
-                "(good or weak) and a short reason; if weak, say what to improve."
+                "Judge whether the produced short matches the topic and is coherent. FIRST: if "
+                "the Editor's message contains 'EDITED export_id=<id>', call export_status with "
+                "that id — found with status ready OR rendering means the short WAS produced "
+                "(rendering finishes in the background; never call that weak). Only when there "
+                "is no EDITED line at all, or export_status says not found, is the verdict weak "
+                "for lack of output. explain_candidate and check_voice_alignment take CANDIDATE "
+                "ids — never pass an export id to them. If a candidate was rendered, call "
+                "check_voice_alignment on it: clipped words mean the voice is cut mid-word — "
+                "verdict weak. Respond with a verdict (good or weak) and a short reason; if "
+                "weak, say what to improve."
             ),
-            tool_names=("explain_candidate", "score_visual_hook", "check_voice_alignment"),
+            tool_names=(
+                "export_status",
+                "explain_candidate",
+                "score_visual_hook",
+                "check_voice_alignment",
+            ),
             max_tool_iterations=3,
         ),
     ]
 
 
-def build_agents(
-    db: Database, config: AgentConfig, *, stage: Stage = "A"
-) -> list[AssistantAgent]:
+def build_agents(db: Database, config: AgentConfig, *, stage: Stage = "A") -> list[AssistantAgent]:
     """Construct one ``AssistantAgent`` per spec (lazy autogen import).
 
     All agents share one agent-role model client for *stage*; tools are the
