@@ -14,7 +14,7 @@ _Datum: 2026-07-08 · Status: Richtung vom User freigegeben (Formate + Voice-Sco
 
 ## Slices (einzeln lauffähig, in dieser Reihenfolge)
 
-### Slice 1 — Szenen-Relevanz aus dem Transkript
+### Slice 1 — Szenen-Relevanz aus dem Transkript ✅ (83c0457)
 
 - `scene_transcripts(asset_id)`: pro Szene (order_index) der Transkript-Text (Szenen-Frame-Range ×
   Segmente; reine DB-Arbeit auf Vorhandenem).
@@ -23,7 +23,7 @@ _Datum: 2026-07-08 · Status: Richtung vom User freigegeben (Formate + Voice-Sco
   **Semantik-Ausbaustufe** (optional, später): vorhandene Embedding-Infra.
 - Director/Analyst bekommen beide Tools; Director-Prompt: erst ranken, dann wählen.
 
-### Slice 2 — Szenen per Nummer + Plattform-Formate
+### Slice 2 — Szenen per Nummer + Plattform-Formate ✅ (53ddbf0)
 
 - Format-Presets: `insta` = 1080×1920 (9:16, vorhanden) · `x` = 1920×1080 (16:9, vorhanden) ·
   `linkedin` = 1080×1080 (**1:1, neu** in `render_clips_mp4`: Center-Crop oder fit+blur wie 9:16).
