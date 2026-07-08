@@ -32,6 +32,10 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 # Injectable for tests; the extract wait polls with this sleeper.
 _sleep: Callable[[float], None] = time.sleep
 EXTRACT_WAIT_SECONDS = 120
+# export_status waits a render out (a ~60-90s reel takes 1-2 min): a 7B QA cannot be trusted
+# to reason about a transient "rendering" state (live-run finding: it read found=True,
+# status=rendering and still concluded "not found -> weak").
+RENDER_WAIT_SECONDS = 240
 _EXTRACT_POLL_INTERVAL = 2.0
 
 
@@ -337,6 +341,8 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         target_seconds: int | None = None,
         max_segments: int | None = None,
         max_segment_seconds: float | None = None,
+        voiceover_path: str | None = None,
+        voiceover_text: str | None = None,
     ) -> dict[str, Any]:
         """Render a vertical 9:16 short with captions — from chosen candidates OR auto-picked.
 
@@ -345,7 +351,8 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         non-overlapping scenes are picked deterministically — e.g. "~60s, 15 Szenen à 4s" →
         render_short(asset_id=..., target_seconds=60, max_segments=15, max_segment_seconds=4).
         fit="blur" letterboxes onto a blurred background — use it for screen recordings / UI
-        content (a crop cuts them off).
+        content (a crop cuts them off). voiceover_path (+voiceover_text) replaces the original
+        audio with the synthesized voice (see synthesize_voiceover); captions follow the script.
         """
         if not candidate_id and not candidate_ids and asset_id and target_seconds:
             picked = _pick_best_segments(
@@ -361,7 +368,14 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
                 (int(s["start_frame"]), int(s["end_frame_exclusive"])) for s in picked["segments"]
             ]
             result = t.tool_render_segments(
-                db, asset_id, segments, captions=captions, hook_text=hook_text, fit=fit
+                db,
+                asset_id,
+                segments,
+                captions=captions,
+                hook_text=hook_text,
+                fit=fit,
+                voiceover_path=voiceover_path,
+                voiceover_text=voiceover_text,
             )
             return {
                 **result,
@@ -377,17 +391,25 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
             captions=captions,
             hook_text=hook_text,
             fit=fit,
+            voiceover_path=voiceover_path,
+            voiceover_text=voiceover_text,
         )
 
     def export_status(export_id: str) -> dict[str, Any]:
-        """Check a rendered export by export_id: found, status (rendering/ready/error), path.
+        """Check a rendered export by export_id — WAITS for the render to finish.
 
-        For the QA gate: verify the Editor's "EDITED export_id=..." here — status ready OR
-        rendering BOTH mean a short was produced (rendering finishes in the background).
+        For the QA gate: verify the Editor's "EDITED export_id=..." here. status "ready"
+        (with path) means the short exists; "error" carries the reason; found=False means
+        nothing was produced. No reasoning about a transient "rendering" state is needed —
+        this tool waits it out (bounded).
         """
         row = repos.get_export(db, export_id)
         if row is None:
             return {"found": False, "export_id": export_id}
+        deadline = time.monotonic() + RENDER_WAIT_SECONDS
+        while str(row.get("status")) == "rendering" and time.monotonic() < deadline:
+            _sleep(_EXTRACT_POLL_INTERVAL)
+            row = repos.get_export(db, export_id) or row
         return {
             "found": True,
             "export_id": export_id,
@@ -397,7 +419,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         }
 
     def check_voice_alignment(candidate_id: str) -> dict[str, Any]:
-        """Verify the candidate's cut clips no word (voice aligned to the scene)."""
+        """Verify the cut clips no word (voice aligned). Accepts a candidate id OR export id."""
         return context.check_voice_alignment(db, candidate_id)
 
     def pick_best_candidate(asset_id: str, target_seconds: int = 20) -> dict[str, Any]:

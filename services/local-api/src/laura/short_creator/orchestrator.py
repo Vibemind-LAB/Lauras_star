@@ -10,6 +10,7 @@ messages (manual-to-verify — no model in CI).
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -122,6 +123,58 @@ def _run_stage(
     return magentic_outcome
 
 
+# Deterministic wish-parsing (7B-proof): a small model reliably follows an EXPLICIT tool call
+# spelled out in the task, but not a conditional rule buried in a system prompt (live-run
+# finding: "15 Szenen à 4s" and "Transkript neu" were both ignored despite prompt rules).
+_TARGET_SECONDS_RE = re.compile(r"(\d{2,3})\s*s(?:ek\w*|ec\w*)?\b", re.IGNORECASE)
+_SCENE_COUNT_RE = re.compile(r"(\d{1,2})\s*(?:s[cz]enen|scenes)\b", re.IGNORECASE)
+_SCENE_SECONDS_RE = re.compile(
+    r"(?:jede?r?|je|à|each)\s*(?:ca\.?\s*|~\s*)?(\d{1,2}(?:[.,]\d)?)\s*s(?:ek\w*|ec\w*)?\b",
+    re.IGNORECASE,
+)
+_REVOICE_RE = re.compile(
+    r"neu\s+einsprech\w*|re-?voice|new\s+voice\w*|neue\s+stimme|neues?\s+skript"
+    r"|new\s+script|trans[a-z]*\s+(?:neu\b|new\b)|voice-?over\s+(?:neu\b|new\b)",
+    re.IGNORECASE,
+)
+
+
+def _parse_target_seconds(topic: str) -> int | None:
+    """A 2-3 digit "Ns" in the user's wording (e.g. "über 60s"), sanity-bounded."""
+    for m in _TARGET_SECONDS_RE.finditer(topic):
+        value = int(m.group(1))
+        if 15 <= value <= 300:
+            return value
+    return None
+
+
+def _task_directives(asset_id: str, topic: str, target_seconds: int) -> str:
+    """Explicit, mandatory directives derived from the user's wording (pure; '' if none)."""
+    parts: list[str] = []
+    count_m = _SCENE_COUNT_RE.search(topic)
+    secs_m = _SCENE_SECONDS_RE.search(topic)
+    if count_m or secs_m:
+        args = [f"asset_id='{asset_id}'", f"target_seconds={target_seconds}"]
+        if count_m:
+            args.append(f"max_segments={int(count_m.group(1))}")
+        if secs_m:
+            args.append(f"max_segment_seconds={secs_m.group(1).replace(',', '.')}")
+        parts.append(
+            "RENDER PLAN (mandatory): Editor, do NOT pick candidates yourself — call "
+            f"render_short({', '.join(args)}) and reply EDITED export_id=<id>. "
+            "Use fit='blur' if the Describer saw screen content / UI, else fit='crop'."
+        )
+    if _REVOICE_RE.search(topic):
+        parts.append(
+            "RE-VOICE REQUESTED (mandatory): Transcript Master, do NOT reply SKIP — write the "
+            "new ENERGETIC script in the task's language (NEVER English), call "
+            f"synthesize_voiceover(asset_id='{asset_id}', script=<your script>) and reply "
+            "VOICEOVER path=<voiceover_path> SCRIPT: <script>. Editor: pass "
+            "voiceover_path=<that path> and voiceover_text=<that script> to the render call."
+        )
+    return ("\n" + "\n".join(parts)) if parts else ""
+
+
 def _task_prompt(asset_id: str, topic: str, target_seconds: int) -> str:
     return (
         f"Create a ~{target_seconds}s vertical short about: {topic}.\n"
@@ -131,6 +184,7 @@ def _task_prompt(asset_id: str, topic: str, target_seconds: int) -> str:
         f"the video for the topic and target length (CHOSEN: <id>, <id>, ...); the Editor renders "
         f"them with render_short (fit='blur' for screen content); the QA gate judges the result "
         f"against the topic (say 'weak' if it does not match)."
+        + _task_directives(asset_id, topic, target_seconds)
     )
 
 
@@ -157,7 +211,8 @@ def run_short_creator(
 ) -> dict[str, Any]:
     """Run the ladder: Stage A (local), then Stage B (escalated) when Stage A is too bad."""
     run = execute if execute is not None else _default_execute
-    task = _task_prompt(asset_id, topic, target_seconds)
+    # An explicit "Ns" in the user's wording beats the API default target.
+    task = _task_prompt(asset_id, topic, _parse_target_seconds(topic) or target_seconds)
 
     a = _run_stage(db, config, "A", task, run)
     if a.status == "ok" and not a.weak:

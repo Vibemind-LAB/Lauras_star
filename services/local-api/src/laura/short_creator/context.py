@@ -149,9 +149,7 @@ def _segments_in_ranges(
 _TOKEN = re.compile(r"[a-zA-ZäöüÄÖÜß0-9]{3,}")
 
 
-def _rank_texts(
-    topic: str, texts: Sequence[tuple[int, str]]
-) -> list[tuple[int, float, str]]:
+def _rank_texts(topic: str, texts: Sequence[tuple[int, str]]) -> list[tuple[int, float, str]]:
     """Rank ``(number, text)`` pairs by lexical overlap with *topic*. Pure.
 
     Score = matched unique topic tokens + a small term-frequency bonus, length-normalized so a
@@ -187,9 +185,7 @@ def scene_transcripts(db: Database, asset_id: str) -> dict[str, Any]:
     if not scenes:
         return {"ok": False, "reason": "no scenes; build_roughcut first", "scenes": []}
     run = repos.get_latest_analysis_run(db, asset_id)
-    segments = (
-        repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
-    )
+    segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
     clips = repos.list_timeline_clips(db, str(timeline["id"]))
     out: list[dict[str, Any]] = []
     for scene in scenes:
@@ -211,16 +207,12 @@ def scene_transcripts(db: Database, asset_id: str) -> dict[str, Any]:
     return {"ok": True, "asset_id": asset_id, "scenes": out}
 
 
-def rank_scenes_by_topic(
-    db: Database, asset_id: str, topic: str, k: int = 10
-) -> dict[str, Any]:
+def rank_scenes_by_topic(db: Database, asset_id: str, topic: str, k: int = 10) -> dict[str, Any]:
     """The rough-cut scenes most relevant to *topic*, by their transcript text."""
     scenes = scene_transcripts(db, asset_id)
     if not scenes.get("ok"):
         return {"ok": False, "reason": scenes.get("reason", "no scenes"), "ranked": []}
-    ranked = _rank_texts(
-        topic, [(s["scene_number"], str(s["text"])) for s in scenes["scenes"]]
-    )
+    ranked = _rank_texts(topic, [(s["scene_number"], str(s["text"])) for s in scenes["scenes"]])
     return {
         "ok": True,
         "topic": topic,
@@ -259,14 +251,54 @@ def _voice_alignment(
     }
 
 
+def _export_voice_alignment(db: Database, export: dict[str, Any]) -> dict[str, Any]:
+    """Voice alignment for a whole EXPORT: every segment it was cut from is checked.
+
+    The QA gate habitually feeds the Editor's export_id into alignment (live-run finding) —
+    instead of erroring, resolve the export's candidate_ids (or raw segments + asset_id) and
+    aggregate: aligned only when every segment keeps its words intact.
+    """
+    opts: dict[str, Any] = export.get("options") or {}
+    ranges: list[tuple[int, int]] = []
+    asset_id = str(opts.get("asset_id") or "")
+    for cid in opts.get("candidate_ids") or []:
+        row = repos.get_short_candidate(db, str(cid))
+        if row is not None:
+            asset_id = asset_id or str(row["asset_id"])
+            ranges.append((int(row["start_frame"]), int(row["end_frame_exclusive"])))
+    for seg in opts.get("segments") or []:
+        ranges.append((int(seg[0]), int(seg[1])))
+    if not asset_id or not ranges:
+        return {"ok": False, "reason": "export has no checkable segments", "aligned": False}
+    run = repos.get_latest_analysis_run(db, asset_id)
+    if run is None:
+        return {"ok": False, "reason": "no analysis run", "aligned": False}
+    words = repos.list_words_for_run(db, asset_id, str(run["id"]))
+    clipped: list[str] = []
+    for start, end in ranges:
+        result = _voice_alignment(words, start_frame=start, end_frame_exclusive=end)
+        clipped.extend(result["clipped_words"])
+    return {
+        "ok": True,
+        "export_id": str(export["id"]),
+        "segments_checked": len(ranges),
+        "aligned": not clipped,
+        "clipped_words": clipped,
+    }
+
+
 def check_voice_alignment(db: Database, candidate_id: str) -> dict[str, Any]:
     """Verify a candidate's cut keeps every word intact (voice aligned to the scene).
 
     Objective ground for the QA gate: sentence-snapped candidates should never clip words; if
     this reports clipped words, the short's voice is cut mid-word and the verdict must be weak.
+    Accepts an EXPORT id too (all its segments are checked) — QA gates pass those in practice.
     """
     candidate = repos.get_short_candidate(db, candidate_id)
     if candidate is None:
+        export = repos.get_export(db, candidate_id)
+        if export is not None:
+            return _export_voice_alignment(db, export)
         return {"ok": False, "reason": "candidate not found", "aligned": False}
     asset_id = str(candidate["asset_id"])
     run = repos.get_latest_analysis_run(db, asset_id)

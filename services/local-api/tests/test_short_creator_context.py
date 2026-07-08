@@ -198,6 +198,78 @@ def test_check_voice_alignment_unknown_candidate_graceful(db: Database) -> None:
     assert out["ok"] is False
 
 
+def test_check_voice_alignment_accepts_export_id(db: Database) -> None:
+    # Live-run finding: the QA gate feeds the Editor's EXPORT id into alignment. Instead of
+    # "candidate not found", the export's segments are resolved and each one is checked.
+    from laura.db import repos
+
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=str(project["id"]),
+        type="video",
+        display_name="v",
+        source_path="/tmp/v.mp4",
+    )
+    run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="t", config={})
+    repos.start_analysis_run(db, run["id"])
+    repos.insert_segment_with_words(
+        db,
+        asset_id=asset["id"],
+        run_id=run["id"],
+        speaker_id=None,
+        segment={
+            "start_sample": 0,
+            "end_sample": 96_000,
+            "start_frame": 0,
+            "end_frame": 60,
+            "text": "hallo welt",
+            "confidence": 1.0,
+        },
+        words=[
+            {
+                "idx": 0,
+                "start_sample": 0,
+                "end_sample": 32_000,
+                "start_frame": 10,
+                "end_frame": 20,
+                "text": "hallo",
+                "confidence": 1.0,
+                "is_punctuation": False,
+            },
+            {
+                "idx": 1,
+                "start_sample": 40_000,
+                "end_sample": 64_000,
+                "start_frame": 25,
+                "end_frame": 40,
+                "text": "welt",
+                "confidence": 1.0,
+                "is_punctuation": False,
+            },
+        ],
+    )
+    repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
+    exp = repos.create_export(
+        db,
+        project_id=str(project["id"]),
+        timeline_id=None,
+        format="mp4",
+        # The cut at frame 30 lands INSIDE "welt" [25, 40) -> clipped.
+        options={"kind": "short", "asset_id": asset["id"], "segments": [[0, 30]]},
+    )
+
+    out = context.check_voice_alignment(db, str(exp["id"]))
+
+    assert out["ok"] is True
+    assert out["export_id"] == str(exp["id"])
+    assert out["segments_checked"] == 1
+    assert out["aligned"] is False
+    assert out["clipped_words"] == ["welt"]
+
+
 # --- describe_moment: injectable, graceful --------------------------------------------------
 
 

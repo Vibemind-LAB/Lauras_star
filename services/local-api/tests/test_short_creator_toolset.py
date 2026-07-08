@@ -382,9 +382,7 @@ def test_render_short_auto_pick_mode_renders_trimmed_segments(
     assert calls[0]["fit"] == "blur"
 
 
-def test_export_status_found_and_missing(db: Database, tmp_path: Path) -> None:
-    # The QA gate verifies the Editor's EDITED export_id with this — an export id is NOT a
-    # candidate id (live-run finding: QA fed the export id to explain_candidate -> false weak).
+def _create_rendering_export(db: Database, tmp_path: Path) -> dict[str, Any]:
     project = repos.create_project(
         db,
         name="p",
@@ -393,17 +391,82 @@ def test_export_status_found_and_missing(db: Database, tmp_path: Path) -> None:
         drop_frame=False,
         workspace_root=str(tmp_path / "proj"),
     )
-    exp = repos.create_export(
+    return repos.create_export(
         db, project_id=project["id"], timeline_id=None, format="mp4", options={"kind": "short"}
     )
+
+
+def test_export_status_waits_for_the_render_then_reports_ready(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The QA gate verifies the Editor's EDITED export_id with this. It must WAIT the render
+    # out: a 7B QA reading a transient "rendering" concluded "not found -> weak" (live-run
+    # finding) — so the tool only returns once the export is terminal.
+    exp = _create_rendering_export(db, tmp_path)
+
+    def finish_render(_seconds: float) -> None:
+        repos.set_export_done(db, exp["id"], path=str(tmp_path / "out.mp4"), size_bytes=7)
+
+    monkeypatch.setattr(toolset, "_sleep", finish_render)
     specs = {s.name: s for s in toolset.build_tool_specs(db)}
 
     found = specs["export_status"].func(exp["id"])
     assert found["found"] is True
-    assert found["status"] == "rendering"
+    assert found["status"] == "ready"
+    assert found["path"] == str(tmp_path / "out.mp4")
 
     missing = specs["export_status"].func("no-such-export")
     assert missing["found"] is False
+
+
+def test_export_status_timeout_still_reports_rendering(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exp = _create_rendering_export(db, tmp_path)
+    monkeypatch.setattr(toolset, "RENDER_WAIT_SECONDS", 0)
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["export_status"].func(exp["id"])
+    assert out["found"] is True
+    assert out["status"] == "rendering"
+
+
+def test_render_short_auto_pick_forwards_voiceover(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Re-voiced auto-picked shorts: the synthesized voice must flow through to the renderer.
+    fps = 30
+    rows = [
+        {
+            "id": "c1",
+            "score": 5.0,
+            "rejected": False,
+            "start_frame": 0,
+            "end_frame_exclusive": 600,
+        },
+    ]
+    monkeypatch.setattr(
+        mcp_tools,
+        "tool_list_short_candidates",
+        lambda _db, _aid: {"count": len(rows), "candidates": rows},
+    )
+    monkeypatch.setattr(toolset, "_asset_fps", lambda _db, _aid: float(fps))
+    calls: list[dict[str, Any]] = []
+
+    def fake_render(_db: Database, asset_id: str, segments: Any, **kw: Any) -> dict[str, Any]:
+        calls.append({"asset_id": asset_id, "segments": segments, **kw})
+        return {"ok": True, "export_id": "e1", "job_id": "j1"}
+
+    monkeypatch.setattr(mcp_tools, "tool_render_segments", fake_render)
+    specs = {s.name: s for s in toolset.build_tool_specs(db)}
+
+    out = specs["render_short"].func(
+        "", None, True, None, "blur", "a1", 12, 4, 4.0, "/vo/x.mp3", "Neues Skript"
+    )
+
+    assert out["ok"] is True
+    assert calls[0]["voiceover_path"] == "/vo/x.mp3"
+    assert calls[0]["voiceover_text"] == "Neues Skript"
 
 
 def test_pick_best_candidate_no_candidates_graceful(

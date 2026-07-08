@@ -282,9 +282,7 @@ def tool_extract_shorts(
 
     run = repos.get_latest_analysis_run(db, asset_id)
     if run is None or run["status"] != "succeeded":
-        logger.debug(
-            "tool_extract_shorts: asset_id=%r has no succeeded analysis run", asset_id
-        )
+        logger.debug("tool_extract_shorts: asset_id=%r has no succeeded analysis run", asset_id)
         return {
             "ok": False,
             "error": "analyze the asset first (no succeeded analysis run)",
@@ -397,9 +395,7 @@ def tool_explain_candidate(db: Database, candidate_id: str) -> dict[str, Any]:
 
     # Build the explanation string
     if top_factors:
-        factor_parts = ", ".join(
-            f"{f['name']} ({f['value']:.2f})" for f in top_factors
-        )
+        factor_parts = ", ".join(f"{f['name']} ({f['value']:.2f})" for f in top_factors)
         explanation = f"Score {score:.2f} — strongest factors: {factor_parts}."
     else:
         explanation = f"Score {score:.2f} — no score breakdown available."
@@ -439,6 +435,8 @@ def tool_render_short(
     loudnorm: bool = True,
     candidate_ids: list[str] | None = None,
     fit: str = "crop",
+    voiceover_path: str | None = None,
+    voiceover_text: str | None = None,
 ) -> dict[str, Any]:
     """Render one or more short candidates to a vertical 9:16 MP4 (export/job ids returned).
 
@@ -449,7 +447,8 @@ def tool_render_short(
     ``candidate_ids`` (ordered, same asset) renders a MULTI-SEGMENT short — several scenes cut
     together with captions aligned per segment. ``fit="blur"`` letterboxes the source onto a
     blurred background instead of center-cropping (for screen recordings / UI content, where a
-    9:16 crop cuts the picture off).
+    9:16 crop cuts the picture off). ``voiceover_path`` (+``voiceover_text``) replaces the
+    original audio with a synthesized voice; the burned captions then follow the new script.
 
     Returns ``{"ok": True, "export_id": ..., "job_id": ...}`` on success, or
     ``{"ok": False, "error": "candidate not found", "candidate_id": ...}`` when a candidate
@@ -488,6 +487,11 @@ def tool_render_short(
         "reel_fit": fit == "blur",
         "reel_blur_fill": fit == "blur",
     }
+    if voiceover_path:
+        # New synthesized voice replaces the original audio; captions follow the new script.
+        options["voiceover_path"] = voiceover_path
+        options["voiceover_text"] = voiceover_text
+        options["ai_effect"] = "voiceover_elevenlabs"
     exp = repos.create_export(
         db,
         project_id=asset["project_id"],
@@ -608,9 +612,7 @@ def tool_deduplicate_shorts(
     return visual_query.deduplicate_shorts(db, asset_id, threshold=threshold)
 
 
-def tool_visual_hook(
-    db: Database, asset_id: str, candidate_id: str
-) -> dict[str, Any]:
+def tool_visual_hook(db: Database, asset_id: str, candidate_id: str) -> dict[str, Any]:
     """Score a candidate's visual opening strength (image-image).
 
     Wraps :func:`laura.analysis.visual_query.visual_hook`. Returns

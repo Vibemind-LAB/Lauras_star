@@ -79,9 +79,7 @@ def _add_succeeded_analysis(db: SqliteDatabase, asset_id: str) -> dict[str, Any]
     return repos.get_analysis_run(db, run["id"])  # type: ignore[return-value]
 
 
-def _add_rough_cut_with_clips(
-    db: SqliteDatabase, project_id: str, asset_id: str
-) -> dict[str, Any]:
+def _add_rough_cut_with_clips(db: SqliteDatabase, project_id: str, asset_id: str) -> dict[str, Any]:
     tl = repos.create_timeline(
         db, project_id=project_id, name="RC", kind="rough_cut", created_from=asset_id
     )
@@ -110,8 +108,16 @@ def _add_succeeded_export(
 def _row_counts(db: SqliteDatabase) -> dict[str, int]:
     """Snapshot row counts for no-writes assertion."""
     tables = [
-        "projects", "media_assets", "asset_files", "analysis_runs",
-        "timelines", "timeline_clips", "exports", "jobs", "short_runs", "asset_policies",
+        "projects",
+        "media_assets",
+        "asset_files",
+        "analysis_runs",
+        "timelines",
+        "timeline_clips",
+        "exports",
+        "jobs",
+        "short_runs",
+        "asset_policies",
     ]
     counts: dict[str, int] = {}
     with db.connection() as conn:
@@ -861,9 +867,18 @@ def _seed_embeddings_and_candidates(
     e_x = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     e_y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
     frame_vecs = {
-        0: e_x, 25: e_x, 50: e_x, 75: e_x,        # A → X
-        200: e_x, 225: e_x, 250: e_x, 275: e_x,   # B → X (dup of A)
-        400: e_y, 425: e_y, 450: e_y, 475: e_y,   # C → Y (distinct)
+        0: e_x,
+        25: e_x,
+        50: e_x,
+        75: e_x,  # A → X
+        200: e_x,
+        225: e_x,
+        250: e_x,
+        275: e_x,  # B → X (dup of A)
+        400: e_y,
+        425: e_y,
+        450: e_y,
+        475: e_y,  # C → Y (distinct)
     }
     store = SqliteVectorStore(db)
     store.replace_frame_embeddings(
@@ -1004,9 +1019,7 @@ def test_tool_search_visual_moments_no_embeddings(tmp_path: Path) -> None:
     assert vq is not None  # module import smoke
 
 
-def test_tool_search_visual_moments_extra_unavailable(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_tool_search_visual_moments_extra_unavailable(tmp_path: Path, monkeypatch: Any) -> None:
     """With embeddings present but the visual extra forced absent → ok=False, no model load."""
     import laura.analysis.visual_query as vq
     from laura.mcp.tools import tool_search_visual_moments
@@ -1075,3 +1088,24 @@ def test_tool_render_short_candidate_not_found(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["error"] == "candidate not found"
     assert result["candidate_id"] == "nonexistent-candidate"
+
+
+def test_tool_render_short_voiceover_options(tmp_path: Path) -> None:
+    """voiceover_path/text land in the export options (+ ai_effect provenance tag)."""
+    from laura.mcp.tools import tool_render_short
+
+    db = _make_db(tmp_path)
+    project, asset = _create_project_and_asset(db)
+    _seed_short_candidates(db, asset, project, count=1)
+    candidate_id = repos.list_shorts_candidates_by_asset(db, asset["id"])[0]["id"]
+
+    result = tool_render_short(
+        db, candidate_id, voiceover_path="/vo/x.mp3", voiceover_text="Neues Skript"
+    )
+
+    assert result["ok"] is True
+    exp = repos.get_export(db, result["export_id"])
+    assert exp is not None
+    assert exp["options"]["voiceover_path"] == "/vo/x.mp3"
+    assert exp["options"]["voiceover_text"] == "Neues Skript"
+    assert exp["options"]["ai_effect"] == "voiceover_elevenlabs"

@@ -75,7 +75,8 @@ def test_qa_verifies_exports_with_export_status() -> None:
     qa = by_name["qa"]
     assert "export_status" in qa.tool_names
     assert "EDITED export_id" in qa.system_message
-    assert "never pass an export id" in qa.system_message
+    assert "WAITS for the render" in qa.system_message
+    assert "SAME export id" in qa.system_message
 
 
 def test_transcript_master_triggers_on_new_transcript_phrases() -> None:

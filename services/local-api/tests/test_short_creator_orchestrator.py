@@ -47,9 +47,7 @@ def _run(
 ) -> tuple[dict[str, object], list[tuple[str, str]]]:
     execute, calls = _make_execute(script)
     config = providers.resolve_from_env(env)
-    result = orchestrator.run_short_creator(
-        db, config, asset_id="a", topic="cats", execute=execute
-    )
+    result = orchestrator.run_short_creator(db, config, asset_id="a", topic="cats", execute=execute)
     return result, calls
 
 
@@ -134,8 +132,72 @@ def test_soft_weak_with_auto_escalate_goes_to_b(db: Database) -> None:
 
 
 def test_orchestration_graph_forces_graph(db: Database) -> None:
-    result, calls = _run(
-        db, {("A", "graph"): ("ok", False)}, LAURA_AGENT_ORCHESTRATION="graph"
-    )
+    result, calls = _run(db, {("A", "graph"): ("ok", False)}, LAURA_AGENT_ORCHESTRATION="graph")
     assert result["team"] == "graph"
     assert calls == [("A", "graph")]  # magentic skipped
+
+
+# --- deterministic task directives (7B-proof wish parsing) -----------------------------------
+
+
+def test_task_prompt_injects_scene_plan_and_revoice_directives() -> None:
+    # The live run "60s ... 15 Szenen ... jede ca. 4 s ... Transkript neu" was ignored by the
+    # 7B team when the rules only lived in system prompts — they are injected as explicit,
+    # mandatory task directives instead.
+    topic = (
+        "Mach mir einen Short ueber 60s fuer Instagram, nimm ca. 15 Szenen her, "
+        "jede ca. 4 s lang, Transkript neu - energetisch"
+    )
+    task = orchestrator._task_prompt("a1", topic, 60)
+    assert "RENDER PLAN (mandatory)" in task
+    assert (
+        "render_short(asset_id='a1', target_seconds=60, max_segments=15, "
+        "max_segment_seconds=4)" in task
+    )
+    assert "RE-VOICE REQUESTED (mandatory)" in task
+    assert "synthesize_voiceover(asset_id='a1'" in task
+
+
+def test_task_prompt_revoice_triggers_on_misspellings() -> None:
+    assert "RE-VOICE" in orchestrator._task_prompt("a1", "20s short, transkipt new bitte", 20)
+    assert "RE-VOICE" in orchestrator._task_prompt("a1", "bitte neu einsprechen", 20)
+    assert "RE-VOICE" in orchestrator._task_prompt("a1", "mit neuer... neue stimme drauf", 20)
+
+
+def test_task_prompt_no_directives_for_plain_topics() -> None:
+    task = orchestrator._task_prompt("a1", "das beste zum thema agenten", 60)
+    assert "RENDER PLAN" not in task
+    assert "RE-VOICE" not in task
+
+
+def test_parse_target_seconds_bounds() -> None:
+    assert orchestrator._parse_target_seconds("ueber 90s bitte") == 90
+    assert orchestrator._parse_target_seconds("jede 4 s lang") is None  # single digit
+    assert orchestrator._parse_target_seconds("nimm 15 szenen") is None  # not an "Ns"
+    assert orchestrator._parse_target_seconds("kein limit") is None
+
+
+def test_run_short_creator_target_from_topic_overrides_default(db: Database) -> None:
+    captured: dict[str, str] = {}
+
+    def execute(
+        db_: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        captured["task"] = task
+        return orchestrator.StageOutcome(
+            status="ok",
+            weak=False,
+            summary="",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    config = providers.resolve_from_env({})
+    orchestrator.run_short_creator(
+        db, config, asset_id="a", topic="mach 90s daraus", execute=execute
+    )
+    assert "~90s" in captured["task"]
