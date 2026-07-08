@@ -147,6 +147,7 @@ def test_terminal_outcome_max_turns_is_hard_fail() -> None:
         [("orchestrator", "planning"), ("orchestrator", "looping")],
         team="magentic",
         stage="A",
+        artifacts=0,
     )
     assert out["status"] == "hard_fail"
 
@@ -157,6 +158,7 @@ def test_terminal_outcome_max_messages_is_hard_fail() -> None:
         [],
         team="graph",
         stage="A",
+        artifacts=0,
     )
     assert out["status"] == "hard_fail"
 
@@ -169,6 +171,7 @@ def test_terminal_outcome_weak_reads_only_qa_verdict() -> None:
         [("user", "say 'weak' if it does not match"), ("qa", "good — matches the topic")],
         team="magentic",
         stage="A",
+        artifacts=1,
     )
     assert out["status"] == "ok"
     assert out["weak"] is False
@@ -176,7 +179,7 @@ def test_terminal_outcome_weak_reads_only_qa_verdict() -> None:
 
 def test_terminal_outcome_qa_weak_verdict_is_weak() -> None:
     out = stream._terminal_outcome(
-        None, [("qa", "the short is WEAK and off-topic")], team="magentic", stage="A"
+        None, [("qa", "the short is WEAK and off-topic")], team="magentic", stage="A", artifacts=1
     )
     assert out["weak"] is True
 
@@ -184,7 +187,11 @@ def test_terminal_outcome_qa_weak_verdict_is_weak() -> None:
 def test_terminal_outcome_no_qa_verdict_is_weak() -> None:
     # qa never spoke (e.g. the orchestrator hallucinated completion) -> never validated -> weak.
     out = stream._terminal_outcome(
-        None, [("orchestrator", "Great job! Here is your short: ...")], team="magentic", stage="A"
+        None,
+        [("orchestrator", "Great job! Here is your short: ...")],
+        team="magentic",
+        stage="A",
+        artifacts=1,
     )
     assert out["status"] == "ok"
     assert out["weak"] is True
@@ -258,3 +265,32 @@ def test_map_event_tool_execution_error_flags_not_ok() -> None:
     assert mapped is not None
     assert mapped["type"] == "tool_result"
     assert mapped["ok"] is False
+
+
+# --- artifact derivation + artifact-grounded outcome -----------------------------------------
+
+
+def test_artifact_events_derived_from_tool_result_summaries() -> None:
+    assert stream._artifact_events(
+        "{'ok': True, 'timeline_id': 'abc123', 'scene_count': 4}"
+    ) == [{"type": "artifact", "kind": "timeline", "id": "abc123"}]
+    assert stream._artifact_events("{'export_id': 'e9', 'job_id': 'j1'}") == [
+        {"type": "artifact", "kind": "render", "id": "e9"}
+    ]
+    assert stream._artifact_events("{'ok': False, 'reason': 'nope'}") == []
+
+
+def test_terminal_outcome_without_artifact_is_weak_even_if_qa_approves() -> None:
+    # qa said "good" but the editor never produced a timeline/render — nothing exists, so the
+    # run must read weak (observed live: a 7B team talked through the task without acting).
+    out = stream._terminal_outcome(
+        None, [("qa", "good — matches the topic")], team="graph", stage="A", artifacts=0
+    )
+    assert out["weak"] is True
+
+
+def test_terminal_outcome_with_artifact_and_qa_ok_is_not_weak() -> None:
+    out = stream._terminal_outcome(
+        None, [("qa", "good — matches the topic")], team="graph", stage="A", artifacts=2
+    )
+    assert out["weak"] is False

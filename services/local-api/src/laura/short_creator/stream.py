@@ -13,6 +13,7 @@ forwarded to the client.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -196,8 +197,34 @@ def _map_event(raw: Any, kind: TeamKind) -> dict[str, Any] | None:
     return None
 
 
+_TIMELINE_ID = re.compile(r"'timeline_id':\s*'([0-9a-fA-F-]+)'")
+_EXPORT_ID = re.compile(r"'export_id':\s*'([0-9a-fA-F-]+)'")
+
+
+def _artifact_events(summary: str) -> list[dict[str, Any]]:
+    """Artifact events derived from a tool result's summary (repr-style dict text).
+
+    ``timeline_id`` → a built timeline (rough cut); ``export_id`` → a started render. These
+    events drive the frontend's live view refresh AND ground the outcome: no artifact means
+    the team never actually edited anything.
+    """
+    events: list[dict[str, Any]] = []
+    m = _TIMELINE_ID.search(summary)
+    if m:
+        events.append({"type": "artifact", "kind": "timeline", "id": m.group(1)})
+    m = _EXPORT_ID.search(summary)
+    if m:
+        events.append({"type": "artifact", "kind": "render", "id": m.group(1)})
+    return events
+
+
 def _terminal_outcome(
-    stop_reason: str | None, texts: list[tuple[str, str]], *, team: TeamKind, stage: Stage
+    stop_reason: str | None,
+    texts: list[tuple[str, str]],
+    *,
+    team: TeamKind,
+    stage: Stage,
+    artifacts: int,
 ) -> dict[str, Any]:
     """The stage outcome from a finished team run.
 
@@ -205,10 +232,12 @@ def _terminal_outcome(
     that is a hard fail (so the ladder falls back / escalates), NOT a success. ``weak`` reads
     ONLY the qa agent's verdict (the task prompt itself contains the word "weak", so scanning
     the whole transcript would flag every run); a run in which qa never spoke was never
-    validated and is weak too.
+    validated, and a run that produced NO artifact (no timeline/render) never actually edited
+    anything (observed live: a 7B team talked through the task without acting) — both weak.
     """
     qa_text = " ".join(text for source, text in texts if source == "qa")
-    weak = ("weak" in qa_text.lower()) if qa_text.strip() else True
+    qa_ok = qa_text.strip() != "" and "weak" not in qa_text.lower()
+    weak = not (qa_ok and artifacts > 0)
     joined = " ".join(text for _source, text in texts)
     exhausted = "maximum number of" in (stop_reason or "").lower()
     return _outcome_event(
@@ -232,6 +261,7 @@ async def _default_execute_stream(
     )
     texts: list[tuple[str, str]] = []
     stop_reason: str | None = None
+    artifacts = 0
     async for raw in team.run_stream(task=task):
         if type(raw).__name__ == "TaskResult":
             reason = getattr(raw, "stop_reason", None)
@@ -243,4 +273,8 @@ async def _default_execute_stream(
         if mapped.get("type") == "agent":
             texts.append((str(mapped.get("agent", "")), str(mapped.get("text", ""))))
         yield mapped
-    yield _terminal_outcome(stop_reason, texts, team=kind, stage=stage)
+        if mapped.get("type") == "tool_result":
+            for artifact in _artifact_events(str(mapped.get("summary", ""))):
+                artifacts += 1
+                yield artifact
+    yield _terminal_outcome(stop_reason, texts, team=kind, stage=stage, artifacts=artifacts)
