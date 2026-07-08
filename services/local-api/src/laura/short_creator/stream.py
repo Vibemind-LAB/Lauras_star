@@ -197,19 +197,23 @@ def _map_event(raw: Any, kind: TeamKind) -> dict[str, Any] | None:
 
 
 def _terminal_outcome(
-    stop_reason: str | None, texts: list[str], *, team: TeamKind, stage: Stage
+    stop_reason: str | None, texts: list[tuple[str, str]], *, team: TeamKind, stage: Stage
 ) -> dict[str, Any]:
     """The stage outcome from a finished team run.
 
     A run that ended because it exhausted its turn/message budget produced nothing useful —
     that is a hard fail (so the ladder falls back / escalates), NOT a success. ``weak`` reads
-    the QA gate's verdict from the transcript.
+    ONLY the qa agent's verdict (the task prompt itself contains the word "weak", so scanning
+    the whole transcript would flag every run); a run in which qa never spoke was never
+    validated and is weak too.
     """
-    joined = " ".join(texts)
+    qa_text = " ".join(text for source, text in texts if source == "qa")
+    weak = ("weak" in qa_text.lower()) if qa_text.strip() else True
+    joined = " ".join(text for _source, text in texts)
     exhausted = "maximum number of" in (stop_reason or "").lower()
     return _outcome_event(
         "hard_fail" if exhausted else "ok",
-        "weak" in joined.lower(),
+        weak,
         team=team,
         stage=stage,
         summary=(joined or (stop_reason or ""))[:2000],
@@ -226,7 +230,7 @@ async def _default_execute_stream(
         if kind == "magentic"
         else graph.build_graph_team(db, config, stage=stage)
     )
-    texts: list[str] = []
+    texts: list[tuple[str, str]] = []
     stop_reason: str | None = None
     async for raw in team.run_stream(task=task):
         if type(raw).__name__ == "TaskResult":
@@ -237,6 +241,6 @@ async def _default_execute_stream(
         if mapped is None:
             continue
         if mapped.get("type") == "agent":
-            texts.append(str(mapped.get("text", "")))
+            texts.append((str(mapped.get("agent", "")), str(mapped.get("text", ""))))
         yield mapped
     yield _terminal_outcome(stop_reason, texts, team=kind, stage=stage)

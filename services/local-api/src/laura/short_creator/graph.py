@@ -47,7 +47,9 @@ def build_graph_team(db: Database, config: AgentConfig, *, stage: Stage = "A") -
             "Install it with: uv sync --extra autoshort"
         ) from exc
 
-    agents = build_agents(db, config, stage=stage)
+    # list[Any]: participants wants list[ChatAgent]; AssistantAgent subclasses it, but list is
+    # invariant (and ChatAgent is only importable with the extra installed).
+    agents: list[Any] = list(build_agents(db, config, stage=stage))
     by_name = {agent.name: agent for agent in agents}
     builder = DiGraphBuilder()
     for agent in agents:

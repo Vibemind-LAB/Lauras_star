@@ -143,7 +143,10 @@ def test_exception_emits_error_event_then_falls_back(db: Database) -> None:
 
 def test_terminal_outcome_max_turns_is_hard_fail() -> None:
     out = stream._terminal_outcome(
-        "Maximum number of turns 30 reached.", ["planning", "looping"], team="magentic", stage="A"
+        "Maximum number of turns 30 reached.",
+        [("orchestrator", "planning"), ("orchestrator", "looping")],
+        team="magentic",
+        stage="A",
     )
     assert out["status"] == "hard_fail"
 
@@ -158,18 +161,33 @@ def test_terminal_outcome_max_messages_is_hard_fail() -> None:
     assert out["status"] == "hard_fail"
 
 
-def test_terminal_outcome_normal_completion_is_ok_and_reads_weak() -> None:
+def test_terminal_outcome_weak_reads_only_qa_verdict() -> None:
+    # The task echo contains the word "weak" — it must NOT trip the detector; only qa's
+    # verdict counts.
     out = stream._terminal_outcome(
-        "The task has been completed.", ["the result is WEAK on topic"], team="magentic", stage="A"
+        "The task has been completed.",
+        [("user", "say 'weak' if it does not match"), ("qa", "good — matches the topic")],
+        team="magentic",
+        stage="A",
     )
     assert out["status"] == "ok"
+    assert out["weak"] is False
+
+
+def test_terminal_outcome_qa_weak_verdict_is_weak() -> None:
+    out = stream._terminal_outcome(
+        None, [("qa", "the short is WEAK and off-topic")], team="magentic", stage="A"
+    )
     assert out["weak"] is True
 
 
-def test_terminal_outcome_none_stop_reason_is_ok() -> None:
-    out = stream._terminal_outcome(None, ["fine"], team="magentic", stage="A")
+def test_terminal_outcome_no_qa_verdict_is_weak() -> None:
+    # qa never spoke (e.g. the orchestrator hallucinated completion) -> never validated -> weak.
+    out = stream._terminal_outcome(
+        None, [("orchestrator", "Great job! Here is your short: ...")], team="magentic", stage="A"
+    )
     assert out["status"] == "ok"
-    assert out["weak"] is False
+    assert out["weak"] is True
 
 
 # --- _map_event: real tool names + tool results (duck-typed like autogen 0.4) ----------------

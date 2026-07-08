@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:  # annotations only — never imported at runtime
     from autogen_core.models import ChatCompletionClient
@@ -158,18 +158,20 @@ def build_model_client(
         from autogen_core.models import ModelInfo
         from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-        return OpenAIChatCompletionClient(
-            model=spec.model,
-            base_url=spec.base_url,
-            api_key=spec.api_key or "not-needed",
-            model_info=ModelInfo(
+        kwargs: dict[str, Any] = {
+            "model": spec.model,
+            "api_key": spec.api_key or "not-needed",
+            "model_info": ModelInfo(
                 vision=False,
                 function_calling=True,
                 json_output=True,
                 family="unknown",
                 structured_output=True,
             ),
-        )
+        }
+        if spec.base_url is not None:
+            kwargs["base_url"] = spec.base_url
+        return OpenAIChatCompletionClient(**kwargs)
     except ImportError as exc:  # optional extra missing
         raise RuntimeError(
             "The short-creator needs the optional 'autoshort' extra. "

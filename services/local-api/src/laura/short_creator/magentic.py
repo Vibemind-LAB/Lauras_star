@@ -8,7 +8,7 @@ on stalls. It needs a capable orchestrator model (``LAURA_ORCHESTRATOR_MODEL``, 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..db.database import Database
 from .agents import build_agents
@@ -37,7 +37,9 @@ def build_magentic_team(
             "Install it with: uv sync --extra autoshort"
         ) from exc
 
-    agents = build_agents(db, config, stage=stage)
+    # list[Any]: participants wants list[ChatAgent]; AssistantAgent subclasses it, but list is
+    # invariant (and ChatAgent is only importable with the extra installed).
+    agents: list[Any] = list(build_agents(db, config, stage=stage))
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
     return MagenticOneGroupChat(
         participants=agents, model_client=orchestrator, max_turns=MAX_TURNS

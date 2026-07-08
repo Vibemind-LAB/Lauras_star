@@ -43,14 +43,24 @@ async def _run_team(team: Any, task: str) -> Any:
 
 
 def _parse_result(result: Any, *, kind: TeamKind, stage: Stage) -> StageOutcome:
-    """Read the team's final messages into an outcome. ``weak`` == the QA gate flagged 'weak'."""
+    """Read the team's final messages into an outcome.
+
+    ``weak`` reads ONLY the qa agent's messages (the task prompt itself contains the word
+    "weak", so scanning the whole transcript would flag every run); a run in which qa never
+    spoke was never validated and is weak too.
+    """
     text = ""
+    qa_text = ""
     for msg in getattr(result, "messages", None) or []:
         to_text = getattr(msg, "to_model_text", None)
-        text += (to_text() if callable(to_text) else str(getattr(msg, "content", ""))) + "\n"
+        line = (to_text() if callable(to_text) else str(getattr(msg, "content", ""))) + "\n"
+        text += line
+        if str(getattr(msg, "source", "")) == "qa":
+            qa_text += line
+    weak = ("weak" in qa_text.lower()) if qa_text.strip() else True
     return StageOutcome(
         status="ok",
-        weak="weak" in text.lower(),
+        weak=weak,
         summary=text.strip()[:2000],
         team=kind,
         stage=stage,
