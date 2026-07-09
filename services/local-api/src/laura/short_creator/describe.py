@@ -1,10 +1,16 @@
-"""Optional local VLM backend that DESCRIBES frames (free text), for the Describer agent.
+"""Optional VLM backends that DESCRIBE frames (free text), for the Describer agent.
 
-Mirrors ``analysis/vlm_ollama.py``'s Ollama HTTP pattern but returns a short description
+Mirrors ``analysis/vlm_ollama.py``'s stdlib-HTTP pattern but returns a short description
 instead of a transition verdict. Opt-in & local-first: :func:`resolve_describe_backend`
-returns ``None`` unless ``LAURA_VLM_MODEL`` (or ``LAURA_VLM=1``) is set and the model is
-locally available, so the backend runs without a model (the Describer degrades gracefully).
-The real Ollama output is manual-to-verify (no model in CI); tests inject a fake backend.
+returns ``None`` unless a backend is configured, so the pipeline runs without a model (the
+Describer degrades gracefully). Two backends:
+
+* Ollama (default): gated on ``LAURA_VLM_MODEL``/``LAURA_VLM`` + local model availability.
+* OpenRouter: ``LAURA_VLM_PROVIDER=openrouter`` + ``LAURA_OPENROUTER_API_KEY`` — describes
+  via OpenRouter's OpenAI-compatible API (free vision models exist), keeping the local GPU
+  free for rendering (a 15GB VLM + a 7B text model don't fit a 12GB card together).
+
+Real model output is manual-to-verify (no model/key in CI); tests fake the HTTP layer.
 """
 
 from __future__ import annotations
@@ -21,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3-vl:8b"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# A free vision model (OpenRouter's free tier rotates — override via LAURA_VLM_MODEL).
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
 DESCRIBE_PROMPT = (
     "You are a film editor's assistant. In ONE concise sentence, describe what is visibly "
     "happening in these frames: the main subject, the action, and the setting. Be concrete; "
@@ -36,10 +45,17 @@ class DescribeBackend(Protocol):
     def describe(self, frames: list[bytes], prompt: str) -> str: ...
 
 
-def _http_json(url: str, payload: dict[str, Any] | None = None, *, timeout: float = 120.0) -> Any:
+def _http_json(
+    url: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    timeout: float = 120.0,
+    headers: dict[str, str] | None = None,
+) -> Any:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (local Ollama only)
+    all_headers = {"Content-Type": "application/json", **(headers or {})}
+    req = urllib.request.Request(url, data=data, headers=all_headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (fixed hosts only)
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -86,8 +102,66 @@ class OllamaDescribeBackend:
             return ""  # never block the pipeline on a model hiccup
 
 
+class OpenRouterDescribeBackend:
+    """DescribeBackend over OpenRouter's OpenAI-compatible API (free vision models exist).
+
+    Frames go as ``image_url`` data URIs in one user message; deterministic-ish settings
+    (temperature 0). Failures return ``""`` — the Describer must never block the pipeline.
+    """
+
+    def __init__(self, *, api_key: str, model: str | None = None) -> None:
+        self.api_key = api_key
+        picked = model or os.environ.get("LAURA_VLM_MODEL") or DEFAULT_OPENROUTER_MODEL
+        # OpenRouter ids are "vendor/name"; an Ollama-style tag (e.g. "qwen2.5vl:7b") left
+        # over in the env must not be sent upstream — fall back to the free default.
+        self.model = picked if "/" in picked else DEFAULT_OPENROUTER_MODEL
+
+    def available(self) -> bool:
+        return bool(self.api_key)
+
+    def describe(self, frames: list[bytes], prompt: str) -> str:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for frame in frames:
+            b64 = base64.b64encode(frame).decode("ascii")
+            content.append(
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+            )
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 200,
+            "temperature": 0,
+        }
+        try:
+            data = _http_json(
+                OPENROUTER_URL,
+                payload,
+                timeout=120.0,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not isinstance(choices, list) or not choices:
+                return ""
+            message = choices[0].get("message") or {}
+            return str(message.get("content") or "").strip()
+        except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+            logger.warning("openrouter describe failed: %s", exc)
+            return ""  # never block the pipeline on a model hiccup
+
+
 def resolve_describe_backend() -> DescribeBackend | None:
-    """The configured describe backend, or ``None`` when the ``[vlm]`` model isn't set up."""
+    """The configured describe backend, or ``None`` when no VLM is set up.
+
+    ``LAURA_VLM_PROVIDER=openrouter`` (+ ``LAURA_OPENROUTER_API_KEY``) routes descriptions to
+    OpenRouter — the local GPU stays free for rendering. Default stays local-first: Ollama,
+    gated on ``LAURA_VLM_MODEL``/``LAURA_VLM`` and local model availability.
+    """
+    provider = (os.environ.get("LAURA_VLM_PROVIDER") or "").strip().lower()
+    if provider == "openrouter":
+        api_key = (os.environ.get("LAURA_OPENROUTER_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        return OpenRouterDescribeBackend(api_key=api_key)
     if not (os.environ.get("LAURA_VLM_MODEL") or os.environ.get("LAURA_VLM")):
         return None
     backend = OllamaDescribeBackend()

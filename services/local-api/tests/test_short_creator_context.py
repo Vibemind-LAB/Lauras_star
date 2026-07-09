@@ -8,6 +8,7 @@ is exercised with a fake backend so no Ollama/ffmpeg is needed.
 
 from __future__ import annotations
 
+import urllib.error
 from typing import Any
 
 import pytest
@@ -313,4 +314,75 @@ def test_describe_moment_with_backend_returns_text(db: Database) -> None:
 def test_resolve_describe_backend_none_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LAURA_VLM_MODEL", raising=False)
     monkeypatch.delenv("LAURA_VLM", raising=False)
+    monkeypatch.delenv("LAURA_VLM_PROVIDER", raising=False)
     assert describe.resolve_describe_backend() is None
+
+
+# --- OpenRouter describe backend: frames leave the local GPU ---------------------------------
+
+
+def test_resolve_openrouter_needs_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LAURA_VLM_PROVIDER", "openrouter")
+    monkeypatch.delenv("LAURA_OPENROUTER_API_KEY", raising=False)
+    assert describe.resolve_describe_backend() is None
+
+    monkeypatch.setenv("LAURA_OPENROUTER_API_KEY", "sk-or-x")
+    backend = describe.resolve_describe_backend()
+    assert isinstance(backend, describe.OpenRouterDescribeBackend)
+    assert backend.available() is True
+
+
+def test_openrouter_ignores_ollama_style_model_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A leftover "qwen2.5vl:7b" in LAURA_VLM_MODEL is an Ollama tag, not an OpenRouter id.
+    monkeypatch.setenv("LAURA_VLM_MODEL", "qwen2.5vl:7b")
+    backend = describe.OpenRouterDescribeBackend(api_key="k")
+    assert backend.model == describe.DEFAULT_OPENROUTER_MODEL
+
+    monkeypatch.setenv("LAURA_VLM_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
+    backend2 = describe.OpenRouterDescribeBackend(api_key="k")
+    assert backend2.model == "nvidia/nemotron-nano-12b-v2-vl:free"
+
+
+def test_openrouter_describe_posts_frames_and_returns_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_http(
+        url: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 120.0,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        seen["url"] = url
+        seen["payload"] = payload
+        seen["headers"] = headers
+        return {"choices": [{"message": {"content": "  Eine Person erklärt am Whiteboard.  "}}]}
+
+    monkeypatch.setattr(describe, "_http_json", fake_http)
+    backend = describe.OpenRouterDescribeBackend(api_key="sk-or-x", model="v/free-model")
+
+    text = backend.describe([b"JPEG1", b"JPEG2"], "Was ist zu sehen?")
+
+    assert text == "Eine Person erklärt am Whiteboard."
+    assert seen["url"] == describe.OPENROUTER_URL
+    assert seen["headers"] == {"Authorization": "Bearer sk-or-x"}
+    payload = seen["payload"]
+    assert payload["model"] == "v/free-model"
+    content = payload["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "Was ist zu sehen?"}
+    assert len(content) == 3  # prompt + 2 frames
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_openrouter_describe_error_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(describe, "_http_json", boom)
+    backend = describe.OpenRouterDescribeBackend(api_key="k", model="v/m")
+    assert backend.describe([b"F"], "p") == ""
+
+    monkeypatch.setattr(describe, "_http_json", lambda *a, **kw: {"choices": []})
+    assert backend.describe([b"F"], "p") == ""
