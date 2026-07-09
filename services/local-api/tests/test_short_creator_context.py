@@ -377,6 +377,8 @@ def test_openrouter_describe_posts_frames_and_returns_text(
 
 
 def test_openrouter_describe_error_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(describe, "_sleep", lambda _s: None)
+
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise urllib.error.URLError("down")
 
@@ -386,3 +388,34 @@ def test_openrouter_describe_error_returns_empty(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(describe, "_http_json", lambda *a, **kw: {"choices": []})
     assert backend.describe([b"F"], "p") == ""
+
+    # 200 + {"error": ...} (free-tier rate limits) degrades to "" — logged, never raised.
+    monkeypatch.setattr(
+        describe, "_http_json", lambda *a, **kw: {"error": {"message": "rate limited"}}
+    )
+    assert backend.describe([b"F"], "p") == ""
+
+
+def test_openrouter_describe_retries_transient_error_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Observed live: the free endpoint answered one call with a 504 error body and the next
+    # with a clean description — a single retry recovers it.
+    monkeypatch.setattr(describe, "_sleep", lambda _s: None)
+    responses = iter(
+        [
+            {"error": {"message": "Upstream idle timeout exceeded", "code": 504}},
+            {"choices": [{"message": {"content": "Eine Person tippt am Laptop."}}]},
+        ]
+    )
+    calls: list[int] = []
+
+    def fake_http(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return next(responses)
+
+    monkeypatch.setattr(describe, "_http_json", fake_http)
+    backend = describe.OpenRouterDescribeBackend(api_key="k", model="v/m")
+
+    assert backend.describe([b"F"], "p") == "Eine Person tippt am Laptop."
+    assert len(calls) == 2

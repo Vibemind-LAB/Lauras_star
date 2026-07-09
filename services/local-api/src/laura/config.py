@@ -14,12 +14,13 @@ _DOTENV_SEARCH_DEPTH = 4
 
 
 def _load_dotenv(start: Path | None = None) -> None:
-    """Load the nearest ``.env`` (cwd upward) into ``os.environ`` — real env always wins.
+    """Layer ALL ``.env`` files from cwd upward into ``os.environ`` — real env always wins.
 
     Stdlib-only ``KEY=value`` parser (comments/blank lines skipped, surrounding quotes
-    stripped); values are applied via ``setdefault`` so explicitly set environment variables
-    are never overridden. Missing file is a no-op. Searching upward lets the repo-root
-    ``.env`` cover dev runs whose cwd is ``services/local-api`` (the desktop spawner).
+    stripped); values are applied via ``setdefault`` in nearest-first order, so: explicit
+    environment > nearest ``.env`` > parent ``.env``s. Every level is read (NOT first-match-
+    only): a stray ``services/local-api/.env`` must not shadow keys that only exist in the
+    repo-root ``.env`` (live finding — the OpenRouter key was invisible to the backend).
     """
     directory = (start or Path.cwd()).resolve()
     for _ in range(_DOTENV_SEARCH_DEPTH):
@@ -34,7 +35,6 @@ def _load_dotenv(start: Path | None = None) -> None:
                 value = value.strip().strip("'\"")
                 if key:
                     os.environ.setdefault(key, value)
-            return
         if directory.parent == directory:
             return
         directory = directory.parent
@@ -48,14 +48,14 @@ class Settings:
     workspace_root: Path
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    token: str | None = None          # if set, required via X-Laura-Token header
-    start_runner: bool = True         # background job runner thread
+    token: str | None = None  # if set, required via X-Laura-Token header
+    start_runner: bool = True  # background job runner thread
     lease_seconds: int = 60
-    worker_concurrency: int = 3       # background job-runner threads (desktop)
+    worker_concurrency: int = 3  # background job-runner threads (desktop)
     job_max_runtime_seconds: int = 3600  # cap before a job's lease stops being refreshed
-    database_url: str | None = None   # postgresql://… for server mode; else SQLite
-    rate_limit_rpm: int = 0           # per-identity requests/minute; 0 disables the limiter
-    rate_limit_burst: int = 0         # bucket capacity; 0 -> falls back to rpm
+    database_url: str | None = None  # postgresql://… for server mode; else SQLite
+    rate_limit_rpm: int = 0  # per-identity requests/minute; 0 disables the limiter
+    rate_limit_burst: int = 0  # bucket capacity; 0 -> falls back to rpm
 
     @property
     def db_path(self) -> Path:
@@ -66,9 +66,7 @@ class Settings:
         _load_dotenv()  # fills gaps from the nearest .env; explicit env always wins
         root = os.environ.get("LAURA_WORKSPACE")
         workspace_root = (
-            Path(root).expanduser().resolve()
-            if root
-            else (Path.cwd() / "workspace").resolve()
+            Path(root).expanduser().resolve() if root else (Path.cwd() / "workspace").resolve()
         )
         return cls(
             workspace_root=workspace_root,

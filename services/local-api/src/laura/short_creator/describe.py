@@ -19,11 +19,18 @@ import base64
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+# Injectable for tests; the OpenRouter retry pauses with this sleeper.
+_sleep: Callable[[float], None] = time.sleep
+_OPENROUTER_ATTEMPTS = 2
+_OPENROUTER_RETRY_PAUSE_S = 2.0
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3-vl:8b"
@@ -132,21 +139,34 @@ class OpenRouterDescribeBackend:
             "max_tokens": 200,
             "temperature": 0,
         }
-        try:
-            data = _http_json(
-                OPENROUTER_URL,
-                payload,
-                timeout=120.0,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
+        # Free-tier endpoints are flaky (observed live: 200 + upstream 504 error body on one
+        # call, a clean answer on the next) — retry once before degrading to "".
+        for attempt in range(_OPENROUTER_ATTEMPTS):
+            if attempt:
+                _sleep(_OPENROUTER_RETRY_PAUSE_S)
+            try:
+                data = _http_json(
+                    OPENROUTER_URL,
+                    payload,
+                    timeout=120.0,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+            except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+                logger.warning("openrouter describe failed: %s", exc)
+                continue
+            # OpenRouter reports failures as 200 + {"error": ...} — surface them in the log
+            # instead of silently degrading (free-tier rate limits look like this).
+            if isinstance(data, dict) and data.get("error"):
+                logger.warning("openrouter describe error: %s", str(data["error"])[:300])
+                continue
             choices = data.get("choices") if isinstance(data, dict) else None
             if not isinstance(choices, list) or not choices:
-                return ""
+                continue
             message = choices[0].get("message") or {}
-            return str(message.get("content") or "").strip()
-        except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
-            logger.warning("openrouter describe failed: %s", exc)
-            return ""  # never block the pipeline on a model hiccup
+            text = str(message.get("content") or "").strip()
+            if text:
+                return text
+        return ""  # never block the pipeline on a model hiccup
 
 
 def resolve_describe_backend() -> DescribeBackend | None:

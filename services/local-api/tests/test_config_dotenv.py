@@ -54,3 +54,26 @@ def test_load_dotenv_searches_upward(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
     config._load_dotenv(tmp_path)  # no .env anywhere under tmp — must not raise
+
+
+def test_load_dotenv_layers_all_levels_nearest_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Live finding: a stray services/local-api/.env used to SHADOW the repo-root .env
+    # entirely — keys only present at the root (the OpenRouter key) never loaded. All
+    # levels must be read; on conflicts the nearest file wins.
+    (tmp_path / ".env").write_text(
+        "LAURA_TEST_ROOT_ONLY=root\nLAURA_TEST_BOTH=root\n", encoding="utf-8"
+    )
+    nested = tmp_path / "services" / "local-api"
+    nested.mkdir(parents=True)
+    (nested / ".env").write_text("LAURA_TEST_BOTH=near\n", encoding="utf-8")
+    monkeypatch.delenv("LAURA_TEST_ROOT_ONLY", raising=False)
+    monkeypatch.delenv("LAURA_TEST_BOTH", raising=False)
+
+    config._load_dotenv(nested)
+
+    assert os.environ["LAURA_TEST_BOTH"] == "near"  # nearest wins the conflict
+    assert os.environ["LAURA_TEST_ROOT_ONLY"] == "root"  # root fills the gap
+    for key in ("LAURA_TEST_ROOT_ONLY", "LAURA_TEST_BOTH"):
+        monkeypatch.delenv(key, raising=False)
