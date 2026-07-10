@@ -14,10 +14,11 @@ without the extra installed.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:  # annotations only — never imported at runtime
     from autogen_core.models import ChatCompletionClient
@@ -140,13 +141,58 @@ def plan_client(config: AgentConfig, *, role: Role = "agent", stage: Stage = "A"
     )
 
 
+# Free-tier gateways intermittently answer 200 with an error body and NO ``choices`` — the
+# OpenAI SDK parses that into ``ChatCompletion(choices=None)`` and autogen crashes on
+# ``choices[0]`` (TypeError). One such flake killed a whole team run (live finding).
+_RETRY_ATTEMPTS = 3
+_RETRY_PAUSE_S = 3.0
+_RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+class RetryingChatClient:
+    """Delegating wrapper around a ChatCompletionClient that retries transient failures.
+
+    Retries ``create()`` on: TypeError (the choices=None flake above) and HTTP 408/429/5xx
+    (via the exception's ``status_code``). Everything else raises immediately. All other
+    attributes delegate to the wrapped client, so it stays a drop-in for AssistantAgent.
+    """
+
+    def __init__(
+        self, inner: Any, *, attempts: int = _RETRY_ATTEMPTS, pause_s: float = _RETRY_PAUSE_S
+    ) -> None:
+        self._inner = inner
+        self._attempts = max(1, attempts)
+        self._pause_s = pause_s
+
+    async def create(self, *args: Any, **kwargs: Any) -> Any:
+        last: BaseException | None = None
+        for attempt in range(self._attempts):
+            if attempt:
+                await asyncio.sleep(self._pause_s)
+            try:
+                return await self._inner.create(*args, **kwargs)
+            except TypeError as exc:  # choices=None error body from a flaky free tier
+                last = exc
+            except Exception as exc:
+                status = getattr(exc, "status_code", None)
+                if status not in _RETRYABLE_STATUS:
+                    raise
+                last = exc
+        assert last is not None  # attempts >= 1 → a failure landed here
+        raise last
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def build_model_client(
     config: AgentConfig, *, role: Role = "agent", stage: Stage = "A"
 ) -> ChatCompletionClient:
     """Build the AutoGen model client for *role*/*stage*.
 
     Lazily imports the optional ``autoshort`` extra; raises a clear
-    :class:`RuntimeError` (not ``ImportError``) if it is not installed.
+    :class:`RuntimeError` (not ``ImportError``) if it is not installed. Remote
+    (OpenAI-compatible) clients are wrapped in :class:`RetryingChatClient`.
     """
     spec = plan_client(config, role=role, stage=stage)
     try:
@@ -171,7 +217,9 @@ def build_model_client(
         }
         if spec.base_url is not None:
             kwargs["base_url"] = spec.base_url
-        return OpenAIChatCompletionClient(**kwargs)
+        return cast(
+            "ChatCompletionClient", RetryingChatClient(OpenAIChatCompletionClient(**kwargs))
+        )
     except ImportError as exc:  # optional extra missing
         raise RuntimeError(
             "The short-creator needs the optional 'autoshort' extra. "

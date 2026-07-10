@@ -9,6 +9,7 @@ these tests pass whether or not the optional ``autoshort`` extra is present.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 
@@ -138,9 +139,7 @@ def test_plan_stage_a_openai_compat_uses_generic_endpoint() -> None:
 
 
 def test_plan_stage_a_provider_9router_directly() -> None:
-    cfg = p.resolve_from_env(
-        {"LAURA_AGENT_PROVIDER": "9router", "LAURA_9ROUTER_API_KEY": "sk-9r"}
-    )
+    cfg = p.resolve_from_env({"LAURA_AGENT_PROVIDER": "9router", "LAURA_9ROUTER_API_KEY": "sk-9r"})
     spec = p.plan_client(cfg, role="agent", stage="A")
     assert spec.kind == "openai"
     assert spec.base_url == p.DEFAULT_9ROUTER_BASE_URL
@@ -205,9 +204,72 @@ def test_build_9router_passes_base_url_and_model(monkeypatch: pytest.MonkeyPatch
     captured = _install_fake_autogen(monkeypatch)
     cfg = p.resolve_from_env({"LAURA_9ROUTER_API_KEY": "sk-9r"})
     client = p.build_model_client(cfg, role="orchestrator", stage="B")
-    assert type(client).__name__ == "FakeOpenAI"
+    # Remote clients come wrapped in the transient-failure retry shim.
+    assert isinstance(client, p.RetryingChatClient)
+    assert type(client._inner).__name__ == "FakeOpenAI"
     kw = captured["openai"]
     assert kw["model"] == p.DEFAULT_ESCALATE_MODEL
     assert kw["base_url"] == p.DEFAULT_9ROUTER_BASE_URL
     assert kw["api_key"] == "sk-9r"
     assert "model_info" in kw
+
+
+# --- RetryingChatClient: free-tier flakes must not kill a team run ---------------------------
+
+
+class _FlakyInner:
+    """Fake ChatCompletionClient whose create() raises the scripted errors, then succeeds."""
+
+    def __init__(self, errors: list[BaseException]) -> None:
+        self.errors = list(errors)
+        self.calls = 0
+        self.model_info = {"family": "fake"}
+
+    async def create(self, *args: object, **kwargs: object) -> str:
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return "ok"
+
+
+def _status_error(status: int) -> Exception:
+    exc = Exception(f"http {status}")
+    exc.status_code = status  # type: ignore[attr-defined]  # mirrors openai.APIStatusError
+    return exc
+
+
+def test_retrying_client_recovers_choices_none_typeerror() -> None:
+    # Live finding: 200 + {"error": ...} parses to choices=None -> TypeError in autogen.
+    inner = _FlakyInner([TypeError("'NoneType' object is not subscriptable")])
+    client = p.RetryingChatClient(inner, pause_s=0)
+    assert asyncio.run(client.create()) == "ok"
+    assert inner.calls == 2
+
+
+def test_retrying_client_retries_transient_status() -> None:
+    inner = _FlakyInner([_status_error(429), _status_error(503)])
+    client = p.RetryingChatClient(inner, attempts=3, pause_s=0)
+    assert asyncio.run(client.create()) == "ok"
+    assert inner.calls == 3
+
+
+def test_retrying_client_raises_non_transient_immediately() -> None:
+    inner = _FlakyInner([_status_error(404)])
+    client = p.RetryingChatClient(inner, pause_s=0)
+    with pytest.raises(Exception, match="http 404"):
+        asyncio.run(client.create())
+    assert inner.calls == 1
+
+
+def test_retrying_client_exhausts_attempts_and_reraises() -> None:
+    inner = _FlakyInner([TypeError("x"), TypeError("x"), TypeError("x")])
+    client = p.RetryingChatClient(inner, attempts=3, pause_s=0)
+    with pytest.raises(TypeError):
+        asyncio.run(client.create())
+    assert inner.calls == 3
+
+
+def test_retrying_client_delegates_attributes() -> None:
+    inner = _FlakyInner([])
+    client = p.RetryingChatClient(inner, pause_s=0)
+    assert client.model_info == {"family": "fake"}
