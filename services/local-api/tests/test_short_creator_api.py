@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database
 from laura.short_creator import handlers, orchestrator, providers
@@ -47,9 +48,7 @@ def test_auto_short_invalid_body_422(client: TestClient, db: Database) -> None:
     assert r.status_code == 422
 
 
-def test_auto_short_missing_extra_503(
-    client: TestClient, db: Database, monkeypatch: Any
-) -> None:
+def test_auto_short_missing_extra_503(client: TestClient, db: Database, monkeypatch: Any) -> None:
     aid = _asset(db, _project(db))
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: False)
     r = client.post(f"/assets/{aid}/auto-short", json={"topic": "cats"})
@@ -107,8 +106,13 @@ async def _fake_stream(
     yield {"type": "stage", "stage": "A", "team": "magentic"}
     yield {"type": "agent", "agent": "scout", "text": "searching"}
     yield {
-        "type": "done", "ok": True, "stage": "A", "team": "magentic",
-        "weak": False, "escalated": False, "summary": "",
+        "type": "done",
+        "ok": True,
+        "stage": "A",
+        "team": "magentic",
+        "weak": False,
+        "escalated": False,
+        "summary": "",
     }
 
 
@@ -127,7 +131,7 @@ def test_auto_short_stream_missing_extra_503(
 
 
 def test_auto_short_stream_streams_ndjson_events(
-    client: TestClient, db: Database, monkeypatch: Any
+    client: TestClient, db: Database, settings: Settings, monkeypatch: Any
 ) -> None:
     aid = _asset(db, _project(db))
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
@@ -137,3 +141,17 @@ def test_auto_short_stream_streams_ndjson_events(
     events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
     assert [e["type"] for e in events] == ["stage", "agent", "done"]
     assert events[-1]["ok"] is True
+
+    # Every event ALSO lands in an NDJSON run log (meta line first) — runs are debuggable
+    # after the fact without the chat panel's copy (which dies with the window).
+    logs = sorted((settings.workspace_root / "agent-runs").glob("*.ndjson"))
+    assert logs, "run log file missing"
+    logged = [
+        json.loads(line)
+        for line in logs[-1].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert logged[0]["type"] == "meta"
+    assert logged[0]["asset_id"] == aid
+    assert logged[0]["topic"] == "cats"
+    assert [e["type"] for e in logged[1:]] == ["stage", "agent", "done"]

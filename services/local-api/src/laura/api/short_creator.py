@@ -8,8 +8,10 @@ about *topic* from the asset via the multi-agent escalation ladder. Requires the
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
-from typing import Annotated, Any
+from datetime import UTC, datetime
+from typing import IO, Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -20,6 +22,8 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["short-creator"])
 
@@ -101,13 +105,53 @@ def auto_short_stream(
     config = resolve_from_env()
     topic, target_seconds = body.topic, body.target_seconds
 
+    # Every event is ALSO appended to an NDJSON run log (flushed per line), so a run can be
+    # debugged after the fact — the chat panel's copy dies with the window (live finding:
+    # "paste me the chat ending" was the only way to diagnose a run).
+    log_file: IO[str] | None = None
+    log_dir = request.app.state.settings.workspace_root / "agent-runs"
+    log_path = log_dir / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{asset_id[:8]}.ndjson"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_path.open("a", encoding="utf-8")
+        logger.info("auto-short run log: %s", log_path)
+    except OSError as exc:  # logging must never block the run
+        logger.warning("auto-short run log unavailable (%s): %s", log_path, exc)
+
+    def write_line(event: dict[str, Any]) -> bytes:
+        line = json.dumps(event, ensure_ascii=False)
+        if log_file is not None:
+            try:
+                log_file.write(line + "\n")
+                log_file.flush()
+            except OSError:
+                pass  # never break the stream over a full disk
+        return (line + "\n").encode("utf-8")
+
     async def events() -> AsyncIterator[bytes]:
         try:
-            async for event in run_short_creator_stream(
-                db, config, asset_id=asset_id, topic=topic, target_seconds=target_seconds
-            ):
-                yield (json.dumps(event) + "\n").encode("utf-8")
-        except Exception as exc:  # never leak a raw 500 mid-stream — emit a final error event
-            yield (json.dumps({"type": "error", "message": str(exc)}) + "\n").encode("utf-8")
+            write_line(
+                {
+                    "type": "meta",
+                    "asset_id": asset_id,
+                    "topic": topic,
+                    "target_seconds": target_seconds,
+                    "provider": config.provider,
+                    "agent_model": config.agent_model,
+                }
+            )
+            try:
+                async for event in run_short_creator_stream(
+                    db, config, asset_id=asset_id, topic=topic, target_seconds=target_seconds
+                ):
+                    yield write_line(event)
+            except Exception as exc:  # never leak a raw 500 mid-stream — emit a final error
+                yield write_line({"type": "error", "message": str(exc)})
+        except BaseException:  # client disconnect kills the run — make that visible in the log
+            write_line({"type": "aborted", "reason": "client disconnected"})
+            raise
+        finally:
+            if log_file is not None:
+                log_file.close()
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
