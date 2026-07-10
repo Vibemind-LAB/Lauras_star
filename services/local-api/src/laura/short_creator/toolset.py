@@ -267,7 +267,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         scene_numbers: list[int],
         formats: list[str] | None = None,
         hook_text: str | None = None,
-        fit: str = "crop",
+        fit: str = "blur",
         voiceover_path: str | None = None,
         voiceover_text: str | None = None,
     ) -> dict[str, Any]:
@@ -336,7 +336,7 @@ def build_tool_specs(db: Database) -> list[ToolSpec]:
         candidate_ids: list[str] | None = None,
         captions: bool = True,
         hook_text: str | None = None,
-        fit: str = "crop",
+        fit: str = "blur",
         asset_id: str = "",
         target_seconds: int | None = None,
         max_segments: int | None = None,

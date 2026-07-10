@@ -22,6 +22,7 @@ the center-crop is the deterministic baseline for this task.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -39,6 +40,41 @@ _log = logging.getLogger(__name__)
 # vertical center-crop+scale to 1080×1920).
 _PLAY_W = 1080
 _PLAY_H = 1920
+
+
+def _voiceover_caption_words(
+    voiceover_path: str, script: str, total_frames: int, fps: float
+) -> list[tuple[str, int, int]]:
+    """Caption words for a re-voiced short. Integer frames, end-exclusive.
+
+    Word-accurate from the TTS ``<mp3>.timings.json`` sidecar when present (live finding:
+    evenly-spread captions drift audibly from the spoken voice); otherwise the script words
+    spread evenly across the video (v1 fallback).
+    """
+    timings = Path(str(voiceover_path) + ".timings.json")
+    if timings.is_file() and fps > 0:
+        try:
+            data = json.loads(timings.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        timed: list[tuple[str, int, int]] = []
+        for row in data.get("words") or []:
+            try:
+                text = str(row["text"])
+                start_f = int(round(float(row["start_s"]) * fps))
+                end_f = int(round(float(row["end_s"]) * fps))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start_f >= total_frames:
+                break
+            timed.append((text, start_f, max(start_f + 1, min(end_f, total_frames))))
+        if timed:
+            return timed
+    script_words = [w for w in script.split() if w.strip()]
+    if not script_words or total_frames <= 0:
+        return []
+    step = max(1, total_frames // len(script_words))
+    return [(w, i * step, min((i + 1) * step, total_frames)) for i, w in enumerate(script_words)]
 
 
 def _replace_audio(voice_path: Path, dest: Path) -> None:
@@ -162,12 +198,10 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
 
     caption_ass: str | None = None
     if opts.get("captions", True) and voiceover_path and isinstance(voiceover_text, str):
-        script_words = [w for w in voiceover_text.split() if w.strip()]
-        if script_words and total_frames > 0:
-            step = max(1, total_frames // len(script_words))
-            all_words: list[tuple[str, int, int]] = [
-                (w, i * step, min((i + 1) * step, total_frames)) for i, w in enumerate(script_words)
-            ]
+        all_words: list[tuple[str, int, int]] = _voiceover_caption_words(
+            str(voiceover_path), voiceover_text, total_frames, rate_num / (rate_den or 1)
+        )
+        if all_words:
             lines = group_caption_lines(all_words)
             if lines:
                 play_w, play_h = out_size if vertical else (1920, 1080)

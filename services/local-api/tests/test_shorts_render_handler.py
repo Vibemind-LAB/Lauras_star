@@ -31,9 +31,7 @@ def _ctx(db: SqliteDatabase, export_id: str) -> JobContext:
     )
 
 
-def _seed(
-    tmp_path: Path, *, with_words: bool = True
-) -> tuple[SqliteDatabase, str, str]:
+def _seed(tmp_path: Path, *, with_words: bool = True) -> tuple[SqliteDatabase, str, str]:
     """Project (workspace_root) + 30 fps asset + succeeded run (+ words) + ONE candidate.
 
     Returns (db, candidate_id, asset_id). The candidate covers source frames [0, 30).
@@ -45,12 +43,19 @@ def _seed(
     db.migrate()
 
     project = repos.create_project(
-        db, name="p", rate_num=30, rate_den=1, drop_frame=False,
+        db,
+        name="p",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
         workspace_root=str(workspace),
     )
     asset = repos.create_asset(
-        db, project_id=project["id"], type="video",
-        display_name="a.mp4", source_path=str(workspace / "a.mp4"),
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a.mp4",
+        source_path=str(workspace / "a.mp4"),
     )
     run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="t", config={})
     repos.start_analysis_run(db, run["id"])
@@ -59,27 +64,54 @@ def _seed(
         for i in range(6):
             sf = i * _WORD_FRAMES
             words.append(
-                {"idx": i, "start_sample": sf * 1600, "end_sample": (sf + _WORD_FRAMES) * 1600,
-                 "start_frame": sf, "end_frame": sf + _WORD_FRAMES,
-                 "text": f"word{i}", "confidence": 1.0, "is_punctuation": False}
+                {
+                    "idx": i,
+                    "start_sample": sf * 1600,
+                    "end_sample": (sf + _WORD_FRAMES) * 1600,
+                    "start_frame": sf,
+                    "end_frame": sf + _WORD_FRAMES,
+                    "text": f"word{i}",
+                    "confidence": 1.0,
+                    "is_punctuation": False,
+                }
             )
         repos.insert_segment_with_words(
-            db, asset_id=asset["id"], run_id=run["id"], speaker_id=None,
-            segment={"start_sample": 0, "end_sample": 30 * 1600,
-                     "start_frame": 0, "end_frame": 30, "text": "a", "confidence": 1.0},
+            db,
+            asset_id=asset["id"],
+            run_id=run["id"],
+            speaker_id=None,
+            segment={
+                "start_sample": 0,
+                "end_sample": 30 * 1600,
+                "start_frame": 0,
+                "end_frame": 30,
+                "text": "a",
+                "confidence": 1.0,
+            },
             words=words,
         )
     repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
 
     tl = repos.create_timeline(db, project_id=project["id"], name="rc", kind="rough_cut")
     repos.replace_shorts_candidates(
-        db, project["id"], asset["id"], tl["id"],
-        [{
-            "start_frame": 0, "end_frame_exclusive": 30,
-            "start_boundary": "word", "end_boundary": "word",
-            "score": 0.9, "rejected": False, "reject_reason": None,
-            "score_breakdown": {"hook": 0.5}, "qa_passed": True, "qa_issues": [],
-        }],
+        db,
+        project["id"],
+        asset["id"],
+        tl["id"],
+        [
+            {
+                "start_frame": 0,
+                "end_frame_exclusive": 30,
+                "start_boundary": "word",
+                "end_boundary": "word",
+                "score": 0.9,
+                "rejected": False,
+                "reject_reason": None,
+                "score_breakdown": {"hook": 0.5},
+                "qa_passed": True,
+                "qa_issues": [],
+            }
+        ],
     )
     candidate = repos.list_shorts_candidates_by_asset(db, asset["id"])[0]
     return db, candidate["id"], asset["id"]
@@ -108,9 +140,17 @@ def test_render_calls_renderer_vertical_with_clip_and_captions(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
-        options={"kind": "short", "candidate_id": candidate_id,
-                 "captions": True, "hook_text": "Boom", "loudnorm": True},
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "candidate_id": candidate_id,
+            "captions": True,
+            "hook_text": "Boom",
+            "loudnorm": True,
+        },
     )
 
     result = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
@@ -151,7 +191,10 @@ def test_render_without_words_still_succeeds_no_captions(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
         options={"kind": "short", "candidate_id": candidate_id, "captions": True},
     )
 
@@ -173,7 +216,10 @@ def test_captions_false_skips_caption_build(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
         options={"kind": "short", "candidate_id": candidate_id, "captions": False},
     )
     shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
@@ -190,9 +236,16 @@ def test_reel_fit_option_forwarded_to_renderer(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
-        options={"kind": "short", "candidate_id": candidate_id,
-                 "captions": False, "reel_fit": True},
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "candidate_id": candidate_id,
+            "captions": False,
+            "reel_fit": True,
+        },
     )
     shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
 
@@ -212,7 +265,10 @@ def test_reel_fit_defaults_false_when_not_in_options(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
         options={"kind": "short", "candidate_id": candidate_id, "captions": False},
     )
     shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
@@ -231,9 +287,16 @@ def test_reel_blur_fill_option_forwarded_to_renderer(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
-        options={"kind": "short", "candidate_id": candidate_id,
-                 "captions": False, "reel_blur_fill": True},
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "candidate_id": candidate_id,
+            "captions": False,
+            "reel_blur_fill": True,
+        },
     )
     shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
 
@@ -253,7 +316,10 @@ def test_reel_blur_fill_defaults_false_when_not_in_options(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
         options={"kind": "short", "candidate_id": candidate_id, "captions": False},
     )
     shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
@@ -272,7 +338,10 @@ def test_missing_candidate_sets_export_error_and_raises(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
         options={"kind": "short", "candidate_id": "does-not-exist", "captions": True},
     )
 
@@ -302,37 +371,80 @@ def test_multi_candidate_render_concats_segments_and_offsets_captions(
     for i in range(6):
         sf = 60 + i * _WORD_FRAMES
         words2.append(
-            {"idx": i, "start_sample": sf * 1600, "end_sample": (sf + _WORD_FRAMES) * 1600,
-             "start_frame": sf, "end_frame": sf + _WORD_FRAMES,
-             "text": f"late{i}", "confidence": 1.0, "is_punctuation": False}
+            {
+                "idx": i,
+                "start_sample": sf * 1600,
+                "end_sample": (sf + _WORD_FRAMES) * 1600,
+                "start_frame": sf,
+                "end_frame": sf + _WORD_FRAMES,
+                "text": f"late{i}",
+                "confidence": 1.0,
+                "is_punctuation": False,
+            }
         )
     repos.insert_segment_with_words(
-        db, asset_id=asset_id, run_id=run["id"], speaker_id=None,
-        segment={"start_sample": 60 * 1600, "end_sample": 90 * 1600,
-                 "start_frame": 60, "end_frame": 90, "text": "b", "confidence": 1.0},
+        db,
+        asset_id=asset_id,
+        run_id=run["id"],
+        speaker_id=None,
+        segment={
+            "start_sample": 60 * 1600,
+            "end_sample": 90 * 1600,
+            "start_frame": 60,
+            "end_frame": 90,
+            "text": "b",
+            "confidence": 1.0,
+        },
         words=words2,
     )
     candidate = repos.list_shorts_candidates_by_asset(db, asset_id)[0]
     repos.replace_shorts_candidates(
-        db, asset["project_id"], asset_id, candidate["source_timeline_id"],
+        db,
+        asset["project_id"],
+        asset_id,
+        candidate["source_timeline_id"],
         [
-            {"start_frame": 0, "end_frame_exclusive": 30,
-             "start_boundary": "word", "end_boundary": "word", "score": 0.9,
-             "rejected": False, "reject_reason": None, "score_breakdown": {},
-             "qa_passed": True, "qa_issues": []},
-            {"start_frame": 60, "end_frame_exclusive": 90,
-             "start_boundary": "word", "end_boundary": "word", "score": 0.8,
-             "rejected": False, "reject_reason": None, "score_breakdown": {},
-             "qa_passed": True, "qa_issues": []},
+            {
+                "start_frame": 0,
+                "end_frame_exclusive": 30,
+                "start_boundary": "word",
+                "end_boundary": "word",
+                "score": 0.9,
+                "rejected": False,
+                "reject_reason": None,
+                "score_breakdown": {},
+                "qa_passed": True,
+                "qa_issues": [],
+            },
+            {
+                "start_frame": 60,
+                "end_frame_exclusive": 90,
+                "start_boundary": "word",
+                "end_boundary": "word",
+                "score": 0.8,
+                "rejected": False,
+                "reject_reason": None,
+                "score_breakdown": {},
+                "qa_passed": True,
+                "qa_issues": [],
+            },
         ],
     )
     c1, c2 = repos.list_shorts_candidates_by_asset(db, asset_id)[:2]
     calls = _patch_render(monkeypatch)
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
-        options={"kind": "short", "candidate_ids": [c1["id"], c2["id"]],
-                 "captions": True, "reel_fit": True, "reel_blur_fill": True},
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "candidate_ids": [c1["id"], c2["id"]],
+            "captions": True,
+            "reel_fit": True,
+            "reel_blur_fill": True,
+        },
     )
     out = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
 
@@ -358,10 +470,18 @@ def test_raw_segments_mode_renders_scene_ranges_with_format(
     assert asset is not None
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
-        options={"kind": "short", "asset_id": asset_id,
-                 "segments": [[0, 10], [20, 30]], "captions": False,
-                 "vertical": True, "out_size": [1080, 1080]},
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "asset_id": asset_id,
+            "segments": [[0, 10], [20, 30]],
+            "captions": False,
+            "vertical": True,
+            "out_size": [1080, 1080],
+        },
     )
     out = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
 
@@ -383,7 +503,8 @@ def test_voiceover_mode_uses_script_captions_and_replaces_audio(
     calls = _patch_render(monkeypatch)
     replaced: list[tuple[Path, Path]] = []
     monkeypatch.setattr(
-        shorts_render, "_replace_audio",
+        shorts_render,
+        "_replace_audio",
         lambda voice, dest: replaced.append((voice, dest)),
     )
     asset = repos.get_asset(db, asset_id)
@@ -392,10 +513,17 @@ def test_voiceover_mode_uses_script_captions_and_replaces_audio(
     voice_mp3.write_bytes(b"MP3")
 
     exp = repos.create_export(
-        db, project_id=asset["project_id"], timeline_id=None, format="mp4",
-        options={"kind": "short", "candidate_id": candidate_id, "captions": True,
-                 "voiceover_path": str(voice_mp3),
-                 "voiceover_text": "Volle Energie fuer dein Video"},
+        db,
+        project_id=asset["project_id"],
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "candidate_id": candidate_id,
+            "captions": True,
+            "voiceover_path": str(voice_mp3),
+            "voiceover_text": "Volle Energie fuer dein Video",
+        },
     )
 
     result = shorts_render.handle_shorts_render(_ctx(db, exp["id"]))
@@ -411,3 +539,34 @@ def test_voiceover_mode_uses_script_captions_and_replaces_audio(
 def test_voiceover_replace_audio_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="voiceover file not found"):
         shorts_render._replace_audio(tmp_path / "nope.mp3", tmp_path / "out.mp4")
+
+
+def test_voiceover_caption_words_prefers_timings_sidecar(tmp_path: Path) -> None:
+    # Word-accurate captions from the TTS sidecar (live finding: even spread drifts audibly).
+    import json as _json
+
+    voice = tmp_path / "voice.mp3"
+    voice.write_bytes(b"MP3")
+    (tmp_path / "voice.mp3.timings.json").write_text(
+        _json.dumps(
+            {
+                "words": [
+                    {"text": "Neu", "start_s": 0.5, "end_s": 1.0},
+                    {"text": "Start", "start_s": 1.2, "end_s": 1.8},
+                    {"text": "Ende", "start_s": 99.0, "end_s": 99.5},  # beyond the video
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    words = shorts_render._voiceover_caption_words(str(voice), "Neu Start Ende", 120, 30.0)
+
+    # 0.5s/1.0s -> frames 15..30; 1.2s/1.8s -> 36..54; the 99s word is dropped (>= total).
+    assert words == [("Neu", 15, 30), ("Start", 36, 54)]
+
+
+def test_voiceover_caption_words_falls_back_to_even_spread(tmp_path: Path) -> None:
+    voice = tmp_path / "voice.mp3"  # no sidecar written
+    words = shorts_render._voiceover_caption_words(str(voice), "eins zwei drei", 90, 30.0)
+    assert words == [("eins", 0, 30), ("zwei", 30, 60), ("drei", 60, 90)]

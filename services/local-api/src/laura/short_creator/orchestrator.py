@@ -159,10 +159,12 @@ def _task_directives(asset_id: str, topic: str, target_seconds: int) -> str:
             args.append(f"max_segments={int(count_m.group(1))}")
         if secs_m:
             args.append(f"max_segment_seconds={secs_m.group(1).replace(',', '.')}")
+        # blur fits the WHOLE picture into the format (user feedback: never crop content
+        # away) — the describer-conditional crop was too fragile to leave to the LLM.
+        args.append("fit='blur'")
         parts.append(
             "RENDER PLAN (mandatory): Editor, do NOT pick candidates yourself — call "
-            f"render_short({', '.join(args)}) and reply EDITED export_id=<id>. "
-            "Use fit='blur' if the Describer saw screen content / UI, else fit='crop'."
+            f"render_short({', '.join(args)}) and reply EDITED export_id=<id>."
         )
     if _REVOICE_RE.search(topic):
         parts.append(

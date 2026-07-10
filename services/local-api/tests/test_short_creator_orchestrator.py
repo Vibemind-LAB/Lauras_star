@@ -152,7 +152,7 @@ def test_task_prompt_injects_scene_plan_and_revoice_directives() -> None:
     assert "RENDER PLAN (mandatory)" in task
     assert (
         "render_short(asset_id='a1', target_seconds=60, max_segments=15, "
-        "max_segment_seconds=4)" in task
+        "max_segment_seconds=4, fit='blur')" in task
     )
     assert "RE-VOICE REQUESTED (mandatory)" in task
     assert "synthesize_voiceover(asset_id='a1'" in task
