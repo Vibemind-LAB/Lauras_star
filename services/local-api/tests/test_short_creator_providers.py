@@ -241,21 +241,21 @@ def _status_error(status: int) -> Exception:
 def test_retrying_client_recovers_choices_none_typeerror() -> None:
     # Live finding: 200 + {"error": ...} parses to choices=None -> TypeError in autogen.
     inner = _FlakyInner([TypeError("'NoneType' object is not subscriptable")])
-    client = p.RetryingChatClient(inner, pause_s=0)
+    client = p.RetryingChatClient(inner, pauses=(0,))
     assert asyncio.run(client.create()) == "ok"
     assert inner.calls == 2
 
 
 def test_retrying_client_retries_transient_status() -> None:
     inner = _FlakyInner([_status_error(429), _status_error(503)])
-    client = p.RetryingChatClient(inner, attempts=3, pause_s=0)
+    client = p.RetryingChatClient(inner, pauses=(0, 0))
     assert asyncio.run(client.create()) == "ok"
     assert inner.calls == 3
 
 
 def test_retrying_client_raises_non_transient_immediately() -> None:
     inner = _FlakyInner([_status_error(404)])
-    client = p.RetryingChatClient(inner, pause_s=0)
+    client = p.RetryingChatClient(inner, pauses=(0,))
     with pytest.raises(Exception, match="http 404"):
         asyncio.run(client.create())
     assert inner.calls == 1
@@ -263,7 +263,7 @@ def test_retrying_client_raises_non_transient_immediately() -> None:
 
 def test_retrying_client_exhausts_attempts_and_reraises() -> None:
     inner = _FlakyInner([TypeError("x"), TypeError("x"), TypeError("x")])
-    client = p.RetryingChatClient(inner, attempts=3, pause_s=0)
+    client = p.RetryingChatClient(inner, pauses=(0, 0))
     with pytest.raises(TypeError):
         asyncio.run(client.create())
     assert inner.calls == 3
@@ -271,5 +271,23 @@ def test_retrying_client_exhausts_attempts_and_reraises() -> None:
 
 def test_retrying_client_delegates_attributes() -> None:
     inner = _FlakyInner([])
-    client = p.RetryingChatClient(inner, pause_s=0)
+    client = p.RetryingChatClient(inner, pauses=(0,))
     assert client.model_info == {"family": "fake"}
+
+
+def test_retrying_client_backs_off_exponentially(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Rate-limit buckets need real waiting: default pauses grow 3s -> 10s -> 30s.
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
+    inner = _FlakyInner([TypeError("x"), TypeError("x"), TypeError("x"), TypeError("x")])
+    client = p.RetryingChatClient(inner)  # default pauses
+
+    with pytest.raises(TypeError):
+        asyncio.run(client.create())
+
+    assert slept == [3.0, 10.0, 30.0]
+    assert inner.calls == 4

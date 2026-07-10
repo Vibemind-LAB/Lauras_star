@@ -15,10 +15,13 @@ without the extra installed.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # annotations only — never imported at runtime
     from autogen_core.models import ChatCompletionClient
@@ -144,8 +147,9 @@ def plan_client(config: AgentConfig, *, role: Role = "agent", stage: Stage = "A"
 # Free-tier gateways intermittently answer 200 with an error body and NO ``choices`` — the
 # OpenAI SDK parses that into ``ChatCompletion(choices=None)`` and autogen crashes on
 # ``choices[0]`` (TypeError). One such flake killed a whole team run (live finding).
-_RETRY_ATTEMPTS = 3
-_RETRY_PAUSE_S = 3.0
+# Exponential backoff: free-tier RATE limits (per-minute buckets) need real waiting, not
+# rapid-fire retries — three short retries in 6s all landed inside the same closed bucket.
+_RETRY_PAUSES: tuple[float, ...] = (3.0, 10.0, 30.0)
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
@@ -153,22 +157,32 @@ class RetryingChatClient:
     """Delegating wrapper around a ChatCompletionClient that retries transient failures.
 
     Retries ``create()`` on: TypeError (the choices=None flake above) and HTTP 408/429/5xx
-    (via the exception's ``status_code``). Everything else raises immediately. All other
-    attributes delegate to the wrapped client, so it stays a drop-in for AssistantAgent.
+    (via the exception's ``status_code``), pausing per ``pauses`` between attempts
+    (exponential by default). Every retry is logged so rate-limit storms are visible in the
+    backend log instead of surfacing as a bare TypeError. Everything else raises
+    immediately. All other attributes delegate to the wrapped client, so it stays a drop-in
+    for AssistantAgent.
     """
 
-    def __init__(
-        self, inner: Any, *, attempts: int = _RETRY_ATTEMPTS, pause_s: float = _RETRY_PAUSE_S
-    ) -> None:
+    def __init__(self, inner: Any, *, pauses: tuple[float, ...] = _RETRY_PAUSES) -> None:
         self._inner = inner
-        self._attempts = max(1, attempts)
-        self._pause_s = pause_s
+        self._pauses = pauses
 
     async def create(self, *args: Any, **kwargs: Any) -> Any:
+        attempts = len(self._pauses) + 1
         last: BaseException | None = None
-        for attempt in range(self._attempts):
+        for attempt in range(attempts):
             if attempt:
-                await asyncio.sleep(self._pause_s)
+                pause = self._pauses[attempt - 1]
+                logger.warning(
+                    "model call flaked (attempt %d/%d): %s: %s — retrying in %.0fs",
+                    attempt,
+                    attempts,
+                    type(last).__name__,
+                    str(last)[:200],
+                    pause,
+                )
+                await asyncio.sleep(pause)
             try:
                 return await self._inner.create(*args, **kwargs)
             except TypeError as exc:  # choices=None error body from a flaky free tier
@@ -179,6 +193,7 @@ class RetryingChatClient:
                     raise
                 last = exc
         assert last is not None  # attempts >= 1 → a failure landed here
+        logger.warning("model call failed after %d attempts: %s", attempts, str(last)[:200])
         raise last
 
     def __getattr__(self, name: str) -> Any:
