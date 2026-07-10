@@ -266,6 +266,17 @@ def _export_voice_alignment(db: Database, export: dict[str, Any]) -> dict[str, A
     aggregate: aligned only when every segment keeps its words intact.
     """
     opts: dict[str, Any] = export.get("options") or {}
+    if opts.get("voiceover_path"):
+        # The original audio was REPLACED by a synthesized voiceover — clipped original
+        # words are inaudible, so word-boundary alignment is not applicable (live finding:
+        # the first fully successful re-voiced short was false-flagged weak over this).
+        return {
+            "ok": True,
+            "export_id": str(export["id"]),
+            "aligned": True,
+            "clipped_words": [],
+            "note": "audio replaced by voiceover — original-word alignment not applicable",
+        }
     ranges: list[tuple[int, int]] = []
     asset_id = str(opts.get("asset_id") or "")
     for cid in opts.get("candidate_ids") or []:

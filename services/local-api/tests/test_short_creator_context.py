@@ -289,6 +289,27 @@ def test_check_voice_alignment_accepts_export_id(db: Database) -> None:
     assert out["aligned"] is False
     assert out["clipped_words"] == ["welt"]
 
+    # Re-voiced exports: the original audio is gone, so clipped ORIGINAL words are
+    # inaudible — alignment must report fine instead of false-flagging weak (live finding
+    # on the first fully successful re-voiced short).
+    exp2 = repos.create_export(
+        db,
+        project_id=str(project["id"]),
+        timeline_id=None,
+        format="mp4",
+        options={
+            "kind": "short",
+            "asset_id": asset["id"],
+            "segments": [[0, 30]],
+            "voiceover_path": "/vo/x.mp3",
+        },
+    )
+    out2 = context.check_voice_alignment(db, str(exp2["id"]))
+    assert out2["ok"] is True
+    assert out2["aligned"] is True
+    assert out2["clipped_words"] == []
+    assert "voiceover" in out2["note"]
+
 
 # --- describe_moment: injectable, graceful --------------------------------------------------
 
