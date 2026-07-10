@@ -480,6 +480,13 @@ def test_tool_extract_shorts_ok(tmp_path: Path) -> None:
     assert job is not None
     assert job["kind"] == "shorts.extract"
 
+    # Frame embeddings are chained automatically (search_visual_moments/score_visual_hook
+    # were permanently dead because nothing ever enqueued this job — live finding).
+    embed_job = repos.get_job(db, result["embed_job_id"])
+    assert embed_job is not None
+    assert embed_job["kind"] == "shorts.embed_frames"
+    assert json.loads(embed_job["payload_json"])["asset_id"] == asset["id"]
+
 
 def test_tool_extract_shorts_asset_not_found(tmp_path: Path) -> None:
     """tool_extract_shorts returns ok=False with 'asset not found' when asset missing."""

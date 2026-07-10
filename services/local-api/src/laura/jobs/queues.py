@@ -10,10 +10,10 @@ with a queue subset (``CPU_QUEUES`` or ``GPU_QUEUES``) so GPU stages land on GPU
 
 from __future__ import annotations
 
-QUEUE_INGEST = "ingest.io"          # ffprobe / IO-bound import
-QUEUE_PROXY = "proxy.cpu"           # proxy / audio / waveform (CPU, ffmpeg)
+QUEUE_INGEST = "ingest.io"  # ffprobe / IO-bound import
+QUEUE_PROXY = "proxy.cpu"  # proxy / audio / waveform (CPU, ffmpeg)
 QUEUE_ANALYSIS_CPU = "analysis.scene"  # scene detection + orchestrator (CPU)
-QUEUE_ANALYSIS_GPU = "analysis.gpu"    # ASR / align / diarize / embeddings (GPU)
+QUEUE_ANALYSIS_GPU = "analysis.gpu"  # ASR / align / diarize / embeddings (GPU)
 QUEUE_EXPORT = "export"
 
 CPU_QUEUES: tuple[str, ...] = (QUEUE_INGEST, QUEUE_PROXY, QUEUE_ANALYSIS_CPU, QUEUE_EXPORT)
@@ -37,6 +37,7 @@ _STAGE_QUEUE: dict[str, str] = {
     "demo.analyze": QUEUE_ANALYSIS_CPU,
     "export.render": QUEUE_EXPORT,
     "shorts.render": QUEUE_EXPORT,
+    "shorts.embed_frames": QUEUE_ANALYSIS_GPU,  # CLIP frame embeddings (visual search/hook)
     "short_creator.run": QUEUE_ANALYSIS_CPU,  # NL-agent orchestration (CPU; calls local Ollama)
 }
 

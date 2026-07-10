@@ -150,6 +150,25 @@ def test_rank_texts_by_topic_overlap() -> None:
     assert ranked[0][1] > ranked[1][1] > 0.0
 
 
+def test_rank_scenes_by_topic_hints_on_style_words(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "energetisch" shares no tokens with any transcript — the agent must get a usable
+    # hint instead of a silent empty list (live finding).
+    monkeypatch.setattr(
+        context,
+        "scene_transcripts",
+        lambda _db, _aid: {
+            "ok": True,
+            "scenes": [{"scene_number": 1, "text": "wir bauen agenten und dashboards"}],
+        },
+    )
+    out = context.rank_scenes_by_topic(db, "a1", "energetisch")
+    assert out["ok"] is True
+    assert out["ranked"] == []
+    assert "CONTENT topic" in out["hint"]
+
+
 def test_rank_scenes_by_topic_graceful_without_scenes(db: Database) -> None:
     from laura.db import repos
 
@@ -370,6 +389,8 @@ def test_openrouter_describe_posts_frames_and_returns_text(
     assert seen["headers"] == {"Authorization": "Bearer sk-or-x"}
     payload = seen["payload"]
     assert payload["model"] == "v/free-model"
+    # Reasoning VLMs need headroom: 200 tokens produced empty content (live finding).
+    assert payload["max_tokens"] >= 1024
     content = payload["messages"][0]["content"]
     assert content[0] == {"type": "text", "text": "Was ist zu sehen?"}
     assert len(content) == 3  # prompt + 2 frames
@@ -394,6 +415,23 @@ def test_openrouter_describe_error_returns_empty(monkeypatch: pytest.MonkeyPatch
         describe, "_http_json", lambda *a, **kw: {"error": {"message": "rate limited"}}
     )
     assert backend.describe([b"F"], "p") == ""
+
+
+def test_openrouter_describe_retries_empty_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Reasoning VLMs can burn the whole token budget before answering: 200 OK, choices
+    # present, content "" — retried once, then degrades to "" (logged with finish_reason).
+    monkeypatch.setattr(describe, "_sleep", lambda _s: None)
+    calls: list[int] = []
+
+    def fake_http(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+
+    monkeypatch.setattr(describe, "_http_json", fake_http)
+    backend = describe.OpenRouterDescribeBackend(api_key="k", model="v/m")
+
+    assert backend.describe([b"F"], "p") == ""
+    assert len(calls) == 2
 
 
 def test_openrouter_describe_retries_transient_error_once(

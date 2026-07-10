@@ -213,7 +213,7 @@ def rank_scenes_by_topic(db: Database, asset_id: str, topic: str, k: int = 10) -
     if not scenes.get("ok"):
         return {"ok": False, "reason": scenes.get("reason", "no scenes"), "ranked": []}
     ranked = _rank_texts(topic, [(s["scene_number"], str(s["text"])) for s in scenes["scenes"]])
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "topic": topic,
         "ranked": [
@@ -221,6 +221,13 @@ def rank_scenes_by_topic(db: Database, asset_id: str, topic: str, k: int = 10) -
             for (n, score, snippet) in ranked[: max(1, int(k))]
         ],
     }
+    if not result["ranked"] and scenes["scenes"]:
+        # Style words ("energetisch") share no tokens with any transcript — tell the agent
+        # what to do instead of handing it a silent empty list (live finding).
+        result["hint"] = (
+            "no lexical overlap — pass a CONTENT topic (what the video is about), not style words"
+        )
+    return result
 
 
 def _voice_alignment(

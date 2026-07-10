@@ -136,7 +136,9 @@ class OpenRouterDescribeBackend:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": 200,
+            # Reasoning VLMs burn budget on hidden reasoning BEFORE the answer: 200 tokens
+            # produced empty content with ok=True (live finding) — give them headroom.
+            "max_tokens": 1024,
             "temperature": 0,
         }
         # Free-tier endpoints are flaky (observed live: 200 + upstream 504 error body on one
@@ -166,6 +168,11 @@ class OpenRouterDescribeBackend:
             text = str(message.get("content") or "").strip()
             if text:
                 return text
+            logger.warning(
+                "openrouter describe empty content (finish_reason=%s model=%s)",
+                choices[0].get("finish_reason"),
+                self.model,
+            )
         return ""  # never block the pipeline on a model hiccup
 
 

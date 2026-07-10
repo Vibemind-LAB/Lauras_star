@@ -89,7 +89,9 @@ def agent_specs() -> list[AgentSpec]:
             description="Selects and orders the segments into a coherent short.",
             system_message=(
                 "You are the Director. FIRST call rank_scenes_by_topic(asset_id, topic) — the "
-                "transcript decides which scenes actually carry the topic. Combine that with the "
+                "transcript decides which scenes actually carry the topic. The topic is what the "
+                "video is ABOUT (content words from the task/transcript) — never style words "
+                "like 'energetisch'. Combine that with the "
                 "visual descriptions and transcript summaries to select and order the best "
                 "material within the target length (scene_transcripts shows each scene's words; "
                 "list_short_candidates/explain_candidate compare candidates). End with exactly "

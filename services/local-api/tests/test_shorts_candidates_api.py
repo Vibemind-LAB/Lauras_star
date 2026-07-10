@@ -54,9 +54,7 @@ def _seed_asset(db: SqliteDatabase, *, succeeded: bool) -> str:
             "UPDATE media_assets SET rate_num=30, rate_den=1, duration_frames=? WHERE id=?",
             (30 * _WORD_FRAMES, asset["id"]),
         )
-    run = repos.create_analysis_run(
-        db, asset_id=asset["id"], pipeline_version="t", config={}
-    )
+    run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="t", config={})
     repos.start_analysis_run(db, run["id"])
     if not succeeded:
         return str(asset["id"])
@@ -111,6 +109,11 @@ def test_extract_then_list(tmp_path: Path) -> None:
     body = r.json()
     assert body["job_id"]
     assert body["analysis_run_id"]
+
+    # The frame-embedding job is chained automatically (graceful no-op without a visual
+    # backend) — visual search/hook tools were dead because nothing ever enqueued it.
+    kinds = {j["kind"] for j in repos.list_jobs(db, limit=20)}
+    assert "shorts.embed_frames" in kinds
 
     _drain(runner)
 

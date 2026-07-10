@@ -305,17 +305,31 @@ def tool_extract_shorts(
         idempotency_key=f"shorts:{asset_id}:{run['id']}",
         pipeline_version=PIPELINE_VERSION,
     )
+    # Frame embeddings power search_visual_moments / score_visual_hook, but nothing ever
+    # enqueued the job (live finding: every agent run saw "no frame embeddings"). Chain it
+    # here — idempotent per run, independent of the extract result, graceful without a
+    # visual backend.
+    embed_job_id = enqueue(
+        db,
+        queue=queue_for("shorts.embed_frames"),
+        kind="shorts.embed_frames",
+        payload={"asset_id": asset_id},
+        idempotency_key=f"embed:{asset_id}:{run['id']}",
+        pipeline_version=PIPELINE_VERSION,
+    )
     logger.debug(
-        "tool_extract_shorts: asset_id=%r analysis_run_id=%r job_id=%r",
+        "tool_extract_shorts: asset_id=%r analysis_run_id=%r job_id=%r embed_job_id=%r",
         asset_id,
         run["id"],
         job_id,
+        embed_job_id,
     )
     return {
         "ok": True,
         "asset_id": asset_id,
         "analysis_run_id": run["id"],
         "job_id": job_id,
+        "embed_job_id": embed_job_id,
     }
 
 

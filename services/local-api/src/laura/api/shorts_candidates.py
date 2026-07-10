@@ -67,6 +67,16 @@ def extract_shorts(
         idempotency_key=f"shorts:{asset_id}:{run['id']}",
         pipeline_version=PIPELINE_VERSION,
     )
+    # Chain the frame embeddings (visual search / hook scoring) — idempotent per run,
+    # graceful without a visual backend; nothing else enqueues this job.
+    enqueue(
+        db,
+        queue=queue_for("shorts.embed_frames"),
+        kind="shorts.embed_frames",
+        payload={"asset_id": asset_id},
+        idempotency_key=f"embed:{asset_id}:{run['id']}",
+        pipeline_version=PIPELINE_VERSION,
+    )
     return ExtractShortsAccepted(job_id=job_id, analysis_run_id=run["id"])
 
 
