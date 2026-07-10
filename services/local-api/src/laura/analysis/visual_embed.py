@@ -125,9 +125,7 @@ class FastEmbedImageEmbedder:
             try:
                 from fastembed import ImageEmbedding
             except Exception as exc:  # pragma: no cover - exercised only without extra
-                raise RuntimeError(
-                    "visual extra not installed (uv sync --extra semantic)"
-                ) from exc
+                raise RuntimeError("visual extra not installed (uv sync --extra semantic)") from exc
             self._model = ImageEmbedding(model_name=self.name)
         return self._model
 
@@ -138,9 +136,7 @@ class FastEmbedImageEmbedder:
         try:
             from PIL import Image
         except Exception as exc:  # pragma: no cover - exercised only without extra
-            raise RuntimeError(
-                "visual extra not installed (uv sync --extra semantic)"
-            ) from exc
+            raise RuntimeError("visual extra not installed (uv sync --extra semantic)") from exc
         model = self._ensure_model()
         images = [Image.fromarray(np.asarray(f, dtype=np.uint8)) for f in frames]
         vectors = list(model.embed(images))
@@ -194,9 +190,7 @@ class FastEmbedClipTextEmbedder:
             try:
                 from fastembed import TextEmbedding
             except Exception as exc:  # pragma: no cover - exercised only without extra
-                raise RuntimeError(
-                    "visual extra not installed (uv sync --extra semantic)"
-                ) from exc
+                raise RuntimeError("visual extra not installed (uv sync --extra semantic)") from exc
             self._model = TextEmbedding(model_name=self.name)
         return self._model
 
@@ -217,6 +211,12 @@ class FastEmbedClipTextEmbedder:
 RgbFrameLoader = Callable[["Path | str", "list[int]", int, int], "list[np.ndarray]"]
 
 
+# ffmpeg's expression parser cannot take arbitrarily long select chains: a 14.6-min video
+# sampled at ~1fps needs 900+ eq() terms (~15k chars) and died with ENOMEM (live finding).
+# Decode in batches instead; each batch stops reading once its last frame is emitted.
+_SELECT_BATCH = 100
+
+
 def load_rgb_frames_ffmpeg(
     video: Path | str,
     frames: list[int],
@@ -227,25 +227,38 @@ def load_rgb_frames_ffmpeg(
 
     Mirrors :func:`laura.analysis.eval_cut.load_gray_frames_ffmpeg` but selects a list of
     (non-consecutive) frame indices and decodes ``rgb24`` (3 bytes/px). ffmpeg emits the
-    selected frames in increasing source order; this returns them in that order. Empty
-    index list → ``[]``.
+    selected frames in increasing source order; batches of ascending indices concatenate
+    in that same order. Empty index list → ``[]``.
     """
     if not frames:
         return []
-    # select='eq(n\,F1)+eq(n\,F2)+…' — pass each requested frame through.
-    terms = "+".join(f"eq(n\\,{int(f)})" for f in frames)
-    cmd = [
-        "ffmpeg", "-v", "error", "-i", str(video),
-        "-vf", f"select='{terms}',scale={w}:{h},format=rgb24",
-        "-vsync", "0", "-frames:v", str(len(frames)), "-f", "rawvideo", "-",
-    ]
-    out = subprocess.run(cmd, capture_output=True, check=True).stdout  # noqa: S603
     frame_bytes = w * h * 3
     decoded: list[np.ndarray] = []
-    for off in range(0, len(out) - frame_bytes + 1, frame_bytes):
-        decoded.append(
-            np.frombuffer(out[off : off + frame_bytes], dtype=np.uint8).reshape(h, w, 3)
-        )
+    for start in range(0, len(frames), _SELECT_BATCH):
+        batch = frames[start : start + _SELECT_BATCH]
+        # select='eq(n\,F1)+eq(n\,F2)+…' — pass each requested frame through.
+        terms = "+".join(f"eq(n\\,{int(f)})" for f in batch)
+        cmd = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(video),
+            "-vf",
+            f"select='{terms}',scale={w}:{h},format=rgb24",
+            "-vsync",
+            "0",
+            "-frames:v",
+            str(len(batch)),
+            "-f",
+            "rawvideo",
+            "-",
+        ]
+        out = subprocess.run(cmd, capture_output=True, check=True).stdout  # noqa: S603
+        for off in range(0, len(out) - frame_bytes + 1, frame_bytes):
+            decoded.append(
+                np.frombuffer(out[off : off + frame_bytes], dtype=np.uint8).reshape(h, w, 3)
+            )
     return decoded
 
 
@@ -347,9 +360,7 @@ def handle_embed_frames(
 
     idx = sample_frame_indices(total_frames, rate_num, rate_den, boundaries)
 
-    emb: Embedder = embedder or (
-        SidecarImageEmbedder() if sidecar_ok else FastEmbedImageEmbedder()
-    )
+    emb: Embedder = embedder or (SidecarImageEmbedder() if sidecar_ok else FastEmbedImageEmbedder())
     store = SqliteVectorStore(db)
 
     if not idx:
@@ -389,7 +400,11 @@ def handle_embed_frames(
 
     _log.info(
         "shorts.embed_frames asset=%s run=%s frames=%d model=%s dims=%d",
-        asset_id, run_id, len(items), emb.name, emb.dims,
+        asset_id,
+        run_id,
+        len(items),
+        emb.name,
+        emb.dims,
     )
     return {
         "ok": True,

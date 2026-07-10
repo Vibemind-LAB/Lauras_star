@@ -41,9 +41,7 @@ class FakeEmbedder:
 
     def embed_frames(self, frames: list[np.ndarray]) -> np.ndarray:
         # Row i = [i, mean(frame_i), 0, 1]; deterministic and shape-correct.
-        rows = [
-            [float(i), float(np.mean(f)), 0.0, 1.0] for i, f in enumerate(frames)
-        ]
+        rows = [[float(i), float(np.mean(f)), 0.0, 1.0] for i, f in enumerate(frames)]
         return np.asarray(rows, dtype=np.float32).reshape(len(frames), self.dims)
 
 
@@ -56,6 +54,44 @@ def _short_loader(video: Path | str, frames: list[int], w: int, h: int) -> list[
     """Decoder that yields one fewer frame than requested (EOF truncation case)."""
     full = _fake_loader(video, frames, w, h)
     return full[:-1] if full else full
+
+
+# ---------------------------------------------------------------------------
+# RGB loader: batched ffmpeg selects
+# ---------------------------------------------------------------------------
+
+
+def test_load_rgb_frames_batches_large_selects(monkeypatch: Any) -> None:
+    # 900+ eq() terms in ONE select chain killed ffmpeg with ENOMEM (live finding) —
+    # the loader must decode in batches and preserve global frame order.
+    from laura.analysis import visual_embed as ve
+
+    calls: list[list[str]] = []
+    counter = {"n": 0}
+    frame_bytes = ve.FRAME_W * ve.FRAME_H * 3
+
+    def fake_run(cmd: list[str], capture_output: bool = True, check: bool = True) -> Any:
+        calls.append(cmd)
+        n_terms = cmd[cmd.index("-vf") + 1].count("eq(n")
+        chunks: list[bytes] = []
+        for _ in range(n_terms):
+            chunks.append(bytes([counter["n"] % 256]) * frame_bytes)
+            counter["n"] += 1
+
+        class _Result:
+            stdout = b"".join(chunks)
+
+        return _Result()
+
+    monkeypatch.setattr(ve.subprocess, "run", fake_run)
+    frames = list(range(0, 250 * 30, 30))  # 250 sampled indices (a long video)
+
+    out = ve.load_rgb_frames_ffmpeg("v.mp4", frames)
+
+    assert [c[c.index("-vf") + 1].count("eq(n") for c in calls] == [100, 100, 50]
+    assert len(out) == 250
+    # Global order preserved across batches: frame i was filled with value i % 256.
+    assert all(int(out[i][0, 0, 0]) == i % 256 for i in range(250))
 
 
 # ---------------------------------------------------------------------------
