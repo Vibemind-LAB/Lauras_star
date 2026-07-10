@@ -276,18 +276,44 @@ def test_retrying_client_delegates_attributes() -> None:
 
 
 def test_retrying_client_backs_off_exponentially(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Rate-limit buckets need real waiting: default pauses grow 3s -> 10s -> 30s.
+    # Rate-limit buckets need real waiting: default pauses grow up to 2 minutes (observed
+    # 429s carry "reset after 2m 8s" — shorter schedules never left the closed bucket).
     slept: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
 
     monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
-    inner = _FlakyInner([TypeError("x"), TypeError("x"), TypeError("x"), TypeError("x")])
+    inner = _FlakyInner([TypeError("x") for _ in range(5)])
     client = p.RetryingChatClient(inner)  # default pauses
 
     with pytest.raises(TypeError):
         asyncio.run(client.create())
 
-    assert slept == [3.0, 10.0, 30.0]
-    assert inner.calls == 4
+    assert slept == [5.0, 20.0, 60.0, 120.0]
+    assert inner.calls == 5
+
+
+def test_retrying_client_uses_server_reset_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The 429 body says exactly when the bucket reopens — wait THAT (+2s) instead of the
+    # fixed schedule.
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
+    inner = _FlakyInner([_status_error(429)])
+    inner.errors[0] = Exception("Rate limit exceeded (reset after 1m 4s)")
+    inner.errors[0].status_code = 429  # type: ignore[attr-defined]
+    client = p.RetryingChatClient(inner, pauses=(5.0,))
+
+    assert asyncio.run(client.create()) == "ok"
+    assert slept == [66.0]  # 64s hint + 2s margin
+
+
+def test_pause_from_error_parses_hints() -> None:
+    assert p._pause_from_error("reset after 2m 8s", 5.0) == 130.0
+    assert p._pause_from_error("reset after 45s", 5.0) == 47.0
+    assert p._pause_from_error("reset after 10m 0s", 5.0) == p._RESET_PAUSE_CAP_S  # capped
+    assert p._pause_from_error("no hint here", 5.0) == 5.0

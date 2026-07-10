@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -147,10 +148,26 @@ def plan_client(config: AgentConfig, *, role: Role = "agent", stage: Stage = "A"
 # Free-tier gateways intermittently answer 200 with an error body and NO ``choices`` — the
 # OpenAI SDK parses that into ``ChatCompletion(choices=None)`` and autogen crashes on
 # ``choices[0]`` (TypeError). One such flake killed a whole team run (live finding).
-# Exponential backoff: free-tier RATE limits (per-minute buckets) need real waiting, not
-# rapid-fire retries — three short retries in 6s all landed inside the same closed bucket.
-_RETRY_PAUSES: tuple[float, ...] = (3.0, 10.0, 30.0)
+# Exponential backoff: free-tier RATE limits need real waiting — observed 429s carry
+# "reset after 2m 8s", so the ladder must be able to outlast ~2-minute buckets.
+_RETRY_PAUSES: tuple[float, ...] = (5.0, 20.0, 60.0, 120.0)
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+_RESET_HINT = re.compile(r"reset after (?:(\d+)m\s*)?(\d+)s")
+_RESET_PAUSE_CAP_S = 150.0
+
+
+def _pause_from_error(error_text: str, fallback: float) -> float:
+    """The pause before the next retry: the server's own reset hint when present.
+
+    OpenRouter 429 bodies say "reset after 2m 8s" — waiting exactly that (+2s, capped)
+    beats any fixed schedule. Without a hint, *fallback* (the exponential step) is used.
+    """
+    m = _RESET_HINT.search(error_text)
+    if m is None:
+        return fallback
+    minutes = int(m.group(1) or 0)
+    seconds = int(m.group(2))
+    return min(float(minutes * 60 + seconds) + 2.0, _RESET_PAUSE_CAP_S)
 
 
 class RetryingChatClient:
@@ -173,7 +190,7 @@ class RetryingChatClient:
         last: BaseException | None = None
         for attempt in range(attempts):
             if attempt:
-                pause = self._pauses[attempt - 1]
+                pause = _pause_from_error(str(last), self._pauses[attempt - 1])
                 logger.warning(
                     "model call flaked (attempt %d/%d): %s: %s — retrying in %.0fs",
                     attempt,
