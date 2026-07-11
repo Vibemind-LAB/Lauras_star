@@ -312,6 +312,36 @@ def test_retrying_client_uses_server_reset_hint(monkeypatch: pytest.MonkeyPatch)
     assert slept == [66.0]  # 64s hint + 2s margin
 
 
+def test_retrying_client_retries_empty_content_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reasoning models sometimes return EVERYTHING in hidden reasoning with empty content —
+    # a whole graph run of empty agent replies (live finding). Empty content = flake.
+    from types import SimpleNamespace
+
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
+
+    class _EmptyThenText:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def create(self, *args: object, **kwargs: object) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(content="   ")
+            return SimpleNamespace(content="echte Antwort")
+
+    inner = _EmptyThenText()
+    client = p.RetryingChatClient(inner, pauses=(0.0,))
+
+    result = asyncio.run(client.create())
+    assert result.content == "echte Antwort"
+    assert inner.calls == 2
+
+
 def test_pause_from_error_parses_hints() -> None:
     assert p._pause_from_error("reset after 2m 8s", 5.0) == 130.0
     assert p._pause_from_error("reset after 45s", 5.0) == 47.0

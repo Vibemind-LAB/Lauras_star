@@ -201,7 +201,15 @@ class RetryingChatClient:
                 )
                 await asyncio.sleep(pause)
             try:
-                return await self._inner.create(*args, **kwargs)
+                result = await self._inner.create(*args, **kwargs)
+                content = getattr(result, "content", None)
+                if isinstance(content, str) and not content.strip():
+                    # Reasoning models sometimes put EVERYTHING into hidden reasoning and
+                    # return empty content (live finding: a whole graph run of empty agent
+                    # replies — no VOICEOVER, no EDITED, weak). Treat as a flake.
+                    last = RuntimeError("empty completion content (reasoning-only reply)")
+                    continue
+                return result
             except TypeError as exc:  # choices=None error body from a flaky free tier
                 last = exc
             except Exception as exc:
