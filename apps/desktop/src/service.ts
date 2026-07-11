@@ -88,7 +88,9 @@ async function waitForHealth(baseUrl: string, token: string, timeoutMs = 30000):
  * for it to be healthy, and return its connection info plus a stop handle.
  */
 export async function startService(): Promise<{ info: ServiceInfo; stop: () => void }> {
-  const token = randomUUID();
+  // Dev override: a preset LAURA_TOKEN lets external tooling (headless test drivers,
+  // agent runs from a terminal) talk to this instance's API; default stays a random UUID.
+  const token = process.env.LAURA_TOKEN ?? randomUUID();
   const baseUrl = `http://127.0.0.1:${PORT}`;
   // Dev override: an existing LAURA_WORKSPACE env points the app at another workspace
   // (e.g. a live-test one) without touching the default userData location.
