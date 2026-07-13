@@ -874,7 +874,7 @@ def build_production_tool_specs(
                 checks=checks,
             )
             board.save("render_report", report)
-            ok = export_ready and all(c.ok for c in checks)
+            ok = all(c.ok for c in checks)
             return {"ok": ok, "export_id": export_id, "checks": [c.model_dump() for c in checks]}
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
@@ -910,11 +910,11 @@ def build_production_tool_specs(
                 if at_seconds is not None
                 else [1.0, report.video_s / 2, max(0.0, report.video_s - 1.5)]
             )
-            frames = _grab_video_frames(Path(str(path)), times)
-            notes = [
-                {"at_s": t, "note": backend.describe([frame], _QA_PROMPT)}
-                for t, frame in zip(times, frames, strict=False)
-            ]
+            notes: list[dict[str, Any]] = []
+            for t in times:
+                frame = _grab_video_frames(Path(str(path)), [t])
+                if frame:
+                    notes.append({"at_s": t, "note": backend.describe(frame, _QA_PROMPT)})
             return {"ok": True, "notes": notes}
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

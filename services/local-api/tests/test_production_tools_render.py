@@ -409,11 +409,18 @@ def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.Monkey
         {"at_s": 3.0, "note": "note for frame@3.0"},
         {"at_s": 4.5, "note": "note for frame@4.5"},
     ]
-    assert grab_calls == [(Path(export_path), [1.0, 3.0, 4.5])]
+    # Per-timestamp grabs: 3 separate calls
+    assert grab_calls == [
+        (Path(export_path), [1.0]),
+        (Path(export_path), [3.0]),
+        (Path(export_path), [4.5]),
+    ]
 
+    grab_calls.clear()
     out2 = specs["review_export"].func(at_seconds=[2.0])
     assert out2["ok"] is True
     assert out2["notes"] == [{"at_s": 2.0, "note": "note for frame@2.0"}]
+    assert grab_calls == [(Path(export_path), [2.0])]
 
     # No configured describe backend -> degrade instead of blocking the QA reviewer. Guard
     # against a host env that has a VLM configured (mirrors test_production_tools_review.py's
@@ -430,6 +437,79 @@ def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.Monkey
     degraded = specs_no_backend["review_export"].func()
 
     assert degraded == {"ok": True, "notes": [], "degraded": True}
+
+
+def test_review_export_skips_failed_frame_grabs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify per-timestamp grabs: a failed grab in the middle doesn't mislabel remaining
+    frames (regression test for the zip-pairing bug)."""
+    db, asset_id = _seed_asset(tmp_path)
+    board = _board(tmp_path, asset_id)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    exp = repos.create_export(
+        db, project_id=str(asset["project_id"]), timeline_id=None, format="mp4"
+    )
+    export_path = str(tmp_path / "short.mp4")
+    repos.set_export_done(db, exp["id"], path=export_path, size_bytes=42)
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id=exp["id"],
+            video_s=6.0,
+            voice_s=5.0,
+            width=1080,
+            height=1920,
+            checks=[RenderCheck(name="export_ready", ok=True)],
+        ),
+    )
+
+    grab_calls: list[tuple[Path, list[float]]] = []
+
+    def _fake_grab_selective(path: Path, at_seconds: list[float]) -> list[bytes]:
+        """Return [] for the middle timestamp (3.0), frame for others."""
+        grab_calls.append((path, list(at_seconds)))
+        result = []
+        for t in at_seconds:
+            if abs(t - 3.0) < 0.001:  # Skip middle timestamp
+                pass
+            else:
+                result.append(f"frame@{t}".encode())
+        return result
+
+    monkeypatch.setattr(production_tools, "_grab_video_frames", _fake_grab_selective)
+
+    call_count = [0]
+
+    class _VlmWithCounter:
+        def available(self) -> bool:
+            return True
+
+        def describe(self, frames: list[bytes], prompt: str) -> str:
+            call_count[0] += 1
+            assert len(frames) == 1
+            return f"note#{call_count[0]} for {frames[0].decode()}"
+
+    deps = ProductionDeps(describe_backend=_VlmWithCounter())
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["review_export"].func(at_seconds=[1.0, 3.0, 4.5])
+
+    assert out["ok"] is True
+    # Only 2 notes: first and last timestamps (middle failed grab is skipped, never mislabeled)
+    assert len(out["notes"]) == 2
+    assert out["notes"][0]["at_s"] == 1.0
+    assert out["notes"][0]["note"] == "note#1 for frame@1.0"
+    assert out["notes"][1]["at_s"] == 4.5
+    assert out["notes"][1]["note"] == "note#2 for frame@4.5"
+    # Verify per-timestamp grabs: 3 separate calls
+    assert len(grab_calls) == 3
+    assert grab_calls[0] == (Path(export_path), [1.0])
+    assert grab_calls[1] == (Path(export_path), [3.0])
+    assert grab_calls[2] == (Path(export_path), [4.5])
 
 
 def test_save_qa_report_validates(tmp_path: Path) -> None:
