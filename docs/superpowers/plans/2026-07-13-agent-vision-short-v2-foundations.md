@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Slice 1+2 der Spec [2026-07-13-agent-vision-short-v2-design.md](../specs/2026-07-13-agent-vision-short-v2-design.md): das versionierte **Production Board** (Schemas, Store, Invalidierung, Revert, Resume) und der Renderer-Fit-Modus **`zoom_hybrid`** (voll/Blur → geeaster Push in die ROI) — beides LLM-frei, voll unit-testbar.
+**Goal:** Slice 1+2 der Spec [2026-07-13-agent-vision-short-v2-design.md](../specs/2026-07-13-agent-vision-short-v2-design.md): das versionierte **Production Board** (Schemas, Store, Invalidierung, Revert, Resume) und der Renderer-Fit-Modus **`zoom_hybrid`** (voll/Blur → xfade-Dissolve auf statisches ROI-Fenster) — beides LLM-frei, voll unit-testbar.
 
-**Architecture:** Board = reiner Datei-Store (`board_models.py` pydantic-Schemas + `board.py` Store mit append-only `versions/`). Zoom = reine Mathematik + Filtergraph-Builder in `laura/render/zoom.py`; `render_clips_mp4` bekommt einen `zoom_specs`-Zweig (pro Segment: Blur-Voll-Phase, `xfade` in einen animierten `crop`-Push); `shorts_render`-Handler und `tool_render_segments` reichen eine `zoom`-Option durch.
+**Architecture:** Board = reiner Datei-Store (`board_models.py` pydantic-Schemas + `board.py` Store mit append-only `versions/`). Zoom = reine Mathematik + Filtergraph-Builder in `laura/render/zoom.py`; `render_clips_mp4` bekommt einen `zoom_specs`-Zweig (pro Segment: Blur-Voll-Phase, `xfade`-Dissolve auf statischen `crop` des ROI-Fensters); `shorts_render`-Handler und `tool_render_segments` reichen eine `zoom`-Option durch.
 
 **Tech Stack:** Python 3.11 · uv · pytest · pydantic v2 · ffmpeg `filter_complex` (bestehende Muster in `laura/render/mp4.py` und `laura/render/reel.py`).
 
@@ -12,7 +12,7 @@
 
 - Alle Schnittdaten in **Ganzzahl-Frames, end-exclusive** (`end_frame_exclusive > start_frame`); Sekunden nur als Projektion.
 - ROI normiert (0–1); Fenster-Mathematik: **exaktes out-Seitenverhältnis, Mindesthöhe 55 % der Quellhöhe, vollständig im Quellrahmen geklemmt, gerade Ganzzahlen**.
-- Übergang: **smoothstep**, Default **0,6 s**; Zoom endet an der Segmentgrenze (nie Überhang).
+- Übergang: **xfade-Dissolve**, Default **0,6 s**; Zoom endet an der Segmentgrenze (nie Überhang).
 - Fehlende/ungültige ROI oder zu kurzes Segment → **Fallback volles Bild (Blur), nie Crash, nie Center-Crop**.
 - Bestehende Render-Pfade bleiben **byte-identisch** (Blur-Default unverändert; `reel_blur_fill_graph`-Default-Labels unverändert).
 - `zoom_hybrid` v1: nur mit `vertical=True`, **schließt Video-Transitions (xfade/fade) aus** → `ValueError`.
