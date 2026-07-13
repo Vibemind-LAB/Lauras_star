@@ -348,3 +348,82 @@ def test_pause_from_error_parses_hints() -> None:
     assert p._pause_from_error("reset after 45s", 5.0) == 47.0
     assert p._pause_from_error("reset after 10m 0s", 5.0) == p._RESET_PAUSE_CAP_S  # capped
     assert p._pause_from_error("no hint here", 5.0) == 5.0
+
+
+# --- Env-param + orchestrator role scoping fixes ----------------------------------------------
+
+
+def test_resolve_from_env_uses_env_param_for_model_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve_from_env must read the pool from the env param, not os.environ."""
+    # Set os.environ to a value that would break if used instead of the param.
+    monkeypatch.setenv("LAURA_AGENT_MODEL_POOL", "wrong_model")
+    # Call with a custom env dict.
+    cfg = p.resolve_from_env({"LAURA_AGENT_MODEL": "a", "LAURA_AGENT_MODEL_POOL": "b,c"})
+    # The pool should come from the param, not os.environ.
+    assert cfg.model_pool == ("a", "b", "c")
+
+
+def test_build_model_client_agent_role_uses_pool_orchestrator_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent role with a pool gets Rotating; orchestrator role always keeps its own model."""
+    # Install fake autogen and capture all OpenAI client constructions.
+    all_openai_constructions: list[dict[str, object]] = []
+
+    class FakeOllama:
+        def __init__(self, **kw: object) -> None:
+            pass
+
+    class FakeOpenAI:
+        def __init__(self, **kw: object) -> None:
+            all_openai_constructions.append(dict(kw))
+
+    ext = types.ModuleType("autogen_ext")
+    ext_models = types.ModuleType("autogen_ext.models")
+    ext_ollama = types.ModuleType("autogen_ext.models.ollama")
+    ext_openai = types.ModuleType("autogen_ext.models.openai")
+    core = types.ModuleType("autogen_core")
+    core_models = types.ModuleType("autogen_core.models")
+    ext_ollama.OllamaChatCompletionClient = FakeOllama  # type: ignore[attr-defined]
+    ext_openai.OpenAIChatCompletionClient = FakeOpenAI  # type: ignore[attr-defined]
+    core_models.ModelInfo = lambda **kw: dict(kw)  # type: ignore[attr-defined]
+    for name, mod in {
+        "autogen_ext": ext,
+        "autogen_ext.models": ext_models,
+        "autogen_ext.models.ollama": ext_ollama,
+        "autogen_ext.models.openai": ext_openai,
+        "autogen_core": core,
+        "autogen_core.models": core_models,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    env = {
+        "LAURA_AGENT_MODEL": "a",
+        "LAURA_AGENT_MODEL_POOL": "b",
+        "LAURA_ORCHESTRATOR_MODEL": "orch",
+        "LAURA_AGENT_PROVIDER": "openai-compat",
+        "LAURA_AGENT_BASE_URL": "http://x",
+        "LAURA_AGENT_API_KEY": "k",
+    }
+    cfg = p.resolve_from_env(env)
+
+    # Agent role should get a RotatingChatClient with 2 clients (models a, b).
+    agent_client = p.build_model_client(cfg, role="agent", stage="A")
+    assert isinstance(agent_client, p.RotatingChatClient)
+    assert len(agent_client._clients) == 2
+    assert isinstance(agent_client._clients[0], p.RetryingChatClient)
+    assert isinstance(agent_client._clients[1], p.RetryingChatClient)
+    # Verify the models passed to OpenAI clients (should be a and b).
+    models_in_pool = [kw.get("model") for kw in all_openai_constructions[-2:]]
+    assert set(models_in_pool) == {"a", "b"}
+
+    # Clear for the next build.
+    all_openai_constructions.clear()
+
+    # Orchestrator role should get a single RetryingChatClient (model orch, no Rotating).
+    orchestrator_client = p.build_model_client(cfg, role="orchestrator", stage="A")
+    assert isinstance(orchestrator_client, p.RetryingChatClient)
+    assert not isinstance(orchestrator_client, p.RotatingChatClient)
+    # Verify the model passed (should be orch).
+    assert len(all_openai_constructions) == 1
+    assert all_openai_constructions[0]["model"] == "orch"

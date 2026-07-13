@@ -102,7 +102,7 @@ def resolve_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
     e = os.environ if env is None else env
     agent_model = _clean(e.get("LAURA_AGENT_MODEL")) or DEFAULT_AGENT_MODEL
     orchestration_raw = (e.get("LAURA_AGENT_ORCHESTRATION") or "").strip().lower()
-    model_pool = _parse_model_pool(os.environ.get("LAURA_AGENT_MODEL_POOL"), first=agent_model)
+    model_pool = _parse_model_pool(e.get("LAURA_AGENT_MODEL_POOL"), first=agent_model)
     return AgentConfig(
         provider=_provider(e.get("LAURA_AGENT_PROVIDER"), "ollama"),
         agent_model=agent_model,
@@ -176,7 +176,7 @@ def _is_flaky(exc: BaseException) -> bool:
     if isinstance(exc, TypeError):
         return True
     status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and status in {408, 429, 500, 502, 503, 504}:
+    if isinstance(status, int) and status in _RETRYABLE_STATUS:
         return True
     return isinstance(exc, RuntimeError) and "empty completion content" in str(exc)
 
@@ -205,7 +205,7 @@ class RotatingChatClient:
         while True:
             try:
                 return await self._clients[self._index].create(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - classify, then advance or re-raise
+            except Exception as exc:  # classify, then advance or re-raise
                 if not _is_flaky(exc) or self._index >= len(self._clients) - 1:
                     raise
                 self._index += 1
@@ -320,7 +320,11 @@ def build_model_client(
         if spec.base_url is not None:
             kwargs["base_url"] = spec.base_url
 
-        pool = config.model_pool if stage == "A" and len(config.model_pool) > 1 else (spec.model,)
+        pool = (
+            config.model_pool
+            if stage == "A" and role == "agent" and len(config.model_pool) > 1
+            else (spec.model,)
+        )
         clients = []
         for pool_model in pool:
             client_kwargs = dict(kwargs)
