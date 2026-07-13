@@ -22,7 +22,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
@@ -114,19 +114,46 @@ class OpenRouterDescribeBackend:
 
     Frames go as ``image_url`` data URIs in one user message; deterministic-ish settings
     (temperature 0). Failures return ``""`` — the Describer must never block the pipeline.
+    Supports multiple models with sticky failover: iterate the pool, and prefer the last
+    successful model on the next call.
     """
 
-    def __init__(self, *, api_key: str, model: str | None = None) -> None:
+    def __init__(
+        self, *, api_key: str, model: str | None = None, models: Sequence[str] | None = None
+    ) -> None:
         self.api_key = api_key
-        picked = model or os.environ.get("LAURA_VLM_MODEL") or DEFAULT_OPENROUTER_MODEL
-        # OpenRouter ids are "vendor/name"; an Ollama-style tag (e.g. "qwen2.5vl:7b") left
-        # over in the env must not be sent upstream — fall back to the free default.
-        self.model = picked if "/" in picked else DEFAULT_OPENROUTER_MODEL
+
+        # Build the deduplicated model list:
+        # If models is explicitly provided, use only that list (deduplicated).
+        # Otherwise, use the single model (for backward compatibility).
+        if models:
+            model_list = []
+            seen: set[str] = set()
+            for m in models:
+                if m and m not in seen:
+                    model_list.append(m)
+                    seen.add(m)
+        else:
+            picked = model or os.environ.get("LAURA_VLM_MODEL") or DEFAULT_OPENROUTER_MODEL
+            picked_model = picked if "/" in picked else DEFAULT_OPENROUTER_MODEL
+            model_list = [picked_model]
+
+        self._models = model_list
+        self._preferred = 0  # sticky index: start at the first model
+
+    @property
+    def model(self) -> str:
+        """The current model (for backward compatibility; read-only)."""
+        return self._models[self._preferred] if self._models else DEFAULT_OPENROUTER_MODEL
 
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def describe(self, frames: list[bytes], prompt: str) -> str:
+    def _attempt(self, model: str, frames: list[bytes], prompt: str) -> str:
+        """Attempt a single describe call with the given model.
+
+        Returns "" on any failure (network, API error, or empty content).
+        """
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for frame in frames:
             b64 = base64.b64encode(frame).decode("ascii")
@@ -134,7 +161,7 @@ class OpenRouterDescribeBackend:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             )
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": [{"role": "user", "content": content}],
             # Reasoning VLMs burn budget on hidden reasoning BEFORE the answer: 200 tokens
             # produced empty content with ok=True (live finding) — give them headroom.
@@ -171,24 +198,47 @@ class OpenRouterDescribeBackend:
             logger.warning(
                 "openrouter describe empty content (finish_reason=%s model=%s)",
                 choices[0].get("finish_reason"),
-                self.model,
+                model,
             )
         return ""  # never block the pipeline on a model hiccup
+
+    def describe(self, frames: list[bytes], prompt: str) -> str:
+        """Describe frames using the model pool with sticky failover.
+
+        Iterates through models starting from the last successful one.
+        On success, sticks to that model for the next call.
+        Returns "" if all models fail.
+        """
+        for offset in range(len(self._models)):
+            idx = (self._preferred + offset) % len(self._models)
+            model = self._models[idx]
+            result = self._attempt(model, frames, prompt)
+            if result:  # non-empty success
+                self._preferred = idx  # stick to this model
+                return result
+        return ""  # all models failed
 
 
 def resolve_describe_backend() -> DescribeBackend | None:
     """The configured describe backend, or ``None`` when no VLM is set up.
 
     ``LAURA_VLM_PROVIDER=openrouter`` (+ ``LAURA_OPENROUTER_API_KEY``) routes descriptions to
-    OpenRouter — the local GPU stays free for rendering. Default stays local-first: Ollama,
-    gated on ``LAURA_VLM_MODEL``/``LAURA_VLM`` and local model availability.
+    OpenRouter — the local GPU stays free for rendering. Supports model failover via
+    ``LAURA_VLM_MODEL_POOL`` (comma-separated list; the primary model or env default leads).
+    Default stays local-first: Ollama, gated on ``LAURA_VLM_MODEL``/``LAURA_VLM`` and local
+    model availability.
     """
     provider = (os.environ.get("LAURA_VLM_PROVIDER") or "").strip().lower()
     if provider == "openrouter":
         api_key = (os.environ.get("LAURA_OPENROUTER_API_KEY") or "").strip()
         if not api_key:
             return None
-        return OpenRouterDescribeBackend(api_key=api_key)
+        # Parse optional model pool (comma-separated list)
+        pool_raw = os.environ.get("LAURA_VLM_MODEL_POOL")
+        models = None
+        if pool_raw:
+            models = [p.strip() for p in pool_raw.split(",") if p.strip()]
+        return OpenRouterDescribeBackend(api_key=api_key, models=models)
     if not (os.environ.get("LAURA_VLM_MODEL") or os.environ.get("LAURA_VLM")):
         return None
     backend = OllamaDescribeBackend()
