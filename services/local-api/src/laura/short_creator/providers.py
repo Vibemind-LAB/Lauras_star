@@ -18,11 +18,12 @@ import asyncio
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 logger = logging.getLogger(__name__)
+_log = logger
 
 if TYPE_CHECKING:  # annotations only — never imported at runtime
     from autogen_core.models import ChatCompletionClient
@@ -58,6 +59,7 @@ class AgentConfig:
     nine_router_api_key: str | None
     openai_base_url: str | None
     openai_api_key: str | None
+    model_pool: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ def resolve_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
     e = os.environ if env is None else env
     agent_model = _clean(e.get("LAURA_AGENT_MODEL")) or DEFAULT_AGENT_MODEL
     orchestration_raw = (e.get("LAURA_AGENT_ORCHESTRATION") or "").strip().lower()
+    model_pool = _parse_model_pool(os.environ.get("LAURA_AGENT_MODEL_POOL"), first=agent_model)
     return AgentConfig(
         provider=_provider(e.get("LAURA_AGENT_PROVIDER"), "ollama"),
         agent_model=agent_model,
@@ -115,6 +118,7 @@ def resolve_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
         nine_router_api_key=_clean(e.get("LAURA_9ROUTER_API_KEY")),
         openai_base_url=_clean(e.get("LAURA_AGENT_BASE_URL")),
         openai_api_key=_clean(e.get("LAURA_AGENT_API_KEY")),
+        model_pool=model_pool,
     )
 
 
@@ -154,6 +158,63 @@ _RETRY_PAUSES: tuple[float, ...] = (5.0, 20.0, 60.0, 120.0)
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 _RESET_HINT = re.compile(r"reset after (?:(\d+)m\s*)?(\d+)s")
 _RESET_PAUSE_CAP_S = 150.0
+
+
+def _parse_model_pool(raw: str | None, first: str) -> tuple[str, ...]:
+    """Comma-separated model pool; the active model always leads, duplicates dropped."""
+    names = [first] + [part.strip() for part in (raw or "").split(",")]
+    out: list[str] = []
+    for name in names:
+        if name and name not in out:
+            out.append(name)
+    return tuple(out)
+
+
+def _is_flaky(exc: BaseException) -> bool:
+    """The failure classes RetryingChatClient retries — i.e. 'this model/day is bad',
+    not 'this request is wrong'. Used by the pool to decide whether to fail over."""
+    if isinstance(exc, TypeError):
+        return True
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in {408, 429, 500, 502, 503, 504}:
+        return True
+    return isinstance(exc, RuntimeError) and "empty completion content" in str(exc)
+
+
+class RotatingChatClient:
+    """Sticky failover across a pool of per-model clients.
+
+    Each pool entry is expected to be a RetryingChatClient (its own retries
+    exhausted before an exception reaches us).  On a flaky-class failure the
+    pool advances to the next model and retries the SAME request; the index is
+    sticky for the rest of the process (free-tier serving variance is per
+    model per day — a bad model stays skipped).  Non-flaky errors re-raise
+    immediately; an exhausted pool re-raises the last flaky error.
+    """
+
+    def __init__(self, clients: Sequence[Any]) -> None:
+        if not clients:
+            raise ValueError("model pool must not be empty")
+        self._clients = list(clients)
+        self._index = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._clients[self._index], name)
+
+    async def create(self, *args: Any, **kwargs: Any) -> Any:
+        while True:
+            try:
+                return await self._clients[self._index].create(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - classify, then advance or re-raise
+                if not _is_flaky(exc) or self._index >= len(self._clients) - 1:
+                    raise
+                self._index += 1
+                _log.warning(
+                    "model pool: advancing to client %d/%d after flaky failure: %s",
+                    self._index + 1,
+                    len(self._clients),
+                    exc,
+                )
 
 
 def _pause_from_error(error_text: str, fallback: float) -> float:
@@ -233,6 +294,8 @@ def build_model_client(
     Lazily imports the optional ``autoshort`` extra; raises a clear
     :class:`RuntimeError` (not ``ImportError``) if it is not installed. Remote
     (OpenAI-compatible) clients are wrapped in :class:`RetryingChatClient`.
+    At stage A with a pool of multiple models, wraps all per-model clients
+    in a :class:`RotatingChatClient` for sticky failover.
     """
     spec = plan_client(config, role=role, stage=stage)
     try:
@@ -245,7 +308,6 @@ def build_model_client(
         from autogen_ext.models.openai import OpenAIChatCompletionClient
 
         kwargs: dict[str, Any] = {
-            "model": spec.model,
             "api_key": spec.api_key or "not-needed",
             "model_info": ModelInfo(
                 vision=False,
@@ -257,9 +319,16 @@ def build_model_client(
         }
         if spec.base_url is not None:
             kwargs["base_url"] = spec.base_url
-        return cast(
-            "ChatCompletionClient", RetryingChatClient(OpenAIChatCompletionClient(**kwargs))
-        )
+
+        pool = config.model_pool if stage == "A" and len(config.model_pool) > 1 else (spec.model,)
+        clients = []
+        for pool_model in pool:
+            client_kwargs = dict(kwargs)
+            client_kwargs["model"] = pool_model
+            clients.append(RetryingChatClient(OpenAIChatCompletionClient(**client_kwargs)))
+        if len(clients) == 1:
+            return cast("ChatCompletionClient", clients[0])
+        return cast("ChatCompletionClient", RotatingChatClient(clients))
     except ImportError as exc:  # optional extra missing
         raise RuntimeError(
             "The short-creator needs the optional 'autoshort' extra. "
