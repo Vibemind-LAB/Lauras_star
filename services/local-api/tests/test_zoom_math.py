@@ -101,8 +101,6 @@ def test_zoom_spec_from_option_fallbacks_return_none() -> None:
     assert zoom_spec_from_option({"roi": {"x": 0.1, "y": 0.1, "w": "bad", "h": 0.5}}, **kw) is None  # type: ignore[arg-type]
     short: dict[str, int | float] = dict(kw, segment_seconds=0.5)  # too short for a visible push
     assert zoom_spec_from_option({"roi": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.3}}, **short) is None  # type: ignore[arg-type]
-    # roi that already needs (almost) the whole frame → nothing to push into
-    assert zoom_spec_from_option({"roi": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}}, **kw) is None  # type: ignore[arg-type]
 
 
 def test_zoom_spec_from_option_clamps_timing_to_segment() -> None:
@@ -115,3 +113,20 @@ def test_zoom_spec_from_option_clamps_timing_to_segment() -> None:
     )
     assert spec is not None
     assert spec.zoom_start_s + spec.transition_s <= 2.0 + 1e-9
+
+
+def test_zoom_spec_from_option_same_aspect_wide_roi_builds_spec() -> None:
+    # same-aspect src/out with a wide-but-not-full roi: geometric check must govern
+    spec = zoom_spec_from_option(
+        {"roi": {"x": 0.0, "y": 0.0, "w": 0.96, "h": 0.5}},
+        src_w=1080, src_h=1920, out_w=1080, out_h=1920, segment_seconds=4.0,
+    )
+    assert spec is not None
+    assert spec.start_win != spec.end_win
+
+
+def test_zoom_spec_from_option_rejects_non_finite_timing() -> None:
+    kw = dict(src_w=1920, src_h=1080, out_w=1080, out_h=1920, segment_seconds=4.0)
+    roi = {"x": 0.6, "y": 0.1, "w": 0.25, "h": 0.25}
+    assert zoom_spec_from_option({"roi": roi, "zoom_start_s": float("nan")}, **kw) is None  # type: ignore[arg-type]
+    assert zoom_spec_from_option({"roi": roi, "transition_s": float("inf")}, **kw) is None  # type: ignore[arg-type]

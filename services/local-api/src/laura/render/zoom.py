@@ -10,6 +10,7 @@ needs runtime clamping.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -147,8 +148,7 @@ def zoom_spec_from_option(
         return None
     if rx + rw > 1.0 + 1e-9 or ry + rh > 1.0 + 1e-9:
         return None
-    # roi that covers almost the whole frame → nothing to push into
-    if rw >= 0.95 or rh >= 0.95:
+    if not (math.isfinite(t0) and math.isfinite(td)):
         return None
     if segment_seconds < _MIN_ZOOM_SEGMENT_S or td <= 0.0:
         return None
