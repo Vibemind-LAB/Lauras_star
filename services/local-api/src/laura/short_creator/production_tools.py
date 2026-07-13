@@ -37,12 +37,30 @@ is a *pure derivation* — no model or backend calls — turning storyline + scr
 frame-accurate ``Cutlist``: one ``CutSegment`` per scene in arc order, clamped inside its own
 source range, with an optional zoom timed to when the scene's script line is actually spoken
 (the voice sidecar's word ``start_s``, via :func:`line_starts`, offset by ``transition_lead_s``).
+
+``render_production``/``review_export``/``save_qa_report`` close out the pipeline (Task 6).
+``render_production`` turns the cutlist into the actual render call (``deps.render_segments``,
+falling back to the real :func:`laura.mcp.tools.tool_render_segments`, resolved lazily like every
+other backend seam): segments and an index-aligned zoom hint per segment, the board's voice as
+the new audio track, captions on, blurred vertical 1080x1920 — then polls the resulting export
+(bounded by ``RENDER_WAIT_SECONDS``, same pattern as :func:`laura.short_creator.toolset`'s
+``export_status``) and grades it against three checks (``voice_fits``, ``export_ready``,
+``has_voice_timings``); the ``RenderReport`` is saved regardless of the verdict so a failing
+render stays inspectable, and the coding-agent's remedy for a too-short video is a longer cutlist
+budget, NEVER a shortened voice (see the tool's own docstring). ``review_export`` grabs a few real
+frames of the finished export (``_grab_video_frames``, one ffmpeg seek per timestamp — a failed
+grab just yields fewer frames, never raises) and has the VLM QA-check each one individually,
+degrading to an empty, explicitly-flagged note list without a configured backend. ``save_qa_report``
+is the last board write: pydantic-validated verdict + findings, same self-correcting error contract
+as ``save_storyline``/``save_script_chapter``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +71,7 @@ from pydantic import ValidationError
 from ..analysis.transition_review import extract_frames
 from ..db import repos
 from ..db.database import Database
+from ..ingest.ffmpeg import ffmpeg_bin
 from ..util import new_id, utcnow_iso
 from . import context
 from .board import Board
@@ -61,6 +80,10 @@ from .board_models import (
     Chapter,
     Cutlist,
     CutSegment,
+    QaFinding,
+    QaReport,
+    RenderCheck,
+    RenderReport,
     Roi,
     SceneReview,
     Script,
@@ -69,7 +92,7 @@ from .board_models import (
     VoiceArtifact,
 )
 from .describe import DescribeBackend, resolve_describe_backend
-from .toolset import ToolSpec
+from .toolset import RENDER_WAIT_SECONDS, ToolSpec
 from .voice import VoiceBackend, resolve_voice_backend
 
 # Signature of laura.mcp.tools.tool_render_segments — wired in from Task 6 on.
@@ -93,6 +116,18 @@ _REVIEW_PROMPT = (
     "  \"roi\": {{\"x\": float, \"y\": float, \"w\": float, \"h\": float}} | null (normalized "
     "0-1 box around the ONE region a viewer must read; null if the whole frame matters),\n"
     "  \"legibility_notes\": str}}"
+)
+
+_RENDER_POLL_INTERVAL_S = 2.0
+_VOICE_FIT_TOLERANCE_S = 0.05
+_RENDER_WIDTH = 1080
+_RENDER_HEIGHT = 1920
+
+_QA_PROMPT = (
+    "You are QA-checking a finished vertical short (1080x1920) before it ships. Look at this "
+    "single frame and reply in ONE short, concrete sentence: is the subject/text legible, well "
+    "framed inside the vertical canvas, and free of visual glitches? Name anything a viewer "
+    "would notice as wrong; say \"looks fine\" if nothing is."
 )
 
 
@@ -209,6 +244,45 @@ def _default_extract_frames(db: Database, asset_id: str, frames: list[int]) -> l
         return []
     refs = [(asset_id, frame) for frame in frames]
     return extract_frames({asset_id: proxy}, refs, rate_num=rate[0], rate_den=rate[1])
+
+
+def _grab_video_frames(path: Path, at_seconds: list[float]) -> list[bytes]:
+    """One JPEG (bytes) per timestamp, seeked directly out of a finished export file.
+
+    Same ffmpeg invocation as :func:`laura.analysis.transition_review.extract_frames`
+    (``-ss <t> -frames:v 1 -f image2pipe``) but against an arbitrary video path instead of an
+    asset's proxy — ``review_export`` grabs a few frames of the RENDERED short, not the source.
+    A failed seek/decode for one timestamp (path missing, ffmpeg missing, timestamp past the end)
+    is silently skipped, so the returned list may be shorter than ``at_seconds`` or empty; this
+    never raises — a QA review always degrades instead of blocking the pipeline.
+    """
+    out: list[bytes] = []
+    for t in at_seconds:
+        cmd = [
+            ffmpeg_bin(),
+            "-v",
+            "error",
+            "-ss",
+            f"{max(0.0, t):.6f}",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True)  # noqa: S603
+        except OSError:
+            continue
+        if proc.returncode == 0 and proc.stdout:
+            out.append(proc.stdout)
+    return out
 
 
 def _resolve_scene(db: Database, asset_id: str, scene_number: int) -> tuple[int, int, str] | None:
@@ -686,6 +760,184 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def render_production() -> dict[str, Any]:
+        """Render the board's cutlist to a finished vertical export and grade it.
+
+        Requires build_cutlist (and transitively storyline + script + voice) to have run first
+        — reports which one is missing instead of raising. Turns the cutlist into
+        (start_frame, end_frame_exclusive) segments plus an index-aligned zoom hint per segment
+        (only where that segment has BOTH a roi and a zoom_start_s; otherwise None), and renders
+        them with the v1 short defaults (captions on, blurred vertical 1080x1920 letterbox) and
+        the board's voice as the new audio track. Polls the resulting export (bounded by
+        RENDER_WAIT_SECONDS) until it leaves the "rendering" state, then grades three checks:
+        voice_fits (the rendered video covers the whole voice track, small tolerance),
+        export_ready, and has_voice_timings (captions can be burned in). The RenderReport is
+        saved to the board regardless of the verdict, so a failing render stays inspectable.
+
+        CODING-AGENT CHARTER: if voice_fits comes back False, do NOT shorten or cut the voice —
+        rebuild the cutlist with a longer per-chapter time budget (build_cutlist) and render
+        again. The voice is the script the team already agreed on; the video must fit it.
+        """
+        try:
+            cutlist = board.load("cutlist")
+            if not isinstance(cutlist, Cutlist):
+                return {"ok": False, "reason": "no cutlist on the board; run build_cutlist first"}
+            voice = board.load("voice")
+            if not isinstance(voice, VoiceArtifact):
+                return {
+                    "ok": False,
+                    "reason": "no voice on the board; run synthesize_script_voice first",
+                }
+            script = board.load("script")
+            if not isinstance(script, Script):
+                return {
+                    "ok": False,
+                    "reason": "no script on the board; run save_script_chapter first",
+                }
+
+            asset = repos.get_asset(db, asset_id)
+            fps = _fps(db, asset) if asset is not None else 30.0
+            video_s = sum((s.end_frame_exclusive - s.start_frame) / fps for s in cutlist.segments)
+
+            segments: list[tuple[int, int]] = [
+                (s.start_frame, s.end_frame_exclusive) for s in cutlist.segments
+            ]
+            zoom: list[dict[str, Any] | None] = [
+                {"roi": s.roi.model_dump(), "zoom_start_s": s.zoom_start_s}
+                if s.roi is not None and s.zoom_start_s is not None
+                else None
+                for s in cutlist.segments
+            ]
+
+            render_fn = d.render_segments
+            if render_fn is None:
+                from ..mcp.tools import tool_render_segments
+
+                render_fn = tool_render_segments
+
+            result = render_fn(
+                db,
+                asset_id,
+                segments,
+                captions=True,
+                fit="blur",
+                vertical=True,
+                out_size=(_RENDER_WIDTH, _RENDER_HEIGHT),
+                voiceover_path=voice.mp3_path,
+                voiceover_text=script_text(script),
+                zoom=zoom,
+            )
+            if not result.get("ok"):
+                return {"ok": False, "reason": str(result.get("error") or "render failed")}
+            export_id = str(result["export_id"])
+
+            row = repos.get_export(db, export_id)
+            deadline = time.monotonic() + RENDER_WAIT_SECONDS
+            while (
+                row is not None
+                and str(row.get("status")) == "rendering"
+                and time.monotonic() < deadline
+            ):
+                time.sleep(_RENDER_POLL_INTERVAL_S)
+                row = repos.get_export(db, export_id) or row
+
+            export_ready = row is not None and str(row.get("status")) == "ready"
+            voice_fits = voice.voice_s is None or (
+                video_s + _VOICE_FIT_TOLERANCE_S >= voice.voice_s
+            )
+            has_voice_timings = bool(voice.timings_path)
+            voice_note = (
+                f"video={video_s:.2f}s voice={voice.voice_s:.2f}s"
+                if voice.voice_s is not None
+                else f"video={video_s:.2f}s voice=unknown"
+            )
+
+            checks = [
+                RenderCheck(name="voice_fits", ok=voice_fits, note=voice_note),
+                RenderCheck(
+                    name="export_ready",
+                    ok=export_ready,
+                    note=str(row.get("status")) if row is not None else "export not found",
+                ),
+                RenderCheck(
+                    name="has_voice_timings",
+                    ok=has_voice_timings,
+                    note="" if has_voice_timings else "no timings sidecar on the voice artifact",
+                ),
+            ]
+            report = RenderReport(
+                export_id=export_id,
+                video_s=video_s,
+                voice_s=voice.voice_s,
+                width=_RENDER_WIDTH,
+                height=_RENDER_HEIGHT,
+                checks=checks,
+            )
+            board.save("render_report", report)
+            ok = export_ready and all(c.ok for c in checks)
+            return {"ok": ok, "export_id": export_id, "checks": [c.model_dump() for c in checks]}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def review_export(at_seconds: list[float] | None = None) -> dict[str, Any]:
+        """Look at a few real frames of the rendered export with the VLM and collect one short
+        QA note per timestamp. Requires render_production to have run first (reads its
+        RenderReport plus the export's on-disk path via repos.get_export). Defaults to
+        start/middle/near-end (``[1.0, video_s/2, video_s-1.5]``) when at_seconds is omitted.
+        Never fails the pipeline: without a configured describe backend it reports
+        ``degraded: True`` with an empty notes list instead of blocking the QA reviewer, and a
+        frame-grab failure just yields fewer notes than timestamps requested (never raises)."""
+        try:
+            report = board.load("render_report")
+            if not isinstance(report, RenderReport):
+                return {
+                    "ok": False,
+                    "reason": "no render_report on the board; run render_production first",
+                }
+            row = repos.get_export(db, report.export_id)
+            path = row.get("path") if row is not None else None
+            if not path:
+                return {"ok": False, "reason": "export has no rendered file yet"}
+
+            backend = (
+                d.describe_backend if d.describe_backend is not None else resolve_describe_backend()
+            )
+            if backend is None:
+                return {"ok": True, "notes": [], "degraded": True}
+
+            times = (
+                at_seconds
+                if at_seconds is not None
+                else [1.0, report.video_s / 2, max(0.0, report.video_s - 1.5)]
+            )
+            frames = _grab_video_frames(Path(str(path)), times)
+            notes = [
+                {"at_s": t, "note": backend.describe([frame], _QA_PROMPT)}
+                for t, frame in zip(times, frames, strict=False)
+            ]
+            return {"ok": True, "notes": notes}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def save_qa_report(verdict: str, findings: list[dict[str, Any]]) -> dict[str, Any]:
+        """Validate and save the QA reviewer's verdict ("ship" or "revise") plus concrete
+        findings (severity/where/note each) to the board. A malformed verdict or finding is
+        rejected with field-level validation errors instead of raising, so the agent can
+        self-correct."""
+        try:
+            try:
+                # verdict is plain str at the tool boundary; the Literal check happens here.
+                qa_report = QaReport(
+                    verdict=verdict,  # type: ignore[arg-type]
+                    findings=[QaFinding(**f) for f in findings],
+                )
+            except ValidationError as exc:
+                return {"ok": False, "errors": _validation_errors(exc)}
+            version = board.save("qa_report", qa_report)
+            return {"ok": True, "version": version}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         board_status,
         get_scene_context,
@@ -697,5 +949,8 @@ def build_production_tool_specs(
         get_script,
         synthesize_script_voice,
         build_cutlist,
+        render_production,
+        review_export,
+        save_qa_report,
     ]
     return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]

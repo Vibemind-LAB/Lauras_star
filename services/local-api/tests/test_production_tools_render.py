@@ -1,0 +1,463 @@
+"""production_tools: render_production (zoom passthrough + polled export + checks),
+review_export (VLM QA notes over real export frames), save_qa_report (Slice 3, Task 6).
+
+The render_production tests need a REAL, deterministically-built Cutlist on the board, so
+``_build_board_to_cutlist`` reuses ``tests/test_production_tools_cutlist.py``'s two-scene fixture
++ word-timing setup verbatim (same numbers, so segment math is already hand-verified there) and
+drives it through the actual ``build_cutlist`` tool rather than hand-writing one. review_export
+and save_qa_report never touch scenes or the cutlist chain at all, so they use a minimal
+one-asset fixture with no rough cut.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from laura.config import Settings
+from laura.db import repos
+from laura.db.database import Database, SqliteDatabase
+from laura.short_creator import production_tools
+from laura.short_creator.board import Board
+from laura.short_creator.board_models import (
+    BestWindow,
+    BoardMeta,
+    Chapter,
+    Cutlist,
+    CutSegment,
+    QaReport,
+    RenderCheck,
+    RenderReport,
+    Roi,
+    SceneReview,
+    Script,
+    ScriptLine,
+    Storyline,
+    VoiceArtifact,
+)
+from laura.short_creator.production_tools import (
+    ProductionDeps,
+    build_production_tool_specs,
+    script_text,
+)
+
+FPS = 30
+SCENE_FRAMES = 300  # 300 frames @ 30fps = 10.0s per scene
+N_SCENES = 2
+
+
+def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
+    """Project + asset + a TWO-scene rough cut (copy of test_production_tools_cutlist.py's
+    fixture — kept self-contained per this file's own convention)."""
+    settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
+    db: Database = SqliteDatabase(settings.db_path)
+    db.migrate()
+    project = repos.create_project(
+        db,
+        name="p",
+        rate_num=FPS,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a.mp4",
+        source_path=str(tmp_path / "a.mp4"),
+    )
+    timeline = repos.create_timeline(
+        db,
+        project_id=project["id"],
+        name="Rough Cut",
+        kind="rough_cut",
+        created_from=asset["id"],
+    )
+    repos.add_timeline_clip(
+        db,
+        timeline_id=timeline["id"],
+        asset_id=asset["id"],
+        src_in_frame=0,
+        src_out_frame_exclusive=SCENE_FRAMES * N_SCENES,
+        seq_in_frame=0,
+        seq_out_frame_exclusive=SCENE_FRAMES * N_SCENES,
+        lane=0,
+        role="base",
+    )
+    repos.replace_scenes(
+        db,
+        project["id"],
+        timeline["id"],
+        [(i * SCENE_FRAMES, (i + 1) * SCENE_FRAMES) for i in range(N_SCENES)],
+    )
+    return db, str(asset["id"])
+
+
+def _seed_asset(tmp_path: Path) -> tuple[Database, str]:
+    """Minimal project + asset, no rough cut — enough for review_export/save_qa_report, which
+    never resolve scenes."""
+    settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
+    db: Database = SqliteDatabase(settings.db_path)
+    db.migrate()
+    project = repos.create_project(
+        db,
+        name="p",
+        rate_num=FPS,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a.mp4",
+        source_path=str(tmp_path / "a.mp4"),
+    )
+    return db, str(asset["id"])
+
+
+def _board(tmp_path: Path, asset_id: str) -> Board:
+    meta = BoardMeta(
+        session_id="s1",
+        asset_id=asset_id,
+        created_utc="2026-07-13T00:00:00Z",
+        task="overview short",
+        target_seconds=20.0,
+    )
+    return Board.create(tmp_path / "board", meta)
+
+
+def _review(
+    board: Board,
+    scene_number: int,
+    *,
+    best_window: BestWindow | None = None,
+    roi: Roi | None = None,
+) -> None:
+    board.save_scene_review(
+        SceneReview(
+            scene_number=scene_number,
+            src_start_frame=(scene_number - 1) * SCENE_FRAMES,
+            src_end_frame_exclusive=scene_number * SCENE_FRAMES,
+            description="d",
+            whats_happening="h",
+            hook_score=5,
+            best_window=best_window
+            if best_window is not None
+            else BestWindow(offset_s=0.0, duration_s=2.0),
+            roi=roi,
+        )
+    )
+
+
+def _storyline(
+    *, scene_numbers: list[int] | None = None, target_seconds: float = 4.0
+) -> Storyline:
+    return Storyline(
+        red_thread="stop scrolling",
+        arc=[
+            Chapter(
+                chapter=1,
+                role="hook",
+                message="stop scrolling",
+                scene_numbers=scene_numbers if scene_numbers is not None else [1, 2],
+                target_seconds=target_seconds,
+            )
+        ],
+    )
+
+
+def _script() -> Script:
+    return Script(
+        language="de",
+        lines=[
+            ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team"),
+            ScriptLine(chapter=1, scene_number=2, text="Ein Klick genügt"),
+        ],
+    )
+
+
+def _save_voice(
+    board: Board, tmp_path: Path, words: list[dict[str, Any]], *, voice_s: float | None = None
+) -> VoiceArtifact:
+    """Seed the board's voice artifact directly with a real sidecar file on disk (as
+    build_cutlist reads it from timings_path, not from a fake backend) — mirrors
+    test_production_tools_cutlist.py's helper, plus an explicit voice_s override so the render
+    tests can force a voice_fits pass/fail deterministically."""
+    timings_path = tmp_path / "voice.mp3.timings.json"
+    timings_path.write_text(json.dumps({"words": words}), encoding="utf-8")
+    artifact = VoiceArtifact(
+        script_hash="irrelevant-for-cutlist",
+        mp3_path=str(tmp_path / "voice.mp3"),
+        timings_path=str(timings_path),
+        voice_s=voice_s,
+    )
+    board.save("voice", artifact)
+    return artifact
+
+
+class _FakeRenderSegments:
+    """Fake render_segments: records every call's kwargs and creates a REAL export row directly
+    via repos (like the real tool_render_segments's job would eventually produce) so
+    render_production's poll loop sees an already-terminal status — no sleep needed."""
+
+    def __init__(self, *, status: str = "ready") -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.status = status
+
+    def __call__(
+        self, db: Database, asset_id: str, segments: list[tuple[int, int]], **kwargs: Any
+    ) -> dict[str, Any]:
+        self.calls.append({"asset_id": asset_id, "segments": segments, **kwargs})
+        asset = repos.get_asset(db, asset_id)
+        assert asset is not None
+        exp = repos.create_export(
+            db, project_id=str(asset["project_id"]), timeline_id=None, format="mp4"
+        )
+        if self.status == "ready":
+            repos.set_export_done(db, exp["id"], path=str(Path("out") / "short.mp4"), size_bytes=1)
+        elif self.status == "error":
+            repos.set_export_error(db, exp["id"], "render boom")
+        return {"ok": True, "export_id": exp["id"], "job_id": "job-1", "segments": len(segments)}
+
+
+def _build_board_to_cutlist(
+    tmp_path: Path, *, scene2_roi: Roi | None, voice_s: float | None
+) -> tuple[Database, str, Board]:
+    """A full board up to (and including) a real cutlist — reviews, storyline, script, voice,
+    then the actual build_cutlist tool. Same word timings as
+    test_production_tools_cutlist.py::test_build_cutlist_deterministic_segments_and_zoom (already
+    hand-verified there), so segment 0 (scene 1, which always has a roi) comes out to
+    start/end=(30, 90) with zoom_start_s~=0.6; segment 1 (scene 2) is (300, 360) and its
+    zoom_start_s depends on scene2_roi (None -> no zoom regardless of timing — the "segment
+    without roi -> zoom entry None" case render_production must pass through unchanged).
+    """
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(
+        board,
+        1,
+        best_window=BestWindow(offset_s=1.0, duration_s=3.0),
+        roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
+    )
+    _review(board, 2, best_window=BestWindow(offset_s=0.0, duration_s=3.0), roi=scene2_roi)
+    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=4.0))
+    board.save("script", _script())
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.2, "end_s": 0.45},
+            {"text": "dein", "start_s": 0.5, "end_s": 0.75},
+            {"text": "Team", "start_s": 0.9, "end_s": 1.2},
+            {"text": "Ein", "start_s": 2.5, "end_s": 2.75},
+            {"text": "Klick", "start_s": 2.8, "end_s": 3.0},
+            {"text": "genügt", "start_s": 3.1, "end_s": 3.4},
+        ],
+        voice_s=voice_s,
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    built = specs["build_cutlist"].func()
+    assert built["ok"] is True, built
+    return db, asset_id, board
+
+
+def test_render_production_passes_zoom_and_reports(tmp_path: Path) -> None:
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["asset_id"] == asset_id
+    assert call["segments"] == [(30, 90), (300, 360)]
+    zoom = call["zoom"]
+    assert len(zoom) == 2
+    assert zoom[0]["roi"] == {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}
+    assert zoom[0]["zoom_start_s"] == pytest.approx(0.6)
+    assert zoom[1] is None  # scene 2 has no roi -> index-aligned None, not dropped
+    assert call["captions"] is True
+    assert call["fit"] == "blur"
+    assert call["vertical"] is True
+    assert call["out_size"] == (1080, 1920)
+    assert call["voiceover_path"] == str(tmp_path / "voice.mp3")
+    assert call["voiceover_text"] == script_text(_script())
+
+    assert out["ok"] is True
+    checks_by_name = {c["name"]: c for c in out["checks"]}
+    assert checks_by_name["voice_fits"]["ok"] is True
+    assert checks_by_name["export_ready"]["ok"] is True
+    assert checks_by_name["has_voice_timings"]["ok"] is True
+
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert report.export_id == out["export_id"]
+    assert report.video_s == pytest.approx(4.0)
+    assert report.voice_s == pytest.approx(3.4)
+    assert report.width == 1080
+    assert report.height == 1920
+    assert len(report.checks) == 3
+
+    row = repos.get_export(db, report.export_id)
+    assert row is not None
+    assert row["status"] == "ready"
+
+
+def test_render_production_voice_fit_check_fails(tmp_path: Path) -> None:
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=100.0)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    assert out["ok"] is False  # video (4.0s) is nowhere near the (deliberately inflated) voice
+    checks_by_name = {c["name"]: c for c in out["checks"]}
+    assert checks_by_name["voice_fits"]["ok"] is False
+    assert checks_by_name["export_ready"]["ok"] is True  # the export itself still rendered fine
+
+    # The report is still persisted (a coding agent needs to SEE the failing check to react).
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert report.voice_s == pytest.approx(100.0)
+    assert any(c.name == "voice_fits" and not c.ok for c in report.checks)
+
+
+def test_render_production_requires_cutlist(tmp_path: Path) -> None:
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["render_production"].func()
+    assert out["ok"] is False
+    assert "cutlist" in out["reason"]
+
+    # A cutlist can exist on the board without voice ever having been saved (only reachable by
+    # writing straight to the board, as here — the real build_cutlist tool itself requires voice
+    # first); render_production must still catch this instead of crashing on a None voice.
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=60)]
+        ),
+    )
+    out = specs["render_production"].func()
+    assert out["ok"] is False
+    assert "voice" in out["reason"]
+
+
+def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db, asset_id = _seed_asset(tmp_path)
+    board = _board(tmp_path, asset_id)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    exp = repos.create_export(
+        db, project_id=str(asset["project_id"]), timeline_id=None, format="mp4"
+    )
+    export_path = str(tmp_path / "short.mp4")
+    repos.set_export_done(db, exp["id"], path=export_path, size_bytes=42)
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id=exp["id"],
+            video_s=6.0,
+            voice_s=5.0,
+            width=1080,
+            height=1920,
+            checks=[RenderCheck(name="export_ready", ok=True)],
+        ),
+    )
+
+    grab_calls: list[tuple[Path, list[float]]] = []
+
+    def _fake_grab(path: Path, at_seconds: list[float]) -> list[bytes]:
+        grab_calls.append((path, list(at_seconds)))
+        return [f"frame@{t}".encode() for t in at_seconds]
+
+    monkeypatch.setattr(production_tools, "_grab_video_frames", _fake_grab)
+
+    class _Vlm:
+        def available(self) -> bool:
+            return True
+
+        def describe(self, frames: list[bytes], prompt: str) -> str:
+            assert len(frames) == 1
+            return f"note for {frames[0].decode()}"
+
+    deps = ProductionDeps(describe_backend=_Vlm())
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["review_export"].func()
+
+    assert out["ok"] is True
+    assert out["notes"] == [
+        {"at_s": 1.0, "note": "note for frame@1.0"},
+        {"at_s": 3.0, "note": "note for frame@3.0"},
+        {"at_s": 4.5, "note": "note for frame@4.5"},
+    ]
+    assert grab_calls == [(Path(export_path), [1.0, 3.0, 4.5])]
+
+    out2 = specs["review_export"].func(at_seconds=[2.0])
+    assert out2["ok"] is True
+    assert out2["notes"] == [{"at_s": 2.0, "note": "note for frame@2.0"}]
+
+    # No configured describe backend -> degrade instead of blocking the QA reviewer. Guard
+    # against a host env that has a VLM configured (mirrors test_production_tools_review.py's
+    # test_review_scene_degrades_without_backend).
+    monkeypatch.delenv("LAURA_VLM_MODEL", raising=False)
+    monkeypatch.delenv("LAURA_VLM", raising=False)
+    monkeypatch.delenv("LAURA_VLM_PROVIDER", raising=False)
+    deps_no_backend = ProductionDeps(describe_backend=None)
+    specs_no_backend = {
+        s.name: s
+        for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps_no_backend)
+    }
+
+    degraded = specs_no_backend["review_export"].func()
+
+    assert degraded == {"ok": True, "notes": [], "degraded": True}
+
+
+def test_save_qa_report_validates(tmp_path: Path) -> None:
+    db, asset_id = _seed_asset(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    bad = specs["save_qa_report"].func(verdict="maybe", findings=[])
+    assert bad["ok"] is False
+    assert "errors" in bad
+    assert any("verdict" in err for err in bad["errors"])
+    assert board.load("qa_report") is None
+
+    ok = specs["save_qa_report"].func(
+        verdict="ship",
+        findings=[{"severity": "minor", "where": "scene 2 caption", "note": "syncs a beat late"}],
+    )
+    assert ok == {"ok": True, "version": 1}
+
+    saved = board.load("qa_report")
+    assert isinstance(saved, QaReport)
+    assert saved.verdict == "ship"
+    assert len(saved.findings) == 1
+    assert saved.findings[0].severity == "minor"
+    assert saved.findings[0].where == "scene 2 caption"
+
+    bad_finding = specs["save_qa_report"].func(
+        verdict="revise", findings=[{"severity": "minor", "note": "missing the where field"}]
+    )
+    assert bad_finding["ok"] is False
+    assert any("where" in err for err in bad_finding["errors"])
