@@ -110,7 +110,7 @@ def reel_video_chain(
 
 
 def reel_blur_fill_graph(
-    in_label: str, out_label: str, *, out_w: int = 1080, out_h: int = 1920
+    in_label: str, out_label: str, *, out_w: int = 1080, out_h: int = 1920, tag: str = "_rb"
 ) -> str:
     """Return the semicolon-joined ffmpeg filtergraph fragment for blurred-background fill.
 
@@ -140,12 +140,15 @@ def reel_blur_fill_graph(
     Args:
         in_label:  The labeled input stream (e.g. ``"[vcat]"``).
         out_label: The labeled output stream (e.g. ``"[out]"``).
+        tag:       Tag prefix for internal labels (default "_rb" creates ``[_rbbg]``, etc).
+                   Custom tags keep multiple sub-graph instances collision-free.
     """
-    # Internal scratch labels — unique enough within any single render graph.
-    bg_split = "[_rbbg]"
-    fg_split = "[_rbfg]"
-    bg_blurred = "[_rbbl]"
-    fg_scaled = "[_rbfl]"
+    # Internal scratch labels — the tag keeps multiple instances of this
+    # sub-graph (one per zoom_hybrid segment) collision-free in one graph.
+    bg_split = f"[{tag}bg]"
+    fg_split = f"[{tag}fg]"
+    bg_blurred = f"[{tag}bl]"
+    fg_scaled = f"[{tag}fl]"
 
     parts = [
         # 1. Split input into background and foreground copies.

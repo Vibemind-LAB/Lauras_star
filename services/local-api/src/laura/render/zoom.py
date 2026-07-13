@@ -14,6 +14,8 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from laura.render.reel import reel_blur_fill_graph
+
 MIN_HEIGHT_FRAC = 0.55
 
 DEFAULT_TRANSITION_S = 0.6
@@ -168,3 +170,123 @@ def zoom_spec_from_option(
         zoom_start_s=round(t0, 4),
         transition_s=round(td, 4),
     )
+
+
+def _fmt_seconds(value: float) -> str:
+    """Trim-friendly seconds formatting (no trailing zeros, plain int stays int)."""
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
+def zoom_hybrid_segment_parts(
+    input_idx: int,
+    seg_idx: int,
+    *,
+    start_frame: int,
+    end_frame_exclusive: int,
+    spec: ZoomSpec | None,
+    out_w: int,
+    out_h: int,
+) -> tuple[list[str], str]:
+    """Filtergraph parts rendering ONE trimmed segment as hybrid zoom.
+
+    ``spec=None`` → full-frame blur-fill only (the fallback contract).  All
+    internal labels carry ``seg_idx`` so any number of segments compose into
+    one ``filter_complex`` without label collisions.  Returns
+    ``(parts, out_label)``; the output is exactly ``out_w×out_h``, SAR 1.
+    """
+    out_label = f"[zh{seg_idx}]"
+    composed = f"[zfx{seg_idx}]"
+    trim = (
+        f"[{input_idx}:v]trim=start_frame={start_frame}:end_frame={end_frame_exclusive},"
+        f"setpts=PTS-STARTPTS,settb=AVTB"
+    )
+    if spec is None:
+        src = f"[zsrc{seg_idx}]"
+        return (
+            [
+                f"{trim}{src}",
+                reel_blur_fill_graph(src, composed, out_w=out_w, out_h=out_h, tag=f"_z{seg_idx}"),
+                f"{composed}setsar=1{out_label}",
+            ],
+            out_label,
+        )
+
+    full_in, zoom_in = f"[zfa{seg_idx}]", f"[zza{seg_idx}]"
+    full_out, zoom_out = f"[zfull{seg_idx}]", f"[zzoom{seg_idx}]"
+    w, h, x, y = zoom_crop_exprs(spec)
+    parts = [
+        f"{trim},split=2{full_in}{zoom_in}",
+        reel_blur_fill_graph(full_in, composed, out_w=out_w, out_h=out_h, tag=f"_z{seg_idx}"),
+        f"{composed}setsar=1{full_out}",
+        (
+            f"{zoom_in}trim=start={_fmt_seconds(spec.zoom_start_s)},setpts=PTS-STARTPTS,"
+            f"crop=w='{w}':h='{h}':x='{x}':y='{y}',"
+            f"scale={out_w}:{out_h}:flags=lanczos,setsar=1,settb=AVTB{zoom_out}"
+        ),
+        (
+            f"{full_out}{zoom_out}xfade=transition=fade"
+            f":duration={_fmt_seconds(spec.transition_s)}"
+            f":offset={_fmt_seconds(spec.zoom_start_s)},settb=AVTB{out_label}"
+        ),
+    ]
+    return parts, out_label
+
+
+def zoom_concat_graph(
+    clips: list[tuple[int, int]],
+    specs: list[ZoomSpec | None],
+    *,
+    audio_flags: list[bool],
+    has_base_audio: bool,
+    rate_num: int,
+    rate_den: int,
+    out_w: int,
+    out_h: int,
+) -> tuple[str, str, str | None]:
+    """Full pre-caption filtergraph for the zoom_hybrid path.
+
+    Returns ``(parts, "[vcat]", "[abase]" | None)``.  Video: concat of the
+    per-segment hybrid graphs.  Audio: the classic per-segment atrim concat —
+    byte-equivalent semantics to the standard concat path, so the voiceover
+    post-mux and loudnorm stages downstream stay unchanged.
+    """
+    parts: list[str] = []
+    v_labels: list[str] = []
+    for i, ((fin, fout), spec) in enumerate(zip(clips, specs, strict=True)):
+        seg_parts, label = zoom_hybrid_segment_parts(
+            i, i, start_frame=fin, end_frame_exclusive=fout,
+            spec=spec, out_w=out_w, out_h=out_h,
+        )
+        parts.extend(seg_parts)
+        v_labels.append(label)
+
+    n = len(v_labels)
+    if n == 1:
+        parts.append(f"{v_labels[0]}null[vcat]")
+    else:
+        parts.append(f"{''.join(v_labels)}concat=n={n}:v=1:a=0[vcat]")
+
+    a_label: str | None = None
+    if has_base_audio:
+        for i, (fin, fout) in enumerate(clips):
+            if audio_flags[i]:
+                start = fin * rate_den / rate_num
+                end = fout * rate_den / rate_num
+                parts.append(
+                    f"[{i}:a]atrim=start={_fmt_seconds(start)}:end={_fmt_seconds(end)},"
+                    f"asetpts=PTS-STARTPTS[zba{i}]"
+                )
+            else:
+                dur = (fout - fin) * rate_den / rate_num
+                parts.append(
+                    "anullsrc=channel_layout=stereo:sample_rate=48000,"
+                    f"atrim=duration={_fmt_seconds(dur)},asetpts=PTS-STARTPTS[zba{i}]"
+                )
+        if n == 1:
+            parts.append("[zba0]anull[abase]")
+        else:
+            parts.append(f"{''.join(f'[zba{i}]' for i in range(n))}concat=n={n}:v=0:a=1[abase]")
+        a_label = "[abase]"
+
+    return ";".join(parts), "[vcat]", a_label
