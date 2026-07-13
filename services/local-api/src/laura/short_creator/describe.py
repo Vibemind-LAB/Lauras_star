@@ -123,22 +123,18 @@ class OpenRouterDescribeBackend:
     ) -> None:
         self.api_key = api_key
 
-        # Build the deduplicated model list:
-        # If models is explicitly provided, use only that list (deduplicated).
-        # Otherwise, use the single model (for backward compatibility).
-        if models:
-            model_list = []
-            seen: set[str] = set()
-            for m in models:
-                if m and m not in seen:
-                    model_list.append(m)
-                    seen.add(m)
-        else:
-            picked = model or os.environ.get("LAURA_VLM_MODEL") or DEFAULT_OPENROUTER_MODEL
-            picked_model = picked if "/" in picked else DEFAULT_OPENROUTER_MODEL
-            model_list = [picked_model]
+        # Always resolve the primary model unconditionally (model kwarg → env → default).
+        picked = model or os.environ.get("LAURA_VLM_MODEL") or DEFAULT_OPENROUTER_MODEL
+        picked_model = picked if "/" in picked else DEFAULT_OPENROUTER_MODEL
 
-        self._models = model_list
+        # Build ordered list: primary model first, then pool entries (deduped in order).
+        ordered = [picked_model, *(models or [])]
+        deduped: list[str] = []
+        for name in ordered:
+            if name and name not in deduped:
+                deduped.append(name)
+
+        self._models = deduped
         self._preferred = 0  # sticky index: start at the first model
 
     @property
