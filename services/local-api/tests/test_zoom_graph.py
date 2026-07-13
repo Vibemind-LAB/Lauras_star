@@ -38,15 +38,17 @@ def test_segment_without_spec_is_blur_only() -> None:
 
 
 def test_segment_with_spec_builds_hybrid_graph() -> None:
+    spec = _spec()
     parts, label = zoom_hybrid_segment_parts(
-        2, 2, start_frame=0, end_frame_exclusive=120, spec=_spec(), out_w=1080, out_h=1920)
+        2, 2, start_frame=0, end_frame_exclusive=120, spec=spec, out_w=1080, out_h=1920)
     assert label == "[zh2]"
     joined = ";".join(parts)
     assert "split=2[zfa2][zza2]" in joined
     assert "[_z2bg]" in joined
     # _fmt_seconds trims trailing zeros: 1.0 → "1", 0.6 → "0.6"
     assert "trim=start=1,setpts=PTS-STARTPTS" in joined  # zoom branch starts at zoom_start_s
-    assert "crop=w='trunc((" in joined
+    ex, ey, ew, eh = spec.end_win
+    assert f"crop={ew}:{eh}:{ex}:{ey}" in joined  # static end-window crop (w/h are config-time)
     assert "scale=1080:1920:flags=lanczos" in joined
     assert "xfade=transition=fade:duration=0.6:offset=1," in joined
 

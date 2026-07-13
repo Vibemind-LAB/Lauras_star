@@ -5,9 +5,7 @@ from laura.render.zoom import (  # noqa: E402
     MIN_HEIGHT_FRAC,
     ZoomSpec,
     roi_to_window,
-    smooth_progress_expr,
     start_window,
-    zoom_crop_exprs,
     zoom_spec_from_option,
 )
 
@@ -63,21 +61,6 @@ def _spec() -> ZoomSpec:
     end = roi_to_window((0.6, 0.1, 0.25, 0.25), src_w=1920, src_h=1080, out_w=1080, out_h=1920)
     start = start_window(end, src_w=1920, src_h=1080, out_w=1080, out_h=1920)
     return ZoomSpec(end_win=end, start_win=start, zoom_start_s=1.0, transition_s=0.6)
-
-
-def test_smooth_progress_expr_shape() -> None:
-    expr = smooth_progress_expr(0.6)
-    assert "clip(t/0.6000,0,1)" in expr and "3-2*" in expr
-
-
-def test_zoom_crop_exprs_interpolate_between_windows() -> None:
-    spec = _spec()
-    w, h, x, y = zoom_crop_exprs(spec)
-    (sx, sy, sw, sh), (ex, ey, ew, eh) = spec.start_win, spec.end_win
-    assert f"({sw}+({ew}-{sw})*" in w and w.startswith("trunc(") and w.endswith("/2)*2")
-    assert f"({sh}+({eh}-{sh})*" in h
-    assert f"({sx}+({ex}-{sx})*" in x
-    assert f"({sy}+({ey}-{sy})*" in y
 
 
 def test_zoom_spec_from_option_happy_path() -> None:

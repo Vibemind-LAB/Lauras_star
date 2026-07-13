@@ -1,11 +1,12 @@
 """ROI→window math and filtergraph builders for the ``zoom_hybrid`` fit mode.
 
 ``zoom_hybrid`` renders each segment in two phases: the full frame on a
-blurred-fill canvas, then — from ``zoom_start_s`` — a smooth push into an exact
+blurred-fill canvas, then — from ``zoom_start_s`` — a dissolve into an exact
 out-aspect window around the scene's region of interest.  All window math is
-pure and pixel-integer.  A linear blend of two windows that each lie fully
-inside the source frame stays inside the frame, so the animated crop never
-needs runtime clamping.
+pure and pixel-integer.  The zoom branch crops the precomputed end window
+statically; the ``xfade`` dissolve between the full-frame and zoom branches is
+the transition — ffmpeg's ``crop`` filter evaluates ``w``/``h`` only once at
+filter-configuration time, so it cannot animate its output size.
 """
 
 from __future__ import annotations
@@ -94,29 +95,6 @@ class ZoomSpec:
     start_win: tuple[int, int, int, int]
     zoom_start_s: float
     transition_s: float = DEFAULT_TRANSITION_S
-
-
-def smooth_progress_expr(duration_s: float) -> str:
-    """ffmpeg per-frame eased progress 0→1 over local time ``t`` ∈ [0, duration]."""
-    lin = f"clip(t/{duration_s:.4f},0,1)"
-    return f"(({lin})*({lin})*(3-2*({lin})))"
-
-
-def zoom_crop_exprs(spec: ZoomSpec) -> tuple[str, str, str, str]:
-    """Crop expressions (w, h, x, y) pushing ``start_win`` → ``end_win``.
-
-    Local time base: the zoom branch is trimmed to begin at ``zoom_start_s``,
-    so the push covers t ∈ [0, transition_s].  ``trunc(…/2)*2`` keeps every
-    animated value an even integer (yuv420 chroma alignment).
-    """
-    p = smooth_progress_expr(spec.transition_s)
-    sx, sy, sw, sh = spec.start_win
-    ex, ey, ew, eh = spec.end_win
-    w = f"trunc(({sw}+({ew}-{sw})*{p})/2)*2"
-    h = f"trunc(({sh}+({eh}-{sh})*{p})/2)*2"
-    x = f"trunc(({sx}+({ex}-{sx})*{p})/2)*2"
-    y = f"trunc(({sy}+({ey}-{sy})*{p})/2)*2"
-    return (w, h, x, y)
 
 
 def zoom_spec_from_option(
@@ -214,14 +192,14 @@ def zoom_hybrid_segment_parts(
 
     full_in, zoom_in = f"[zfa{seg_idx}]", f"[zza{seg_idx}]"
     full_out, zoom_out = f"[zfull{seg_idx}]", f"[zzoom{seg_idx}]"
-    w, h, x, y = zoom_crop_exprs(spec)
+    ex, ey, ew, eh = spec.end_win
     parts = [
         f"{trim},split=2{full_in}{zoom_in}",
         reel_blur_fill_graph(full_in, composed, out_w=out_w, out_h=out_h, tag=f"_z{seg_idx}"),
         f"{composed}setsar=1{full_out}",
         (
             f"{zoom_in}trim=start={_fmt_seconds(spec.zoom_start_s)},setpts=PTS-STARTPTS,"
-            f"crop=w='{w}':h='{h}':x='{x}':y='{y}',"
+            f"crop={ew}:{eh}:{ex}:{ey},"
             f"scale={out_w}:{out_h}:flags=lanczos,setsar=1,settb=AVTB{zoom_out}"
         ),
         (
