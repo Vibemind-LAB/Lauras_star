@@ -18,8 +18,8 @@ from laura.short_creator.board_models import (
 )
 
 
-def _review(**overrides):
-    base = dict(
+def _review(**overrides: object) -> SceneReview:
+    base: dict[str, object] = dict(
         scene_number=3,
         src_start_frame=100,
         src_end_frame_exclusive=220,
@@ -30,7 +30,7 @@ def _review(**overrides):
         roi=Roi(x=0.1, y=0.2, w=0.5, h=0.4),
     )
     base.update(overrides)
-    return SceneReview(**base)
+    return SceneReview(**base)  # type: ignore[arg-type]
 
 
 def test_scene_review_roundtrip() -> None:
@@ -76,7 +76,7 @@ def test_storyline_roles_are_closed_set() -> None:
     with pytest.raises(ValidationError):
         Chapter(
             chapter=1,
-            role="outro",
+            role="outro",  # type: ignore[arg-type]
             message="x",
             scene_numbers=[1],
             target_seconds=3.0,
@@ -84,10 +84,16 @@ def test_storyline_roles_are_closed_set() -> None:
 
 
 def test_cutlist_orders_must_be_contiguous() -> None:
-    seg = dict(scene_number=1, start_frame=0, end_frame_exclusive=120, roi=None, zoom_start_s=None)
+    seg: dict[str, object] = dict(
+        scene_number=1, start_frame=0, end_frame_exclusive=120, roi=None, zoom_start_s=None
+    )
     with pytest.raises(ValidationError):
-        Cutlist(segments=[CutSegment(order=0, **seg), CutSegment(order=2, **seg)])
-    ok = Cutlist(segments=[CutSegment(order=0, **seg), CutSegment(order=1, **seg)])
+        Cutlist(
+            segments=[CutSegment(order=0, **seg), CutSegment(order=2, **seg)]  # type: ignore[arg-type]
+        )
+    ok = Cutlist(
+        segments=[CutSegment(order=0, **seg), CutSegment(order=1, **seg)]  # type: ignore[arg-type]
+    )
     assert [s.order for s in ok.segments] == [0, 1]
 
 
@@ -100,7 +106,7 @@ def test_script_needs_lines() -> None:
 
 def test_qa_report_verdict_literal() -> None:
     with pytest.raises(ValidationError):
-        QaReport(verdict="maybe", findings=[])
+        QaReport(verdict="maybe", findings=[])  # type: ignore[arg-type]
     assert QaReport(verdict="ship", findings=[]).verdict == "ship"
 
 
