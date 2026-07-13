@@ -542,6 +542,7 @@ def tool_render_segments(
     out_size: tuple[int, int] = (1080, 1920),
     voiceover_path: str | None = None,
     voiceover_text: str | None = None,
+    zoom: list[dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Render raw source segments of one asset to a short (export/job ids returned).
 
@@ -550,6 +551,9 @@ def tool_render_segments(
     number. ``vertical``/``out_size`` select the canvas (1080×1920 reel, 1080×1080 square, or
     ``vertical=False`` for the native 16:9 pass-through); ``fit="blur"`` letterboxes onto a
     blurred background.
+
+    ``zoom``: optional per-segment hybrid-zoom hints (``{"roi": {x,y,w,h}, "zoom_start_s": s}``
+    or ``None``), index-aligned with ``segments``; requires ``vertical=True``.
     """
     asset = repos.get_asset(db, asset_id)
     if asset is None:
@@ -575,6 +579,8 @@ def tool_render_segments(
         options["voiceover_path"] = voiceover_path
         options["voiceover_text"] = voiceover_text
         options["ai_effect"] = "voiceover_elevenlabs"
+    if zoom is not None:
+        options["zoom"] = zoom
     exp = repos.create_export(
         db,
         project_id=asset["project_id"],

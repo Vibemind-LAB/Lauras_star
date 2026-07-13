@@ -33,6 +33,7 @@ from ..jobs.runner import JobContext, JobHandler
 from .captions import build_ass, group_caption_lines
 from .captions_source import candidate_caption_words
 from .mp4 import render_clips_mp4
+from .zoom import ZoomSpec, zoom_spec_from_option
 
 _log = logging.getLogger(__name__)
 
@@ -183,6 +184,38 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
     raw_size = opts.get("out_size") or [1080, 1920]
     out_size = (int(raw_size[0]), int(raw_size[1]))
 
+    # zoom_hybrid: per-segment options, index-aligned with the segment list.
+    # Missing/invalid entries and missing asset dimensions degrade to plain
+    # blur-fill — never fail a render over a zoom hint.
+    zoom_specs: list[ZoomSpec | None] | None = None
+    zoom_raw = opts.get("zoom")
+    if zoom_raw is not None:
+        if not isinstance(zoom_raw, list) or len(zoom_raw) != len(segment_ranges):
+            repos.set_export_error(ctx.db, export_id, "zoom must align 1:1 with segments")
+            raise ValueError("zoom must align 1:1 with segments")
+        src_w = asset.get("width")
+        src_h = asset.get("height")
+        if vertical and src_w and src_h:
+            fps = rate_num / (rate_den or 1)
+            zoom_specs = [
+                zoom_spec_from_option(
+                    z if isinstance(z, dict) else None,
+                    src_w=int(src_w),
+                    src_h=int(src_h),
+                    out_w=out_size[0],
+                    out_h=out_size[1],
+                    segment_seconds=(end - start) / fps,
+                )
+                for z, (start, end) in zip(zoom_raw, segment_ranges, strict=True)
+            ]
+            if all(s is None for s in zoom_specs):
+                zoom_specs = None
+        else:
+            _log.warning(
+                "zoom requested but unusable (vertical=%s, dims=%s×%s) — blur fallback",
+                vertical, src_w, src_h,
+            )
+
     # The short is the ordered concat of the trimmed source segments (end-exclusive, integer
     # frames). One segment == the classic single-clip short.
     clips: list[tuple[Path, int, int]] = [
@@ -247,6 +280,7 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
             vertical=vertical,
             reel_fit=reel_fit,
             reel_blur_fill=reel_blur_fill,
+            zoom_specs=zoom_specs,
             out_size=out_size,
             hook_text=hook_text if isinstance(hook_text, str) else None,
             caption_ass=caption_ass,
