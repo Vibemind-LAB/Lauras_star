@@ -75,7 +75,7 @@ def start_window(
     out_w: int,
     out_h: int,
 ) -> tuple[int, int, int, int]:
-    """Widest out-aspect window centered on ``end_win`` — where the push starts."""
+    """Widest out-aspect window centered on ``end_win`` — used in degenerate-roi check."""
     x, y, w, h = end_win
     roi = (x / src_w, y / src_h, w / src_w, h / src_h)
     return roi_to_window(
@@ -87,8 +87,9 @@ def start_window(
 class ZoomSpec:
     """Per-segment hybrid-zoom parameters in source-pixel space.
 
-    ``zoom_start_s`` is relative to the segment start; the push runs over
-    ``transition_s`` and then holds ``end_win`` until the segment ends.
+    ``zoom_start_s`` is relative to the segment start; the dissolve to the
+    static end window runs over ``transition_s`` and then holds ``end_win``
+    until the segment ends.
     """
 
     end_win: tuple[int, int, int, int]
@@ -111,7 +112,7 @@ def zoom_spec_from_option(
     Option shape: ``{"roi": {"x","y","w","h"}, "zoom_start_s": float,
     "transition_s": float?}`` (roi normalized).  Returns ``None`` — meaning
     plain full-frame blur-fill — for ``None``/malformed/out-of-range ROIs and
-    for segments too short for a visible push.  Fallback contract: never
+    for segments too short for a visible zoom.  Fallback contract: never
     crash, never center-crop.
     """
     if option is None:

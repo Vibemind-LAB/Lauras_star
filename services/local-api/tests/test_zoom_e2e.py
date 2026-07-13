@@ -58,3 +58,32 @@ def test_zoom_hybrid_e2e(tmp_path: Path) -> None:
     video = next(s for s in info["streams"] if s["codec_type"] == "video")
     assert (video["width"], video["height"]) == (1080, 1920)
     assert abs(float(info["format"]["duration"]) - 4.0) < 0.25
+
+
+def test_zoom_hybrid_e2e_with_audio(tmp_path: Path) -> None:
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=4",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+         str(src)],
+        check=True,
+    )
+    dest = tmp_path / "out.mp4"
+    spec = zoom_spec_from_option(
+        {"roi": {"x": 0.6, "y": 0.1, "w": 0.3, "h": 0.3}, "zoom_start_s": 0.8},
+        src_w=1920, src_h=1080, out_w=1080, out_h=1920, segment_seconds=2.0,
+    )
+    assert spec is not None
+    render_clips_mp4(
+        [(src, 0, 60), (src, 60, 120)], dest,
+        rate_num=30, rate_den=1, vertical=True,
+        zoom_specs=[spec, None], out_size=(1080, 1920),
+    )
+    assert dest.is_file() and dest.stat().st_size > 0
+    info = _probe(dest)
+    video = next(s for s in info["streams"] if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (1080, 1920)
+    assert abs(float(info["format"]["duration"]) - 4.0) < 0.25
+    assert any(s["codec_type"] == "audio" for s in info["streams"])
