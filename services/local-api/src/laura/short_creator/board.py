@@ -14,8 +14,9 @@ runs *downstream* along ``_CHAIN`` — never upstream — so cached upstream wor
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel
 
@@ -185,3 +186,40 @@ class Board:
     def _archive(self, stem: str, version: int, path: Path) -> None:
         dest = self.root / "versions" / f"{stem}.v{version}.json"
         _write_atomic(dest, path.read_text(encoding="utf-8"))
+
+    # -- progress -----------------------------------------------------------
+
+    def resume_point(self, expected_scenes: list[int]) -> str:
+        """First missing artifact — where a (re)started session job continues."""
+        have = {r.scene_number for r in self.scene_reviews()}
+        missing = [n for n in expected_scenes if n not in have]
+        if missing:
+            return f"scene_reviews:{missing[0]}"
+        for name in _CHAIN:
+            if self.load(name) is None:
+                return name
+        return "done"
+
+    def status(self) -> dict[str, Any]:
+        """Board summary for the session API (versions + presence)."""
+        reviews = self.scene_reviews()
+        artifacts: dict[str, Any] = {}
+        for name in _CHAIN:
+            cur = self.load(name)
+            if cur is not None:
+                cur_versioned = cast(_Versioned, cur)
+                version = int(cur_versioned.version)
+            else:
+                version = None
+            artifacts[name] = {
+                "version": version,
+                "archived_versions": self.versions(name),
+            }
+        return {
+            "meta": json.loads(self.meta().model_dump_json()),
+            "scene_reviews": {
+                "count": len(reviews),
+                "scenes": [r.scene_number for r in reviews],
+            },
+            "artifacts": artifacts,
+        }

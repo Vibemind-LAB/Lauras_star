@@ -143,3 +143,40 @@ def test_revert_unknown_version_raises(tmp_path: Path) -> None:
     board.save("storyline", _storyline())
     with pytest.raises(FileNotFoundError):
         board.revert("storyline", 7)
+
+
+# -- progress & status -------------------------------------------------------
+
+
+def test_resume_point_progression(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    assert board.resume_point([1, 2]) == "scene_reviews:1"
+    board.save_scene_review(_review(1))
+    assert board.resume_point([1, 2]) == "scene_reviews:2"
+    board.save_scene_review(_review(2))
+    assert board.resume_point([1, 2]) == "storyline"
+    board.save("storyline", _storyline())
+    assert board.resume_point([1, 2]) == "script"
+    board.save("script", _script())
+    assert board.resume_point([1, 2]) == "voice"
+
+
+def test_resume_point_reflects_invalidation(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    board.save_scene_review(_review(1))
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    board.save("storyline", _storyline("changed"))  # invalidates script
+    assert board.resume_point([1]) == "script"
+
+
+def test_status_shape(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    board.save_scene_review(_review(1))
+    board.save("storyline", _storyline("a"))
+    board.save("storyline", _storyline("b"))
+    status = board.status()
+    assert status["meta"]["session_id"] == "s1"
+    assert status["scene_reviews"] == {"count": 1, "scenes": [1]}
+    assert status["artifacts"]["storyline"] == {"version": 2, "archived_versions": [1]}
+    assert status["artifacts"]["qa_report"] == {"version": None, "archived_versions": []}
