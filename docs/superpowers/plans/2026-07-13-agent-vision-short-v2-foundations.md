@@ -22,6 +22,18 @@
 
 **Arbeitsverzeichnis aller Kommandos:** `services/local-api/`.
 
+> **Design-Amendment (2026-07-13, nach Task-7-Review):** ffmpegs `crop` wertet
+> `w`/`h` nur EINMAL bei Filter-Konfiguration aus — animierte Fenstergrößen-Ausdrücke
+> (Task 6 `zoom_crop_exprs`/`smooth_progress_expr`, Task 7 Zoom-Branch) brechen den
+> Graphen zur Laufzeit (-22, empirisch belegt). **v1 rendert den Zoom-Branch statisch:**
+> `crop={end_w}:{end_h}:{end_x}:{end_y}` (Werte aus `ZoomSpec.end_win`), Übergang bleibt
+> der bestehende `xfade`-Dissolve mit unveränderter Timing-Algebra. `zoom_crop_exprs` und
+> `smooth_progress_expr` sind ersatzlos entfernt (samt ihren Tests); `ZoomSpec` behält
+> `start_win` (wird vom Degenerat-Check in `zoom_spec_from_option` genutzt). Die
+> Schnittstellen von Task 7 (`zoom_hybrid_segment_parts`, `zoom_concat_graph`,
+> `[vcat]`/`[abase]`) und alles in Task 8–11 bleiben unverändert gültig; Task 10 ist
+> der empirische Gate. Animierter Push = spätere Iteration (zoompan-Kandidat).
+
 ---
 
 ### Task 1: Board-Schemas (`board_models.py`)

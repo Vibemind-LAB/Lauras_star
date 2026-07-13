@@ -162,9 +162,18 @@ Pro Segment (aus `cutlist.json`): `{roi, zoom_start_s}`.
 
 - Phase 1 (voll): Quellbild komplett sichtbar, Blur-Fill-Rahmen (bestehender
   `reel_blur_fill`-Pfad).
-- Übergang: ab `zoom_start_s` (relativ zum Segmentstart) geeaster Crop-Flug (~0,6s,
-  smoothstep) in das ROI-Fenster.
+- Übergang: ab `zoom_start_s` (relativ zum Segmentstart) weicher Übergang (~0,6s,
+  `xfade`-Dissolve) in das ROI-Fenster.
 - Phase 2 (Zoom): ROI-Fenster füllt 1080×1920 exakt.
+
+> **Design-Amendment (2026-07-13, Implementierungsbefund):** Der ursprünglich
+> spezifizierte geeaste Crop-Flug (animierte `crop`-Fenstergröße per Ausdruck) ist in
+> ffmpeg nicht umsetzbar — `crop` wertet `w`/`h` nur einmal bei Filter-Konfiguration
+> aus (nur `x`/`y` sind per-frame); ein `t`-Ausdruck in `w`/`h` bricht den Graphen
+> (-22), empirisch belegt. v1 rendert deshalb **statisch: Voll-Phase → xfade-Dissolve
+> → statisches ROI-Fenster** (gleiches Timing, gleiche Wirkung „voll → gezoomt,
+> stimmensynchron"). Ein echter animierter Push ist eine spätere Iteration
+> (Kandidat: `zoompan`, braucht eigene empirische Validierung wegen Jitter/`it`-Vars).
 
 ROI→Fenster-Mathematik (deterministisch, rein, getestet):
 
