@@ -83,7 +83,7 @@ def test_load_rgb_frames_batches_large_selects(monkeypatch: Any) -> None:
 
         return _Result()
 
-    monkeypatch.setattr(ve.subprocess, "run", fake_run)
+    monkeypatch.setattr(ve.subprocess, "run", fake_run)  # type: ignore[attr-defined]
     frames = list(range(0, 250 * 30, 30))  # 250 sampled indices (a long video)
 
     out = ve.load_rgb_frames_ffmpeg("v.mp4", frames)

@@ -42,9 +42,11 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
         def __init__(
             self, *, participants: tuple[object, ...], model_client: object, max_turns: int = 0
         ) -> None:
-            self.participants = list(participants)
-            self.model_client = model_client
-            self.max_turns = max_turns
+            # Mirrors the real autogen_agentchat MagenticOneGroupChat, which only exposes
+            # these as private attributes (set by BaseGroupChat.__init__ / this __init__).
+            self._participants = list(participants)
+            self._model_client = model_client
+            self._max_turns = max_turns
             created["team"] = self
 
     ollama = types.ModuleType("autogen_ext.models.ollama")
@@ -74,6 +76,7 @@ def test_build_magentic_team_wires_roster(
 ) -> None:
     _install_fake_autogen(monkeypatch)
     team = magentic.build_magentic_team(db, providers.resolve_from_env({}))
-    assert len(team.participants) == 7
-    assert team.model_client is not None
-    assert team.max_turns == magentic.MAX_TURNS
+    # autogen's MagenticOneGroupChat only exposes these privately (no public accessor).
+    assert len(team._participants) == 7
+    assert team._model_client is not None
+    assert team._max_turns == magentic.MAX_TURNS

@@ -284,7 +284,7 @@ def test_retrying_client_backs_off_exponentially(monkeypatch: pytest.MonkeyPatch
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
 
-    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)  # type: ignore[attr-defined]
     inner = _FlakyInner([TypeError("x") for _ in range(5)])
     client = p.RetryingChatClient(inner)  # default pauses
 
@@ -303,7 +303,7 @@ def test_retrying_client_uses_server_reset_hint(monkeypatch: pytest.MonkeyPatch)
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
 
-    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)  # type: ignore[attr-defined]
     inner = _FlakyInner([_status_error(429)])
     inner.errors[0] = Exception("Rate limit exceeded (reset after 1m 4s)")
     inner.errors[0].status_code = 429  # type: ignore[attr-defined]
@@ -323,7 +323,7 @@ def test_retrying_client_retries_empty_content_results(
     async def fake_sleep(seconds: float) -> None:
         return None
 
-    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(p.asyncio, "sleep", fake_sleep)  # type: ignore[attr-defined]
 
     class _EmptyThenText:
         def __init__(self) -> None:
