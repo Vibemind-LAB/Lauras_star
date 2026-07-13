@@ -27,13 +27,25 @@ to save chapters that reference a scene without a review yet. ``save_script_chap
 chapter (other chapters' lines are kept, only the given chapter's lines are replaced) and, like
 every ``board.save()`` call, invalidates every artifact downstream in the chain (voice, cutlist,
 render report, qa report).
+
+``synthesize_script_voice``/``build_cutlist`` are the Slice-3 core toolkit (Task 5).
+``synthesize_script_voice`` turns the board's script into an mp3 + word-timings sidecar through
+``deps.voice_backend`` (falling back to :func:`laura.short_creator.voice.resolve_voice_backend`,
+same graceful-without-config pattern as the VLM), cached by a sha256 of the script's text
+(:func:`script_hash`) so re-running after an unrelated board change is a no-op. ``build_cutlist``
+is a *pure derivation* — no model or backend calls — turning storyline + script + voice into a
+frame-accurate ``Cutlist``: one ``CutSegment`` per scene in arc order, clamped inside its own
+source range, with an optional zoom timed to when the scene's script line is actually spoken
+(the voice sidecar's word ``start_s``, via :func:`line_starts`, offset by ``transition_lead_s``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -41,13 +53,24 @@ from pydantic import ValidationError
 from ..analysis.transition_review import extract_frames
 from ..db import repos
 from ..db.database import Database
-from ..util import utcnow_iso
+from ..util import new_id, utcnow_iso
 from . import context
 from .board import Board
-from .board_models import BestWindow, Chapter, Roi, SceneReview, Script, ScriptLine, Storyline
+from .board_models import (
+    BestWindow,
+    Chapter,
+    Cutlist,
+    CutSegment,
+    Roi,
+    SceneReview,
+    Script,
+    ScriptLine,
+    Storyline,
+    VoiceArtifact,
+)
 from .describe import DescribeBackend, resolve_describe_backend
 from .toolset import ToolSpec
-from .voice import VoiceBackend
+from .voice import VoiceBackend, resolve_voice_backend
 
 # Signature of laura.mcp.tools.tool_render_segments — wired in from Task 6 on.
 RenderSegmentsFn = Callable[..., dict[str, Any]]
@@ -233,6 +256,65 @@ def _validation_errors(exc: ValidationError) -> list[str]:
     """Up to 5 ``"loc: msg"`` strings out of a ValidationError — compact enough for the agent
     to read and self-correct on, without dumping pydantic's full error payload."""
     return [f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]]
+
+
+# --- voice + cutlist (pure) -------------------------------------------------------------------
+
+
+def script_text(script: Script) -> str:
+    """The script's full spoken text: lines ordered by ``(chapter, their list position)``,
+    joined with a single space. This exact string is what goes to the voice backend and is
+    hashed (:func:`script_hash`) as the synthesis cache key — so its ordering must be stable."""
+    ordered = sorted(script.lines, key=lambda line: line.chapter)
+    return " ".join(line.text for line in ordered)
+
+
+def script_hash(script: Script) -> str:
+    """sha256 hex digest over :func:`script_text` — the voice-synthesis cache key (Task 5):
+    unchanged text (even across an unrelated re-save) hits the cache instead of re-synthesizing."""
+    return hashlib.sha256(script_text(script).encode("utf-8")).hexdigest()
+
+
+def line_starts(script: Script, words: list[dict[str, Any]]) -> dict[tuple[int, int], float]:
+    """Each line's ``(chapter, scene_number)`` mapped to its first word's ``start_s``.
+
+    ``words`` (a voice backend's timings sidecar) are assumed to be the whitespace tokens of
+    exactly :func:`script_text`'s output, in order — so each line "claims" as many words as it
+    has whitespace-split tokens, walking the shared word stream forward in the same
+    ``(chapter, list position)`` order ``script_text`` joined them in. A line is absent from the
+    result if the word stream runs out before reaching it (e.g. a sidecar shorter than the
+    script) — callers treat a missing entry as "no known start" (skip the zoom for that line).
+    """
+    ordered = sorted(script.lines, key=lambda line: line.chapter)
+    out: dict[tuple[int, int], float] = {}
+    idx = 0
+    for line in ordered:
+        n_tokens = len(line.text.split())
+        if n_tokens and idx < len(words):
+            out[(line.chapter, line.scene_number)] = _as_float(words[idx].get("start_s"), 0.0)
+        idx += n_tokens
+    return out
+
+
+def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
+    """The voice sidecar's ``words`` list, or ``[]`` for a missing/unreadable/malformed file."""
+    if not timings_path:
+        return []
+    try:
+        return list(json.loads(Path(timings_path).read_text(encoding="utf-8"))["words"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def _segment_duration_s(
+    *, target_seconds: float, n_scenes: int, best_window: BestWindow, scene_duration_s: float
+) -> float:
+    """One scene's cutlist-segment length: the chapter's per-scene time budget, floored at 2s
+    and capped at the best_window's own length (itself floored at 2s, so a short highlight
+    doesn't shrink the cap below the floor) — then clamped inside the scene's own duration."""
+    budget = target_seconds / n_scenes
+    upper = best_window.duration_s if best_window.duration_s > 2.0 else 2.0
+    return min(max(2.0, min(budget, upper)), scene_duration_s)
 
 
 # --- tool builder ----------------------------------------------------------------------------
@@ -445,6 +527,165 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def synthesize_script_voice() -> dict[str, Any]:
+        """Speak the board's current script with the configured voice backend, caching by a
+        hash of the script text — a re-run after an unrelated board change is a no-op
+        (``cached: True``). Requires save_script_chapter to have run first. On a fresh
+        synthesis, the mp3 plus a word-timings sidecar (used for caption burn-in and
+        build_cutlist's zoom timing) are saved as the board's voice artifact. Gracefully
+        reports ``ok: False`` without raising when no voice backend is configured or the
+        backend itself fails."""
+        try:
+            script = board.load("script")
+            if not isinstance(script, Script):
+                return {"ok": False, "reason": "no script on the board"}
+            new_hash = script_hash(script)
+
+            existing = board.load("voice")
+            if isinstance(existing, VoiceArtifact) and existing.script_hash == new_hash:
+                return {
+                    "ok": True,
+                    "cached": True,
+                    "mp3_path": existing.mp3_path,
+                    "voice_s": existing.voice_s,
+                }
+
+            backend = d.voice_backend if d.voice_backend is not None else resolve_voice_backend()
+            if backend is None:
+                return {"ok": False, "reason": "no voice backend configured"}
+            asset = repos.get_asset(db, asset_id)
+            if asset is None:
+                return {"ok": False, "reason": "asset not found"}
+            project = repos.get_project(db, str(asset["project_id"]))
+            if project is None:
+                return {"ok": False, "reason": "project not found"}
+
+            out_path = Path(str(project["workspace_root"])) / "voiceovers" / f"{new_id()}.mp3"
+            result = backend.synthesize(script_text(script), out_path)
+            if not result.get("ok"):
+                return {"ok": False, "reason": str(result.get("reason") or "synthesis failed")}
+
+            words = _read_words(result.get("timings_path"))
+            voice_s = _as_float(words[-1].get("end_s"), 0.0) if words else None
+            artifact = VoiceArtifact(
+                script_hash=new_hash,
+                mp3_path=str(out_path),
+                timings_path=result.get("timings_path"),
+                voice_s=voice_s,
+            )
+            version = board.save("voice", artifact)
+            return {
+                "ok": True,
+                "cached": False,
+                "version": version,
+                "mp3_path": artifact.mp3_path,
+                "voice_s": voice_s,
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def build_cutlist(transition_lead_s: float = 0.4) -> dict[str, Any]:
+        """Deterministically derive a frame-accurate cutlist from storyline + script + voice:
+        one CutSegment per scene in arc order (chapter, then that chapter's scene_numbers
+        order), each segment's length from the chapter's time budget clamped to its scene's
+        best_window and the scene's own duration, and an optional zoom-in timed to when the
+        scene's script line is actually spoken (from the voice sidecar's word starts, offset
+        ahead by transition_lead_s so the zoom lands just before the word lands, not on it).
+        Requires save_storyline, save_script_chapter and synthesize_script_voice to have all
+        run first — reports which one is missing instead of raising."""
+        try:
+            storyline = board.load("storyline")
+            if not isinstance(storyline, Storyline):
+                return {
+                    "ok": False,
+                    "reason": "no storyline on the board; run save_storyline first",
+                }
+            script = board.load("script")
+            if not isinstance(script, Script):
+                return {
+                    "ok": False,
+                    "reason": "no script on the board; run save_script_chapter first",
+                }
+            voice = board.load("voice")
+            if not isinstance(voice, VoiceArtifact):
+                return {
+                    "ok": False,
+                    "reason": "no voice on the board; run synthesize_script_voice first",
+                }
+
+            asset = repos.get_asset(db, asset_id)
+            fps = _fps(db, asset) if asset is not None else 30.0
+            line_map = line_starts(script, _read_words(voice.timings_path))
+            reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
+
+            segments: list[CutSegment] = []
+            video_start_s = 0.0
+            order = 0
+            for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
+                n_scenes = len(chapter.scene_numbers)
+                for scene_number in chapter.scene_numbers:
+                    resolved = _resolve_scene(db, asset_id, scene_number)
+                    if resolved is None:
+                        continue
+                    src_start, src_end, _text = resolved
+                    scene_duration_s = (src_end - src_start) / fps
+
+                    review = reviews_by_scene.get(scene_number)
+                    if review is not None:
+                        best_window, roi = review.best_window, review.roi
+                    else:
+                        best_window = BestWindow(
+                            offset_s=0.0, duration_s=min(_DEFAULT_WINDOW_S, scene_duration_s)
+                        )
+                        roi = None
+
+                    seg_dur_s = _segment_duration_s(
+                        target_seconds=chapter.target_seconds,
+                        n_scenes=n_scenes,
+                        best_window=best_window,
+                        scene_duration_s=scene_duration_s,
+                    )
+                    dur_frames = round(seg_dur_s * fps)
+                    raw_start = src_start + round(best_window.offset_s * fps)
+                    start_frame = min(raw_start, src_end - dur_frames)
+                    end_frame_exclusive = start_frame + max(dur_frames, 1)
+                    actual_dur_s = (end_frame_exclusive - start_frame) / fps
+
+                    zoom_start_s: float | None = None
+                    line_start = line_map.get((chapter.chapter, scene_number))
+                    if roi is not None and line_start is not None:
+                        candidate = max(0.0, line_start - video_start_s + transition_lead_s)
+                        if candidate < actual_dur_s - 0.7:
+                            zoom_start_s = candidate
+
+                    segments.append(
+                        CutSegment(
+                            order=order,
+                            scene_number=scene_number,
+                            start_frame=start_frame,
+                            end_frame_exclusive=end_frame_exclusive,
+                            roi=roi,
+                            zoom_start_s=zoom_start_s,
+                        )
+                    )
+                    video_start_s += actual_dur_s
+                    order += 1
+
+            if not segments:
+                return {"ok": False, "reason": "no scenes resolved from the storyline"}
+
+            board.save("cutlist", Cutlist(segments=segments))
+            total_seconds = sum((s.end_frame_exclusive - s.start_frame) / fps for s in segments)
+            with_zoom = sum(1 for s in segments if s.zoom_start_s is not None)
+            return {
+                "ok": True,
+                "segments": len(segments),
+                "total_seconds": round(total_seconds, 3),
+                "with_zoom": with_zoom,
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         board_status,
         get_scene_context,
@@ -454,5 +695,7 @@ def build_production_tool_specs(
         get_storyline,
         save_script_chapter,
         get_script,
+        synthesize_script_voice,
+        build_cutlist,
     ]
     return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]
