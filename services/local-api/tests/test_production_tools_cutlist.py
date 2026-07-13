@@ -163,12 +163,14 @@ class _FakeVoiceBackend:
         self, *, words: list[dict[str, Any]] | None = None, ok: bool = True, reason: str = "boom"
     ) -> None:
         self.calls = 0
+        self.last_text: str | None = None
         self._words = words if words is not None else []
         self._ok = ok
         self._reason = reason
 
     def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
         self.calls += 1
+        self.last_text = text
         if not self._ok:
             return {"ok": False, "reason": self._reason}
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,19 +205,19 @@ def test_script_text_and_hash_stable() -> None:
         ],
     )
 
-    text = script_text(script)
+    text = script_text(script.lines)
 
     assert text == "Stopp dein Team Ein Klick genügt Und fertig"
 
-    h1 = script_hash(script)
-    h2 = script_hash(script.model_copy(deep=True))
+    h1 = script_hash(script.lines)
+    h2 = script_hash(script.model_copy(deep=True).lines)
     assert h1 == h2
     assert len(h1) == 64  # sha256 hex digest
 
     changed = script.model_copy(
         update={"lines": [*script.lines, ScriptLine(chapter=2, scene_number=4, text="!")]}
     )
-    assert script_hash(changed) != h1
+    assert script_hash(changed.lines) != h1
 
 
 def test_line_starts_maps_tokens_to_word_times() -> None:
@@ -234,7 +236,7 @@ def test_line_starts_maps_tokens_to_word_times() -> None:
         {"text": "Klick", "start_s": 1.9, "end_s": 2.3},
     ]
 
-    starts = line_starts(script, words)
+    starts = line_starts(script.lines, words)
 
     assert starts == {(1, 1): 0.0, (1, 2): 1.5}
 
@@ -242,6 +244,7 @@ def test_line_starts_maps_tokens_to_word_times() -> None:
 def test_synthesize_uses_cache_on_same_hash(tmp_path: Path) -> None:
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
     board.save("script", _script())
     backend = _FakeVoiceBackend(
         words=[
@@ -271,12 +274,15 @@ def test_synthesize_uses_cache_on_same_hash(tmp_path: Path) -> None:
 
     saved = board.load("voice")
     assert isinstance(saved, VoiceArtifact)
-    assert saved.script_hash == script_hash(_script())
+    # default _storyline() scene_numbers=[1, 2] matches _script()'s natural line order, so the
+    # storyline-ordered hash equals the raw line-order hash here.
+    assert saved.script_hash == script_hash(_script().lines)
 
 
 def test_synthesize_reports_backend_failure(tmp_path: Path) -> None:
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
     board.save("script", _script())
     backend = _FakeVoiceBackend(ok=False, reason="quota exceeded")
     deps = ProductionDeps(voice_backend=backend)
@@ -398,3 +404,88 @@ def test_build_cutlist_clamps_inside_scene(tmp_path: Path) -> None:
     assert seg.end_frame_exclusive == 300
     assert seg.end_frame_exclusive <= SCENE_FRAMES
     assert seg.zoom_start_s is None  # roi=None -> no zoom regardless of timing
+
+
+def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> None:
+    """Regression test for the A/V-sync bug: the script's lines are WRITTEN scene 1 first, then
+    scene 2 (``_script()``'s natural order), but the storyline PLAYS scene 2 first, then scene 1
+    (``scene_numbers=[2, 1]``) — a scrambled chapter. Voice text, the word-start map and the
+    cutlist's per-segment zoom must all follow the STORYLINE's order, not the script's raw list
+    order, or narration/captions/zoom desync from the picture.
+
+    Also covers the voice cache: it must invalidate when ONLY the storyline's scene order
+    changes (a re-save of the storyline is downstream-invalidating for script/voice/cutlist per
+    board.py's ``_CHAIN``, so the script has to be re-saved too before synthesizing again)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(
+        board,
+        1,
+        best_window=BestWindow(offset_s=1.0, duration_s=3.0),
+        roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
+    )
+    _review(
+        board,
+        2,
+        best_window=BestWindow(offset_s=0.0, duration_s=3.0),
+        roi=Roi(x=0.3, y=0.3, w=0.2, h=0.2),
+    )
+    # Storyline plays scene 2 BEFORE scene 1 ...
+    board.save("storyline", _storyline(scene_numbers=[2, 1], target_seconds=4.0))
+    # ... but the script's lines were written scene 1 first, scene 2 second (scrambled vs the
+    # storyline — _script() is unchanged from every other test in this file).
+    board.save("script", _script())
+
+    # Word timings as a real TTS backend would produce them for the CORRECTLY (storyline-)
+    # ordered text "Ein Klick genügt Stopp dein Team" (scene 2's line, then scene 1's line).
+    backend = _FakeVoiceBackend(
+        words=[
+            {"text": "Ein", "start_s": 0.2, "end_s": 0.45},
+            {"text": "Klick", "start_s": 0.5, "end_s": 0.75},
+            {"text": "genügt", "start_s": 0.8, "end_s": 1.1},
+            {"text": "Stopp", "start_s": 2.5, "end_s": 2.75},
+            {"text": "dein", "start_s": 2.8, "end_s": 3.0},
+            {"text": "Team", "start_s": 3.1, "end_s": 3.4},
+        ]
+    )
+    deps = ProductionDeps(voice_backend=backend)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    synth = specs["synthesize_script_voice"].func()
+    assert synth["ok"] is True
+    assert synth["cached"] is False
+    assert backend.calls == 1
+    assert backend.last_text == "Ein Klick genügt Stopp dein Team"
+
+    built = specs["build_cutlist"].func()
+    assert built["ok"] is True
+
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+
+    # Video order follows the STORYLINE (scene 2 first, scene 1 second) ...
+    assert (seg0.order, seg0.scene_number) == (0, 2)
+    assert (seg1.order, seg1.scene_number) == (1, 1)
+    # ... and the zoom timing follows that SAME order: scene 2's zoom uses the EARLY word start
+    # (its line is spoken first), scene 1's zoom uses the LATE one (its line is spoken second) —
+    # the exact opposite of what the naive (chapter, list-position) order would have produced
+    # (which would have paired scene 1 with the early words and scene 2 with the late ones).
+    assert seg0.zoom_start_s == pytest.approx(0.6)
+    assert seg1.zoom_start_s == pytest.approx(0.9)
+
+    # The voice cache is keyed on the ORDERED text: re-saving the storyline with a DIFFERENT
+    # scene order changes that text (even though the script itself is untouched) and must
+    # invalidate the cache. save_storyline invalidates script downstream (board.py's _CHAIN), so
+    # the script has to be re-saved before synthesizing again.
+    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=4.0))
+    assert board.load("script") is None  # confirms the downstream invalidation actually fired
+    board.save("script", _script())
+
+    second = specs["synthesize_script_voice"].func()
+    assert second["ok"] is True
+    assert second["cached"] is False  # order-only change still busts the cache
+    assert backend.calls == 2
+    assert backend.last_text == "Stopp dein Team Ein Klick genügt"

@@ -31,8 +31,12 @@ render report, qa report).
 ``synthesize_script_voice``/``build_cutlist`` are the Slice-3 core toolkit (Task 5).
 ``synthesize_script_voice`` turns the board's script into an mp3 + word-timings sidecar through
 ``deps.voice_backend`` (falling back to :func:`laura.short_creator.voice.resolve_voice_backend`,
-same graceful-without-config pattern as the VLM), cached by a sha256 of the script's text
-(:func:`script_hash`) so re-running after an unrelated board change is a no-op. ``build_cutlist``
+same graceful-without-config pattern as the VLM). It, ``build_cutlist`` and ``render_production``
+all read the script's lines through :func:`_lines_in_storyline_order` first — the STORYLINE's
+scene order, not the order the lines happen to be written in — so the spoken narration, the
+word-time map and the picture all walk the same sequence; a sha256 of that ORDERED text
+(:func:`script_hash`) is the synthesis cache key, so an unrelated board change is a no-op re-run
+while a storyline reorder (which changes the text) correctly busts the cache. ``build_cutlist``
 is a *pure derivation* — no model or backend calls — turning storyline + script + voice into a
 frame-accurate ``Cutlist``: one ``CutSegment`` per scene in arc order, clamped inside its own
 source range, with an optional zoom timed to when the scene's script line is actually spoken
@@ -335,34 +339,71 @@ def _validation_errors(exc: ValidationError) -> list[str]:
 # --- voice + cutlist (pure) -------------------------------------------------------------------
 
 
-def script_text(script: Script) -> str:
-    """The script's full spoken text: lines ordered by ``(chapter, their list position)``,
-    joined with a single space. This exact string is what goes to the voice backend and is
-    hashed (:func:`script_hash`) as the synthesis cache key — so its ordering must be stable."""
-    ordered = sorted(script.lines, key=lambda line: line.chapter)
-    return " ".join(line.text for line in ordered)
+def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[ScriptLine]:
+    """The script's lines reordered to follow the STORYLINE's playback order.
+
+    For each chapter in ``storyline.arc`` (in arc order), for each scene_number in that
+    chapter's ``scene_numbers`` (in list order), appends the matching line(s) — same chapter +
+    scene_number, preserving their relative order for multiple lines per scene. This is the
+    order the VIDEO plays in (:func:`build_cutlist` walks ``storyline.arc``/``scene_numbers`` the
+    same way), so it is also the order the voice, captions and zoom timing must walk — writing
+    a chapter's lines in a different order than its ``scene_numbers`` would otherwise desync
+    narration from picture.
+
+    Lines the storyline does not reference (a stale chapter/scene left over from an earlier
+    script draft) are appended at the end, in their original ``script.lines`` order — never
+    dropped, since the voice must contain every line the author wrote.
+    """
+    by_key: dict[tuple[int, int], list[ScriptLine]] = {}
+    for line in script.lines:
+        by_key.setdefault((line.chapter, line.scene_number), []).append(line)
+
+    placed: set[tuple[int, int]] = set()
+    ordered: list[ScriptLine] = []
+    for chapter in storyline.arc:
+        for scene_number in chapter.scene_numbers:
+            key = (chapter.chapter, scene_number)
+            if key in by_key and key not in placed:
+                ordered.extend(by_key[key])
+                placed.add(key)
+
+    for line in script.lines:
+        if (line.chapter, line.scene_number) not in placed:
+            ordered.append(line)
+    return ordered
 
 
-def script_hash(script: Script) -> str:
-    """sha256 hex digest over :func:`script_text` — the voice-synthesis cache key (Task 5):
-    unchanged text (even across an unrelated re-save) hits the cache instead of re-synthesizing."""
-    return hashlib.sha256(script_text(script).encode("utf-8")).hexdigest()
+def script_text(lines: list[ScriptLine]) -> str:
+    """The given lines' spoken text, joined with a single space, in the given order. This exact
+    string is what goes to the voice backend and is hashed (:func:`script_hash`) as the
+    synthesis cache key — callers pass lines already in a stable, playback-meaningful order
+    (see :func:`_lines_in_storyline_order`)."""
+    return " ".join(line.text for line in lines)
 
 
-def line_starts(script: Script, words: list[dict[str, Any]]) -> dict[tuple[int, int], float]:
+def script_hash(lines: list[ScriptLine]) -> str:
+    """sha256 hex digest over :func:`script_text` of the given (ordered) lines — the
+    voice-synthesis cache key (Task 5): an unchanged ordered text (even across an unrelated
+    re-save) hits the cache instead of re-synthesizing, while a storyline reorder changes the
+    text and therefore correctly busts the cache."""
+    return hashlib.sha256(script_text(lines).encode("utf-8")).hexdigest()
+
+
+def line_starts(
+    lines: list[ScriptLine], words: list[dict[str, Any]]
+) -> dict[tuple[int, int], float]:
     """Each line's ``(chapter, scene_number)`` mapped to its first word's ``start_s``.
 
     ``words`` (a voice backend's timings sidecar) are assumed to be the whitespace tokens of
-    exactly :func:`script_text`'s output, in order — so each line "claims" as many words as it
-    has whitespace-split tokens, walking the shared word stream forward in the same
-    ``(chapter, list position)`` order ``script_text`` joined them in. A line is absent from the
-    result if the word stream runs out before reaching it (e.g. a sidecar shorter than the
-    script) — callers treat a missing entry as "no known start" (skip the zoom for that line).
+    exactly :func:`script_text` of these SAME ``lines``, in the SAME order — so each line
+    "claims" as many words as it has whitespace-split tokens, walking the shared word stream
+    forward in that order. A line is absent from the result if the word stream runs out before
+    reaching it (e.g. a sidecar shorter than the script) — callers treat a missing entry as "no
+    known start" (skip the zoom for that line).
     """
-    ordered = sorted(script.lines, key=lambda line: line.chapter)
     out: dict[tuple[int, int], float] = {}
     idx = 0
-    for line in ordered:
+    for line in lines:
         n_tokens = len(line.text.split())
         if n_tokens and idx < len(words):
             out[(line.chapter, line.scene_number)] = _as_float(words[idx].get("start_s"), 0.0)
@@ -602,18 +643,27 @@ def build_production_tool_specs(
             return {"ok": False, "reason": str(exc)[:200]}
 
     def synthesize_script_voice() -> dict[str, Any]:
-        """Speak the board's current script with the configured voice backend, caching by a
-        hash of the script text — a re-run after an unrelated board change is a no-op
-        (``cached: True``). Requires save_script_chapter to have run first. On a fresh
-        synthesis, the mp3 plus a word-timings sidecar (used for caption burn-in and
-        build_cutlist's zoom timing) are saved as the board's voice artifact. Gracefully
-        reports ``ok: False`` without raising when no voice backend is configured or the
-        backend itself fails."""
+        """Speak the board's current script — in STORYLINE scene order, not the order the
+        lines were written in (see _lines_in_storyline_order) — with the configured voice
+        backend, caching by a hash of that ordered text: a re-run after an unrelated board
+        change is a no-op (``cached: True``), while a storyline reorder changes the text and
+        correctly busts the cache. Requires save_storyline and save_script_chapter to have both
+        run first. On a fresh synthesis, the mp3 plus a word-timings sidecar (used for caption
+        burn-in and build_cutlist's zoom timing) are saved as the board's voice artifact.
+        Gracefully reports ``ok: False`` without raising when no voice backend is configured or
+        the backend itself fails."""
         try:
+            storyline = board.load("storyline")
+            if not isinstance(storyline, Storyline):
+                return {
+                    "ok": False,
+                    "reason": "no storyline on the board; run save_storyline first",
+                }
             script = board.load("script")
             if not isinstance(script, Script):
                 return {"ok": False, "reason": "no script on the board"}
-            new_hash = script_hash(script)
+            ordered_lines = _lines_in_storyline_order(script, storyline)
+            new_hash = script_hash(ordered_lines)
 
             existing = board.load("voice")
             if isinstance(existing, VoiceArtifact) and existing.script_hash == new_hash:
@@ -635,7 +685,7 @@ def build_production_tool_specs(
                 return {"ok": False, "reason": "project not found"}
 
             out_path = Path(str(project["workspace_root"])) / "voiceovers" / f"{new_id()}.mp3"
-            result = backend.synthesize(script_text(script), out_path)
+            result = backend.synthesize(script_text(ordered_lines), out_path)
             if not result.get("ok"):
                 return {"ok": False, "reason": str(result.get("reason") or "synthesis failed")}
 
@@ -689,7 +739,8 @@ def build_production_tool_specs(
 
             asset = repos.get_asset(db, asset_id)
             fps = _fps(db, asset) if asset is not None else 30.0
-            line_map = line_starts(script, _read_words(voice.timings_path))
+            ordered_lines = _lines_in_storyline_order(script, storyline)
+            line_map = line_starts(ordered_lines, _read_words(voice.timings_path))
             reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
 
             segments: list[CutSegment] = []
@@ -763,9 +814,12 @@ def build_production_tool_specs(
     def render_production() -> dict[str, Any]:
         """Render the board's cutlist to a finished vertical export and grade it.
 
-        Requires build_cutlist (and transitively storyline + script + voice) to have run first
-        — reports which one is missing instead of raising. Turns the cutlist into
-        (start_frame, end_frame_exclusive) segments plus an index-aligned zoom hint per segment
+        Requires build_cutlist, voice, script and storyline to have all run first — reports
+        which one is missing instead of raising (storyline is also a transitive prerequisite of
+        build_cutlist, but is re-checked directly here since it is needed again to put the
+        caption/voiceover text back in the SAME storyline scene order the cutlist's segments
+        are in — see _lines_in_storyline_order). Turns the cutlist into (start_frame,
+        end_frame_exclusive) segments plus an index-aligned zoom hint per segment
         (only where that segment has BOTH a roi and a zoom_start_s; otherwise None), and renders
         them with the v1 short defaults (captions on, blurred vertical 1080x1920 letterbox) and
         the board's voice as the new audio track. Polls the resulting export (bounded by
@@ -794,6 +848,13 @@ def build_production_tool_specs(
                     "ok": False,
                     "reason": "no script on the board; run save_script_chapter first",
                 }
+            storyline = board.load("storyline")
+            if not isinstance(storyline, Storyline):
+                return {
+                    "ok": False,
+                    "reason": "no storyline on the board; run save_storyline first",
+                }
+            ordered_lines = _lines_in_storyline_order(script, storyline)
 
             asset = repos.get_asset(db, asset_id)
             fps = _fps(db, asset) if asset is not None else 30.0
@@ -824,7 +885,7 @@ def build_production_tool_specs(
                 vertical=True,
                 out_size=(_RENDER_WIDTH, _RENDER_HEIGHT),
                 voiceover_path=voice.mp3_path,
-                voiceover_text=script_text(script),
+                voiceover_text=script_text(ordered_lines),
                 zoom=zoom,
             )
             if not result.get("ok"):

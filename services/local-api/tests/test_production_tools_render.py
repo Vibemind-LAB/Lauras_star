@@ -291,7 +291,9 @@ def test_render_production_passes_zoom_and_reports(tmp_path: Path) -> None:
     assert call["vertical"] is True
     assert call["out_size"] == (1080, 1920)
     assert call["voiceover_path"] == str(tmp_path / "voice.mp3")
-    assert call["voiceover_text"] == script_text(_script())
+    # _build_board_to_cutlist's storyline scene_numbers=[1, 2] matches _script()'s natural line
+    # order, so the storyline-ordered text equals the raw line-order text here.
+    assert call["voiceover_text"] == script_text(_script().lines)
 
     assert out["ok"] is True
     checks_by_name = {c["name"]: c for c in out["checks"]}

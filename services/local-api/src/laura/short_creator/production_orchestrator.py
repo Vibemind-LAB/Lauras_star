@@ -185,17 +185,30 @@ def run_production(
 ) -> dict[str, Any]:
     """Run the v2 production team for one session: resume-aware board + magentic-only A/B ladder.
 
-    A missing asset is reported the same way a failed run is, never raised. Otherwise the
-    session's board is opened if it already exists, or created fresh (this is what makes a
-    second call for the same ``session_id`` a resume rather than a restart - nothing already on
-    the board is touched or re-created). Stage A runs first; only a ``hard_fail`` escalates to
-    Stage B (both magentic-only - v2 has no GraphFlow fallback). Every stage call goes through
+    A missing asset — or one whose project no longer exists (an orphaned asset) — is reported
+    the same way a failed run is, never raised. Otherwise the session's board is opened if it
+    already exists, or created fresh (this is what makes a second call for the same
+    ``session_id`` a resume rather than a restart - nothing already on the board is touched or
+    re-created). Stage A runs first; only a ``hard_fail`` escalates to Stage B (both
+    magentic-only - v2 has no GraphFlow fallback). Every stage call goes through
     :func:`orchestrator._safe_execute`, so a raising ``execute`` never propagates out of here.
     """
     if repos.get_asset(db, asset_id) is None:
         return {"ok": False, "error": "asset not found", "session_id": session_id}
 
-    root = board_root_for(db, asset_id, session_id)
+    try:
+        root = board_root_for(db, asset_id, session_id)
+    except ValueError:
+        # The asset row exists but its project has been deleted out from under it —
+        # board_root_for raises (it is a pure/raising path helper); this is the one caller that
+        # must never propagate that, so it is turned into the same kind of reported failure as
+        # a missing asset instead.
+        return {
+            "ok": False,
+            "error": "project not found",
+            "asset_id": asset_id,
+            "session_id": session_id,
+        }
     try:
         board = Board.open(root)
     except FileNotFoundError:

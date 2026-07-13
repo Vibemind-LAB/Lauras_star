@@ -231,6 +231,34 @@ def test_run_production_creates_board_and_reports(tmp_path: Path) -> None:
     assert (root / "meta.json").is_file()
 
 
+def test_run_production_orphaned_asset_never_raises(tmp_path: Path) -> None:
+    """An asset row whose project has been deleted out from under it (board_root_for's own
+    ValueError, per its docstring) must be reported the same way a missing asset is, not
+    raised. FK-enforced cascade deletes normally remove the asset along with its project (see
+    repos.delete_project), so this orphan state is reproduced directly on the fixture, the way
+    it could arise from any out-of-band data repair that skips the ORM/repo layer."""
+    db, asset_id = _seed_scene(tmp_path)
+    with db.connection() as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "UPDATE media_assets SET project_id = ? WHERE id = ?", ("does-not-exist", asset_id)
+        )
+    config = providers.resolve_from_env({})
+    execute, calls = _make_execute({"A": ("ok", False)})
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess1", task="t", execute=execute
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project not found",
+        "asset_id": asset_id,
+        "session_id": "sess1",
+    }
+    assert calls == []  # never reached team execution
+
+
 def test_run_production_reopens_existing_board(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     root = production_orchestrator.board_root_for(db, asset_id, "sess1")
