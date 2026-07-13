@@ -19,6 +19,14 @@ alone (``degraded=True``, ``roi=None``, a neutral ``hook_score``), which is stil
 board so the pipeline can proceed. Every tool function additionally catches unexpected
 exceptions at its own boundary and reports them as ``{"ok": False, "reason": ...}`` instead of
 raising — the agent loop must never die on a tool.
+
+``save_storyline``/``save_script_chapter`` are the first *write* tools past scene review: they
+pydantic-validate their input and report a malformed payload as ``{"ok": False, "errors": [...]}``
+(loc+msg strings, agent-correctable) rather than raising. ``save_storyline`` additionally refuses
+to save chapters that reference a scene without a review yet. ``save_script_chapter`` merges by
+chapter (other chapters' lines are kept, only the given chapter's lines are replaced) and, like
+every ``board.save()`` call, invalidates every artifact downstream in the chain (voice, cutlist,
+render report, qa report).
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ from ..db.database import Database
 from ..util import utcnow_iso
 from . import context
 from .board import Board
-from .board_models import BestWindow, Roi, SceneReview
+from .board_models import BestWindow, Chapter, Roi, SceneReview, Script, ScriptLine, Storyline
 from .describe import DescribeBackend, resolve_describe_backend
 from .toolset import ToolSpec
 from .voice import VoiceBackend
@@ -218,6 +226,15 @@ def _expected_scenes(db: Database, asset_id: str) -> list[int]:
     return [int(s["scene_number"]) for s in result.get("scenes", [])]
 
 
+# --- validation-error formatting (pure) -----------------------------------------------------
+
+
+def _validation_errors(exc: ValidationError) -> list[str]:
+    """Up to 5 ``"loc: msg"`` strings out of a ValidationError — compact enough for the agent
+    to read and self-correct on, without dumping pydantic's full error payload."""
+    return [f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]]
+
+
 # --- tool builder ----------------------------------------------------------------------------
 
 
@@ -362,10 +379,80 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
+        """Validate and save the short's storyline (red thread + chapter arc) to the board.
+        Every chapter's scene_numbers must already have a scene review on the board — a
+        chapter referencing an unreviewed scene is rejected with the missing scene numbers
+        so the agent reviews them first. A malformed chapter is rejected with field-level
+        validation errors instead of raising."""
+        try:
+            referenced = sorted(
+                {int(n) for c in chapters for n in (c.get("scene_numbers") or [])}
+            )
+            reviewed = {r.scene_number for r in board.scene_reviews()}
+            missing = [n for n in referenced if n not in reviewed]
+            if missing:
+                return {"ok": False, "reason": f"scenes without review: {missing}"}
+            try:
+                storyline = Storyline(red_thread=red_thread, arc=[Chapter(**c) for c in chapters])
+            except ValidationError as exc:
+                return {"ok": False, "errors": _validation_errors(exc)}
+            version = board.save("storyline", storyline)
+            return {"ok": True, "version": version}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def get_storyline() -> dict[str, Any]:
+        """The board's current storyline, or a not-found reason if none has been saved yet."""
+        try:
+            storyline = board.load("storyline")
+            if storyline is None:
+                return {"ok": False, "reason": "no storyline on the board"}
+            return {"ok": True, "storyline": storyline.model_dump()}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def save_script_chapter(chapter: int, lines: list[dict[str, Any]]) -> dict[str, Any]:
+        """Replace one chapter's script lines; every other chapter's lines are kept as-is
+        (merge semantics). Lines are validated (each needs scene_number + text; a malformed
+        line is rejected with field-level validation errors). language defaults to "de" on
+        the first write. Saving invalidates every downstream artifact (voice, cutlist,
+        render report, qa report) so they get regenerated from the new script."""
+        try:
+            try:
+                new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
+            except ValidationError as exc:
+                return {"ok": False, "errors": _validation_errors(exc)}
+            existing = board.load("script")
+            language = "de"
+            kept: list[ScriptLine] = []
+            if isinstance(existing, Script):
+                language = existing.language
+                kept = [line for line in existing.lines if line.chapter != chapter]
+            merged = sorted(kept + new_lines, key=lambda line: line.chapter)
+            version = board.save("script", Script(language=language, lines=merged))
+            return {"ok": True, "version": version, "total_lines": len(merged)}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def get_script() -> dict[str, Any]:
+        """The board's current script, or a not-found reason if none has been saved yet."""
+        try:
+            script = board.load("script")
+            if script is None:
+                return {"ok": False, "reason": "no script on the board"}
+            return {"ok": True, "script": script.model_dump()}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         board_status,
         get_scene_context,
         review_scene,
         get_reviews,
+        save_storyline,
+        get_storyline,
+        save_script_chapter,
+        get_script,
     ]
     return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]
