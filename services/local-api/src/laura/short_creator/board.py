@@ -15,6 +15,7 @@ runs *downstream* along ``_CHAIN`` — never upstream — so cached upstream wor
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol, cast
 
 from pydantic import BaseModel
 
@@ -28,6 +29,12 @@ from laura.short_creator.board_models import (
     Storyline,
     VoiceArtifact,
 )
+
+
+class _Versioned(Protocol):
+    """Protocol for artifacts with a version field."""
+
+    version: int
 
 _CHAIN: tuple[str, ...] = ("storyline", "script", "voice", "cutlist", "render_report", "qa_report")
 _SINGLETONS: dict[str, type[BaseModel]] = {
@@ -98,6 +105,70 @@ class Board:
             for p in folder.glob("scene_*.json")
         ]
         return sorted(reviews, key=lambda r: r.scene_number)
+
+    # -- singleton artifacts -----------------------------------------------
+
+    def save(self, name: str, artifact: BaseModel) -> int:
+        """Persist a singleton artifact; archives the old version and
+        invalidates everything downstream.  Returns the new version."""
+        model_type = _SINGLETONS.get(name)
+        if model_type is None:
+            raise KeyError(f"unknown artifact: {name}")
+        if not isinstance(artifact, model_type):
+            raise TypeError(
+                f"{name} expects {model_type.__name__}, got {type(artifact).__name__}"
+            )
+        path = self.root / f"{name}.json"
+        current_version = 0
+        if path.is_file():
+            old = model_type.model_validate_json(path.read_text(encoding="utf-8"))
+            old_versioned = cast(_Versioned, old)
+            current_version = int(old_versioned.version)
+            self._archive(name, current_version, path)
+        version = max([current_version, *self.versions(name)]) + 1
+        stamped = artifact.model_copy(update={"version": version})
+        _write_atomic(path, stamped.model_dump_json(indent=2))
+        self.invalidate(name)
+        return version
+
+    def load(self, name: str) -> BaseModel | None:
+        model_type = _SINGLETONS.get(name)
+        if model_type is None:
+            raise KeyError(f"unknown artifact: {name}")
+        path = self.root / f"{name}.json"
+        if not path.is_file():
+            return None
+        return model_type.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def invalidate(self, name: str) -> list[str]:
+        """Archive + remove every present artifact downstream of ``name``."""
+        removed: list[str] = []
+        for dep in downstream_of(name):
+            path = self.root / f"{dep}.json"
+            if path.is_file():
+                model_type = _SINGLETONS[dep]
+                cur = model_type.model_validate_json(path.read_text(encoding="utf-8"))
+                cur_versioned = cast(_Versioned, cur)
+                self._archive(dep, int(cur_versioned.version), path)
+                path.unlink()
+                removed.append(dep)
+        return removed
+
+    def revert(self, name: str, version: int) -> None:
+        """Restore an archived version as current; downstream is invalidated."""
+        if name not in _SINGLETONS:
+            raise KeyError(f"unknown artifact: {name}")
+        archived = self.root / "versions" / f"{name}.v{version}.json"
+        if not archived.is_file():
+            raise FileNotFoundError(f"no archived {name} v{version}")
+        path = self.root / f"{name}.json"
+        if path.is_file():
+            model_type = _SINGLETONS[name]
+            cur = model_type.model_validate_json(path.read_text(encoding="utf-8"))
+            cur_versioned = cast(_Versioned, cur)
+            self._archive(name, int(cur_versioned.version), path)
+        _write_atomic(path, archived.read_text(encoding="utf-8"))
+        self.invalidate(name)
 
     # -- shared internals --------------------------------------------------
 

@@ -5,7 +5,18 @@ from pathlib import Path
 import pytest
 
 from laura.short_creator.board import Board, downstream_of
-from laura.short_creator.board_models import BestWindow, BoardMeta, Roi, SceneReview
+from laura.short_creator.board_models import (  # noqa: E402
+    BestWindow,
+    BoardMeta,
+    Chapter,
+    Cutlist,
+    CutSegment,
+    Roi,
+    SceneReview,
+    Script,
+    ScriptLine,
+    Storyline,
+)
 
 
 def _meta() -> BoardMeta:
@@ -58,3 +69,77 @@ def test_downstream_of() -> None:
         "storyline", "script", "voice", "cutlist", "render_report", "qa_report")
     assert downstream_of("cutlist") == ("render_report", "qa_report")
     assert downstream_of("qa_report") == ()
+
+
+# -- singleton artifacts --------------------------------------------------------
+
+
+def _storyline(thread: str = "one app") -> Storyline:
+    return Storyline(red_thread=thread, arc=[
+        Chapter(chapter=1, role="hook", message="stop", scene_numbers=[1], target_seconds=3.0)])
+
+
+def _script() -> Script:
+    return Script(language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp!")])
+
+
+def _cutlist() -> Cutlist:
+    return Cutlist(segments=[CutSegment(order=0, scene_number=1, start_frame=0,
+                                        end_frame_exclusive=120)])
+
+
+def test_singleton_save_load_and_version_stamp(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    assert board.save("storyline", _storyline("v1 thread")) == 1
+    assert board.save("storyline", _storyline("v2 thread")) == 2
+    loaded = board.load("storyline")
+    assert isinstance(loaded, Storyline)
+    assert loaded.version == 2 and loaded.red_thread == "v2 thread"
+    assert board.versions("storyline") == [1]
+    assert board.load("qa_report") is None
+
+
+def test_save_rejects_wrong_type_and_unknown_name(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    with pytest.raises(TypeError):
+        board.save("storyline", _script())
+    with pytest.raises(KeyError):
+        board.save("nonsense", _storyline())
+    with pytest.raises(KeyError):
+        board.load("nonsense")
+
+
+def test_save_invalidates_downstream(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    board.save("cutlist", _cutlist())
+    removed = board.invalidate("script")
+    assert removed == ["cutlist"]
+    assert board.load("cutlist") is None
+    assert board.versions("cutlist") == [1]  # archived, not lost
+    # save() itself invalidates downstream too:
+    board.save("cutlist", _cutlist())
+    board.save("storyline", _storyline("changed"))
+    assert board.load("script") is None and board.load("cutlist") is None
+
+
+def test_revert_restores_and_invalidates(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    board.save("storyline", _storyline("first"))
+    board.save("storyline", _storyline("second"))
+    board.save("script", _script())
+    board.revert("storyline", 1)
+    loaded = board.load("storyline")
+    assert isinstance(loaded, Storyline) and loaded.red_thread == "first"
+    assert board.load("script") is None  # downstream invalidated
+    # v2 stays in the archive; saving after revert continues past ALL known versions
+    assert 2 in board.versions("storyline")
+    assert board.save("storyline", _storyline("third")) == 3
+
+
+def test_revert_unknown_version_raises(tmp_path: Path) -> None:
+    board = Board.create(tmp_path / "board", _meta())
+    board.save("storyline", _storyline())
+    with pytest.raises(FileNotFoundError):
+        board.revert("storyline", 7)
