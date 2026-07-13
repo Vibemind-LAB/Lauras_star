@@ -22,6 +22,7 @@ from pathlib import Path
 from ..ingest.ffmpeg import FFmpegError, probe, run_ffmpeg
 from .audio import AudioOverlay
 from .reel import reel_blur_fill_graph, reel_video_chain, resolve_font
+from .zoom import ZoomSpec, zoom_concat_graph
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,7 @@ def render_clips_mp4(
     caption_srt: str | None = None,
     video_transitions: list[VideoTransition] | None = None,
     loudnorm: bool = False,
+    zoom_specs: list[ZoomSpec | None] | None = None,
 ) -> None:
     """Trim each clip by frame range (end-exclusive) and concat into one MP4.
 
@@ -512,7 +514,26 @@ def render_clips_mp4(
     into the ``filter_complex`` string rather than through the comma-chain returned by
     :func:`reel_video_chain` — drawtext and ASS captions are still applied on top of the
     composited 1080×1920 stream, so caption output is identical to the other vertical modes.
+
+    ``zoom_specs`` (default ``None``) switches on the ``zoom_hybrid`` fit mode: a
+    ``list[ZoomSpec | None]`` that must align 1:1 with ``clips`` (``None`` entries fall back to
+    plain blur-fill for that segment).  When set, the video graph is built by
+    :func:`zoom_concat_graph` (per-segment blurred full frame dissolving into a static
+    end-window crop) instead of the crossfade/concat assembly; captions, disclosure/hook
+    drawtext, and the audio graph are layered on top exactly as in the other paths — only the
+    ``[vcat]``-producing video branch differs.  v1 scope: requires ``vertical=True`` and excludes
+    ``video_transitions`` (both raise ``ValueError``), and ``len(zoom_specs) != len(clips)``
+    raises ``ValueError``.  With ``zoom_specs=None`` (default) every path is byte-identical to
+    today.
     """
+    if zoom_specs is not None:
+        if len(zoom_specs) != len(clips):
+            raise ValueError("zoom_specs must align 1:1 with clips")
+        if not vertical:
+            raise ValueError("zoom_hybrid requires vertical=True")
+        if video_transitions:
+            raise ValueError("zoom_hybrid excludes video transitions (v1)")
+    use_zoom = zoom_specs is not None
     dest.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
     audio_flags = [_source_has_audio(src) for src, _, _ in clips]
@@ -571,7 +592,7 @@ def render_clips_mp4(
         # Target canvas for any reframe mode; default is the classic 1080×1920 reel.
         out_w, out_h = out_size if out_size is not None else (1080, 1920)
         reel = reel_video_chain(
-            vertical=vertical and not use_blur_fill,
+            vertical=vertical and not use_blur_fill and not use_zoom,
             reel_fit=reel_fit,
             hook_textfile=hook_tf,
             disclosure_textfile=disc_tf,
@@ -585,7 +606,28 @@ def render_clips_mp4(
             caption_filter = f"subtitles={srt_basename}"
         else:
             caption_filter = ""
-        if has_crossfade:
+        if use_zoom:
+            # zoom_hybrid: per-segment blurred-full-frame -> static end-window crop dissolve
+            # (Task 7's zoom_concat_graph). Emits "[abase]" directly when has_base_audio, which
+            # is exactly the label the overlay-ducking/loudnorm code below expects — no extra
+            # remap stage needed (unlike the xfade fold's [a_label] -> [abase] step below).
+            assert zoom_specs is not None
+            zparts, v_label, _a_label = zoom_concat_graph(
+                [(fin, fout) for _src, fin, fout in clips],
+                zoom_specs,
+                audio_flags=audio_flags,
+                has_base_audio=has_base_audio,
+                rate_num=rate_num,
+                rate_den=rate_den,
+                out_w=out_w,
+                out_h=out_h,
+            )
+            post_caption = ",".join(p for p in (reel, caption_filter) if p)
+            if post_caption:
+                parts = f"{zparts};{v_label}{post_caption}[out]"
+            else:
+                parts = f"{zparts};{v_label}null[out]"
+        elif has_crossfade:
             # Real cross-dissolve: pairwise xfade/acrossfade fold with reserve overlap.
             fold_parts, v_label, a_label = _xfade_base_graph(
                 clips,
