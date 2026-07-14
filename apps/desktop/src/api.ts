@@ -708,6 +708,37 @@ export interface AutoShortRequest {
   target_seconds?: number;
 }
 
+/** Presence + version bookkeeping for one artifact slot on a v2 production session board. */
+export interface ProductionArtifactState {
+  version: number | null;
+  archived_versions: number[];
+}
+
+/** Read-only board status for a v2 production session (GET /production/{sessionId}). */
+export interface ProductionStatus {
+  meta: {
+    session_id: string;
+    asset_id: string;
+    created_utc: string;
+    task: string;
+    format: string;
+    target_seconds: number;
+    status: string;
+  };
+  scene_reviews: { count: number; scenes: number[] };
+  artifacts: Record<
+    "storyline" | "script" | "voice" | "cutlist" | "render_report" | "qa_report",
+    ProductionArtifactState
+  >;
+  resume_point: string;
+}
+
+/** Accepted response from creating a v2 production session or posting a follow-up message. */
+export interface ProductionCreated {
+  session_id: string;
+  job_id: string;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -788,6 +819,46 @@ export class LauraClient {
       result = await reader.read();
     }
     flush(buffer);
+  }
+
+  /**
+   * Create a v2 production session for an asset (storyline -> script -> voice -> cutlist ->
+   * render -> QA agent pipeline) and enqueue its first `production.run` job.
+   * POST /assets/{assetId}/production {task, target_seconds} -> 202 {session_id, job_id}
+   */
+  createProduction(
+    assetId: string,
+    task: string,
+    targetSeconds?: number,
+  ): Promise<ProductionCreated> {
+    const body: Record<string, unknown> = { task };
+    if (targetSeconds !== undefined) body.target_seconds = targetSeconds;
+    return this.request<ProductionCreated>(`/assets/${assetId}/production`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Post a follow-up message onto an existing production session's board, enqueueing another
+   * `production.run` job. task/target_seconds are NOT re-sent — the backend reads them back
+   * from the board's own meta (fixed at session creation).
+   * POST /production/{sessionId}/message {text} -> 202 {session_id, job_id}
+   */
+  sendProductionMessage(sessionId: string, text: string): Promise<ProductionCreated> {
+    return this.request<ProductionCreated>(`/production/${sessionId}/message`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  /**
+   * Read-only status of a production session's board: per-artifact versions, scene-review
+   * progress, and the resume point. Pure read — never enqueues anything.
+   * GET /production/{sessionId} -> 200 ProductionStatus
+   */
+  getProductionStatus(sessionId: string): Promise<ProductionStatus> {
+    return this.request<ProductionStatus>(`/production/${sessionId}`);
   }
 
   health(): Promise<Health> {
