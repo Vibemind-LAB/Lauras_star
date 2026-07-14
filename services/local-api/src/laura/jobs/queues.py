@@ -39,6 +39,7 @@ _STAGE_QUEUE: dict[str, str] = {
     "shorts.render": QUEUE_EXPORT,
     "shorts.embed_frames": QUEUE_ANALYSIS_GPU,  # CLIP frame embeddings (visual search/hook)
     "short_creator.run": QUEUE_ANALYSIS_CPU,  # NL-agent orchestration (CPU; calls local Ollama)
+    "production.run": QUEUE_ANALYSIS_CPU,  # v2 production-board orchestration (CPU; local Ollama)
 }
 
 
