@@ -6,6 +6,7 @@ Covers:
 - get_production_session for unknown session_id → None
 - list_production_sessions filtered by asset_id and sorted newest-first
 - duplicate create_production_session (same session_id) → sqlite3.IntegrityError
+- cascade deletion: deleting media_assets row cascades to production_sessions
 """
 from __future__ import annotations
 
@@ -22,7 +23,31 @@ from laura.db.database import SqliteDatabase
 def _db(tmp_path: Path) -> SqliteDatabase:
     db = SqliteDatabase(Settings(workspace_root=tmp_path / "ws", start_runner=False).db_path)
     db.migrate()
+    # Foreign keys are enabled by default in SqliteDatabase.connect()
     return db
+
+
+def _seed_project_and_asset(db: SqliteDatabase, tmp_path: Path, asset_id: str) -> tuple[str, str]:
+    """Seed a project and media_assets row. Returns (project_id, asset_id)."""
+    workspace = tmp_path / "ws" / "project"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    project = repos.create_project(
+        db,
+        name="test_project",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(workspace),
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="test.mp4",
+        source_path=str(workspace / "test.mp4"),
+    )
+    return project["id"], asset["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -42,14 +67,16 @@ def test_schema_version_is_32_after_migrate(tmp_path: Path) -> None:
 
 def test_create_and_get_production_session(tmp_path: Path) -> None:
     db = _db(tmp_path)
+    _, asset_id = _seed_project_and_asset(db, tmp_path, "asset_1")
+
     repos.create_production_session(
-        db, session_id="sess_001", asset_id="asset_1", created_utc="2026-07-14T10:00:00.000Z"
+        db, session_id="sess_001", asset_id=asset_id, created_utc="2026-07-14T10:00:00.000Z"
     )
 
     session = repos.get_production_session(db, "sess_001")
     assert session is not None
     assert session["session_id"] == "sess_001"
-    assert session["asset_id"] == "asset_1"
+    assert session["asset_id"] == asset_id
     assert session["created_utc"] == "2026-07-14T10:00:00.000Z"
 
 
@@ -71,23 +98,26 @@ def test_get_unknown_production_session(tmp_path: Path) -> None:
 
 def test_list_production_sessions_by_asset_newest_first(tmp_path: Path) -> None:
     db = _db(tmp_path)
+    _, asset_1_id = _seed_project_and_asset(db, tmp_path, "asset_1")
+    _, asset_2_id = _seed_project_and_asset(db, tmp_path, "asset_2")
+
     # Insert 3 sessions for asset_1, with different timestamps
     repos.create_production_session(
-        db, session_id="sess_001", asset_id="asset_1", created_utc="2026-07-14T08:00:00.000Z"
+        db, session_id="sess_001", asset_id=asset_1_id, created_utc="2026-07-14T08:00:00.000Z"
     )
     repos.create_production_session(
-        db, session_id="sess_002", asset_id="asset_1", created_utc="2026-07-14T10:00:00.000Z"
+        db, session_id="sess_002", asset_id=asset_1_id, created_utc="2026-07-14T10:00:00.000Z"
     )
     repos.create_production_session(
-        db, session_id="sess_003", asset_id="asset_1", created_utc="2026-07-14T09:00:00.000Z"
+        db, session_id="sess_003", asset_id=asset_1_id, created_utc="2026-07-14T09:00:00.000Z"
     )
 
     # Insert 1 session for asset_2 (should not appear)
     repos.create_production_session(
-        db, session_id="sess_004", asset_id="asset_2", created_utc="2026-07-14T11:00:00.000Z"
+        db, session_id="sess_004", asset_id=asset_2_id, created_utc="2026-07-14T11:00:00.000Z"
     )
 
-    sessions = repos.list_production_sessions(db, "asset_1")
+    sessions = repos.list_production_sessions(db, asset_1_id)
     assert len(sessions) == 3
 
     # Newest first: sess_002, sess_003, sess_001
@@ -103,12 +133,42 @@ def test_list_production_sessions_by_asset_newest_first(tmp_path: Path) -> None:
 
 def test_duplicate_session_id_raises_integrity_error(tmp_path: Path) -> None:
     db = _db(tmp_path)
+    _, asset_id = _seed_project_and_asset(db, tmp_path, "asset_1")
+
     repos.create_production_session(
-        db, session_id="sess_001", asset_id="asset_1", created_utc="2026-07-14T10:00:00.000Z"
+        db, session_id="sess_001", asset_id=asset_id, created_utc="2026-07-14T10:00:00.000Z"
     )
 
     # Try to insert again with same session_id (PK collision)
     with pytest.raises(sqlite3.IntegrityError):
         repos.create_production_session(
-            db, session_id="sess_001", asset_id="asset_1", created_utc="2026-07-14T10:00:00.000Z"
+            db, session_id="sess_001", asset_id=asset_id, created_utc="2026-07-14T10:00:00.000Z"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cascade deletion on media_assets delete
+# ---------------------------------------------------------------------------
+
+
+def test_cascade_delete_production_session_on_asset_delete(tmp_path: Path) -> None:
+    """Deleting a media_assets row cascades to production_sessions via FK."""
+    db = _db(tmp_path)
+    project_id, asset_id = _seed_project_and_asset(db, tmp_path, "asset_to_delete")
+
+    # Create a production session for this asset
+    repos.create_production_session(
+        db, session_id="sess_001", asset_id=asset_id, created_utc="2026-07-14T10:00:00.000Z"
+    )
+
+    # Verify it exists
+    session = repos.get_production_session(db, "sess_001")
+    assert session is not None
+
+    # Delete the asset (cascades to production_sessions) via transaction
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM media_assets WHERE id = ?", (asset_id,))
+
+    # Verify the session is now gone
+    session = repos.get_production_session(db, "sess_001")
+    assert session is None
