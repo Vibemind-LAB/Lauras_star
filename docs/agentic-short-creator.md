@@ -88,3 +88,32 @@ CI/Sandbox haben **kein** Ollama/AutoGen/Modell — daher ist der echte End-to-E
 
 Alle Nicht-Modell-Pfade (Provider-Factory, Tool-Bridge, Roster, Team-Zusammenbau, Eskalations-Logik,
 Endpoint/Guard) sind mit gemockten Clients getestet (`tests/test_short_creator_*.py`).
+
+## v2: Produktions-Sessions (Vibe-Editing)
+
+Seit Slice 4 des v2-Umbaus (Spec `docs/superpowers/specs/2026-07-13-agent-vision-short-v2-design.md`)
+läuft die Short-Produktion als **Session**: das 5er-Team (Vision-Reviewer, Story-Architekt,
+Szenen-Autor, Coding-Agent, QA) arbeitet über das versionierte **Production Board** unter
+`<workspace>/agent-runs/<session_id>/board/` — jedes Artefakt (Szenen-Reviews, Storyline, Skript,
+Stimme, Cutlist, Render-Report, QA-Report) ist sofort persistiert, versioniert und wiederaufnehmbar.
+Folge-Nachrichten bauen nur Downstream neu; „zurück zu Version X" ist ein echter Revert.
+
+```bash
+# Session starten (202 → {session_id, job_id}; läuft als Job production.run)
+curl -X POST -H "X-Laura-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"task": "Virales 60s-Insta-Short über das Overview-Video", "target_seconds": 60}' \
+  http://127.0.0.1:8765/assets/<asset_id>/production
+
+# Board-Stand ansehen (Artefakt-Versionen + resume_point)
+curl -H "X-Laura-Token: $TOKEN" http://127.0.0.1:8765/production/<session_id>
+
+# Nachjustieren oder zurückspulen (Freitext; das Team interpretiert)
+curl -X POST -H "X-Laura-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"text": "Kapitel 2 bitte mit einer anderen Szene, und der Hook kürzer"}' \
+  http://127.0.0.1:8765/production/<session_id>/message
+```
+
+Hinweise: Sessions brauchen das `autoshort`-Extra (sonst 503); Jobs laufen mit `max_attempts=1`;
+ein grobes Run-Log liegt unter `agent-runs/<session_id>/runs/`. Free-Tier-Resilienz:
+`LAURA_AGENT_MODEL_POOL` / `LAURA_VLM_MODEL_POOL` rotieren bei leeren Antworten sticky auf das
+nächste Modell. ChatPanel-Anbindung (Slice 5) folgt.
