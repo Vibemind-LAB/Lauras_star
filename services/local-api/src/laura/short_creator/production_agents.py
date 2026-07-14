@@ -5,9 +5,10 @@ the Production Board (:mod:`.board`) — never talking directly to each other ab
 through board artifacts (scene reviews -> storyline -> script -> voice/cutlist/render -> QA). The
 pipeline is a fixed judgment chain: ``vision_reviewer`` (what is actually on screen) ->
 ``story_architect`` (the arc) -> ``scene_author`` (the words) -> ``coding_agent`` (voice, cutlist,
-render — execution only) -> ``qa_reviewer`` (ship or revise on the rendered result). Each tool
-name in the roster is cross-checked in tests against :func:`production_tools.
-build_production_tool_specs`'s real tool names.
+render — execution only, plus reverting the board to an earlier artifact version when explicitly
+asked to) -> ``qa_reviewer`` (ship or revise on the rendered result). Each tool name in the roster
+is cross-checked in tests against :func:`production_tools.build_production_tool_specs`'s real
+tool names.
 
 Mirrors :mod:`.agents`/:mod:`.magentic`'s split: :func:`production_agent_specs` is pure data (no
 autogen, no db — testable standalone) and :func:`build_production_team` is the only
@@ -129,7 +130,10 @@ def production_agent_specs() -> list[AgentSpec]:
                 "(build_cutlist) and render again. NEVER cut the voice — it is the script the "
                 "team already agreed on, and the video must fit it, not the other way round. "
                 "Report the export_id and the checks verbatim so the QA Reviewer can verify them "
-                "independently instead of trusting your summary."
+                "independently instead of trusting your summary. Use revert_artifact ONLY when "
+                "the task or user message explicitly asks to go back to an earlier version — "
+                "never as a routine step; afterwards rebuild whatever it invalidated through the "
+                "normal pipeline, not by hand."
             ),
             tool_names=(
                 "board_status",
@@ -139,6 +143,7 @@ def production_agent_specs() -> list[AgentSpec]:
                 "synthesize_script_voice",
                 "build_cutlist",
                 "render_production",
+                "revert_artifact",
             ),
             max_tool_iterations=8,
         ),

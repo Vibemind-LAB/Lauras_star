@@ -70,6 +70,7 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
             "synthesize_script_voice",
             "build_cutlist",
             "render_production",
+            "revert_artifact",
         ),
         8,
     ),

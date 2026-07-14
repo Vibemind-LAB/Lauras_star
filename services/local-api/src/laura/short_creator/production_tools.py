@@ -57,6 +57,16 @@ grab just yields fewer frames, never raises) and has the VLM QA-check each one i
 degrading to an empty, explicitly-flagged note list without a configured backend. ``save_qa_report``
 is the last board write: pydantic-validated verdict + findings, same self-correcting error contract
 as ``save_storyline``/``save_script_chapter``.
+
+``revert_artifact`` (Slice 4, Task 2) is the coding agent's one content-editing tool: it restores
+an archived version of a singleton artifact as current and invalidates everything downstream of
+it, exactly like a fresh ``board.save`` would — the normal pipeline tools then regenerate those
+downstream artifacts. It reads ``downstream_of(name)`` and snapshots which of those are actually
+present BEFORE calling ``board.revert`` (which deletes them), so the returned ``invalidated`` list
+reflects what is about to disappear rather than what is already gone. An unknown artifact name
+never reaches ``board.revert`` at all — it is rejected with the valid name list up front — and a
+version that was never archived reports ``{"ok": False, "reason": "no archived <name> v<version>"}``
+instead of raising, matching every other tool's error contract.
 """
 
 from __future__ import annotations
@@ -78,7 +88,7 @@ from ..db.database import Database
 from ..ingest.ffmpeg import ffmpeg_bin
 from ..util import new_id, utcnow_iso
 from . import context
-from .board import Board
+from .board import Board, downstream_of
 from .board_models import (
     BestWindow,
     Chapter,
@@ -999,6 +1009,36 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def revert_artifact(name: str, version: int) -> dict[str, Any]:
+        """Restore an earlier archived version of a board artifact as current, invalidating
+        every artifact downstream of it exactly like a fresh save would (their current files are
+        archived and removed; the normal pipeline tools then regenerate them). Use this ONLY when
+        the task or user message explicitly asks to go back to a prior version — never as a
+        routine step — and rebuild anything invalidated afterwards via the normal pipeline. Valid
+        names: storyline, script, voice, cutlist, render_report, qa_report. An unknown name is
+        rejected with that list instead of raising; a version that was never archived reports
+        ok: False with reason "no archived <name> v<version>" instead of raising."""
+        try:
+            valid_names = downstream_of("scene_reviews")
+            if name not in valid_names:
+                return {
+                    "ok": False,
+                    "reason": f"unknown artifact '{name}'; valid: {', '.join(valid_names)}",
+                }
+            will_invalidate = [d for d in downstream_of(name) if board.load(d) is not None]
+            try:
+                board.revert(name, version)
+            except FileNotFoundError:
+                return {"ok": False, "reason": f"no archived {name} v{version}"}
+            return {
+                "ok": True,
+                "name": name,
+                "restored_version": version,
+                "invalidated": will_invalidate,
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     funcs: list[Callable[..., dict[str, Any]]] = [
         board_status,
         get_scene_context,
@@ -1013,5 +1053,6 @@ def build_production_tool_specs(
         render_production,
         review_export,
         save_qa_report,
+        revert_artifact,
     ]
     return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]
