@@ -68,32 +68,69 @@ def _expected_scene_numbers(db: Database, asset_id: str) -> list[int]:
 
 
 def build_production_task(
-    db: Database, board: Board, *, asset_id: str, task: str, target_seconds: int
+    db: Database,
+    board: Board,
+    *,
+    asset_id: str,
+    task: str,
+    target_seconds: int,
+    message: str | None = None,
 ) -> str:
     """The task text handed to the magentic production team: a resume-aware contract.
 
-    Six fixed, deterministically-ordered elements:
+    Six fixed, deterministically-ordered elements, plus a seventh that only appears when this
+    call is a follow-up on top of an already-produced board:
 
     1. goal + format + target length;
     2. the FIXED viral arc as a structural contract;
     3. the board's current resume status (reviews vs. expected scenes, per-artifact DONE/pending
-       + version, the resume point, and an explicit "do not redo" instruction);
+       + version, the resume point, and an explicit "do not redo" instruction). When ``message``
+       is set, any artifact that has archived versions also lists them (``[archived: vN, ...]``)
+       so the team can name a concrete ``(name, version)`` pair back to ``revert_artifact``;
     4. the mandatory stage order (reviews -> storyline -> script -> voice+cutlist+render -> qa);
     5. the German-script language rule plus the coding-agent's ``voice_fits`` charter;
-    6. the QA revision-round limit (one revise round, then ship with findings as warnings).
+    6. the QA revision-round limit (one revise round, then ship with findings as warnings);
+    7. only when ``message`` is set: the user's follow-up request text (capped at 2000 chars)
+       plus instructions for interpreting it against the board status above - going back to an
+       earlier version is a ``revert_artifact`` call using the ``archived_versions`` listed in
+       section 3, a content change is a re-save of the affected artifact (the highest affected
+       one wins when the request touches more than one) with everything downstream left to
+       rebuild through the normal pipeline, and an intact upstream artifact the request does not
+       mention must never be redone.
     """
     meta = board.meta()
     expected_scenes = _expected_scene_numbers(db, asset_id)
     status = board.status()
     resume_point = board.resume_point(expected_scenes)
     reviewed = status["scene_reviews"]["count"]
+    show_archived = bool(message)
+
+    def _artifact_line(name: str, info: dict[str, Any]) -> str:
+        base = f"DONE (v{info['version']})" if info["version"] is not None else "pending"
+        archived = info["archived_versions"]
+        if show_archived and archived:
+            versions = ", ".join(f"v{v}" for v in archived)
+            return f"  - {name}: {base} [archived: {versions}]"
+        return f"  - {name}: {base}"
 
     artifact_lines = "\n".join(
-        f"  - {name}: DONE (v{info['version']})"
-        if info["version"] is not None
-        else f"  - {name}: pending"
-        for name, info in status["artifacts"].items()
+        _artifact_line(name, info) for name, info in status["artifacts"].items()
     )
+
+    follow_up = ""
+    if message:
+        follow_up = (
+            "\n"
+            "7) USER FOLLOW-UP REQUEST:\n"
+            f"   {message[:2000]}\n"
+            "   Interpret this request against the BOARD STATUS above. Going back to an "
+            "earlier version: coding_agent calls revert_artifact(name, version), using the "
+            "archived_versions listed per artifact in the board status above. A content "
+            "change: re-save the affected artifact - if the request touches more than one "
+            "artifact, the highest affected artifact wins - and let everything downstream "
+            "rebuild through the normal pipeline. NEVER redo an intact upstream artifact the "
+            "request does not ask to change.\n"
+        )
 
     return (
         f"1) GOAL: {task}\n"
@@ -121,6 +158,7 @@ def build_production_task(
         "6) QA LIMIT: after ONE revise verdict, at most one revision round is allowed - if the "
         "next QA pass still finds issues, deliver anyway with the findings recorded as "
         "warnings instead of looping again.\n"
+        f"{follow_up}"
     )
 
 
@@ -180,6 +218,7 @@ def run_production(
     session_id: str,
     task: str,
     target_seconds: int = 60,
+    message: str | None = None,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
 ) -> dict[str, Any]:
@@ -189,8 +228,12 @@ def run_production(
     the same way a failed run is, never raised. Otherwise the session's board is opened if it
     already exists, or created fresh (this is what makes a second call for the same
     ``session_id`` a resume rather than a restart - nothing already on the board is touched or
-    re-created). Stage A runs first; only a ``hard_fail`` escalates to Stage B (both
-    magentic-only - v2 has no GraphFlow fallback). Every stage call goes through
+    re-created). ``message`` is a follow-up request on top of an already-produced board (e.g.
+    "go back to the previous storyline" or "make the hook punchier"); it assumes a prior
+    production, so if the board does not exist yet, this is an error - report it and return
+    WITHOUT creating a board (unlike a plain fresh run, a follow-up with no board to follow up
+    on is not a valid restart). Stage A runs first; only a ``hard_fail`` escalates to Stage B
+    (both magentic-only - v2 has no GraphFlow fallback). Every stage call goes through
     :func:`orchestrator._safe_execute`, so a raising ``execute`` never propagates out of here.
     """
     if repos.get_asset(db, asset_id) is None:
@@ -212,6 +255,13 @@ def run_production(
     try:
         board = Board.open(root)
     except FileNotFoundError:
+        if message:
+            return {
+                "ok": False,
+                "error": "unknown session (no board)",
+                "asset_id": asset_id,
+                "session_id": session_id,
+            }
         meta = BoardMeta(
             session_id=session_id,
             asset_id=asset_id,
@@ -222,7 +272,7 @@ def run_production(
         board = Board.create(root, meta)
 
     task_text = build_production_task(
-        db, board, asset_id=asset_id, task=task, target_seconds=target_seconds
+        db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
     )
     run: ExecuteFn = execute if execute is not None else _make_default_execute(
         board, asset_id, deps

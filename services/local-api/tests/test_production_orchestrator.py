@@ -194,6 +194,49 @@ def test_task_text_contains_contract_and_resume(tmp_path: Path) -> None:
     assert "Resume point: script" in resumed
 
 
+def test_task_text_follow_up_block_only_with_message(tmp_path: Path) -> None:
+    """The USER FOLLOW-UP REQUEST section (+ its revert/re-save/never-redo instructions) only
+    appears when ``message`` is passed; the board-status block also grows an ``[archived: ...]``
+    suffix per artifact, but only for artifacts that actually have an archived version, and only
+    while a message is present (a fresh, non-follow-up call stays exactly as before)."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess1")
+    meta = BoardMeta(
+        session_id="sess1",
+        asset_id=asset_id,
+        created_utc="2026-07-13T00:00:00+00:00",
+        task="overview short",
+        target_seconds=20.0,
+    )
+    board = Board.create(root, meta)
+    chapter = Chapter(chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0)
+    board.save("storyline", Storyline(red_thread="thread v1", arc=[chapter]))
+    board.save("storyline", Storyline(red_thread="thread v2", arc=[chapter]))  # -> v2, archives v1
+
+    without_message = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="overview short", target_seconds=20
+    )
+    assert "USER FOLLOW-UP REQUEST" not in without_message
+    assert "[archived:" not in without_message
+
+    with_message = production_orchestrator.build_production_task(
+        db,
+        board,
+        asset_id=asset_id,
+        task="overview short",
+        target_seconds=20,
+        message="make the hook punchier",
+    )
+    assert "USER FOLLOW-UP REQUEST" in with_message
+    assert "make the hook punchier" in with_message
+    assert "revert_artifact" in with_message
+    assert "archived_versions" in with_message
+    assert "highest affected" in with_message.lower()
+    assert "never redo" in with_message.lower()
+    assert "intact upstream" in with_message.lower()
+    assert "storyline: DONE (v2) [archived: v1]" in with_message
+
+
 # --- run_production -----------------------------------------------------------------------
 
 
@@ -229,6 +272,83 @@ def test_run_production_creates_board_and_reports(tmp_path: Path) -> None:
     assert calls == [("A", "magentic")]
     root = production_orchestrator.board_root_for(db, asset_id, "sess1")
     assert (root / "meta.json").is_file()
+
+
+def test_run_production_message_on_fresh_board_is_error(tmp_path: Path) -> None:
+    """A follow-up ``message`` assumes a prior production already exists on the board. A
+    session that has never been run has no board yet, so this is reported as an error - and,
+    unlike a plain fresh run (no message), no board directory gets created for it."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    execute, calls = _make_execute({})  # empty script — must never be reached
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess1",
+        task="overview short",
+        message="go back to the previous storyline",
+        execute=execute,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "unknown session (no board)",
+        "asset_id": asset_id,
+        "session_id": "sess1",
+    }
+    assert calls == []  # never reached team execution
+    root = production_orchestrator.board_root_for(db, asset_id, "sess1")
+    assert not root.exists()
+
+
+def test_run_production_message_run_reaches_team_with_follow_up_text(tmp_path: Path) -> None:
+    """A follow-up ``message`` against an EXISTING board runs normally, and the user's text
+    ends up verbatim in the task text handed to the team (captured via a fake execute)."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess1")
+    meta = BoardMeta(
+        session_id="sess1",
+        asset_id=asset_id,
+        created_utc="2026-01-01T00:00:00+00:00",
+        task="original task",
+        target_seconds=20.0,
+    )
+    Board.create(root, meta).save_scene_review(_review(1))
+    config = providers.resolve_from_env({})
+    captured_tasks: list[str] = []
+
+    def execute(
+        db: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        captured_tasks.append(task)
+        return orchestrator.StageOutcome(
+            status="ok",
+            weak=False,
+            summary="done",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess1",
+        task="overview short",
+        message="swap the hook for the dashboard scene",
+        execute=execute,
+    )
+
+    assert result["ok"] is True
+    assert len(captured_tasks) == 1
+    assert "swap the hook for the dashboard scene" in captured_tasks[0]
+    assert "USER FOLLOW-UP REQUEST" in captured_tasks[0]
 
 
 def test_run_production_orphaned_asset_never_raises(tmp_path: Path) -> None:
