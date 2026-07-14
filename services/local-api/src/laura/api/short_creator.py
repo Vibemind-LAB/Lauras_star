@@ -22,6 +22,7 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..util import new_id
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ router = APIRouter(tags=["short-creator"])
 
 class AutoShortRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=2000)
+    target_seconds: int = Field(default=60, gt=0, le=600)
+
+
+class ProductionCreateRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=2000)
     target_seconds: int = Field(default=60, gt=0, le=600)
 
 
@@ -155,3 +161,48 @@ def auto_short_stream(
                 log_file.close()
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
+
+
+# --- v2 production session endpoint (Slice 4) -------------------------------------------------
+
+
+@router.post("/assets/{asset_id}/production", status_code=status.HTTP_202_ACCEPTED)
+def create_production(
+    asset_id: str,
+    body: ProductionCreateRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Create a v2 production session for *asset_id* and enqueue its ``production.run`` job.
+
+    The session row is created before the job is enqueued: a session without a job is
+    harmless (visible, just never progresses), while a job without a session row would
+    reference an entity that doesn't exist. 503 if the 'autoshort' extra is missing.
+    """
+    db = _db(request)
+    if repos.get_asset(db, asset_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    if not _autoshort_available():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The 'autoshort' extra is not installed. Run: uv sync --extra autoshort",
+        )
+    session_id = new_id()
+    created_utc = datetime.now(UTC).isoformat(timespec="seconds")
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset_id, created_utc=created_utc
+    )
+    # LLM-driven production runs are expensive + non-idempotent — do not auto-retry.
+    job_id = enqueue(
+        db,
+        queue=queue_for("production.run"),
+        kind="production.run",
+        payload={
+            "asset_id": asset_id,
+            "session_id": session_id,
+            "task": body.task,
+            "target_seconds": body.target_seconds,
+        },
+        max_attempts=1,
+    )
+    return {"session_id": session_id, "job_id": job_id}
