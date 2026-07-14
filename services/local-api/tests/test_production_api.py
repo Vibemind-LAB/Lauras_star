@@ -1,9 +1,16 @@
 """POST /assets/{asset_id}/production — creates a v2 production session + enqueues production.run.
+POST /production/{session_id}/message — follow-up message on an existing session's board.
+GET /production/{session_id} — read-only board status + resume point.
 
 Mirrors test_shorts_render_api.py's app-factory + token-header pattern. The job is NOT drained
 here (no real LLM/orchestrator call) — we assert the session row and the queued job's kind +
 payload instead. ``_autoshort_available`` is monkeypatched so tests never depend on whether the
 optional 'autoshort' extra is actually installed (see test_short_creator_api.py).
+
+The message/status tests need a REAL board on disk (``Board.create``), so unlike ``_seed_asset``
+(a fake, never-written ``workspace_root="/tmp/p"`` — fine when only DB rows are asserted), the
+board-backed fixture below gives the project a real ``workspace_root`` under ``tmp_path``, mirroring
+``tests/test_production_orchestrator.py``'s ``_seed_scene`` convention.
 """
 
 from __future__ import annotations
@@ -18,6 +25,9 @@ from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
 from laura.main import create_app
+from laura.short_creator.board import Board
+from laura.short_creator.board_models import BoardMeta
+from laura.short_creator.production_orchestrator import board_root_for
 
 _TOKEN = "test-token"
 _H = {"X-Laura-Token": _TOKEN}
@@ -40,6 +50,43 @@ def _seed_asset(db: SqliteDatabase) -> tuple[str, str]:
         display_name="a", source_path="/tmp/a.mp4",
     )
     return asset["id"], project["id"]
+
+
+def _seed_session_with_board(
+    db: SqliteDatabase,
+    tmp_path: Path,
+    *,
+    session_id: str = "sess_001",
+    task: str = "Make a 30s recap",
+    target_seconds: float = 45.0,
+) -> str:
+    """Project (REAL workspace_root under tmp_path) + asset + production session + a board
+    already created via ``Board.create``. Returns asset_id."""
+    project = repos.create_project(
+        db,
+        name="p",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video",
+        display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc="2026-07-14T10:00:00Z"
+    )
+    root = board_root_for(db, asset["id"], session_id)
+    meta = BoardMeta(
+        session_id=session_id,
+        asset_id=asset["id"],
+        created_utc="2026-07-14T10:00:00Z",
+        task=task,
+        target_seconds=target_seconds,
+    )
+    Board.create(root, meta)
+    return str(asset["id"])
 
 
 def test_create_production_enqueues_job_and_creates_session(
@@ -108,3 +155,91 @@ def test_create_production_session_row_has_correct_asset_id(
     assert session["session_id"] == session_id
     assert session["asset_id"] == asset_id
     assert session["created_utc"]
+
+
+# ---------------------------------------------------------------------------
+# POST /production/{session_id}/message
+# ---------------------------------------------------------------------------
+
+
+def test_send_message_enqueues_job_with_board_meta_task(tmp_path: Path, monkeypatch: Any) -> None:
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id = _seed_session_with_board(
+        db, tmp_path, session_id="sess_001", task="Make a 30s recap", target_seconds=45.0
+    )
+
+    r = client.post(
+        "/production/sess_001/message",
+        json={"text": "make the hook punchier"},
+        headers=_H,
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["session_id"] == "sess_001"
+    assert body["job_id"]
+
+    # Job payload: task/target_seconds come from the board's meta, not the request body
+    # (the request only ever supplies the follow-up text).
+    job = repos.get_job(db, body["job_id"])
+    assert job is not None
+    assert job["kind"] == "production.run"
+    payload = json.loads(job["payload_json"])
+    assert payload == {
+        "asset_id": asset_id,
+        "session_id": "sess_001",
+        "task": "Make a 30s recap",
+        "target_seconds": 45,
+        "message": "make the hook punchier",
+    }
+
+
+def test_send_message_unknown_session_404(tmp_path: Path) -> None:
+    client, _db = _app(tmp_path)
+    r = client.post(
+        "/production/does-not-exist/message", json={"text": "go back a version"}, headers=_H
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_send_message_session_without_board_404(tmp_path: Path, monkeypatch: Any) -> None:
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+    repos.create_production_session(
+        db, session_id="sess_no_board", asset_id=asset_id, created_utc="2026-07-14T10:00:00Z"
+    )
+
+    r = client.post(
+        "/production/sess_no_board/message", json={"text": "go back a version"}, headers=_H
+    )
+    assert r.status_code == 404, r.text
+
+
+# ---------------------------------------------------------------------------
+# GET /production/{session_id}
+# ---------------------------------------------------------------------------
+
+
+def test_get_production_status_shape(tmp_path: Path) -> None:
+    client, db = _app(tmp_path)
+    _seed_session_with_board(db, tmp_path, session_id="sess_002")
+
+    r = client.get("/production/sess_002", headers=_H)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert set(body) >= {"meta", "scene_reviews", "artifacts", "resume_point"}
+    assert body["meta"]["session_id"] == "sess_002"
+    assert body["scene_reviews"] == {"count": 0, "scenes": []}
+    assert set(body["artifacts"]) == {
+        "storyline", "script", "voice", "cutlist", "render_report", "qa_report",
+    }
+    # Fresh board, no expected scenes resolvable (no rough cut) -> first chain artifact.
+    assert body["resume_point"] == "storyline"
+
+
+def test_get_production_status_unknown_session_404(tmp_path: Path) -> None:
+    client, _db = _app(tmp_path)
+    r = client.get("/production/does-not-exist", headers=_H)
+    assert r.status_code == 404, r.text
