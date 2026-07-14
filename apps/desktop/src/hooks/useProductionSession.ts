@@ -139,6 +139,11 @@ export function useProductionSession(
   // clobber current state (mirrors useAnalysis's pollGen).
   const genRef = useRef(0);
   const timerRef = useRef<number | null>(null);
+  // Guards against overlapping poll ticks: without it, a checkOnce() still in flight when the
+  // next interval tick fires could resolve *after* a later tick already saw a terminal status
+  // and stopped the timer — landing a stale setState(status) that regresses the board snapshot
+  // below its post-done value. Held true for the duration of exactly one checkOnce() call.
+  const tickInFlightRef = useRef(false);
 
   const stopPolling = useCallback((): void => {
     if (timerRef.current !== null) {
@@ -185,6 +190,9 @@ export function useProductionSession(
       } catch (e) {
         log.warn("useProductionSession: final status fetch failed", e);
       }
+      // Both call sites re-check gen themselves before acting on this result, so `true` here
+      // only means "stop caring about this tick" (a superseded generation) — not "the job is
+      // terminal for the session the caller still cares about".
       if (genRef.current !== gen) return true;
 
       if (job.status === "succeeded") {
@@ -213,9 +221,17 @@ export function useProductionSession(
     (gen: number, sessionId: string, jobId: string): void => {
       stopPolling();
       timerRef.current = window.setInterval(() => {
-        void checkOnce(gen, sessionId, jobId).then((terminal) => {
-          if (terminal && genRef.current === gen) stopPolling();
-        });
+        // Skip this tick if the previous checkOnce() hasn't resolved yet — see
+        // tickInFlightRef's declaration for why an overlap here is unsafe.
+        if (tickInFlightRef.current) return;
+        tickInFlightRef.current = true;
+        void checkOnce(gen, sessionId, jobId)
+          .then((terminal) => {
+            if (terminal && genRef.current === gen) stopPolling();
+          })
+          .finally(() => {
+            tickInFlightRef.current = false;
+          });
       }, POLL_INTERVAL_MS);
     },
     [checkOnce, stopPolling],

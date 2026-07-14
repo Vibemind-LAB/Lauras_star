@@ -126,6 +126,49 @@ describe("useProductionSession", () => {
     expect(calls).toEqual(["create", "getJob", "getStatus"]);
   });
 
+  it("startPolling(): skips an overlapping tick while the previous checkOnce is still in flight", async () => {
+    let resolveGetJob: ((value: JobStatus) => void) | null = null;
+    const getJob = vi.fn(
+      () =>
+        new Promise<JobStatus>((resolve) => {
+          resolveGetJob = resolve;
+        }),
+    );
+    const client = makeClient({ getJob });
+
+    const { result } = renderHook(() => useProductionSession(client, "asset-1"));
+
+    await act(async () => {
+      await result.current.start("Make a short");
+    });
+    expect(getJob).not.toHaveBeenCalled();
+
+    // First tick: checkOnce calls getJob and hangs (the mock's promise is never auto-resolved).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(getJob).toHaveBeenCalledTimes(1);
+
+    // Second tick fires while the first checkOnce is still pending. A second checkOnce WOULD
+    // start here (and call getJob again) if the overlap weren't guarded.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(getJob).toHaveBeenCalledTimes(1);
+
+    // Resolve the first call — the in-flight flag clears once its checkOnce settles.
+    await act(async () => {
+      resolveGetJob?.(job({ status: "running" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // The guard no longer blocks: the next tick is free to start a new checkOnce.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(getJob).toHaveBeenCalledTimes(2);
+  });
+
   it("start(): a rejected createProduction sets phase error and writes no storage entry", async () => {
     const client = makeClient({
       createProduction: vi.fn().mockRejectedValue(new Error("boom")),
@@ -188,6 +231,37 @@ describe("useProductionSession", () => {
     expect(result.current.state.phase).toBe("done");
   });
 
+  it("ignores a getProductionStatus rejection while the job is still running: no error, polling continues", async () => {
+    const client = makeClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockRejectedValue(new Error("board not ready yet")),
+    });
+
+    const { result } = renderHook(() => useProductionSession(client, "asset-1"));
+
+    await act(async () => {
+      await result.current.start("Make a short");
+    });
+    expect(result.current.state.phase).toBe("running");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(result.current.state.phase).toBe("running");
+    expect(result.current.state.error).toBeNull();
+    expect(result.current.state.status).toBeNull();
+    expect(client.getJob).toHaveBeenCalledTimes(1);
+
+    // Polling continues past the ignored rejection — the next tick still fires.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(client.getJob).toHaveBeenCalledTimes(2);
+    expect(result.current.state.phase).toBe("running");
+    expect(result.current.state.error).toBeNull();
+  });
+
   it("resumes an already-terminal stored session as phase done, without ever polling", async () => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId: "s1", jobId: "j1" }));
     const client = makeClient({
@@ -217,6 +291,19 @@ describe("useProductionSession", () => {
 
     expect(result.current.state.phase).toBe("error");
     expect(result.current.state.error).toBe("boom");
+  });
+
+  it("resumes an already-cancelled stored session as phase error with the cancellation message", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId: "s1", jobId: "j1" }));
+    const client = makeClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "cancelled" })),
+    });
+
+    const { result } = renderHook(() => useProductionSession(client, "asset-1"));
+    await flush();
+
+    expect(result.current.state.phase).toBe("error");
+    expect(result.current.state.error).toBe("Produktion abgebrochen.");
   });
 
   it("a failed-before-board job does not crash: status stays null, phase still error", async () => {
