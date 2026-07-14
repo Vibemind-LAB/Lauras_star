@@ -2262,3 +2262,37 @@ def revoke_consent_record(db: Database, consent_id: str) -> bool:
             (utcnow_iso(), consent_id),
         )
         return cur.rowcount > 0
+
+
+# --- production sessions (agentic short-creator) ----------------------------
+
+
+def create_production_session(
+    db: Database, *, session_id: str, asset_id: str, created_utc: str
+) -> None:
+    """Create a production session record. session_id must be unique (PK)."""
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO production_sessions (session_id, asset_id, created_utc) "
+            "VALUES (?, ?, ?)",
+            (session_id, asset_id, created_utc),
+        )
+
+
+def get_production_session(db: Database, session_id: str) -> dict[str, Any] | None:
+    """Get a production session by session_id, or None if not found."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM production_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def list_production_sessions(db: Database, asset_id: str) -> list[dict[str, Any]]:
+    """List all production sessions for an asset, newest first."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM production_sessions WHERE asset_id=? ORDER BY created_utc DESC",
+            (asset_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]

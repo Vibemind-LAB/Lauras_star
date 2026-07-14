@@ -1,7 +1,7 @@
 """Tests for the frame-embedding vector store (VE2).
 
 Covers:
-- schema_version() == 31 after migrate()
+- schema_version() == 32 after migrate()
 - FrameEmbedding round-trip: replace + list returns vectors bit-exact, ordered by frame, dims ok
 - replace-not-accumulate: second call replaces, does not append
 - search: nearest vector is top-1; identical → ~1.0, orthogonal → ~0.0
@@ -57,7 +57,7 @@ def _make_emb(frame: int, *values: float) -> FrameEmbedding:
 
 def test_schema_version_is_31_after_migrate(tmp_path: Path) -> None:
     db = _db(tmp_path)
-    assert db.schema_version() == 31
+    assert db.schema_version() == 32
 
 
 # ---------------------------------------------------------------------------
