@@ -20,7 +20,7 @@
 
 ---
 
-### Task F1: `api.ts` — Session-Methoden + Typen
+### Task 1: `api.ts` — Session-Methoden + Typen
 
 **Files:** Modify `apps/desktop/src/api.ts` · Test `apps/desktop/src/api.production.test.ts` (neu; Muster eines bestehenden api-Tests spiegeln, sonst neben ChatPanel.test.tsx anlegen wie die Nachbarn es tun)
 
@@ -47,7 +47,7 @@ Fehlersemantik wie die Nachbar-Methoden (Nicht-2xx → Error mit Status/Detail-T
 
 ---
 
-### Task F2: `useProductionSession`-Hook
+### Task 2: `useProductionSession`-Hook
 
 **Files:** Create `apps/desktop/src/hooks/useProductionSession.ts` · Test `apps/desktop/src/hooks/useProductionSession.test.ts`
 
@@ -77,7 +77,7 @@ Tests (fake timers + gemockter Client als Objekt mit vi.fn()): start-happy (Reih
 
 ---
 
-### Task F3: ChatPanel-Integration — Session-Modus
+### Task 3: ChatPanel-Integration — Session-Modus
 
 **Files:** Modify `apps/desktop/src/components/ChatPanel.tsx` · Test erweitern `apps/desktop/src/components/ChatPanel.test.tsx`
 
@@ -91,7 +91,7 @@ Tests: Umschalter zeigt Session-UI; running-Zustand rendert resume_point + Chips
 
 ---
 
-### Task F4: Gesamt-Verifikation Slice 5
+### Task 4: Gesamt-Verifikation Slice 5
 
 - [ ] `pnpm typecheck` (apps/desktop) → 0 Fehler.
 - [ ] `pnpm test` → alle vitest grün (v1-ChatPanel-Tests unverändert grün).
