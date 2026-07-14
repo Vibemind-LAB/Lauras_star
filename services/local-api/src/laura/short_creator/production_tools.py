@@ -360,7 +360,7 @@ def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[Scri
 
     placed: set[tuple[int, int]] = set()
     ordered: list[ScriptLine] = []
-    for chapter in storyline.arc:
+    for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
         for scene_number in chapter.scene_numbers:
             key = (chapter.chapter, scene_number)
             if key in by_key and key not in placed:

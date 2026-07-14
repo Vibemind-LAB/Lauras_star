@@ -489,3 +489,97 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     assert second["cached"] is False  # order-only change still busts the cache
     assert backend.calls == 2
     assert backend.last_text == "Stopp dein Team Ein Klick genügt"
+
+
+def test_chapters_narrated_in_numeric_order_not_save_order(tmp_path: Path) -> None:
+    """Regression test: when a storyline arc is saved out of numeric order (e.g., [chapter 2,
+    chapter 1]), voice synthesis must follow numeric chapter order (1, 2), not save order. This
+    ensures audio/video/zoom stay in sync during playback."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+
+    # Reviews for both scenes
+    _review(
+        board,
+        1,
+        best_window=BestWindow(offset_s=0.0, duration_s=3.0),
+        roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
+    )
+    _review(
+        board,
+        2,
+        best_window=BestWindow(offset_s=0.0, duration_s=3.0),
+        roi=Roi(x=0.3, y=0.3, w=0.2, h=0.2),
+    )
+
+    # Storyline with TWO chapters saved OUT OF NUMERIC ORDER: arc=[chapter 2, chapter 1]
+    # Voice synthesis must still follow numeric order: chapter 1 first, then chapter 2.
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="multi-chapter test",
+            arc=[
+                Chapter(
+                    chapter=2,
+                    role="payoff_cta",
+                    message="chapter 2",
+                    scene_numbers=[2],
+                    target_seconds=2.0,
+                ),
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="chapter 1",
+                    scene_numbers=[1],
+                    target_seconds=2.0,
+                ),
+            ],
+        ),
+    )
+
+    # Script with lines for both chapters (in natural scene order)
+    board.save(
+        "script",
+        Script(
+            language="de",
+            lines=[
+                ScriptLine(chapter=1, scene_number=1, text="First chapter"),
+                ScriptLine(chapter=2, scene_number=2, text="Second chapter"),
+            ],
+        ),
+    )
+
+    # Voice backend with words for CORRECTLY ORDERED text: "First chapter Second chapter"
+    backend = _FakeVoiceBackend(
+        words=[
+            {"text": "First", "start_s": 0.0, "end_s": 0.3},
+            {"text": "chapter", "start_s": 0.3, "end_s": 0.6},
+            {"text": "Second", "start_s": 1.0, "end_s": 1.3},
+            {"text": "chapter", "start_s": 1.3, "end_s": 1.6},
+        ]
+    )
+    deps = ProductionDeps(voice_backend=backend)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    # Synthesize voice: backend must receive text in NUMERIC chapter order, not save order
+    synth = specs["synthesize_script_voice"].func()
+    assert synth["ok"] is True
+    assert backend.last_text == "First chapter Second chapter"
+
+    # Build cutlist: must follow numeric order, not save order
+    built = specs["build_cutlist"].func()
+    assert built["ok"] is True
+
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    assert len(cutlist.segments) == 2
+
+    # First segment in cutlist is chapter 1 (scene 1), not chapter 2 (despite save order)
+    seg0 = cutlist.segments[0]
+    assert seg0.scene_number == 1
+
+    # Second segment is chapter 2 (scene 2)
+    seg1 = cutlist.segments[1]
+    assert seg1.scene_number == 2
