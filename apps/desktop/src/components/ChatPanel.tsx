@@ -1,6 +1,10 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-import type { AgentEvent, LauraClient } from "../api";
+import type { AgentEvent, LauraClient, ProductionStatus } from "../api";
+import {
+  type ProductionSessionController,
+  useProductionSession,
+} from "../hooks/useProductionSession";
 
 export interface ChatPanelProps {
   client: LauraClient;
@@ -224,17 +228,233 @@ function EventLine({ event }: { event: AgentEvent }): ReactElement | null {
   }
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * Session (v2) mode: a persistent, resumable production session (multi-turn, board-backed) as an
+ * alternative to the v1 one-shot stream above. State comes entirely from `useProductionSession`
+ * (Task 2) — this file only renders its phases (idle/running/done/error).
+ * ------------------------------------------------------------------------------------------- */
+
+/** Board artifact chain in display order, with a friendly short label per slot. `render_report`
+ * reads as "Export" rather than its raw key — that's what it represents to the user, and the
+ * board status carries no separate export id to show instead (see ProductionStatus). */
+const SESSION_ARTIFACT_ORDER = [
+  "storyline",
+  "script",
+  "voice",
+  "cutlist",
+  "render_report",
+  "qa_report",
+] as const;
+
+const SESSION_ARTIFACT_LABELS: Record<(typeof SESSION_ARTIFACT_ORDER)[number], string> = {
+  storyline: "storyline",
+  script: "script",
+  voice: "voice",
+  cutlist: "cutlist",
+  render_report: "Export",
+  qa_report: "QA",
+};
+
+/** Board chips: a review-count chip when any exist, then one version chip per present artifact
+ * (chain order) — e.g. "🎬 5", "storyline v2", "script v1". */
+function SessionChips({ status }: { status: ProductionStatus }): ReactElement | null {
+  const chips: { key: string; text: string }[] = [];
+  if (status.scene_reviews.count > 0) {
+    chips.push({ key: "reviews", text: `🎬 ${status.scene_reviews.count}` });
+  }
+  for (const name of SESSION_ARTIFACT_ORDER) {
+    const { version } = status.artifacts[name];
+    if (version !== null) {
+      chips.push({ key: name, text: `${SESSION_ARTIFACT_LABELS[name]} v${version}` });
+    }
+  }
+  if (chips.length === 0) return null;
+  return (
+    <div className="mb-1 flex flex-wrap gap-1">
+      {chips.map((chip) => (
+        <span
+          key={chip.key}
+          className="inline-block rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] text-content-strong"
+        >
+          {chip.text}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** The load-bearing facts of a terminal session job's `result_json`, narrowed defensively —
+ * the hook only guarantees `unknown` (an opaque, agent-produced payload). Unrecognized shapes or
+ * mistyped fields fall back to safe defaults instead of throwing. */
+interface SessionResultInfo {
+  ok: boolean;
+  weak: boolean;
+  exportId: string | null;
+}
+
+function narrowSessionResult(value: unknown): SessionResultInfo {
+  const record =
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  return {
+    ok: typeof record.ok === "boolean" ? record.ok : false,
+    weak: typeof record.weak === "boolean" ? record.weak : false,
+    exportId: typeof record.export_id === "string" ? record.export_id : null,
+  };
+}
+
+/** Done-phase result card — same tone language as v1's DoneCard (ok/weak/failed), plus the
+ * export id when the terminal job result carries one. */
+function SessionCard({ jobResult }: { jobResult: unknown }): ReactElement {
+  const info = narrowSessionResult(jobResult);
+  const tone = !info.ok
+    ? { cls: "border-status-err text-status-err", text: "✗ Nicht geklappt" }
+    : info.weak
+      ? { cls: "border-status-warn text-status-warn", text: "⚠ Fertig — QA meldet Schwächen" }
+      : { cls: "border-status-ok text-status-ok", text: "✓ Session fertig" };
+  return (
+    <div className={`mt-1 rounded-md border bg-surface-2 px-1.5 py-1 ${tone.cls}`}>
+      <div className="font-medium">{tone.text}</div>
+      {info.exportId !== null && (
+        <div className="text-[10px] text-content-faint">Export: {info.exportId}</div>
+      )}
+    </div>
+  );
+}
+
+/** Shared input/button look, matching the v1 input row exactly. */
+const SESSION_INPUT_CLS =
+  "min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px] text-content-strong disabled:opacity-40";
+const SESSION_BUTTON_CLS =
+  "rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40";
+
+/**
+ * Session (v2) body: idle task input + start; running spinner (resume_point) + board chips; done
+ * result card + a follow-up input (sendMessage); error message + reset. Owns only the current
+ * draft text — everything else comes from `session` (driven by useProductionSession, exercised in
+ * tests via a mocked client, never by mocking the hook itself).
+ */
+function SessionPanel({
+  session,
+  assetId,
+}: {
+  session: ProductionSessionController;
+  assetId: string | null;
+}): ReactElement {
+  const { state } = session;
+  const [draft, setDraft] = useState("");
+
+  const handleStart = (): void => {
+    const text = draft.trim();
+    if (text === "" || assetId === null) return;
+    setDraft("");
+    void session.start(text);
+  };
+
+  const handleSend = (): void => {
+    const text = draft.trim();
+    if (text === "") return;
+    setDraft("");
+    void session.sendMessage(text);
+  };
+
+  return (
+    <>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5 text-[11px]">
+        {state.phase === "idle" && (
+          <p className="text-content-faint">
+            {assetId === null
+              ? "Wähle ein Video, dann beschreib den Auftrag."
+              : "Beschreib den Auftrag — die Session merkt sich den Fortschritt über mehrere Nachrichten."}
+          </p>
+        )}
+        {state.phase === "running" && (
+          <>
+            <div className="mb-1 animate-pulse text-content-faint">
+              {state.status !== null ? `⚙ ${state.status.resume_point} …` : "läuft …"}
+            </div>
+            {state.status !== null && <SessionChips status={state.status} />}
+          </>
+        )}
+        {state.phase === "done" && <SessionCard jobResult={state.jobResult} />}
+        {state.phase === "error" && (
+          <div className="mb-1 text-status-err" role="alert">
+            ⚠ {state.error}
+          </div>
+        )}
+      </div>
+      <div className="flex gap-1 border-t border-bezel p-1.5">
+        {state.phase === "idle" && (
+          <>
+            <input
+              aria-label="Sitzungsauftrag"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleStart();
+              }}
+              placeholder="Mach mir einen 60s-Short über …"
+              disabled={assetId === null}
+              className={SESSION_INPUT_CLS}
+            />
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={assetId === null || draft.trim() === ""}
+              className={SESSION_BUTTON_CLS}
+            >
+              Start
+            </button>
+          </>
+        )}
+        {state.phase === "done" && (
+          <>
+            <input
+              aria-label="Folgeanfrage"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSend();
+              }}
+              placeholder="z. B. Kapitel 2 andere Szene — oder: zurück zu storyline v1"
+              className={SESSION_INPUT_CLS}
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={draft.trim() === ""}
+              className={SESSION_BUTTON_CLS}
+            >
+              Senden
+            </button>
+          </>
+        )}
+        {state.phase === "error" && (
+          <button
+            type="button"
+            onClick={session.reset}
+            className="ml-auto rounded border border-bezel px-2 py-1 text-[11px] font-medium text-content-muted hover:text-content-strong"
+          >
+            Zurücksetzen
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 /**
  * Docked assistant chat: the user types a request, the agent team runs live via the streaming
  * endpoint, and each event renders as a chat line. `onEvent` lets the parent refresh the app views
  * (Timeline/Player/Scenes) as artifacts appear, so the app "fills in" alongside the chat.
  */
 export function ChatPanel({ client, assetId, onEvent }: ChatPanelProps): ReactElement {
+  const [mode, setMode] = useState<"v1" | "v2">("v1");
   const [input, setInput] = useState("");
   const [topic, setTopic] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [running, setRunning] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const session = useProductionSession(client, assetId);
 
   // Follow the live run: keep the newest event in view unless the user scrolled up to read.
   useEffect(() => {
@@ -268,45 +488,79 @@ export function ChatPanel({ client, assetId, onEvent }: ChatPanelProps): ReactEl
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l border-bezel bg-surface-1">
       <header className="border-b border-bezel px-2 py-1.5 text-[11px] font-medium text-content-muted">
-        🤖 Assistent
-      </header>
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5 text-[11px]">
-        {topic !== null && (
-          <div className="mb-1.5 rounded-md bg-accent/15 px-1.5 py-1 text-content-strong">
-            <span className="font-medium">Du:</span> {topic}
+        <div className="flex items-center justify-between gap-2">
+          <span>🤖 Assistent</span>
+          <div className="flex gap-0.5 rounded border border-bezel p-0.5">
+            <button
+              type="button"
+              onClick={() => setMode("v1")}
+              aria-pressed={mode === "v1"}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                mode === "v1"
+                  ? "bg-accent text-accent-ink"
+                  : "text-content-faint hover:text-content-muted"
+              }`}
+            >
+              Stream (v1)
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("v2")}
+              aria-pressed={mode === "v2"}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                mode === "v2"
+                  ? "bg-accent text-accent-ink"
+                  : "text-content-faint hover:text-content-muted"
+              }`}
+            >
+              Session (v2)
+            </button>
           </div>
-        )}
-        {messages.map((m) => (
-          <EventLine key={m.id} event={m.event} />
-        ))}
-        {running && (
-          <div className="mb-1 animate-pulse text-content-faint">⏳ Agenten arbeiten …</div>
-        )}
-        {assetId === null && (
-          <p className="text-content-faint">Wähle ein Video, dann sag, was du willst.</p>
-        )}
-      </div>
-      <div className="flex gap-1 border-t border-bezel p-1.5">
-        <input
-          aria-label="Anfrage"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-          }}
-          placeholder="Mach mir einen 60s-Short über …"
-          disabled={assetId === null || running}
-          className="min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px] text-content-strong disabled:opacity-40"
-        />
-        <button
-          type="button"
-          onClick={submit}
-          disabled={assetId === null || running || input.trim() === ""}
-          className="rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
-        >
-          {running ? "…" : "Los"}
-        </button>
-      </div>
+        </div>
+      </header>
+      {mode === "v1" ? (
+        <>
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5 text-[11px]">
+            {topic !== null && (
+              <div className="mb-1.5 rounded-md bg-accent/15 px-1.5 py-1 text-content-strong">
+                <span className="font-medium">Du:</span> {topic}
+              </div>
+            )}
+            {messages.map((m) => (
+              <EventLine key={m.id} event={m.event} />
+            ))}
+            {running && (
+              <div className="mb-1 animate-pulse text-content-faint">⏳ Agenten arbeiten …</div>
+            )}
+            {assetId === null && (
+              <p className="text-content-faint">Wähle ein Video, dann sag, was du willst.</p>
+            )}
+          </div>
+          <div className="flex gap-1 border-t border-bezel p-1.5">
+            <input
+              aria-label="Anfrage"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+              placeholder="Mach mir einen 60s-Short über …"
+              disabled={assetId === null || running}
+              className="min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px] text-content-strong disabled:opacity-40"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={assetId === null || running || input.trim() === ""}
+              className="rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
+            >
+              {running ? "…" : "Los"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <SessionPanel session={session} assetId={assetId} />
+      )}
     </aside>
   );
 }

@@ -1,8 +1,15 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentEvent, LauraClient } from "../api";
+import type { AgentEvent, JobStatus, LauraClient, ProductionStatus } from "../api";
 import { ChatPanel, pickHighlights } from "./ChatPanel";
+
+// v2 session-mode tests write a `laura.production.<assetId>` localStorage entry via
+// useProductionSession's start()/sendMessage(). Clear it before every test (v1 tests never touch
+// localStorage, so this is a no-op for them) so no session leaks across tests reusing assetId "a1".
+beforeEach(() => {
+  window.localStorage.clear();
+});
 
 function mockClient(streamAutoShort: ReturnType<typeof vi.fn>): LauraClient {
   return { streamAutoShort } as unknown as LauraClient;
@@ -162,5 +169,165 @@ describe("pickHighlights", () => {
   it("returns an empty string for unknown shapes and skips None values", () => {
     expect(pickHighlights("plain text")).toBe("");
     expect(pickHighlights("{'error': None}")).toBe("");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Session (v2) mode. Driven through the real useProductionSession hook via a mocked client —
+// same pattern useProductionSession.test.ts uses (fake timers + vi.fn() promises on the client)
+// — never by mocking the hook module itself.
+// -------------------------------------------------------------------------------------------
+
+function job(overrides: Partial<JobStatus> = {}): JobStatus {
+  return {
+    id: "j1",
+    queue: "default",
+    kind: "production.run",
+    status: "running",
+    attempt: 1,
+    max_attempts: 3,
+    result_json: null,
+    error_json: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    finished_at: null,
+    ...overrides,
+  };
+}
+
+function boardStatus(overrides: Partial<ProductionStatus> = {}): ProductionStatus {
+  return {
+    meta: {
+      session_id: "s1",
+      asset_id: "a1",
+      created_utc: "2026-01-01T00:00:00Z",
+      task: "make a short",
+      format: "insta",
+      target_seconds: 30,
+      status: "active",
+    },
+    scene_reviews: { count: 0, scenes: [] },
+    artifacts: {
+      storyline: { version: null, archived_versions: [] },
+      script: { version: null, archived_versions: [] },
+      voice: { version: null, archived_versions: [] },
+      cutlist: { version: null, archived_versions: [] },
+      render_report: { version: null, archived_versions: [] },
+      qa_report: { version: null, archived_versions: [] },
+    },
+    resume_point: "script",
+    ...overrides,
+  };
+}
+
+function mockSessionClient(overrides: Partial<LauraClient> = {}): LauraClient {
+  return {
+    streamAutoShort: vi.fn(),
+    createProduction: vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j1" }),
+    sendProductionMessage: vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j2" }),
+    getProductionStatus: vi.fn().mockResolvedValue(boardStatus()),
+    getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+    ...overrides,
+  } as unknown as LauraClient;
+}
+
+// Flushes a fire-and-forget start()/sendMessage() promise chain triggered from a click handler,
+// without advancing real time — mirrors useProductionSession.test.ts's own flush() helper.
+async function flushSession(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
+describe("ChatPanel session mode (v2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("header toggle switches from the v1 stream UI to the session (v2) UI", () => {
+    render(<ChatPanel client={mockSessionClient()} assetId="a1" />);
+    expect(screen.getByLabelText("Anfrage")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+
+    expect(screen.queryByLabelText("Anfrage")).toBeNull();
+    expect(screen.getByLabelText("Sitzungsauftrag")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
+  });
+
+  it("running renders the resume_point and board chips (reviews + artifact versions)", async () => {
+    const status = boardStatus({
+      scene_reviews: { count: 5, scenes: [1, 2, 3, 4, 5] },
+      artifacts: {
+        ...boardStatus().artifacts,
+        storyline: { version: 2, archived_versions: [1] },
+        script: { version: 1, archived_versions: [] },
+      },
+      resume_point: "script",
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("⚙ script …")).toBeTruthy();
+    expect(screen.getByText("🎬 5")).toBeTruthy();
+    expect(screen.getByText("storyline v2")).toBeTruthy();
+    expect(screen.getByText("script v1")).toBeTruthy();
+  });
+
+  it("done shows a follow-up input; sending it calls sendMessage with the typed text", async () => {
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(
+        job({ status: "succeeded", result_json: '{"ok":true,"weak":false,"export_id":"e9"}' }),
+      ),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Session fertig/)).toBeTruthy();
+    expect(screen.getByText(/Export: e9/)).toBeTruthy();
+
+    const followUp = screen.getByLabelText("Folgeanfrage");
+    fireEvent.change(followUp, { target: { value: "Kapitel 2 andere Szene" } });
+    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    await flushSession();
+
+    expect(client.sendProductionMessage).toHaveBeenCalledWith("s1", "Kapitel 2 andere Szene");
+  });
+
+  it("error shows the failure message and a reset button", async () => {
+    const client = mockSessionClient({
+      createProduction: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    expect(screen.getByText(/boom/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Zurücksetzen" }));
+    expect(screen.getByLabelText("Sitzungsauftrag")).toBeTruthy();
   });
 });
