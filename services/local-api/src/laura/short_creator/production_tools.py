@@ -23,7 +23,9 @@ raising — the agent loop must never die on a tool.
 ``save_storyline``/``save_script_chapter`` are the first *write* tools past scene review: they
 pydantic-validate their input and report a malformed payload as ``{"ok": False, "errors": [...]}``
 (loc+msg strings, agent-correctable) rather than raising. ``save_storyline`` additionally refuses
-to save chapters that reference a scene without a review yet. ``save_script_chapter`` merges by
+to save chapters that reference a scene without a review yet, or a review window the scene does
+not have — a ``scene_numbers`` entry is a plain scene number (window 0) or ``{"scene": N,
+"window": K}``, the same scene may recur with different windows, the same pair never twice. ``save_script_chapter`` merges by
 chapter (other chapters' lines are kept, only the given chapter's lines are replaced) and, like
 every ``board.save()`` call, invalidates every artifact downstream in the chain (voice, cutlist,
 render report, qa report).
@@ -38,7 +40,8 @@ word-time map and the picture all walk the same sequence; a sha256 of that ORDER
 (:func:`script_hash`) is the synthesis cache key, so an unrelated board change is a no-op re-run
 while a storyline reorder (which changes the text) correctly busts the cache. ``build_cutlist``
 is a *pure derivation* — no model or backend calls — turning storyline + script + voice into a
-frame-accurate ``Cutlist``: one ``CutSegment`` per scene in arc order, clamped inside its own
+frame-accurate ``Cutlist``: one ``CutSegment`` per scene entry in arc order, cut from the review
+window the entry references (offset, duration cap, per-window roi), clamped inside its own
 source range, with an optional zoom timed to when the scene's script line is actually spoken
 (the voice sidecar's word ``start_s``, via :func:`line_starts`, offset by ``transition_lead_s``).
 Segment durations are coupled to that same sidecar: :func:`chapter_audio_windows` tiles the
@@ -409,6 +412,9 @@ def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[Scri
     Lines the storyline does not reference (a stale chapter/scene left over from an earlier
     script draft) are appended at the end, in their original ``script.lines`` order — never
     dropped, since the voice must contain every line the author wrote.
+
+    Window references collapse to their scene: a scene listed several times in a chapter
+    (with different windows) speaks its line(s) once, at its FIRST occurrence.
     """
     by_key: dict[tuple[int, int], list[ScriptLine]] = {}
     for line in script.lines:
@@ -417,8 +423,8 @@ def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[Scri
     placed: set[tuple[int, int]] = set()
     ordered: list[ScriptLine] = []
     for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
-        for scene_number in chapter.scene_numbers:
-            key = (chapter.chapter, scene_number)
+        for entry in chapter.scene_numbers:
+            key = (chapter.chapter, as_scene_window(entry)[0])
             if key in by_key and key not in placed:
                 ordered.extend(by_key[key])
                 placed.add(key)
@@ -478,17 +484,18 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
 
 
 def _segment_duration_s(
-    *, target_seconds: float, n_scenes: int, best_window: BestWindow, scene_duration_s: float
+    *, target_seconds: float, n_scenes: int, window: BestWindow, scene_duration_s: float
 ) -> float:
-    """One scene's BASE cutlist-segment length: the chapter's per-scene time budget, floored at
-    2s and capped at the best_window's own length (itself floored at 2s, so a short highlight
-    doesn't shrink the cap below the floor) — then clamped inside the scene's own duration.
+    """One segment's BASE cutlist length: the chapter's per-segment time budget, floored at
+    2s and capped at the chosen review window's own length (itself floored at 2s, so a short
+    highlight doesn't shrink the cap below the floor) — then clamped inside the scene's own
+    duration.
 
     With a usable voice sidecar these are only the WEIGHTS that ``_scale_chapter_durations``
     rescales to fill the chapter's audio window (:func:`chapter_audio_windows`); without one
     they are the segment durations themselves (the pre-coupling behavior)."""
     budget = target_seconds / n_scenes
-    upper = max(best_window.duration_s, _SEGMENT_FLOOR_S)
+    upper = max(window.duration_s, _SEGMENT_FLOOR_S)
     return min(max(_SEGMENT_FLOOR_S, min(budget, upper)), scene_duration_s)
 
 
@@ -908,19 +915,24 @@ def build_production_tool_specs(
 
     def build_cutlist(transition_lead_s: float = 0.4) -> dict[str, Any]:
         """Deterministically derive a frame-accurate cutlist from storyline + script + voice:
-        one CutSegment per scene in arc order (chapter, then that chapter's scene_numbers
-        order). Segment lengths are COUPLED TO THE VOICE so picture chapters stay in sync with
-        the one continuous voice track: each chapter's audio window (from the word-timings
-        sidecar; boundaries midway between adjacent chapters' words, the last chapter running
-        to voice end + a short tail) is distributed over its scenes proportionally to their
-        target_seconds/best_window base durations — 2s floor per segment, each segment starting
-        at its scene's best_window offset and stretching past best_window.duration_s if needed,
-        but never past its scene's end. A chapter the sidecar doesn't cover (or a missing
-        sidecar) falls back to the plain target_seconds budget. An optional zoom-in is timed to
-        when the scene's script line is actually spoken (word starts, offset ahead by
+        one CutSegment per scene entry in arc order (chapter, then that chapter's
+        scene_numbers order). An entry that references a review window ({"scene": N,
+        "window": K}) is cut from THAT window — its offset is the segment start, its length
+        the base-duration cap, its roi the zoom region (falling back to the review-level
+        roi) — so the same scene can appear several times with different windows. Segment
+        lengths are COUPLED TO THE VOICE so picture chapters stay in sync with the one
+        continuous voice track: each chapter's audio window (from the word-timings sidecar;
+        boundaries midway between adjacent chapters' words, the last chapter running to voice
+        end + a short tail) is distributed over its segments proportionally to their
+        target_seconds/window base durations — 2s floor per segment, each segment starting at
+        its window's offset and stretching past the window's duration_s if needed, but never
+        past its scene's end. A chapter the sidecar doesn't cover (or a missing sidecar)
+        falls back to the plain target_seconds budget. An optional zoom-in is timed to when
+        the scene's script line is actually spoken (word starts, offset ahead by
         transition_lead_s so the zoom lands just before the word lands, not on it). Requires
-        save_storyline, save_script_chapter and synthesize_script_voice to have all run first —
-        reports which one is missing instead of raising."""
+        save_storyline, save_script_chapter and synthesize_script_voice to have all run first
+        — reports which one is missing instead of raising, and rejects a storyline window
+        reference the scene's review does not have (fix the storyline or re-review)."""
         try:
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
@@ -946,7 +958,7 @@ def build_production_tool_specs(
             ordered_lines = _lines_in_storyline_order(script, storyline)
             words = _read_words(voice.timings_path)
             line_map = line_starts(ordered_lines, words)
-            windows = chapter_audio_windows(ordered_lines, words)
+            audio_windows = chapter_audio_windows(ordered_lines, words)
             reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
 
             segments: list[CutSegment] = []
@@ -954,12 +966,14 @@ def build_production_tool_specs(
             order = 0
             for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
                 n_scenes = len(chapter.scene_numbers)
-                # First pass: resolve the chapter's scenes and their base durations, so the
-                # chapter's audio window can be distributed over them BEFORE any segment is cut.
+                # First pass: resolve the chapter's scene entries (scene + review window) and
+                # their base durations, so the chapter's audio window can be distributed over
+                # them BEFORE any segment is cut.
                 resolved_scenes: list[tuple[int, int, int, BestWindow, Roi | None]] = []
                 base_durations: list[float] = []
                 stretch_caps: list[float] = []
-                for scene_number in chapter.scene_numbers:
+                for entry in chapter.scene_numbers:
+                    scene_number, window_idx = as_scene_window(entry)
                     resolved = _resolve_scene(db, asset_id, scene_number)
                     if resolved is None:
                         continue
@@ -968,45 +982,64 @@ def build_production_tool_specs(
 
                     review = reviews_by_scene.get(scene_number)
                     if review is not None:
-                        best_window, roi = review.best_window, review.roi
+                        if window_idx >= len(review.windows):
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"scene {scene_number} has {len(review.windows)} windows "
+                                    f"(0..{len(review.windows) - 1}) but the storyline "
+                                    f"references window {window_idx}; fix the storyline or "
+                                    "re-review the scene"
+                                ),
+                            }
+                        window = review.windows[window_idx]
+                        roi = window.roi if window.roi is not None else review.roi
                     else:
-                        best_window = BestWindow(
+                        if window_idx > 0:
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"scene {scene_number} has no review; window "
+                                    f"{window_idx} can only be cut from a reviewed scene"
+                                ),
+                            }
+                        window = BestWindow(
                             offset_s=0.0, duration_s=min(_DEFAULT_WINDOW_S, scene_duration_s)
                         )
                         roi = None
 
-                    resolved_scenes.append((scene_number, src_start, src_end, best_window, roi))
+                    resolved_scenes.append((scene_number, src_start, src_end, window, roi))
                     base_durations.append(
                         _segment_duration_s(
                             target_seconds=chapter.target_seconds,
                             n_scenes=n_scenes,
-                            best_window=best_window,
+                            window=window,
                             scene_duration_s=scene_duration_s,
                         )
                     )
-                    # A segment may stretch past best_window.duration_s but keeps the offset as
-                    # its start and never crosses the scene's end (the 2s floor still wins over
-                    # an offset too close to the end — the frame clamp below pulls the start
-                    # back for exactly that case, as before).
+                    # A segment may stretch past its window's duration_s but keeps the offset
+                    # as its start and never crosses the scene's end (the 2s floor still wins
+                    # over an offset too close to the end — the frame clamp below pulls the
+                    # start back for exactly that case, as before).
                     stretch_caps.append(
                         min(
                             scene_duration_s,
-                            max(_SEGMENT_FLOOR_S, scene_duration_s - best_window.offset_s),
+                            max(_SEGMENT_FLOOR_S, scene_duration_s - window.offset_s),
                         )
                     )
 
-                window = windows.get(chapter.chapter)
-                if window is not None:
+                audio_window = audio_windows.get(chapter.chapter)
+                if audio_window is not None:
                     durations = _scale_chapter_durations(
-                        base_durations, stretch_caps, window[1] - window[0]
+                        base_durations, stretch_caps, audio_window[1] - audio_window[0]
                     )
                 else:
                     durations = base_durations
 
                 for scene_info, seg_dur_s in zip(resolved_scenes, durations, strict=True):
-                    scene_number, src_start, src_end, best_window, roi = scene_info
+                    scene_number, src_start, src_end, window, roi = scene_info
                     dur_frames = round(seg_dur_s * fps)
-                    raw_start = src_start + round(best_window.offset_s * fps)
+                    raw_start = src_start + round(window.offset_s * fps)
                     start_frame = min(raw_start, src_end - dur_frames)
                     end_frame_exclusive = start_frame + max(dur_frames, 1)
                     actual_dur_s = (end_frame_exclusive - start_frame) / fps

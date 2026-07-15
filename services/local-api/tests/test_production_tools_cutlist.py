@@ -27,6 +27,7 @@ from laura.short_creator.board_models import (
     Cutlist,
     Roi,
     SceneReview,
+    SceneWindowRef,
     Script,
     ScriptLine,
     Storyline,
@@ -113,9 +114,10 @@ def _review(
     *,
     best_window: BestWindow | None = None,
     roi: Roi | None = None,
+    windows: list[BestWindow] | None = None,
 ) -> None:
     """Write a minimal valid SceneReview straight to the board (build_cutlist reads
-    best_window/roi from these, not from the tool's own re-derivation)."""
+    windows/roi from these, not from the tool's own re-derivation)."""
     board.save_scene_review(
         SceneReview(
             scene_number=scene_number,
@@ -127,6 +129,7 @@ def _review(
             best_window=best_window
             if best_window is not None
             else BestWindow(offset_s=0.0, duration_s=2.0),
+            windows=windows if windows is not None else [],
             roi=roi,
         )
     )
@@ -840,3 +843,140 @@ def test_build_cutlist_stretch_stops_at_scene_end_keeping_offset(tmp_path: Path)
     assert (seg.start_frame, seg.end_frame_exclusive) == (60, 300)
     assert seg.end_frame_exclusive <= SCENE_FRAMES
     assert out["total_seconds"] == pytest.approx(8.0)
+
+
+# --- storyline window references -----------------------------------------------------------------
+
+
+def test_build_cutlist_uses_referenced_window(tmp_path: Path) -> None:
+    """Storyline references window 1 of scene 1: the segment starts at THAT window's offset,
+    its stretch cap runs from that offset to the scene end, and the segment's roi is the
+    window's own roi (the review-level roi is only the fallback for window roi = None)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    w0 = BestWindow(offset_s=0.0, duration_s=2.0)
+    w1 = BestWindow(offset_s=5.0, duration_s=3.0, roi=Roi(x=0.3, y=0.3, w=0.2, h=0.2))
+    _review(board, 1, best_window=w0, windows=[w0, w1], roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2))
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="rt",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="m",
+                    scene_numbers=[SceneWindowRef(scene=1, window=1)],
+                    target_seconds=4.0,
+                )
+            ],
+        ),
+    )
+    board.save(
+        "script",
+        Script(
+            language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team")]
+        ),
+    )
+    # chapter audio window [0, 9.5): longer than the 5s the scene can host from offset 5.0 ->
+    # the segment stretches from the WINDOW's offset to the scene end (frames 150..300).
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.2, "end_s": 0.5},
+            {"text": "dein", "start_s": 0.6, "end_s": 1.0},
+            {"text": "Team", "start_s": 1.2, "end_s": 8.9},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is True
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg = cutlist.segments[0]
+    assert (seg.start_frame, seg.end_frame_exclusive) == (150, 300)
+    assert seg.roi is not None and seg.roi.x == 0.3  # window roi wins over review roi
+
+
+def test_build_cutlist_same_scene_twice_with_different_windows(tmp_path: Path) -> None:
+    """One chapter plays scene 1 twice — window 0 (plain int entry) then window 1 — as two
+    separate segments, each cut from its own window's offset."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    w0 = BestWindow(offset_s=1.0, duration_s=2.0)
+    w1 = BestWindow(offset_s=6.0, duration_s=2.0)
+    _review(board, 1, best_window=w0, windows=[w0, w1])
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="rt",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="m",
+                    scene_numbers=[1, SceneWindowRef(scene=1, window=1)],
+                    target_seconds=4.0,
+                )
+            ],
+        ),
+    )
+    board.save(
+        "script",
+        Script(
+            language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team")]
+        ),
+    )
+    _save_voice(board, tmp_path, words=[])  # no sidecar -> plain target_seconds budget
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    # 4.0s / 2 refs = 2.0s each -> 60 frames from each window's own offset.
+    assert out == {"ok": True, "segments": 2, "total_seconds": 4.0, "with_zoom": 0}
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+    assert (seg0.scene_number, seg0.start_frame, seg0.end_frame_exclusive) == (1, 30, 90)
+    assert (seg1.scene_number, seg1.start_frame, seg1.end_frame_exclusive) == (1, 180, 240)
+
+
+def test_build_cutlist_rejects_out_of_range_window_ref(tmp_path: Path) -> None:
+    """A storyline saved straight to the board (bypassing save_storyline's gate — e.g. written
+    before a scene was re-reviewed down to fewer windows) must fail loud and correctable
+    instead of silently cutting a different moment."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # a single window (0)
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="rt",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="m",
+                    scene_numbers=[SceneWindowRef(scene=1, window=2)],
+                    target_seconds=4.0,
+                )
+            ],
+        ),
+    )
+    board.save(
+        "script",
+        Script(
+            language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team")]
+        ),
+    )
+    _save_voice(board, tmp_path, words=[])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is False
+    assert "window 2" in out["reason"] and "scene 1" in out["reason"]
+    assert board.load("cutlist") is None
