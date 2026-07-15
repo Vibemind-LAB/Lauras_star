@@ -23,16 +23,25 @@ Bild belegt den gesprochenen Satz, Mensch früh im Bild.
 Drei Feature-Stränge berühren dieselben Dateien (`production_tools.py`, `board_models.py`,
 `board.py`). Merge-Reihenfolge, um Konflikte deterministisch zu halten:
 
-1. **Cutlist-Audio-Sync** (fertig auf `claude/nervous-swartz-7c1724`, Commit `13da9d3`):
-   Review → Tests/mypy voll → ff/merge nach `feat/generate-ui`. Löst Bild↔Stimme-Drift
-   und das abgeschnittene Schluss-Kapitel strukturell.
-2. **Multi-Window-Reviews** (Task läuft): baut auf 1 auf. Review → Merge.
-3. **Kontaktbogen-Checkpoint** (Task läuft): baut auf 1+2 auf. Review → Merge.
-4. Nach JEDEM Merge: Backend-Neustart (laufender Prozess hält alten Code) + ein
-   Smoke-Lauf auf der Livetest-Session.
+1. **Cutlist-Audio-Sync** — ✅ **GEMERGED** (`13da9d3`, in `feat/generate-ui`). Segment-Dauern
+   folgen den Kapitel-Sprechfenstern; Bild↔Stimme-Drift + abgeschnittenes Schluss-Kapitel behoben.
+2. **Multi-Window-Reviews** — ✅ **GEMERGED** (`f8d4a46..d84d2f5`, via `origin`, lokal rebased
+   auf `8d18f27`). Reale Schema-Form (verifiziert in `board_models.py`):
+   `SceneReview.windows: list[BestWindow]` (1-4, nicht überlappend, `windows[0] == best_window`;
+   alte Review-JSONs ohne `windows` werden auf `[best_window]` zurückgefüllt);
+   Storyline-Eintrag = `(scene_number, window_index)`, plain int = Fenster 0;
+   `_no_duplicate_scene_windows` erlaubt **dieselbe Szene mit verschiedenen Fenstern**, verbietet
+   das exakt gleiche `(scene, window)` doppelt; `build_cutlist` schneidet das referenzierte Fenster.
+   → Das ist die Materialdecken-Aufhebung UND die Antwort auf „keine Dopplungen": Wiederholung nur
+   mit anderem Ausschnitt, im Code erzwungen.
+3. **Kontaktbogen-Checkpoint** (Task läuft noch): baut auf 1+2 auf. Review → Merge.
+4. Nach JEDEM Merge: Backend-Neustart (laufender Prozess hält alten Code) + Smoke-Lauf.
+   ✅ erledigt für 1+2: mypy 462 clean, 71 Produktions-/Multi-Window-/Caption-Tests grün,
+   Backend neu auf `8d18f27`, Session-Endpoint 200.
 
 **Gate P0:** `uv run pytest` + `uv run mypy` (voller Scope) grün nach jedem Merge;
 ein Team-Render auf `workspace-livetest` erzeugt Kontaktbogen + synchrones Video.
+→ Offen bis Kontaktbogen (Schritt 3) gemerged ist.
 
 ## Phase 1 — Qualitätsregeln vom Message-Text in den Code
 
@@ -42,9 +51,11 @@ Was sich per /message bewährt hat, wird Standard im Task-Contract
 - **Stimm-Formel + Rechenprobe** als feste Autoren-Regel im Contract (Erkenntnis 5).
 - **Decke-zuerst:** Vor `save_storyline` berechnet das Team `Σ min(budget, fenster, szene)`
   und setzt das Längenziel darauf; Ziel > Decke wird im red_thread dokumentiert (Erkenntnis 1).
-- **Privacy-Gate:** `SceneReview` bekommt `person_visible: bool` + `privacy_risk: bool`
+- **Privacy-Gate (noch offen):** `SceneReview` bekommt `person_visible: bool` + `privacy_risk: bool`
   (Review-Prompt erweitert); der Storyline-Validator lehnt `privacy_risk`-Szenen mit
-  agent-korrigierbarem Fehler ab (Erkenntnis 4). Bis gemerged gilt: **keine ungesichtete
+  agent-korrigierbarem Fehler ab (Erkenntnis 4). **Andockpunkt jetzt ideal:** Das Multi-Window-
+  Review-Schema (`windows`-Liste, erweiterter Prompt in `production_tools.py`) ist frisch gemerged
+  — die Privacy-Felder gehören in denselben Review-Vertrag. Bis dahin gilt: **keine ungesichtete
   Szene in eine Storyline** (Kontaktbogen/Controller-Sichtung ist Pflicht-Gate).
 - **Caption-Regeln** (≤8 Wörter/Zeile, ≤14 Zeichen/Wort) stehen im Contract; der
   Breiten-Umbruch ist bereits Code (`c6727d7`).
@@ -98,7 +109,12 @@ Das strategische Format (Erkenntnis 6 + Leitfaden): **eine Serie statt einer Lan
 ## Iterations-Log
 
 - **Iteration 1 (2026-07-15):** Erstfassung aus den 6 Erkenntnissen + Leitfaden-Kriterien.
-- Iteration 2 (geplant): einarbeiten, was die laufenden Tasks (Multi-Window, Kontaktbogen)
-  tatsächlich geliefert haben; Merge-Konflikte real prüfen; Runtime-Limit-Entscheidung.
-- Iteration 3 (geplant): Endhärtung — Gates verifizieren, Reihenfolge fixieren,
-  offene Fragen in konkrete nächste Aufträge überführen.
+- **Iteration 2 (2026-07-15):** Cutlist-Sync (`13da9d3`) und Multi-Window (`f8d4a46..d84d2f5`)
+  sind gemerged und lokal integriert (rebase auf `8d18f27`), Gate grün, Backend neu gestartet.
+  Reale Multi-Window-Schema-Form eingearbeitet; „keine Dopplungen" ist jetzt im Code erzwungen
+  (`_no_duplicate_scene_windows`). Privacy-Gate-Andockpunkt präzisiert (gehört in den
+  Multi-Window-Review-Vertrag). **Offen für Iteration 3:** Kontaktbogen-Merge (Task läuft),
+  dann Gate P0 vollständig; Runtime-Limit-Entscheidung (Erkenntnis 2); Serien-Design-Runde.
+- Iteration 3 (wartet auf Kontaktbogen-Task): Endhärtung — Gate P0 komplett verifizieren
+  (Kontaktbogen + synchrones Video im Smoke-Lauf), Runtime-Limit entscheiden, Serien-Design
+  als konkreten nächsten Auftrag ausformulieren.
