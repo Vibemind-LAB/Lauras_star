@@ -134,10 +134,12 @@ _REVIEW_PROMPT = (
     "{{\"description\": str (what is on screen),\n"
     "  \"whats_happening\": str (what changes across the frames),\n"
     "  \"hook_score\": int 0-10 (how visually gripping for a cold viewer),\n"
-    "  \"best_window\": {{\"offset_s\": float, \"duration_s\": float}} (strongest moment, "
-    "relative to scene start),\n"
-    "  \"roi\": {{\"x\": float, \"y\": float, \"w\": float, \"h\": float}} | null (normalized "
-    "0-1 box around the ONE region a viewer must read; null if the whole frame matters),\n"
+    "  \"windows\": [{{\"offset_s\": float, \"duration_s\": float, \"roi\": {{\"x\": float, "
+    "\"y\": float, \"w\": float, \"h\": float}} | null}}] (1-4 strong moments, STRONGEST "
+    "FIRST, non-overlapping, offsets relative to scene start; a long scene with several "
+    "distinct beats should list each beat as its own window; roi is the normalized 0-1 box "
+    "around the ONE region a viewer must read DURING that window, null if the whole frame "
+    "matters),\n"
     "  \"legibility_notes\": str}}"
 )
 
@@ -201,20 +203,54 @@ def _clamp_hook_score(value: Any) -> int:
 
 
 def _clamp_best_window(raw: Any, scene_duration_s: float) -> BestWindow:
-    """Clamp a proposed best window inside ``[0, scene_duration_s]``.
+    """Clamp a proposed window inside ``[0, scene_duration_s]`` (plus its own optional roi).
 
     Length is preserved where possible — only the offset gives way when the requested window
     would run past the end of the scene — and length itself is capped to the scene's own
     duration, with a small floor so the window is always positive (a pydantic requirement).
     """
     offset_raw, length_raw = 0.0, min(_DEFAULT_WINDOW_S, scene_duration_s)
+    roi: Roi | None = None
     if isinstance(raw, dict):
         offset_raw = _as_float(raw.get("offset_s"), offset_raw)
         length_raw = _as_float(raw.get("duration_s"), length_raw)
+        roi = _clamp_roi(raw.get("roi"))
     length = max(_MIN_WINDOW_S, min(length_raw, scene_duration_s))
     max_offset = max(0.0, scene_duration_s - length)
     offset = max(0.0, min(offset_raw, max_offset))
-    return BestWindow(offset_s=offset, duration_s=length)
+    return BestWindow(offset_s=offset, duration_s=length, roi=roi)
+
+
+_MAX_WINDOWS = 4
+
+
+def _clamp_windows(raw: Any, scene_duration_s: float) -> list[BestWindow]:
+    """1-4 clamped, non-overlapping windows out of a VLM reply, strongest-first.
+
+    Each dict item is clamped like :func:`_clamp_best_window`; an item that (after clamping)
+    overlaps an earlier, stronger accepted window is DISCARDED — not merged — so every kept
+    window stays one distinct moment with its own roi (touching windows are fine, the
+    end-exclusive analog). Anything unusable degrades to the single default window,
+    mirroring ``_clamp_best_window(None)``.
+    """
+    items = raw if isinstance(raw, list) else [raw]
+    accepted: list[BestWindow] = []
+    for item in items:
+        if len(accepted) == _MAX_WINDOWS:
+            break
+        if not isinstance(item, dict):
+            continue
+        window = _clamp_best_window(item, scene_duration_s)
+        end = window.offset_s + window.duration_s
+        if any(
+            window.offset_s < w.offset_s + w.duration_s - 1e-9 and w.offset_s < end - 1e-9
+            for w in accepted
+        ):
+            continue
+        accepted.append(window)
+    if not accepted:
+        return [_clamp_best_window(None, scene_duration_s)]
+    return accepted
 
 
 def _clamp_roi(raw: Any) -> Roi | None:
@@ -606,10 +642,13 @@ def build_production_tool_specs(
 
     def review_scene(scene_number: int) -> dict[str, Any]:
         """Look at 3 real frames (start/middle/end) of a scene with the VLM and write a
-        validated SceneReview to the board. Never fails the pipeline: without a configured VLM,
-        with an empty or unparseable reply, or when no frames could be extracted, it writes a
-        transcript-only *degraded* review instead (``degraded=True``, neutral hook_score, no
-        roi) so downstream steps can still proceed."""
+        validated SceneReview to the board. The VLM proposes 1-4 non-overlapping strong
+        windows (strongest first, each with its own optional roi); windows[0] is the
+        best_window, and the storyline may reference any window by index. Never fails the
+        pipeline: without a configured VLM, with an empty or unparseable reply, or when no
+        frames could be extracted, it writes a transcript-only *degraded* review instead
+        (``degraded=True``, neutral hook_score, one default window, no roi) so downstream
+        steps can still proceed."""
         try:
             resolved = _resolve_scene(db, asset_id, scene_number)
             if resolved is None:
@@ -655,6 +694,10 @@ def build_production_tool_specs(
                     created_utc=utcnow_iso(),
                 )
             else:
+                raw_windows = parsed.get("windows")
+                if raw_windows is None:  # legacy single-window reply shape
+                    raw_windows = [parsed.get("best_window")]
+                windows = _clamp_windows(raw_windows, duration_s)
                 review = SceneReview(
                     scene_number=scene_number,
                     src_start_frame=src_start,
@@ -662,7 +705,8 @@ def build_production_tool_specs(
                     description=str(parsed.get("description") or ""),
                     whats_happening=str(parsed.get("whats_happening") or ""),
                     hook_score=_clamp_hook_score(parsed.get("hook_score")),
-                    best_window=_clamp_best_window(parsed.get("best_window"), duration_s),
+                    best_window=windows[0],
+                    windows=windows,
                     roi=_clamp_roi(parsed.get("roi")),
                     legibility_notes=str(parsed.get("legibility_notes") or ""),
                     degraded=False,
@@ -677,13 +721,17 @@ def build_production_tool_specs(
                 "version": version,
                 "degraded": review.degraded,
                 "hook_score": review.hook_score,
+                "windows": len(review.windows),
                 "roi": review.roi.model_dump() if review.roi is not None else None,
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
     def get_reviews() -> dict[str, Any]:
-        """All saved scene reviews, compact (scene, hook score, degraded flag, has-roi, blurb)."""
+        """All saved scene reviews, compact: scene, hook score, degraded flag, has-roi
+        (review-level or any window), the review's windows (0-based index, offset/duration,
+        per-window has_roi — a storyline entry {"scene": N, "window": K} plays window K),
+        and a description blurb."""
         try:
             reviews = board.scene_reviews()
             return {
@@ -693,7 +741,17 @@ def build_production_tool_specs(
                         "scene_number": r.scene_number,
                         "hook_score": r.hook_score,
                         "degraded": r.degraded,
-                        "has_roi": r.roi is not None,
+                        "has_roi": r.roi is not None
+                        or any(w.roi is not None for w in r.windows),
+                        "windows": [
+                            {
+                                "window": i,
+                                "offset_s": w.offset_s,
+                                "duration_s": w.duration_s,
+                                "has_roi": w.roi is not None,
+                            }
+                            for i, w in enumerate(r.windows)
+                        ],
                         "description": r.description[:_DESCRIPTION_PREVIEW_CHARS],
                     }
                     for r in reviews

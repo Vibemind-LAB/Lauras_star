@@ -16,8 +16,12 @@ from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
 from laura.short_creator.board import Board
-from laura.short_creator.board_models import BoardMeta
-from laura.short_creator.production_tools import ProductionDeps, build_production_tool_specs
+from laura.short_creator.board_models import BestWindow, BoardMeta
+from laura.short_creator.production_tools import (
+    ProductionDeps,
+    _clamp_windows,
+    build_production_tool_specs,
+)
 
 FPS = 30
 SCENE_FRAMES = 150  # 150 frames @ 30fps = 5.0s
@@ -28,6 +32,15 @@ _GOOD_REPLY = (
     '{"description": "agent dashboard", "whats_happening": "list scrolls", '
     '"hook_score": 8, "best_window": {"offset_s": 1.0, "duration_s": 3.0}, '
     '"roi": {"x": 0.1, "y": 0.2, "w": 0.5, "h": 0.4}, "legibility_notes": "small text"}'
+)
+
+_MULTI_REPLY = (
+    '{"description": "agent dashboard", "whats_happening": "list scrolls", '
+    '"hook_score": 8, "windows": ['
+    '{"offset_s": 0.5, "duration_s": 2.0, "roi": {"x": 0.1, "y": 0.2, "w": 0.5, "h": 0.4}}, '
+    '{"offset_s": 3.0, "duration_s": 1.5, "roi": null}, '
+    '{"offset_s": 0.0, "duration_s": 1.0}], '
+    '"legibility_notes": ""}'
 )
 
 
@@ -173,6 +186,7 @@ def test_review_scene_degrades_without_backend(
     assert review.hook_score == 5
     assert review.best_window.offset_s == 0.0
     assert review.best_window.duration_s == 4.0  # min(4.0, 5.0s scene)
+    assert review.windows == [review.best_window]
     assert review.description == DEFAULT_TEXT  # transcript snippet (<=300 chars)
 
 
@@ -259,6 +273,7 @@ def test_board_status_and_get_reviews(tmp_path: Path) -> None:
             "hook_score": 8,
             "degraded": False,
             "has_roi": True,
+            "windows": [{"window": 0, "offset_s": 1.0, "duration_s": 3.0, "has_roi": False}],
             "description": "agent dashboard",
         }
     ]
@@ -280,3 +295,74 @@ def test_get_scene_context_returns_transcript_and_range(tmp_path: Path) -> None:
 
     missing = specs["get_scene_context"].func(scene_number=42)
     assert missing == {"ok": False, "reason": "unknown scene"}
+
+
+def test_review_scene_parses_multiple_windows(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm(_MULTI_REPLY), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["review_scene"].func(scene_number=1)
+
+    assert out["ok"] and out["degraded"] is False
+    assert out["windows"] == 2  # third window overlaps the first (strongest) -> discarded
+    review = board.scene_reviews()[0]
+    assert [w.offset_s for w in review.windows] == [0.5, 3.0]
+    assert review.best_window == review.windows[0]
+    assert review.windows[0].roi is not None and review.windows[0].roi.w == 0.5
+    assert review.windows[1].roi is None
+    assert review.roi is None  # no scene-level roi in the reply
+
+    reviews = specs["get_reviews"].func()
+    entry = reviews["reviews"][0]
+    assert entry["has_roi"] is True  # window 0 carries one
+    assert entry["windows"] == [
+        {"window": 0, "offset_s": 0.5, "duration_s": 2.0, "has_roi": True},
+        {"window": 1, "offset_s": 3.0, "duration_s": 1.5, "has_roi": False},
+    ]
+
+
+def test_review_scene_legacy_best_window_reply_still_parses(tmp_path: Path) -> None:
+    """A VLM that answers in the old single-`best_window` shape (no `windows` list) must
+    still produce a valid one-window review with the top-level roi kept."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm(_GOOD_REPLY), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["review_scene"].func(scene_number=1)
+
+    assert out["ok"] and out["windows"] == 1
+    review = board.scene_reviews()[0]
+    assert review.windows == [review.best_window]
+    assert review.best_window.offset_s == 1.0 and review.best_window.duration_s == 3.0
+    assert review.best_window.roi is None
+    assert review.roi is not None and review.roi.w == 0.5  # top-level roi kept
+
+
+def test_clamp_windows_clamps_discards_and_caps() -> None:
+    # 5 proposals: [0] fine, [1] overlaps [0] -> discarded, [2] runs past the scene end ->
+    # offset pulled back (still non-overlapping), [3] garbage -> skipped, [4] fine.
+    raw: list[object] = [
+        {"offset_s": 0.0, "duration_s": 2.0},
+        {"offset_s": 1.0, "duration_s": 1.0},
+        {"offset_s": 4.5, "duration_s": 1.0, "roi": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}},
+        "garbage",
+        {"offset_s": 2.5, "duration_s": 1.0},
+    ]
+    windows = _clamp_windows(raw, 5.0)
+    assert [(w.offset_s, w.duration_s) for w in windows] == [(0.0, 2.0), (4.0, 1.0), (2.5, 1.0)]
+    assert windows[1].roi is not None
+
+    default = [BestWindow(offset_s=0.0, duration_s=4.0)]
+    assert _clamp_windows(None, 5.0) == default
+    assert _clamp_windows([], 5.0) == default
+    assert _clamp_windows("prose", 5.0) == default
+
+    five: list[object] = [{"offset_s": float(i * 2), "duration_s": 1.0} for i in range(5)]
+    assert len(_clamp_windows(five, 20.0)) == 4  # hard cap at 4 accepted windows
