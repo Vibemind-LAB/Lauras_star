@@ -111,6 +111,7 @@ from .board_models import (
     ScriptLine,
     Storyline,
     VoiceArtifact,
+    as_scene_window,
 )
 from .describe import DescribeBackend, resolve_describe_backend
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
@@ -762,22 +763,35 @@ def build_production_tool_specs(
 
     def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
         """Validate and save the short's storyline (red thread + chapter arc) to the board.
-        Every chapter's scene_numbers must already have a scene review on the board — a
-        chapter referencing an unreviewed scene is rejected with the missing scene numbers
-        so the agent reviews them first. A malformed chapter is rejected with field-level
-        validation errors instead of raising."""
+        A scene_numbers entry is a plain scene number (= that review's primary window 0) or
+        {"scene": N, "window": K} to play review window K (0-based, see get_reviews); the
+        same scene may appear several times with DIFFERENT windows, the same (scene, window)
+        pair only once. Every referenced scene must already have a review on the board and
+        every referenced window must exist in that review — rejected with exactly the
+        scenes/refs to fix so the agent reviews or corrects them first. A malformed chapter
+        is rejected with field-level validation errors instead of raising."""
         try:
-            referenced = sorted(
-                {int(n) for c in chapters for n in (c.get("scene_numbers") or [])}
-            )
-            reviewed = {r.scene_number for r in board.scene_reviews()}
-            missing = [n for n in referenced if n not in reviewed]
-            if missing:
-                return {"ok": False, "reason": f"scenes without review: {missing}"}
             try:
                 storyline = Storyline(red_thread=red_thread, arc=[Chapter(**c) for c in chapters])
             except ValidationError as exc:
                 return {"ok": False, "errors": _validation_errors(exc)}
+            refs = [
+                as_scene_window(entry)
+                for chapter in storyline.arc
+                for entry in chapter.scene_numbers
+            ]
+            reviews = {r.scene_number: r for r in board.scene_reviews()}
+            missing = sorted({scene for scene, _window in refs if scene not in reviews})
+            if missing:
+                return {"ok": False, "reason": f"scenes without review: {missing}"}
+            bad_refs = sorted({(s, w) for s, w in refs if w >= len(reviews[s].windows)})
+            if bad_refs:
+                detail = "; ".join(
+                    f"scene {s} has {len(reviews[s].windows)} windows "
+                    f"(0..{len(reviews[s].windows) - 1}) but window {w} is referenced"
+                    for s, w in bad_refs
+                )
+                return {"ok": False, "reason": detail}
             version = board.save("storyline", storyline)
             return {"ok": True, "version": version}
         except Exception as exc:  # tool must never kill the agent loop

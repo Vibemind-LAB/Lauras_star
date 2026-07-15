@@ -98,9 +98,10 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
     return Board.create(tmp_path / "board", meta)
 
 
-def _review(board: Board, scene_number: int) -> None:
+def _review(board: Board, scene_number: int, *, n_windows: int = 1) -> None:
     """Write a minimal valid SceneReview straight to the board (no VLM/frame-extract fakes
     needed — ``save_storyline``'s review-check only looks at ``board.scene_reviews()``)."""
+    windows = [BestWindow(offset_s=float(i * 2), duration_s=1.0) for i in range(n_windows)]
     board.save_scene_review(
         SceneReview(
             scene_number=scene_number,
@@ -109,13 +110,14 @@ def _review(board: Board, scene_number: int) -> None:
             description="d",
             whats_happening="h",
             hook_score=5,
-            best_window=BestWindow(offset_s=0.0, duration_s=1.0),
+            best_window=windows[0],
+            windows=windows,
         )
     )
 
 
 def _chapter(
-    *, chapter: int = 1, role: str = "hook", scene_numbers: list[int] | None = None
+    *, chapter: int = 1, role: str = "hook", scene_numbers: list[object] | None = None
 ) -> dict[str, object]:
     return {
         "chapter": chapter,
@@ -168,6 +170,53 @@ def test_save_storyline_rejects_unreviewed_scenes(tmp_path: Path) -> None:
     assert out["ok"] is False
     assert "reason" in out
     assert "7" in out["reason"]
+    assert board.load("storyline") is None
+
+
+def test_save_storyline_accepts_window_refs(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[_chapter(scene_numbers=[1, {"scene": 1, "window": 1}])],
+    )
+
+    assert out == {"ok": True, "version": 1}
+    got = specs["get_storyline"].func()
+    assert got["storyline"]["arc"][0]["scene_numbers"] == [1, {"scene": 1, "window": 1}]
+
+
+def test_save_storyline_rejects_out_of_range_window(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # a single window (0)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt", chapters=[_chapter(scene_numbers=[{"scene": 1, "window": 3}])]
+    )
+
+    assert out["ok"] is False
+    assert "window 3" in out["reason"] and "scene 1" in out["reason"]
+    assert board.load("storyline") is None
+
+
+def test_save_storyline_rejects_duplicate_scene_window(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt", chapters=[_chapter(scene_numbers=[1, 1])]
+    )
+
+    assert out["ok"] is False
+    assert any("scene 1 window 0" in err for err in out["errors"])
+    assert any(err.startswith("arc") for err in out["errors"])
     assert board.load("storyline") is None
 
 
