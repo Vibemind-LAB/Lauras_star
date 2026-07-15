@@ -33,6 +33,7 @@ from laura.short_creator.board_models import (
     RenderReport,
     Roi,
     SceneReview,
+    SceneWindowRef,
     Script,
     ScriptLine,
     Storyline,
@@ -156,7 +157,7 @@ def _review(
 
 
 def _storyline(
-    *, scene_numbers: list[int] | None = None, target_seconds: float = 4.0
+    *, scene_numbers: list[int | SceneWindowRef] | None = None, target_seconds: float = 4.0
 ) -> Storyline:
     return Storyline(
         red_thread="stop scrolling",

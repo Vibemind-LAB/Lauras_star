@@ -117,3 +117,25 @@ Hinweise: Sessions brauchen das `autoshort`-Extra (sonst 503); Jobs laufen mit `
 ein grobes Run-Log liegt unter `agent-runs/<session_id>/runs/`. Free-Tier-Resilienz:
 `LAURA_AGENT_MODEL_POOL` / `LAURA_VLM_MODEL_POOL` rotieren bei leeren Antworten sticky auf das
 nächste Modell. ChatPanel-Anbindung (Slice 5) folgt.
+
+### Mehrere Fenster pro Szene (`windows`)
+
+Ein Szenen-Review trägt jetzt **1–4 starke Fenster** statt genau einem `best_window`: das VLM
+liefert `windows` (stärkstes zuerst, nicht überlappend, je Fenster optional eine eigene `roi`);
+`windows[0]` **ist** weiterhin das Pflichtfeld `best_window`. Alte Review-JSONs ohne
+`windows`-Feld validieren unverändert (pydantic-Default → `[best_window]`). Entscheidungen:
+`roi` liegt **am Fenster** (`BestWindow.roi`, atomar statt list-aligned; Review-`roi` bleibt
+Szenen-Fallback), überlappende VLM-Vorschläge werden **verworfen** (nicht gemerged, Stärke-Reihenfolge
+bleibt erhalten).
+
+Die Storyline darf ein Fenster gezielt referenzieren: ein `scene_numbers`-Eintrag ist entweder
+eine nackte Szenennummer (= Fenster 0) oder `{"scene": 13, "window": 2}`. **Dieselbe Szene darf
+mehrfach vorkommen — mit verschiedenen Fenstern**; dieselbe `(scene, window)`-Kombination doppelt
+lehnt `save_storyline` (und jede Storyline-Validierung, auch beim Board-Load) mit einem
+korrigierbaren `loc: msg`-Fehler ab. `build_cutlist` schneidet das referenzierte Fenster
+(Offset = Segmentstart, Länge = Basis-Cap, Fenster-`roi` vor Review-`roi`); eine Referenz auf ein
+nicht (mehr) existierendes Fenster schlägt laut und korrigierbar fehl. Damit sind lange Szenen
+(50–80 s) mehrfach nutzbar und ein 180-s-Ziel ist nicht mehr durch „ein Fenster pro Szene"
+gedeckelt. Achtung Altbestand: eine alte Board-Storyline, die dieselbe Szene zweimal **ohne**
+Fenster referenziert (war nie sinnvoll, aber technisch möglich), validiert nicht mehr — Storyline
+einmal neu speichern, Reviews bleiben erhalten.

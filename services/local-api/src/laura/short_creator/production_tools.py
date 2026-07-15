@@ -25,7 +25,8 @@ pydantic-validate their input and report a malformed payload as ``{"ok": False, 
 (loc+msg strings, agent-correctable) rather than raising. ``save_storyline`` additionally refuses
 to save chapters that reference a scene without a review yet, or a review window the scene does
 not have — a ``scene_numbers`` entry is a plain scene number (window 0) or ``{"scene": N,
-"window": K}``, the same scene may recur with different windows, the same pair never twice. ``save_script_chapter`` merges by
+"window": K}``, the same scene may recur with different windows, the same pair never twice.
+``save_script_chapter`` merges by
 chapter (other chapters' lines are kept, only the given chapter's lines are replaced) and, like
 every ``board.save()`` call, invalidates every artifact downstream in the chain (voice, cutlist,
 render report, qa report).

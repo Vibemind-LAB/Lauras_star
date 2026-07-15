@@ -135,7 +135,9 @@ def _review(
     )
 
 
-def _storyline(*, scene_numbers: list[int] | None = None, target_seconds: float = 4.0) -> Storyline:
+def _storyline(
+    *, scene_numbers: list[int | SceneWindowRef] | None = None, target_seconds: float = 4.0
+) -> Storyline:
     return Storyline(
         red_thread="stop scrolling",
         arc=[
