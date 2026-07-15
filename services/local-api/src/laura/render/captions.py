@@ -114,29 +114,41 @@ def group_caption_lines(
     *,
     max_words_per_line: int = 4,
     max_gap_frames: int = 15,
+    max_chars_per_line: int = 30,
 ) -> list[list[tuple[str, int, int]]]:
-    """Group *words* into caption lines by word-count and silence-gap thresholds.
+    """Group *words* into caption lines by word-count, width and silence-gap thresholds.
 
     A new line is started when:
     - the current line already contains ``max_words_per_line`` words, **or**
+    - adding the word would push the joined line text past
+      ``max_chars_per_line`` characters (at fontsize 72 on a 1080px frame,
+      ~31 rendered chars fit — longer lines spill past both edges), **or**
     - the gap between the previous word's ``seq_end`` and the next word's
       ``seq_start`` exceeds ``max_gap_frames``.
 
-    Words are never reordered or dropped.  Empty input returns ``[]``.
+    A single word longer than the budget still gets its own line.  Words are
+    never reordered or dropped.  Empty input returns ``[]``.
     """
     if not words:
         return []
 
     lines: list[list[tuple[str, int, int]]] = []
     current: list[tuple[str, int, int]] = []
+    current_chars = 0  # joined text length incl. separating spaces
 
     for word in words:
         if current:
             prev_end = current[-1][2]  # seq_end of the last word in the line
             gap = word[1] - prev_end   # word seq_start − prev seq_end
-            if len(current) >= max_words_per_line or gap > max_gap_frames:
+            if (
+                len(current) >= max_words_per_line
+                or gap > max_gap_frames
+                or current_chars + 1 + len(word[0]) > max_chars_per_line
+            ):
                 lines.append(current)
                 current = []
+                current_chars = 0
+        current_chars += len(word[0]) + (1 if current else 0)
         current.append(word)
 
     if current:

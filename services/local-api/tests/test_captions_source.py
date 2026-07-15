@@ -60,6 +60,38 @@ def test_group_lines_empty() -> None:
     assert group_caption_lines([]) == []
 
 
+def test_group_lines_char_budget() -> None:
+    """Long words break the line early: rendered width, not word count, overflows.
+
+    'Dashboard zeigt 59 maßgeschneiderte' is 4 words but ~36 chars — at ASS
+    fontsize 72 that renders wider than the 1080px frame (live finding on
+    export d25eacb3). With the 30-char budget the group must split before
+    'maßgeschneiderte'.
+    """
+    words = [
+        ("Dashboard", 0, 5),
+        ("zeigt", 5, 10),
+        ("59", 10, 15),
+        ("maßgeschneiderte", 15, 20),
+        ("Templates.", 20, 25),
+    ]
+    lines = group_caption_lines(words, max_words_per_line=4, max_gap_frames=999)
+    for line in lines:
+        text = " ".join(w[0] for w in line)
+        assert len(text) <= 30, f"line too wide: {text!r}"
+    flat = [w for line in lines for w in line]
+    assert flat == words
+
+
+def test_group_lines_oversized_single_word() -> None:
+    """A single word longer than the budget still gets its own line (never dropped)."""
+    words = [("kurz", 0, 5), ("Donaudampfschifffahrtsgesellschaft", 5, 10)]
+    lines = group_caption_lines(words, max_words_per_line=4, max_gap_frames=999)
+    flat = [w for line in lines for w in line]
+    assert flat == words
+    assert [w[0] for w in lines[-1]] == ["Donaudampfschifffahrtsgesellschaft"]
+
+
 # ---------------------------------------------------------------------------
 # timeline_caption_words — requires DB
 # ---------------------------------------------------------------------------
