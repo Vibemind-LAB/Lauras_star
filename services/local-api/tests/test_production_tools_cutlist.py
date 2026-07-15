@@ -34,7 +34,9 @@ from laura.short_creator.board_models import (
 )
 from laura.short_creator.production_tools import (
     ProductionDeps,
+    _scale_chapter_durations,
     build_production_tool_specs,
+    chapter_audio_windows,
     line_starts,
     script_hash,
     script_text,
@@ -583,3 +585,258 @@ def test_chapters_narrated_in_numeric_order_not_save_order(tmp_path: Path) -> No
     # Second segment is chapter 2 (scene 2)
     seg1 = cutlist.segments[1]
     assert seg1.scene_number == 2
+
+
+# --- chapter audio windows (pure) --------------------------------------------------------------
+
+
+def test_chapter_audio_windows_midpoint_boundary_and_tail() -> None:
+    """Two chapters: chapter 1 spans [0, midpoint), the boundary is the middle between chapter
+    1's last word end and chapter 2's first word start, and the LAST chapter runs to the voice
+    end plus the ~0.6s tail."""
+    lines = [
+        ScriptLine(chapter=1, scene_number=1, text="a b c"),
+        ScriptLine(chapter=1, scene_number=2, text="d e"),
+        ScriptLine(chapter=2, scene_number=3, text="f g"),
+    ]
+    words = [
+        {"text": "a", "start_s": 0.0, "end_s": 0.4},
+        {"text": "b", "start_s": 0.5, "end_s": 0.9},
+        {"text": "c", "start_s": 1.0, "end_s": 1.4},
+        {"text": "d", "start_s": 1.6, "end_s": 2.0},
+        {"text": "e", "start_s": 2.2, "end_s": 3.0},
+        {"text": "f", "start_s": 3.6, "end_s": 4.0},
+        {"text": "g", "start_s": 4.2, "end_s": 5.0},
+    ]
+
+    windows = chapter_audio_windows(lines, words)
+
+    assert set(windows) == {1, 2}
+    # boundary = mid(3.0, 3.6) = 3.3; last chapter ends at voice_end(5.0) + 0.6 tail.
+    assert windows[1] == pytest.approx((0.0, 3.3))
+    assert windows[2] == pytest.approx((3.3, 5.6))
+
+
+def test_chapter_audio_windows_empty_words() -> None:
+    lines = [ScriptLine(chapter=1, scene_number=1, text="a b")]
+    assert chapter_audio_windows(lines, []) == {}
+
+
+def test_chapter_audio_windows_sidecar_runs_short() -> None:
+    """A sidecar shorter than the script: chapters whose lines got no words have NO window (the
+    caller falls back to the target_seconds budget for them); the covered chapter still ends at
+    the stream's voice end + tail."""
+    lines = [
+        ScriptLine(chapter=1, scene_number=1, text="a b c"),
+        ScriptLine(chapter=2, scene_number=2, text="d e"),
+    ]
+    words = [
+        {"text": "a", "start_s": 0.0, "end_s": 0.4},
+        {"text": "b", "start_s": 0.5, "end_s": 0.9},
+        {"text": "c", "start_s": 1.0, "end_s": 1.4},
+    ]
+
+    windows = chapter_audio_windows(lines, words)
+
+    assert set(windows) == {1}
+    assert windows[1] == pytest.approx((0.0, 2.0))
+
+
+# --- proportional duration scaling (pure) -------------------------------------------------------
+
+
+def test_scale_chapter_durations_proportional() -> None:
+    assert _scale_chapter_durations([2.0, 2.0], [10.0, 10.0], 8.0) == [
+        pytest.approx(4.0),
+        pytest.approx(4.0),
+    ]
+    # weights follow the base durations: 2:4 -> 3:6 for a 9s window.
+    assert _scale_chapter_durations([2.0, 4.0], [10.0, 10.0], 9.0) == [
+        pytest.approx(3.0),
+        pytest.approx(6.0),
+    ]
+
+
+def test_scale_chapter_durations_cap_redistributes() -> None:
+    # item 0 hits its 3.0s cap; the released time goes to item 1 so the sum stays 8.0.
+    assert _scale_chapter_durations([2.0, 2.0], [3.0, 10.0], 8.0) == [
+        pytest.approx(3.0),
+        pytest.approx(5.0),
+    ]
+
+
+def test_scale_chapter_durations_saturates_at_floors_and_caps() -> None:
+    # chapter audio shorter than n*2s floor -> stay at the floors, accept the overhang.
+    assert _scale_chapter_durations([2.0, 2.0], [10.0, 10.0], 3.0) == [
+        pytest.approx(2.0),
+        pytest.approx(2.0),
+    ]
+    # chapter audio longer than the summed caps -> saturate at the caps, accept the shortfall.
+    assert _scale_chapter_durations([3.0], [8.0], 9.5) == [pytest.approx(8.0)]
+    assert _scale_chapter_durations([], [], 5.0) == []
+
+
+# --- build_cutlist coupled to chapter audio windows ---------------------------------------------
+
+
+def test_build_cutlist_couples_segment_durations_to_chapter_audio(tmp_path: Path) -> None:
+    """The A/V drift fix: chapter word-shares != chapter time-shares. Both chapters have the
+    same target_seconds (2.0), but chapter 1's audio runs to ~5s while chapter 2's is short —
+    the video's chapter boundary must land exactly on the AUDIO boundary, not on the
+    target_seconds split, and a segment may stretch past its best_window.duration_s to do so."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(
+        board,
+        1,
+        best_window=BestWindow(offset_s=0.0, duration_s=3.0),
+        roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
+    )
+    _review(
+        board,
+        2,
+        best_window=BestWindow(offset_s=0.0, duration_s=3.0),
+        roi=Roi(x=0.3, y=0.3, w=0.2, h=0.2),
+    )
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="drift fix",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="c1",
+                    scene_numbers=[1],
+                    target_seconds=2.0,
+                ),
+                Chapter(
+                    chapter=2,
+                    role="payoff_cta",
+                    message="c2",
+                    scene_numbers=[2],
+                    target_seconds=2.0,
+                ),
+            ],
+        ),
+    )
+    board.save(
+        "script",
+        Script(
+            language="de",
+            lines=[
+                ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team"),
+                ScriptLine(chapter=2, scene_number=2, text="Ein Klick genügt"),
+            ],
+        ),
+    )
+    # chapter 1's words run to 4.9s, chapter 2's start at 5.5s -> audio boundary at 5.2s;
+    # voice ends 7.4s -> chapter 2's window ends 8.0s (voice end + 0.6 tail).
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.2, "end_s": 0.45},
+            {"text": "dein", "start_s": 0.5, "end_s": 0.75},
+            {"text": "Team", "start_s": 0.9, "end_s": 4.9},
+            {"text": "Ein", "start_s": 5.5, "end_s": 5.75},
+            {"text": "Klick", "start_s": 5.8, "end_s": 6.0},
+            {"text": "genügt", "start_s": 6.1, "end_s": 7.4},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out == {"ok": True, "segments": 2, "total_seconds": 8.0, "with_zoom": 2}
+
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+
+    # chapter 1's segment fills its 5.2s audio window (156 frames @ 30fps) — stretched well past
+    # its best_window.duration_s of 3.0s, from the best_window offset.
+    assert (seg0.start_frame, seg0.end_frame_exclusive) == (0, 156)
+    # chapter 2's segment starts in the video exactly at the audio boundary ...
+    video_boundary_s = (seg0.end_frame_exclusive - seg0.start_frame) / FPS
+    assert video_boundary_s == pytest.approx(5.2)
+    # ... and fills the remaining 2.8s window (84 frames).
+    assert (seg1.start_frame, seg1.end_frame_exclusive) == (300, 384)
+
+    # the zoom still lands where the words land: chapter 2's line starts 0.3s into its segment.
+    assert seg0.zoom_start_s == pytest.approx(0.6)
+    assert seg1.zoom_start_s == pytest.approx(0.7)
+
+
+def test_build_cutlist_floors_when_chapter_audio_shorter_than_scenes(tmp_path: Path) -> None:
+    """Chapter audio (3.0s incl. tail) shorter than n_scenes * 2.0s floor: both segments stay at
+    the 2s floor and the video simply runs 1s past the chapter's audio window."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, best_window=BestWindow(offset_s=1.0, duration_s=3.0))
+    _review(board, 2, best_window=BestWindow(offset_s=0.0, duration_s=3.0))
+    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=4.0))
+    board.save("script", _script())
+    # voice ends at 2.4s -> single chapter window [0, 3.0) < 2 scenes * 2s floor.
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.1, "end_s": 0.3},
+            {"text": "dein", "start_s": 0.35, "end_s": 0.6},
+            {"text": "Team", "start_s": 0.7, "end_s": 1.0},
+            {"text": "Ein", "start_s": 1.2, "end_s": 1.5},
+            {"text": "Klick", "start_s": 1.6, "end_s": 1.9},
+            {"text": "genügt", "start_s": 2.0, "end_s": 2.4},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is True
+    assert out["total_seconds"] == pytest.approx(4.0)  # 2 x 2s floor, NOT squeezed to 3.0
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+    assert (seg0.start_frame, seg0.end_frame_exclusive) == (30, 90)
+    assert (seg1.start_frame, seg1.end_frame_exclusive) == (300, 360)
+
+
+def test_build_cutlist_stretch_stops_at_scene_end_keeping_offset(tmp_path: Path) -> None:
+    """A chapter audio window (9.5s) longer than the scene can host from its best_window offset
+    (10s scene, offset 2s -> at most 8s): the segment keeps the offset as its start, stretches
+    to the scene's end-exclusive boundary and NOT past it, and the shortfall is accepted."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, best_window=BestWindow(offset_s=2.0, duration_s=3.0))
+    board.save("storyline", _storyline(scene_numbers=[1], target_seconds=4.0))
+    board.save(
+        "script",
+        Script(
+            language="de",
+            lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team")],
+        ),
+    )
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.2, "end_s": 0.5},
+            {"text": "dein", "start_s": 0.6, "end_s": 1.0},
+            {"text": "Team", "start_s": 1.2, "end_s": 8.9},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is True
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg = cutlist.segments[0]
+    # start stays at the best_window offset (frame 60), the end is the scene's boundary — the
+    # segment is 8.0s, past its 3.0s best_window but never past the scene (frame invariant).
+    assert (seg.start_frame, seg.end_frame_exclusive) == (60, 300)
+    assert seg.end_frame_exclusive <= SCENE_FRAMES
+    assert out["total_seconds"] == pytest.approx(8.0)

@@ -41,6 +41,13 @@ is a *pure derivation* — no model or backend calls — turning storyline + scr
 frame-accurate ``Cutlist``: one ``CutSegment`` per scene in arc order, clamped inside its own
 source range, with an optional zoom timed to when the scene's script line is actually spoken
 (the voice sidecar's word ``start_s``, via :func:`line_starts`, offset by ``transition_lead_s``).
+Segment durations are coupled to that same sidecar: :func:`chapter_audio_windows` tiles the
+voice track into per-chapter windows (boundaries midway between adjacent chapters' words, the
+last chapter running to voice end + a short tail) and ``_scale_chapter_durations`` rescales each
+chapter's base durations (:func:`_segment_duration_s`) to fill exactly its window — 2s floor per
+segment, hard-capped at the scene's end-exclusive frame boundary — so the picture's chapter
+boundaries track the continuous voice instead of drifting apart (chapter word-shares are not
+chapter time-shares).
 
 ``render_production``/``review_export``/``save_qa_report`` close out the pipeline (Task 6).
 ``render_production`` turns the cutlist into the actual render call (``deps.render_segments``,
@@ -114,6 +121,8 @@ RenderSegmentsFn = Callable[..., dict[str, Any]]
 
 _MIN_WINDOW_S = 0.01
 _DEFAULT_WINDOW_S = 4.0
+_SEGMENT_FLOOR_S = 2.0
+_VOICE_TAIL_S = 0.6
 _DEFAULT_HOOK_SCORE = 5
 _SNIPPET_CHARS = 300
 _DESCRIPTION_PREVIEW_CHARS = 200
@@ -434,12 +443,119 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
 def _segment_duration_s(
     *, target_seconds: float, n_scenes: int, best_window: BestWindow, scene_duration_s: float
 ) -> float:
-    """One scene's cutlist-segment length: the chapter's per-scene time budget, floored at 2s
-    and capped at the best_window's own length (itself floored at 2s, so a short highlight
-    doesn't shrink the cap below the floor) — then clamped inside the scene's own duration."""
+    """One scene's BASE cutlist-segment length: the chapter's per-scene time budget, floored at
+    2s and capped at the best_window's own length (itself floored at 2s, so a short highlight
+    doesn't shrink the cap below the floor) — then clamped inside the scene's own duration.
+
+    With a usable voice sidecar these are only the WEIGHTS that ``_scale_chapter_durations``
+    rescales to fill the chapter's audio window (:func:`chapter_audio_windows`); without one
+    they are the segment durations themselves (the pre-coupling behavior)."""
     budget = target_seconds / n_scenes
-    upper = best_window.duration_s if best_window.duration_s > 2.0 else 2.0
-    return min(max(2.0, min(budget, upper)), scene_duration_s)
+    upper = max(best_window.duration_s, _SEGMENT_FLOOR_S)
+    return min(max(_SEGMENT_FLOOR_S, min(budget, upper)), scene_duration_s)
+
+
+def chapter_audio_windows(
+    ordered_lines: list[ScriptLine],
+    words: list[dict[str, Any]],
+    *,
+    tail_s: float = _VOICE_TAIL_S,
+) -> dict[int, tuple[float, float]]:
+    """Each chapter's share of the continuous voice track, as ``{chapter: (start_s, end_s)}``
+    windows tiling the track from 0.0 to voice end + ``tail_s``.
+
+    The word stream is walked exactly like :func:`line_starts` (each line claims as many words
+    as it has whitespace tokens, in ``ordered_lines`` order — pass the storyline-ordered lines),
+    giving each chapter a raw extent from its first claimed word's ``start_s`` to its last
+    claimed word's ``end_s``. The boundary between two adjacent chapters is the MIDPOINT of the
+    gap between them (the inter-chapter pause belongs half to each side); the first chapter
+    starts at 0.0 and the last runs to the voice end plus ``tail_s`` of breathing room.
+
+    A chapter whose lines claim no words (sidecar shorter than the script) gets NO entry —
+    callers fall back to the target_seconds budget for it. Empty ``words`` -> ``{}``. Boundaries
+    are clamped monotonically non-decreasing, so windows stay valid even for a degenerate
+    (out-of-order) sidecar.
+    """
+    if not words:
+        return {}
+    extents: dict[int, tuple[float, float]] = {}
+    chapter_order: list[int] = []
+    idx = 0
+    for line in ordered_lines:
+        n_tokens = len(line.text.split())
+        claimed = words[idx : idx + n_tokens]
+        idx += n_tokens
+        if not claimed:
+            continue
+        start = _as_float(claimed[0].get("start_s"), 0.0)
+        end = _as_float(claimed[-1].get("end_s"), start)
+        if line.chapter in extents:
+            first_start, last_end = extents[line.chapter]
+            extents[line.chapter] = (first_start, max(last_end, end))
+        else:
+            extents[line.chapter] = (start, end)
+            chapter_order.append(line.chapter)
+    if not chapter_order:
+        return {}
+
+    voice_end = _as_float(words[-1].get("end_s"), 0.0)
+    windows: dict[int, tuple[float, float]] = {}
+    boundary = 0.0
+    for pos, chapter in enumerate(chapter_order):
+        if pos + 1 < len(chapter_order):
+            next_boundary = (extents[chapter][1] + extents[chapter_order[pos + 1]][0]) / 2.0
+        else:
+            next_boundary = voice_end + tail_s
+        next_boundary = max(next_boundary, boundary)
+        windows[chapter] = (boundary, next_boundary)
+        boundary = next_boundary
+    return windows
+
+
+def _scale_chapter_durations(
+    base_s: list[float],
+    upper_s: list[float],
+    total_s: float,
+    *,
+    floor_s: float = _SEGMENT_FLOOR_S,
+) -> list[float]:
+    """``base_s`` rescaled by ONE common factor so the clamped result sums to ``total_s`` (the
+    chapter's audio-window length), each item clamped to ``[min(floor_s, upper), upper]``.
+
+    The common-factor-then-clamp form keeps segments proportional to their base durations
+    wherever no bound binds; the factor is found by bisection (the clamped sum is continuous and
+    non-decreasing in it). Infeasible totals saturate instead of violating a bound: a window
+    shorter than the summed floors leaves everything at its floor (the video overhangs the
+    chapter's audio — accepted), one longer than the summed caps leaves everything at its cap
+    (the scene material simply ends — accepted).
+    """
+    if not base_s:
+        return []
+    lows = [min(floor_s, upper) for upper in upper_s]
+
+    def clamped(factor: float) -> list[float]:
+        return [
+            min(max(base * factor, low), upper)
+            for base, low, upper in zip(base_s, lows, upper_s, strict=True)
+        ]
+
+    if total_s <= sum(lows):
+        return lows
+    if total_s >= sum(upper_s):
+        return list(upper_s)
+    lo = 0.0
+    hi = max(
+        (upper / base for base, upper in zip(base_s, upper_s, strict=True) if base > 0),
+        default=1.0,
+    )
+    hi += 1.0
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        if sum(clamped(mid)) < total_s:
+            lo = mid
+        else:
+            hi = mid
+    return clamped(hi)
 
 
 # --- tool builder ----------------------------------------------------------------------------
@@ -721,12 +837,18 @@ def build_production_tool_specs(
     def build_cutlist(transition_lead_s: float = 0.4) -> dict[str, Any]:
         """Deterministically derive a frame-accurate cutlist from storyline + script + voice:
         one CutSegment per scene in arc order (chapter, then that chapter's scene_numbers
-        order), each segment's length from the chapter's time budget clamped to its scene's
-        best_window and the scene's own duration, and an optional zoom-in timed to when the
-        scene's script line is actually spoken (from the voice sidecar's word starts, offset
-        ahead by transition_lead_s so the zoom lands just before the word lands, not on it).
-        Requires save_storyline, save_script_chapter and synthesize_script_voice to have all
-        run first — reports which one is missing instead of raising."""
+        order). Segment lengths are COUPLED TO THE VOICE so picture chapters stay in sync with
+        the one continuous voice track: each chapter's audio window (from the word-timings
+        sidecar; boundaries midway between adjacent chapters' words, the last chapter running
+        to voice end + a short tail) is distributed over its scenes proportionally to their
+        target_seconds/best_window base durations — 2s floor per segment, each segment starting
+        at its scene's best_window offset and stretching past best_window.duration_s if needed,
+        but never past its scene's end. A chapter the sidecar doesn't cover (or a missing
+        sidecar) falls back to the plain target_seconds budget. An optional zoom-in is timed to
+        when the scene's script line is actually spoken (word starts, offset ahead by
+        transition_lead_s so the zoom lands just before the word lands, not on it). Requires
+        save_storyline, save_script_chapter and synthesize_script_voice to have all run first —
+        reports which one is missing instead of raising."""
         try:
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
@@ -750,7 +872,9 @@ def build_production_tool_specs(
             asset = repos.get_asset(db, asset_id)
             fps = _fps(db, asset) if asset is not None else 30.0
             ordered_lines = _lines_in_storyline_order(script, storyline)
-            line_map = line_starts(ordered_lines, _read_words(voice.timings_path))
+            words = _read_words(voice.timings_path)
+            line_map = line_starts(ordered_lines, words)
+            windows = chapter_audio_windows(ordered_lines, words)
             reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
 
             segments: list[CutSegment] = []
@@ -758,6 +882,11 @@ def build_production_tool_specs(
             order = 0
             for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
                 n_scenes = len(chapter.scene_numbers)
+                # First pass: resolve the chapter's scenes and their base durations, so the
+                # chapter's audio window can be distributed over them BEFORE any segment is cut.
+                resolved_scenes: list[tuple[int, int, int, BestWindow, Roi | None]] = []
+                base_durations: list[float] = []
+                stretch_caps: list[float] = []
                 for scene_number in chapter.scene_numbers:
                     resolved = _resolve_scene(db, asset_id, scene_number)
                     if resolved is None:
@@ -774,12 +903,36 @@ def build_production_tool_specs(
                         )
                         roi = None
 
-                    seg_dur_s = _segment_duration_s(
-                        target_seconds=chapter.target_seconds,
-                        n_scenes=n_scenes,
-                        best_window=best_window,
-                        scene_duration_s=scene_duration_s,
+                    resolved_scenes.append((scene_number, src_start, src_end, best_window, roi))
+                    base_durations.append(
+                        _segment_duration_s(
+                            target_seconds=chapter.target_seconds,
+                            n_scenes=n_scenes,
+                            best_window=best_window,
+                            scene_duration_s=scene_duration_s,
+                        )
                     )
+                    # A segment may stretch past best_window.duration_s but keeps the offset as
+                    # its start and never crosses the scene's end (the 2s floor still wins over
+                    # an offset too close to the end — the frame clamp below pulls the start
+                    # back for exactly that case, as before).
+                    stretch_caps.append(
+                        min(
+                            scene_duration_s,
+                            max(_SEGMENT_FLOOR_S, scene_duration_s - best_window.offset_s),
+                        )
+                    )
+
+                window = windows.get(chapter.chapter)
+                if window is not None:
+                    durations = _scale_chapter_durations(
+                        base_durations, stretch_caps, window[1] - window[0]
+                    )
+                else:
+                    durations = base_durations
+
+                for scene_info, seg_dur_s in zip(resolved_scenes, durations, strict=True):
+                    scene_number, src_start, src_end, best_window, roi = scene_info
                     dur_frames = round(seg_dur_s * fps)
                     raw_start = src_start + round(best_window.offset_s * fps)
                     start_frame = min(raw_start, src_end - dur_frames)
@@ -839,8 +992,12 @@ def build_production_tool_specs(
         saved to the board regardless of the verdict, so a failing render stays inspectable.
 
         CODING-AGENT CHARTER: if voice_fits comes back False, do NOT shorten or cut the voice —
-        rebuild the cutlist with a longer per-chapter time budget (build_cutlist) and render
-        again. The voice is the script the team already agreed on; the video must fit it.
+        build_cutlist already sizes segments to the voice's chapter audio windows, so a
+        shortfall means the scene material ran out (segments hit their scene-end caps) or the
+        voice has no timings sidecar. Re-run build_cutlist and render again; if it still fails,
+        the chapters need more/longer scenes (a storyline decision — report it), or, in the
+        sidecar-less fallback, a longer per-chapter time budget. The voice is the script the
+        team already agreed on; the video must fit it.
         """
         try:
             cutlist = board.load("cutlist")
