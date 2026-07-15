@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Roi(BaseModel):
@@ -32,12 +32,17 @@ class Roi(BaseModel):
 
 
 class BestWindow(BaseModel):
-    """Strongest moment inside a scene, relative to the scene start."""
+    """One strong moment inside a scene, relative to the scene start.
+
+    ``roi`` is this window's own region of interest; ``None`` defers to the review's
+    scene-level ``roi`` (which is also all a pre-``windows`` review JSON ever had).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     offset_s: float = Field(ge=0.0)
     duration_s: float = Field(gt=0.0)
+    roi: Roi | None = None
 
 
 class SceneReview(BaseModel):
@@ -50,6 +55,7 @@ class SceneReview(BaseModel):
     whats_happening: str
     hook_score: int = Field(ge=0, le=10)
     best_window: BestWindow
+    windows: list[BestWindow] = Field(default_factory=list)
     roi: Roi | None = None
     legibility_notes: str = ""
     degraded: bool = False
@@ -63,6 +69,38 @@ class SceneReview(BaseModel):
             raise ValueError("src_end_frame_exclusive must be > src_start_frame")
         return self
 
+    @model_validator(mode="after")
+    def _windows_consistent(self) -> SceneReview:
+        """Normalize + guard the windows list: a review without one (every pre-``windows``
+        JSON, every plain ``SceneReview(best_window=...)`` construction) gets
+        ``[best_window]``; a provided list must lead with ``best_window`` and its windows
+        must not overlap (touching is fine — the end-exclusive analog on the float axis)."""
+        if not self.windows:
+            self.windows = [self.best_window]
+        if self.windows[0] != self.best_window:
+            raise ValueError("windows[0] must equal best_window")
+        spans = sorted((w.offset_s, w.offset_s + w.duration_s) for w in self.windows)
+        for (_start, end), (next_start, _next_end) in zip(spans, spans[1:], strict=False):
+            if next_start < end - 1e-9:
+                raise ValueError("windows must not overlap")
+        return self
+
+
+class SceneWindowRef(BaseModel):
+    """Storyline reference to one review window of a scene (0-based; 0 = ``best_window``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene: int = Field(ge=1)
+    window: int = Field(default=0, ge=0)
+
+
+def as_scene_window(entry: int | SceneWindowRef) -> tuple[int, int]:
+    """A storyline scene entry as ``(scene_number, window_index)``; plain ints are window 0."""
+    if isinstance(entry, SceneWindowRef):
+        return entry.scene, entry.window
+    return entry, 0
+
 
 class Chapter(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -70,7 +108,7 @@ class Chapter(BaseModel):
     chapter: int = Field(ge=1)
     role: Literal["hook", "problem", "feature", "payoff_cta"]
     message: str
-    scene_numbers: list[int] = Field(min_length=1)
+    scene_numbers: list[int | SceneWindowRef] = Field(min_length=1)
     target_seconds: float = Field(gt=0.0)
 
 
@@ -80,6 +118,26 @@ class Storyline(BaseModel):
     version: int = Field(default=1, ge=1)
     red_thread: str
     arc: list[Chapter] = Field(min_length=1)
+
+    @field_validator("arc")
+    @classmethod
+    def _no_duplicate_scene_windows(cls, arc: list[Chapter]) -> list[Chapter]:
+        """The same (scene, window) pair may appear only once in the whole storyline —
+        reusing a scene requires a different window of it."""
+        seen: dict[tuple[int, int], int] = {}
+        for chapter in arc:
+            for entry in chapter.scene_numbers:
+                key = as_scene_window(entry)
+                first = seen.get(key)
+                if first is not None:
+                    scene, window = key
+                    raise ValueError(
+                        f"scene {scene} window {window} is referenced more than once "
+                        f"(chapters {first} and {chapter.chapter}); reuse a scene only "
+                        "with a different window"
+                    )
+                seen[key] = chapter.chapter
+        return arc
 
 
 class ScriptLine(BaseModel):

@@ -12,9 +12,11 @@ from laura.short_creator.board_models import (
     QaReport,
     Roi,
     SceneReview,
+    SceneWindowRef,
     Script,
     ScriptLine,
     Storyline,
+    as_scene_window,
 )
 
 
@@ -108,6 +110,101 @@ def test_qa_report_verdict_literal() -> None:
     with pytest.raises(ValidationError):
         QaReport(verdict="maybe", findings=[])  # type: ignore[arg-type]
     assert QaReport(verdict="ship", findings=[]).verdict == "ship"
+
+
+# Verbatim shape of a pre-windows board review file (workspace livetest schema rebuilt as a
+# fixture — no `windows` list, no per-window roi): these MUST keep validating.
+_OLD_REVIEW_JSON = """
+{
+  "scene_number": 13,
+  "src_start_frame": 4980,
+  "src_end_frame_exclusive": 7260,
+  "description": "terminal with running agents",
+  "whats_happening": "logs scroll while a job finishes",
+  "hook_score": 7,
+  "best_window": {"offset_s": 12.0, "duration_s": 6.0},
+  "roi": {"x": 0.05, "y": 0.4, "w": 0.55, "h": 0.3},
+  "legibility_notes": "small mono font",
+  "degraded": false,
+  "model": "OllamaDescribeBackend",
+  "version": 2,
+  "created_utc": "2026-07-14T18:22:31Z"
+}
+"""
+
+
+def test_scene_review_windows_default_to_best_window() -> None:
+    r = _review()
+    assert r.windows == [r.best_window]
+    again = SceneReview.model_validate_json(r.model_dump_json())
+    assert again.windows == [again.best_window]
+
+
+def test_old_review_json_without_windows_still_validates() -> None:
+    r = SceneReview.model_validate_json(_OLD_REVIEW_JSON)
+    assert r.windows == [BestWindow(offset_s=12.0, duration_s=6.0)]
+    assert r.best_window.roi is None
+    assert r.roi is not None and r.roi.w == 0.55
+
+
+def test_scene_review_windows_first_must_equal_best_window() -> None:
+    with pytest.raises(ValidationError):
+        _review(windows=[BestWindow(offset_s=9.0, duration_s=1.0)])
+
+
+def test_scene_review_windows_must_not_overlap() -> None:
+    w0 = BestWindow(offset_s=1.0, duration_s=4.0)
+    with pytest.raises(ValidationError):
+        _review(best_window=w0, windows=[w0, BestWindow(offset_s=3.0, duration_s=2.0)])
+    ok = _review(best_window=w0, windows=[w0, BestWindow(offset_s=5.0, duration_s=2.0)])
+    assert len(ok.windows) == 2  # touching (end == next start) is fine, end-exclusive analog
+
+
+def test_best_window_roi_optional_and_validated() -> None:
+    w = BestWindow(offset_s=0.0, duration_s=2.0, roi=Roi(x=0.1, y=0.1, w=0.3, h=0.3))
+    assert w.roi is not None
+    with pytest.raises(ValidationError):
+        BestWindow(offset_s=0.0, duration_s=2.0, roi=Roi(x=0.8, y=0.0, w=0.5, h=0.5))
+
+
+def test_chapter_scene_numbers_accept_window_refs() -> None:
+    c = Chapter(
+        chapter=1,
+        role="hook",
+        message="m",
+        scene_numbers=[1, {"scene": 1, "window": 1}],  # type: ignore[list-item]
+        target_seconds=3.0,
+    )
+    assert c.scene_numbers[0] == 1
+    assert c.scene_numbers[1] == SceneWindowRef(scene=1, window=1)
+    assert as_scene_window(c.scene_numbers[0]) == (1, 0)
+    assert as_scene_window(c.scene_numbers[1]) == (1, 1)
+
+
+def test_storyline_rejects_duplicate_scene_window_pairs() -> None:
+    def chapter(n: int, scenes: list[object]) -> Chapter:
+        return Chapter(
+            chapter=n,
+            role="hook" if n == 1 else "payoff_cta",
+            message="m",
+            scene_numbers=scenes,  # type: ignore[arg-type]
+            target_seconds=3.0,
+        )
+
+    # Same (scene, window) pair twice inside one chapter — via both notations.
+    with pytest.raises(ValidationError) as exc:
+        Storyline(red_thread="rt", arc=[chapter(1, [1, {"scene": 1, "window": 0}])])
+    assert "scene 1 window 0" in str(exc.value)
+
+    # Same pair across chapters is just as forbidden.
+    with pytest.raises(ValidationError):
+        Storyline(red_thread="rt", arc=[chapter(1, [2]), chapter(2, [2])])
+
+    # Same scene with a DIFFERENT window is the whole point — allowed.
+    ok = Storyline(
+        red_thread="rt", arc=[chapter(1, [1, {"scene": 1, "window": 1}]), chapter(2, [2])]
+    )
+    assert len(ok.arc) == 2
 
 
 def test_board_meta_defaults() -> None:
