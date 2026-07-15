@@ -34,14 +34,18 @@ Drei Feature-Stränge berühren dieselben Dateien (`production_tools.py`, `board
    das exakt gleiche `(scene, window)` doppelt; `build_cutlist` schneidet das referenzierte Fenster.
    → Das ist die Materialdecken-Aufhebung UND die Antwort auf „keine Dopplungen": Wiederholung nur
    mit anderem Ausschnitt, im Code erzwungen.
-3. **Kontaktbogen-Checkpoint** (Task läuft noch): baut auf 1+2 auf. Review → Merge.
-4. Nach JEDEM Merge: Backend-Neustart (laufender Prozess hält alten Code) + Smoke-Lauf.
-   ✅ erledigt für 1+2: mypy 462 clean, 71 Produktions-/Multi-Window-/Caption-Tests grün,
-   Backend neu auf `8d18f27`, Session-Endpoint 200.
+3. **Kontaktbogen-Checkpoint** — ✅ **GEMERGED** (`03ba418`, auf `main`). Cherry-Pick von
+   `119ea67` (andere Session, 8h idle, WIP-frei); einziger Konflikt war 1 Doku-Hunk (beide
+   Features hängen an dieselbe Stelle, beide behalten). Contact-Sheet-Artefakt zwischen `cutlist`
+   und `render_report`; `save_contact_sheet` baut ein Grid-PNG (Kacheln `<order> S<szene>`) immer
+   vor dem Render; Cutlist-Änderung invalidiert den Bogen; Endpoint `GET /production/<sid>/
+   contact-sheet`; Freigabe-Flow rein über `/message` ("bau bis zum Kontaktbogen, dann stopp").
+4. Nach JEDEM Merge: Backend-Neustart + Smoke-Lauf. ✅ 1+2: mypy clean, 71 Tests grün.
+   ✅ 3: mypy 463 clean, 99 Produktions-Tests grün, volle Suite grün (exit 0), Backend neu.
 
-**Gate P0:** `uv run pytest` + `uv run mypy` (voller Scope) grün nach jedem Merge;
-ein Team-Render auf `workspace-livetest` erzeugt Kontaktbogen + synchrones Video.
-→ Offen bis Kontaktbogen (Schritt 3) gemerged ist.
+**Gate P0:** ✅ **ERFÜLLT** — `uv run pytest` (volle Suite, exit 0) + `uv run mypy` (463, clean)
+grün nach dem letzten Merge. Der Live-Smoke (Team-Render mit Kontaktbogen auf `workspace-livetest`)
+steht als nächste konkrete Verifikation aus — reine Laufzeit-Prüfung, kein Blocker mehr für main.
 
 ## Phase 1 — Qualitätsregeln vom Message-Text in den Code
 
@@ -115,6 +119,12 @@ Das strategische Format (Erkenntnis 6 + Leitfaden): **eine Serie statt einer Lan
   (`_no_duplicate_scene_windows`). Privacy-Gate-Andockpunkt präzisiert (gehört in den
   Multi-Window-Review-Vertrag). **Offen für Iteration 3:** Kontaktbogen-Merge (Task läuft),
   dann Gate P0 vollständig; Runtime-Limit-Entscheidung (Erkenntnis 2); Serien-Design-Runde.
-- Iteration 3 (wartet auf Kontaktbogen-Task): Endhärtung — Gate P0 komplett verifizieren
-  (Kontaktbogen + synchrones Video im Smoke-Lauf), Runtime-Limit entscheiden, Serien-Design
-  als konkreten nächsten Auftrag ausformulieren.
+- **Iteration 3 (2026-07-15):** Kontaktbogen gemerged (`03ba418`, auf `main`) — **Phase 0
+  komplett**, alle drei Plattform-Features live. Gate P0 erfüllt (volle Suite exit 0, mypy 463).
+  Die drei claude-Task-Branches sind integriert; Repo aufgeräumt (13 tote Branches weg).
+  **Damit steht das Fundament des felsenfesten Plans.** Offene, nicht mehr blockierende Punkte
+  für die nächste Runde: (a) Live-Smoke — ein Team-Render mit Kontaktbogen auf `workspace-livetest`
+  (Laufzeit-Verifikation der frisch integrierten Kette); (b) **Phase 1** (Qualitätsregeln in den
+  Task-Contract: Privacy-Gate am jetzt gemergten Multi-Window-Review-Vertrag, Stimm-Formel +
+  Decke-zuerst); (c) **Phase 2** Serien-Design (User-Design-Runde); (d) Runtime-Limit-Entscheidung
+  (Erkenntnis 2). Reihenfolge-Empfehlung: Live-Smoke → Phase 1 → Serien-Design.
