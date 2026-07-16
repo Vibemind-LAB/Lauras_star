@@ -9,6 +9,7 @@ frames, end-exclusive.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -141,11 +142,38 @@ class Storyline(BaseModel):
 
 
 class ScriptLine(BaseModel):
+    """One spoken line. ``text`` is narration only — it is read out verbatim by TTS."""
+
     model_config = ConfigDict(extra="forbid")
 
     chapter: int = Field(ge=1)
     scene_number: int = Field(ge=1)
     text: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _text_is_speakable(self) -> ScriptLine:
+        """Reject what the voice would read out wrong. Messages tell the agent the fix.
+
+        Live finding: the scene_author prefixed EVERY line with its scene number
+        ("3 59 Agenten jetzt sichtbar?", scene_number=3) — all valid strings, so nothing
+        caught it, and TTS would have said "drei neunundfuenfzig Agenten". Stage
+        directions in brackets are the other classic: the contract forbids them, but
+        only prose asked for it.
+        """
+        text = self.text.strip()
+        if not text:
+            raise ValueError("text is blank — write the spoken line, or drop the entry")
+        if re.match(rf"^{self.scene_number}(\s|$)", text):
+            raise ValueError(
+                f"text starts with its own scene number ({self.scene_number}) — the voice "
+                f"would read it out. Drop the number; if it belongs to the sentence, spell "
+                f"it out or reorder."
+            )
+        if re.search(r"[(\[]", text):
+            raise ValueError(
+                "text contains brackets — narration only, no stage directions or notes"
+            )
+        return self
 
 
 class Script(BaseModel):
