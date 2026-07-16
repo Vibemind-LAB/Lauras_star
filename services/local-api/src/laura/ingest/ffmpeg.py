@@ -15,7 +15,32 @@ from typing import Any
 
 
 class FFmpegError(RuntimeError):
-    """Raised when ffmpeg/ffprobe exits non-zero or is not found."""
+    """Raised when ffmpeg/ffprobe exits non-zero or cannot be started."""
+
+
+# Windows rejects a command line past ~32k chars with this, and subprocess surfaces it as
+# the very same FileNotFoundError a missing binary raises.
+_WINERROR_CMDLINE_TOO_LONG = 206
+
+
+def _spawn_failure(exc: OSError, binary: str, *, cwd: Path | str | None = None) -> FFmpegError:
+    """Name why a spawn failed instead of always blaming a missing binary.
+
+    ``subprocess`` raises ``FileNotFoundError`` for a missing binary AND for an over-long
+    command line; a missing ``cwd`` looks similar. Reporting "not found" for all three
+    cost a live session an hour of hunting an ffmpeg that was healthy the whole time.
+    """
+    if getattr(exc, "winerror", None) == _WINERROR_CMDLINE_TOO_LONG:
+        return FFmpegError(
+            f"command line too long (WinError {_WINERROR_CMDLINE_TOO_LONG}): the OS caps it "
+            f"near 32k chars — pass the filtergraph as a file (-filter_complex_script) "
+            f"instead of inline. binary: {binary}"
+        )
+    if cwd is not None and not Path(cwd).is_dir():
+        return FFmpegError(f"working directory does not exist: {cwd} (binary: {binary})")
+    if not Path(binary).is_file() and shutil.which(binary) is None:
+        return FFmpegError(f"not found: {binary}")
+    return FFmpegError(f"cannot start {binary}: {exc}")
 
 
 def ffprobe_bin() -> str:
@@ -38,8 +63,8 @@ def probe(path: Path | str) -> dict[str, Any]:
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
-    except FileNotFoundError as exc:
-        raise FFmpegError(f"ffprobe not found: {ffprobe_bin()}") from exc
+    except OSError as exc:
+        raise _spawn_failure(exc, ffprobe_bin()) from exc
     if proc.returncode != 0:
         raise FFmpegError(proc.stderr.strip() or "ffprobe failed")
     data: dict[str, Any] = json.loads(proc.stdout)
@@ -57,8 +82,8 @@ def run_ffmpeg(args: list[str], *, cwd: Path | str | None = None) -> None:
     cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)  # noqa: S603
-    except FileNotFoundError as exc:
-        raise FFmpegError(f"ffmpeg not found: {ffmpeg_bin()}") from exc
+    except OSError as exc:
+        raise _spawn_failure(exc, ffmpeg_bin(), cwd=cwd) from exc
     if proc.returncode != 0:
         # keep the tail of stderr — ffmpeg errors are most informative at the end
         raise FFmpegError((proc.stderr or "ffmpeg failed").strip()[-2000:])
@@ -77,8 +102,8 @@ def decode_scan(path: Path | str) -> int:
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
-    except FileNotFoundError as exc:
-        raise FFmpegError(f"ffmpeg not found: {ffmpeg_bin()}") from exc
+    except OSError as exc:
+        raise _spawn_failure(exc, ffmpeg_bin()) from exc
     stderr = (proc.stderr or "").strip()
     error_lines = len([line for line in stderr.splitlines() if line.strip()])
     if proc.returncode != 0:
