@@ -110,6 +110,7 @@ from ..analysis.transition_review import extract_frames
 from ..db import repos
 from ..db.database import Database
 from ..ingest.ffmpeg import ffmpeg_bin
+from ..render.zoom import roi_to_window
 from ..util import new_id, utcnow_iso
 from . import context
 from .board import Board, downstream_of
@@ -412,13 +413,44 @@ def _run_ffmpeg_quiet(args: list[str]) -> bool:
     return proc.returncode == 0
 
 
+def _tile_filter(
+    *, roi: tuple[float, float, float, float] | None, src_w: int, src_h: int,
+    fontfile: str | None, label: str,
+) -> str:
+    """The ``-vf`` for one tile, framed the way the RENDER frames that segment.
+
+    A tile showing the bare 16:9 source frame cannot show the faults it exists to catch —
+    a crop cutting text, or content sitting tiny inside the vertical letterbox. So a
+    segment with a roi is cropped through ``roi_to_window`` (the renderer's own function,
+    not a lookalike), and one without is padded into the output aspect, which is exactly
+    what the blur-fill path leaves on screen minus the cosmetic blur.
+    """
+    tile_h = round(_SHEET_TILE_WIDTH * _RENDER_HEIGHT / _RENDER_WIDTH / 2) * 2
+    if roi is not None:
+        x, y, w, h = roi_to_window(
+            roi, src_w=src_w, src_h=src_h, out_w=_RENDER_WIDTH, out_h=_RENDER_HEIGHT
+        )
+        vf = f"crop={w}:{h}:{x}:{y},scale={_SHEET_TILE_WIDTH}:{tile_h}"
+    else:
+        vf = (
+            f"scale={_SHEET_TILE_WIDTH}:{tile_h}:force_original_aspect_ratio=decrease,"
+            f"pad={_SHEET_TILE_WIDTH}:{tile_h}:(ow-iw)/2:(oh-ih)/2:black"
+        )
+    if fontfile is not None:
+        vf += "," + _label_filter(label, fontfile)
+    return vf
+
+
 def _extract_sheet_tiles(
     proxy: Path,
-    times_labels: list[tuple[float, str]],
+    times_labels: list[tuple[float, str, tuple[float, float, float, float] | None]],
     tiles_dir: Path,
     fontfile: str | None,
+    *,
+    src_w: int,
+    src_h: int,
 ) -> tuple[bool, bool, int | None]:
-    """One scaled PNG per (timestamp, label) into ``tiles_dir/tile_%03d.png``.
+    """One PNG per (timestamp, label, roi) into ``tiles_dir/tile_%03d.png``, framed as rendered.
 
     PNG, never mjpeg — mjpeg breaks on non-full-range YUV proxies. Labels use ``drawtext``;
     when the labeled pass fails (broken font, ffmpeg without freetype) the WHOLE sheet is
@@ -427,10 +459,11 @@ def _extract_sheet_tiles(
     labeled = fontfile is not None
     while True:
         failed: int | None = None
-        for i, (t, label) in enumerate(times_labels):
-            vf = f"scale={_SHEET_TILE_WIDTH}:-2"
-            if labeled and fontfile is not None:
-                vf += "," + _label_filter(label, fontfile)
+        for i, (t, label, roi) in enumerate(times_labels):
+            vf = _tile_filter(
+                roi=roi, src_w=src_w, src_h=src_h,
+                fontfile=fontfile if labeled else None, label=label,
+            )
             args = [
                 "-ss",
                 f"{max(0.0, t):.6f}",
@@ -1339,13 +1372,32 @@ def build_production_tool_specs(
             out_dir.mkdir(parents=True, exist_ok=True)
             out_png = out_dir / f"{new_id()}.png"
 
+            # Tiles are framed the way the render frames them (crop for a zoomed segment,
+            # letterbox otherwise), so the sheet can show the framing faults it gates.
+            src_w = int(asset.get("width") or 0)
+            src_h = int(asset.get("height") or 0)
+            roi_by_order = {
+                s.order: (s.roi.x, s.roi.y, s.roi.w, s.roi.h) if s.roi is not None else None
+                for s in cutlist.segments
+            }
+            framed = src_w > 0 and src_h > 0
+
             with tempfile.TemporaryDirectory(prefix="laura-contact-sheet-") as tmp:
                 tiles_dir = Path(tmp)
                 ok, labeled, failed = _extract_sheet_tiles(
                     Path(proxy),
-                    [(t.frame * rate_den / rate_num, t.label) for t in tiles],
+                    [
+                        (
+                            t.frame * rate_den / rate_num,
+                            t.label,
+                            roi_by_order.get(t.order) if framed else None,
+                        )
+                        for t in tiles
+                    ],
                     tiles_dir,
                     _find_fontfile(),
+                    src_w=src_w or _RENDER_HEIGHT,  # unknown dims -> letterbox, never crop
+                    src_h=src_h or _RENDER_WIDTH,
                 )
                 if not ok:
                     bad = tiles[failed] if failed is not None else tiles[0]

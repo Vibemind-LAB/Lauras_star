@@ -28,7 +28,11 @@ from laura.short_creator.board_models import (
     Cutlist,
     CutSegment,
 )
-from laura.short_creator.production_tools import build_production_tool_specs
+from laura.short_creator.production_tools import (
+    _RENDER_HEIGHT,
+    _RENDER_WIDTH,
+    build_production_tool_specs,
+)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
@@ -154,11 +158,14 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
     png = Path(out["png_path"])
     assert png.is_file() and png.stat().st_size > 0
     assert png.parent == board.root.parent / "contact_sheets"
-    # Grid geometry: every tile is scaled to the fixed tile width (aspect preserved).
+    # Grid geometry: a tile carries the RENDER's aspect, not the proxy's — the sheet is a
+    # preview of the finished framing, so a 16:9 source shows up letterboxed into 9:16
+    # exactly as it will on screen. (It asserted the proxy aspect while tiles were bare
+    # source frames; that sheet could not show the framing faults it exists to catch.)
     width, height = _probe_size(png)
     assert width % out["cols"] == 0 and height % out["rows"] == 0
     tile_w, tile_h = width // out["cols"], height // out["rows"]
-    assert tile_w / tile_h == pytest.approx(PROXY_W / PROXY_H, abs=0.02)
+    assert tile_w / tile_h == pytest.approx(_RENDER_WIDTH / _RENDER_HEIGHT, abs=0.02)
 
     saved = board.load("contact_sheet")
     assert isinstance(saved, ContactSheet)
