@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DISCLOSURE: str = "KI · synthetisch"
 
+# ffmpeg takes the filtergraph on the command line, and Windows caps a command line near
+# 32k chars. A long cut — many segments, each with its own zoom/crop chain — blows past
+# that: CreateProcess fails with WinError 206, which run_ffmpeg reports as the misleading
+# "ffmpeg not found". Graphs above this budget are handed to ffmpeg as a file instead
+# (-filter_complex_script). Live finding: a 55-segment multi-window cut died where the
+# same pipeline rendered 13 segments fine. The budget stays well under the cap because
+# the inputs and encoder flags share the same command line.
+_MAX_INLINE_FILTER_CHARS: int = 8000
+
 
 def _effective_disclosure(disclosure_text: str | None) -> str | None:
     """Map disclosure_text to the effective value for the renderer.
@@ -821,9 +830,21 @@ def render_clips_mp4(
             parts += f";{format_in}aresample=48000,aformat=channel_layouts=stereo[aout]"
             audio_maps = ["-map", "[aout]", "-c:a", "aac", "-ar", "48000", "-ac", "2"]
 
+        # cwd is only needed so drawtext textfile= basenames resolve. Decide it BEFORE the
+        # filtergraph file below joins reel_files, so the plain concat call stays
+        # byte-identical (and any run_ffmpeg monkeypatch without a cwd kwarg keeps working).
+        needs_cwd = bool(reel_files)
+        if len(parts) > _MAX_INLINE_FILTER_CHARS:
+            graph_path = dest.parent / f"{dest.stem}.filtergraph.txt"
+            graph_path.write_text(parts, encoding="utf-8")
+            reel_files.append(graph_path)  # cleaned up in the finally below
+            filter_args = ["-filter_complex_script", str(graph_path)]
+        else:
+            filter_args = ["-filter_complex", parts]
+
         ff_args = [
             *inputs,
-            "-filter_complex", parts,
+            *filter_args,
             "-map", "[out]",
             *audio_maps,
             "-c:v", "libx264",
@@ -831,10 +852,7 @@ def render_clips_mp4(
             "-r", f"{rate_num}/{rate_den}",
             str(dest),
         ]
-        # cwd is only needed so drawtext textfile= basenames resolve. Pass it only
-        # on the reel path so the plain concat call stays byte-identical (and any
-        # run_ffmpeg monkeypatch without a cwd kwarg keeps working).
-        if reel_files:
+        if needs_cwd:
             run_ffmpeg(ff_args, cwd=dest.parent)
         else:
             run_ffmpeg(ff_args)
