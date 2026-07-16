@@ -53,6 +53,10 @@ class Settings:
     lease_seconds: int = 60
     worker_concurrency: int = 3  # background job-runner threads (desktop)
     job_max_runtime_seconds: int = 3600  # cap before a job's lease stops being refreshed
+    # An agent team legitimately works for hours; the global cap above guards quick jobs,
+    # where an hour already means a hang. Live finding: three production.run jobs were cut
+    # off mid-work by the shared 3600s cap.
+    production_run_max_runtime_seconds: int = 4 * 3600
     database_url: str | None = None  # postgresql://… for server mode; else SQLite
     rate_limit_rpm: int = 0  # per-identity requests/minute; 0 disables the limiter
     rate_limit_burst: int = 0  # bucket capacity; 0 -> falls back to rpm
@@ -75,6 +79,9 @@ class Settings:
             token=os.environ.get("LAURA_TOKEN") or None,
             worker_concurrency=int(os.environ.get("LAURA_WORKERS", "3")),
             job_max_runtime_seconds=int(os.environ.get("LAURA_JOB_MAX_RUNTIME", "3600")),
+            production_run_max_runtime_seconds=int(
+                os.environ.get("LAURA_PRODUCTION_MAX_RUNTIME", str(4 * 3600))
+            ),
             database_url=os.environ.get("DATABASE_URL") or None,
             rate_limit_rpm=int(os.environ.get("LAURA_RATE_LIMIT_RPM", "0")),
             rate_limit_burst=int(os.environ.get("LAURA_RATE_LIMIT_BURST", "0")),

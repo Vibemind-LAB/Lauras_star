@@ -128,6 +128,7 @@ class JobRunner:
         queues: tuple[str, ...] | None = None,
         concurrency: int = 1,
         max_runtime_seconds: int = 3600,
+        runtime_overrides: dict[str, int] | None = None,
     ) -> None:
         self.db = db
         self.registry: dict[str, JobHandler] = registry or {}
@@ -137,8 +138,15 @@ class JobRunner:
         self.queues = queues  # None = all queues
         self.concurrency = max(1, concurrency)
         self.max_runtime_seconds = max_runtime_seconds
+        # Per-kind caps for work that legitimately outlives the global one (an agent team
+        # runs for hours; an hour-long probe is a hang). Kinds not listed keep the global.
+        self.runtime_overrides: dict[str, int] = dict(runtime_overrides or {})
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+
+    def runtime_limit_for(self, kind: str) -> int:
+        """How long *kind* may run before its lease stops being refreshed."""
+        return self.runtime_overrides.get(kind, self.max_runtime_seconds)
 
     # --- registry ---------------------------------------------------------
     def register(self, kind: str, handler: JobHandler) -> None:
@@ -231,13 +239,15 @@ class JobRunner:
             stop_hb = threading.Event()
             hb_started = time.monotonic()
 
+            runtime_limit = self.runtime_limit_for(kind)
+
             def _heartbeat_loop() -> None:
                 interval = max(1.0, self.lease_seconds / 2)
                 while not stop_hb.wait(interval):
-                    if time.monotonic() - hb_started > self.max_runtime_seconds:
+                    if time.monotonic() - hb_started > runtime_limit:
                         logger.warning(
-                            "job %s exceeded max runtime %ss; ceasing heartbeat so the "
-                            "reaper can recover it", job["id"], self.max_runtime_seconds,
+                            "job %s (%s) exceeded max runtime %ss; ceasing heartbeat so "
+                            "the reaper can recover it", job["id"], kind, runtime_limit,
                         )
                         return
                     with contextlib.suppress(Exception):  # heartbeat is best-effort

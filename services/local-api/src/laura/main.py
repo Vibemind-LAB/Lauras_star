@@ -79,6 +79,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lease_seconds=settings.lease_seconds,
         concurrency=settings.worker_concurrency,
         max_runtime_seconds=settings.job_max_runtime_seconds,
+        # The agent team runs far longer than any other job kind — give it its own cap
+        # instead of loosening the one that catches hung quick jobs.
+        runtime_overrides={"production.run": settings.production_run_max_runtime_seconds},
     )
 
     @asynccontextmanager
