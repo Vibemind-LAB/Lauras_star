@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from laura.short_creator.board_models import BoardMeta, canvas_for
-from laura.short_creator.production_tools import _qa_prompt, _shape_of
+from laura.short_creator.production_tools import _qa_prompt, _roi_rule, _shape_of
 
 
 def _meta(fmt: str) -> BoardMeta:
@@ -65,3 +65,42 @@ def test_the_qa_prompt_names_the_shape_actually_rendered() -> None:
 )
 def test_shape_of_covers_every_preset(w: int, h: int, shape: str) -> None:
     assert _shape_of(w, h) == shape
+
+
+# --- the roi rule follows canvas vs source, not the reel by habit --------------------------
+# Live finding: on a 16:9 screen recording rendered to a 16:9 canvas, the scene_author cropped
+# an org chart captioned "36 agents, 9 teams" down to 2% of its area — the scale WAS the point.
+# The prompt had asked for "the ONE region a viewer must read", which is right only when the
+# canvas is narrower than the footage and the content would otherwise sit tiny in a letterbox.
+
+
+def test_a_reel_canvas_on_landscape_footage_still_wants_a_roi() -> None:
+    """The v1 case: 16:9 source into a 9:16 reel — without a roi the content is a stamp."""
+    rule = _roi_rule(src_w=1920, src_h=1080, out_w=1080, out_h=1920)
+    assert "ONE region" in rule
+    assert "must be null" not in rule
+
+
+def test_a_matching_canvas_tells_the_reviewer_to_leave_the_frame_alone() -> None:
+    """16:9 into 16:9: a roi cannot rescue anything, it can only cut content away."""
+    rule = _roi_rule(src_w=1920, src_h=1080, out_w=1920, out_h=1080)
+    assert "must be null" in rule
+    assert "ONE region" not in rule
+
+
+def test_a_wide_screen_recording_into_a_16_9_canvas_leaves_the_frame_alone() -> None:
+    """The real footage: a 2.27:1 app window letterboxed into 16:9 — still no crop wanted."""
+    rule = _roi_rule(src_w=1706, src_h=752, out_w=1920, out_h=1080)
+    assert "must be null" in rule
+
+
+def test_a_square_canvas_on_wide_footage_wants_a_roi() -> None:
+    """linkedin 1:1 is much narrower than 16:9 footage — the crop earns its keep again."""
+    rule = _roi_rule(src_w=1920, src_h=1080, out_w=1080, out_h=1080)
+    assert "ONE region" in rule
+
+
+def test_unknown_source_dimensions_keep_the_cropping_rule() -> None:
+    """Metrics can be missing; the v1 behaviour must stay the fallback, not a silent change."""
+    rule = _roi_rule(src_w=0, src_h=0, out_w=1080, out_h=1920)
+    assert "ONE region" in rule

@@ -160,11 +160,46 @@ _REVIEW_PROMPT = (
     "  \"windows\": [{{\"offset_s\": float, \"duration_s\": float, \"roi\": {{\"x\": float, "
     "\"y\": float, \"w\": float, \"h\": float}} | null}}] (1-4 strong moments, STRONGEST "
     "FIRST, non-overlapping, offsets relative to scene start; a long scene with several "
-    "distinct beats should list each beat as its own window; roi is the normalized 0-1 box "
-    "around the ONE region a viewer must read DURING that window, null if the whole frame "
-    "matters),\n"
+    "distinct beats should list each beat as its own window; {roi_rule}),\n"
     "  \"legibility_notes\": str}}"
 )
+
+# A roi is a CROP. Whether that rescues the shot or ruins it depends entirely on how the
+# canvas compares to the footage, so the reviewer is told which situation it is in.
+_ROI_RULE_CROP = (
+    "roi is the normalized 0-1 box around the ONE region a viewer must read DURING that "
+    "window, null if the whole frame matters"
+)
+_ROI_RULE_NATIVE = (
+    "roi must be null: the output canvas already matches this footage's shape, so the frame "
+    "is shown as recorded. A roi here would CROP content away rather than enlarge it. Set one "
+    "ONLY if a small detail is genuinely unreadable at full size and nothing else in the frame "
+    "matters"
+)
+# Below this ratio of canvas-aspect to source-aspect, the source cannot fill the canvas and
+# would sit in a letterbox — that is when cropping to a region earns its keep. 16:9 into 9:16
+# scores 0.32; 16:9 into 1:1 scores 0.56; 16:9 into 16:9 scores 1.0.
+_ROI_NEEDED_BELOW = 0.75
+
+
+def _roi_rule(*, src_w: int, src_h: int, out_w: int, out_h: int) -> str:
+    """The roi instruction for this canvas/source pair.
+
+    Live finding: on a 16:9 screen recording rendered to a 16:9 canvas, the reviewer cropped an
+    org chart captioned "36 agents, 9 teams" to 2% of its area — the scale was the whole point.
+    The old wording ("the ONE region a viewer must read") is v1 reel advice: correct when a wide
+    frame has to survive a narrow canvas, actively harmful when it does not.
+
+    Unknown source dimensions keep the v1 rule — a silent switch on missing metadata would be
+    worse than the behaviour that has shipped so far.
+    """
+    if src_w <= 0 or src_h <= 0:
+        return _ROI_RULE_CROP
+    return (
+        _ROI_RULE_NATIVE
+        if (out_w / out_h) / (src_w / src_h) >= _ROI_NEEDED_BELOW
+        else _ROI_RULE_CROP
+    )
 
 _RENDER_POLL_INTERVAL_S = 2.0
 _VOICE_FIT_TOLERANCE_S = 0.05
@@ -891,8 +926,18 @@ def build_production_tool_specs(
 
             parsed: dict[str, Any] | None = None
             if backend is not None and frames and backend.available():
+                _, (out_w, out_h) = canvas_for(board.meta().format)
                 prompt = _REVIEW_PROMPT.format(
-                    n=len(frames), scene=scene_number, duration_s=duration_s, snippet=snippet
+                    n=len(frames),
+                    scene=scene_number,
+                    duration_s=duration_s,
+                    snippet=snippet,
+                    roi_rule=_roi_rule(
+                        src_w=int((asset or {}).get("width") or 0),
+                        src_h=int((asset or {}).get("height") or 0),
+                        out_w=out_w,
+                        out_h=out_h,
+                    ),
                 )
                 reply = backend.describe(frames, prompt)
                 parsed = _parse_review_reply(reply) if reply else None
