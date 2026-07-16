@@ -27,12 +27,9 @@ from laura.short_creator.board_models import (
     ContactSheet,
     Cutlist,
     CutSegment,
+    canvas_for,
 )
-from laura.short_creator.production_tools import (
-    _RENDER_HEIGHT,
-    _RENDER_WIDTH,
-    build_production_tool_specs,
-)
+from laura.short_creator.production_tools import build_production_tool_specs
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
@@ -165,7 +162,8 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
     width, height = _probe_size(png)
     assert width % out["cols"] == 0 and height % out["rows"] == 0
     tile_w, tile_h = width // out["cols"], height // out["rows"]
-    assert tile_w / tile_h == pytest.approx(_RENDER_WIDTH / _RENDER_HEIGHT, abs=0.02)
+    _, (out_w, out_h) = canvas_for(board.meta().format)
+    assert tile_w / tile_h == pytest.approx(out_w / out_h, abs=0.02)
 
     saved = board.load("contact_sheet")
     assert isinstance(saved, ContactSheet)

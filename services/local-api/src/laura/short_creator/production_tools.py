@@ -68,7 +68,8 @@ checkpoint. The user steers around this checkpoint purely via follow-up ``/messa
 ``render_production`` turns the cutlist into the actual render call (``deps.render_segments``,
 falling back to the real :func:`laura.mcp.tools.tool_render_segments`, resolved lazily like every
 other backend seam): segments and an index-aligned zoom hint per segment, the board's voice as
-the new audio track, captions on, blurred vertical 1080x1920 — then polls the resulting export
+the new audio track, captions on, blur-filled onto the board format's canvas — then polls the
+resulting export
 (bounded by ``RENDER_WAIT_SECONDS``, same pattern as :func:`laura.short_creator.toolset`'s
 ``export_status``) and grades it against three checks (``voice_fits``, ``export_ready``,
 ``has_voice_timings``); the ``RenderReport`` is saved regardless of the verdict so a failing
@@ -132,6 +133,7 @@ from .board_models import (
     Storyline,
     VoiceArtifact,
     as_scene_window,
+    canvas_for,
 )
 from .describe import DescribeBackend, resolve_describe_backend
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
@@ -166,15 +168,27 @@ _REVIEW_PROMPT = (
 
 _RENDER_POLL_INTERVAL_S = 2.0
 _VOICE_FIT_TOLERANCE_S = 0.05
-_RENDER_WIDTH = 1080
-_RENDER_HEIGHT = 1920
 
-_QA_PROMPT = (
-    "You are QA-checking a finished vertical short (1080x1920) before it ships. Look at this "
-    "single frame and reply in ONE short, concrete sentence: is the subject/text legible, well "
-    "framed inside the vertical canvas, and free of visual glitches? Name anything a viewer "
-    "would notice as wrong; say \"looks fine\" if nothing is."
-)
+
+def _shape_of(out_w: int, out_h: int) -> str:
+    if out_h > out_w:
+        return "vertical"
+    return "square" if out_h == out_w else "landscape"
+
+
+def _qa_prompt(out_w: int, out_h: int) -> str:
+    """The QA prompt for the canvas actually rendered.
+
+    A VLM told to judge framing "inside the vertical canvas" will invent vertical faults on a
+    landscape frame, so the shape is stated rather than assumed.
+    """
+    shape = _shape_of(out_w, out_h)
+    return (
+        f"You are QA-checking a finished {shape} video ({out_w}x{out_h}) before it ships. Look "
+        "at this single frame and reply in ONE short, concrete sentence: is the subject/text "
+        f"legible, well framed inside the {shape} canvas, and free of visual glitches? Name "
+        'anything a viewer would notice as wrong; say "looks fine" if nothing is.'
+    )
 
 
 @dataclass
@@ -415,21 +429,20 @@ def _run_ffmpeg_quiet(args: list[str]) -> bool:
 
 def _tile_filter(
     *, roi: tuple[float, float, float, float] | None, src_w: int, src_h: int,
-    fontfile: str | None, label: str,
+    out_w: int, out_h: int, fontfile: str | None, label: str,
 ) -> str:
     """The ``-vf`` for one tile, framed the way the RENDER frames that segment.
 
-    A tile showing the bare 16:9 source frame cannot show the faults it exists to catch —
-    a crop cutting text, or content sitting tiny inside the vertical letterbox. So a
-    segment with a roi is cropped through ``roi_to_window`` (the renderer's own function,
-    not a lookalike), and one without is padded into the output aspect, which is exactly
-    what the blur-fill path leaves on screen minus the cosmetic blur.
+    A tile showing the bare source frame cannot show the faults it exists to catch — a crop
+    cutting text, or content sitting tiny inside the letterbox. So a segment with a roi is
+    cropped through ``roi_to_window`` (the renderer's own function, not a lookalike), and one
+    without is padded into the output aspect, which is exactly what the blur-fill path leaves
+    on screen minus the cosmetic blur. ``out_w``/``out_h`` are the production's canvas: a
+    landscape delivery must be sheeted landscape or the sheet gates the wrong frame.
     """
-    tile_h = round(_SHEET_TILE_WIDTH * _RENDER_HEIGHT / _RENDER_WIDTH / 2) * 2
+    tile_h = round(_SHEET_TILE_WIDTH * out_h / out_w / 2) * 2
     if roi is not None:
-        x, y, w, h = roi_to_window(
-            roi, src_w=src_w, src_h=src_h, out_w=_RENDER_WIDTH, out_h=_RENDER_HEIGHT
-        )
+        x, y, w, h = roi_to_window(roi, src_w=src_w, src_h=src_h, out_w=out_w, out_h=out_h)
         vf = f"crop={w}:{h}:{x}:{y},scale={_SHEET_TILE_WIDTH}:{tile_h}"
     else:
         vf = (
@@ -449,6 +462,8 @@ def _extract_sheet_tiles(
     *,
     src_w: int,
     src_h: int,
+    out_w: int,
+    out_h: int,
 ) -> tuple[bool, bool, int | None]:
     """One PNG per (timestamp, label, roi) into ``tiles_dir/tile_%03d.png``, framed as rendered.
 
@@ -461,7 +476,7 @@ def _extract_sheet_tiles(
         failed: int | None = None
         for i, (t, label, roi) in enumerate(times_labels):
             vf = _tile_filter(
-                roi=roi, src_w=src_w, src_h=src_h,
+                roi=roi, src_w=src_w, src_h=src_h, out_w=out_w, out_h=out_h,
                 fontfile=fontfile if labeled else None, label=label,
             )
             args = [
@@ -1376,6 +1391,7 @@ def build_production_tool_specs(
             # letterbox otherwise), so the sheet can show the framing faults it gates.
             src_w = int(asset.get("width") or 0)
             src_h = int(asset.get("height") or 0)
+            _, (out_w, out_h) = canvas_for(board.meta().format)
             roi_by_order = {
                 s.order: (s.roi.x, s.roi.y, s.roi.w, s.roi.h) if s.roi is not None else None
                 for s in cutlist.segments
@@ -1396,8 +1412,10 @@ def build_production_tool_specs(
                     ],
                     tiles_dir,
                     _find_fontfile(),
-                    src_w=src_w or _RENDER_HEIGHT,  # unknown dims -> letterbox, never crop
-                    src_h=src_h or _RENDER_WIDTH,
+                    src_w=src_w or out_h,  # unknown dims -> letterbox, never crop
+                    src_h=src_h or out_w,
+                    out_w=out_w,
+                    out_h=out_h,
                 )
                 if not ok:
                     bad = tiles[failed] if failed is not None else tiles[0]
@@ -1428,7 +1446,7 @@ def build_production_tool_specs(
             return {"ok": False, "reason": str(exc)[:200]}
 
     def render_production() -> dict[str, Any]:
-        """Render the board's cutlist to a finished vertical export and grade it.
+        """Render the board's cutlist to a finished export in the board's format and grade it.
 
         Requires build_cutlist, voice, script and storyline to have all run first — reports
         which one is missing instead of raising (storyline is also a transitive prerequisite of
@@ -1437,8 +1455,9 @@ def build_production_tool_specs(
         are in — see _lines_in_storyline_order). Turns the cutlist into (start_frame,
         end_frame_exclusive) segments plus an index-aligned zoom hint per segment
         (only where that segment has BOTH a roi and a zoom_start_s; otherwise None), and renders
-        them with the v1 short defaults (captions on, blurred vertical 1080x1920 letterbox) and
-        the board's voice as the new audio track. Polls the resulting export (bounded by
+        them with captions on and a blur-filled letterbox onto the canvas the board's format
+        selects (insta 1080x1920, x 1920x1080, linkedin 1080x1080), plus the board's voice as
+        the new audio track. Polls the resulting export (bounded by
         RENDER_WAIT_SECONDS) until it leaves the "rendering" state, then grades three checks:
         voice_fits (the rendered video covers the whole voice track, small tolerance),
         export_ready, and has_voice_timings (captions can be burned in). The RenderReport is
@@ -1496,14 +1515,15 @@ def build_production_tool_specs(
 
                 render_fn = tool_render_segments
 
+            vertical, (out_w, out_h) = canvas_for(board.meta().format)
             result = render_fn(
                 db,
                 asset_id,
                 segments,
                 captions=True,
                 fit="blur",
-                vertical=True,
-                out_size=(_RENDER_WIDTH, _RENDER_HEIGHT),
+                vertical=vertical,
+                out_size=(out_w, out_h),
                 voiceover_path=voice.mp3_path,
                 voiceover_text=script_text(ordered_lines),
                 zoom=zoom,
@@ -1550,8 +1570,8 @@ def build_production_tool_specs(
                 export_id=export_id,
                 video_s=video_s,
                 voice_s=voice.voice_s,
-                width=_RENDER_WIDTH,
-                height=_RENDER_HEIGHT,
+                width=out_w,
+                height=out_h,
                 checks=checks,
             )
             board.save("render_report", report)
@@ -1591,11 +1611,13 @@ def build_production_tool_specs(
                 if at_seconds is not None
                 else [1.0, report.video_s / 2, max(0.0, report.video_s - 1.5)]
             )
+            # The report records the canvas that was actually rendered — judge that one.
+            prompt = _qa_prompt(report.width, report.height)
             notes: list[dict[str, Any]] = []
             for t in times:
                 frame = _grab_video_frames(Path(str(path)), [t])
                 if frame:
-                    notes.append({"at_s": t, "note": backend.describe(frame, _QA_PROMPT)})
+                    notes.append({"at_s": t, "note": backend.describe(frame, prompt)})
             return {"ok": True, "notes": notes}
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

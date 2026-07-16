@@ -28,6 +28,7 @@ from laura.short_creator.board_models import (
     Chapter,
     Cutlist,
     CutSegment,
+    Format,
     QaReport,
     RenderCheck,
     RenderReport,
@@ -122,12 +123,13 @@ def _seed_asset(tmp_path: Path) -> tuple[Database, str]:
     return db, str(asset["id"])
 
 
-def _board(tmp_path: Path, asset_id: str) -> Board:
+def _board(tmp_path: Path, asset_id: str, board_format: Format = "insta") -> Board:
     meta = BoardMeta(
         session_id="s1",
         asset_id=asset_id,
         created_utc="2026-07-13T00:00:00Z",
         task="overview short",
+        format=board_format,
         target_seconds=20.0,
     )
     return Board.create(tmp_path / "board", meta)
@@ -228,7 +230,11 @@ class _FakeRenderSegments:
 
 
 def _build_board_to_cutlist(
-    tmp_path: Path, *, scene2_roi: Roi | None, voice_s: float | None
+    tmp_path: Path,
+    *,
+    scene2_roi: Roi | None,
+    voice_s: float | None,
+    board_format: Format = "insta",
 ) -> tuple[Database, str, Board]:
     """A full board up to (and including) a real cutlist — reviews, storyline, script, voice,
     then the actual build_cutlist tool. Same word timings as
@@ -239,7 +245,7 @@ def _build_board_to_cutlist(
     without roi -> zoom entry None" case render_production must pass through unchanged).
     """
     db, asset_id = _seed_two_scenes(tmp_path)
-    board = _board(tmp_path, asset_id)
+    board = _board(tmp_path, asset_id, board_format)
     _review(
         board,
         1,
@@ -314,6 +320,36 @@ def test_render_production_passes_zoom_and_reports(tmp_path: Path) -> None:
     row = repos.get_export(db, report.export_id)
     assert row is not None
     assert row["status"] == "ready"
+
+
+def test_render_production_renders_landscape_for_a_format_x_board(tmp_path: Path) -> None:
+    """The board's format reaches the renderer — the reason a 16:9 demo is possible at all.
+
+    Everything above this seam (reviews, storyline, script, cutlist, rois) is format-agnostic;
+    only the canvas changes. A 9:16 crop of a screen recording throws away the half of the
+    frame that carries the content, so this must not silently fall back to the reel.
+    """
+    db, asset_id, board = _build_board_to_cutlist(
+        tmp_path, scene2_roi=None, voice_s=3.4, board_format="x"
+    )
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    call = fake.calls[0]
+    assert call["vertical"] is False, "landscape must not go through the vertical fit path"
+    assert call["out_size"] == (1920, 1080)
+    # The segments themselves are unchanged — the format decides the canvas, nothing else.
+    assert call["segments"] == [(30, 90), (300, 360)]
+
+    assert out["ok"] is True
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert (report.width, report.height) == (1920, 1080), "the report must record what shipped"
 
 
 def test_render_production_voice_fit_check_fails(tmp_path: Path) -> None:

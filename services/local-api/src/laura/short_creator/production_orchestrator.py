@@ -30,7 +30,7 @@ from ..db import repos
 from ..db.database import Database
 from . import context
 from .board import Board
-from .board_models import BoardMeta, QaReport, RenderReport
+from .board_models import BoardMeta, Format, QaReport, RenderReport, canvas_for
 from .orchestrator import ExecuteFn, StageOutcome, _safe_execute
 from .production_agents import build_production_team
 from .production_tools import ProductionDeps
@@ -135,9 +135,11 @@ def build_production_task(
             "request does not ask to change.\n"
         )
 
+    _, (out_w, out_h) = canvas_for(meta.format)
     return (
         f"1) GOAL: {task}\n"
-        f"   Format: {meta.format}. Target length: ~{target_seconds}s vertical short.\n"
+        f"   Format: {meta.format} — renders {out_w}x{out_h}. "
+        f"Target length: ~{target_seconds}s.\n"
         "\n"
         "2) FIXED VIRAL ARC (structural contract - every short follows this shape; "
         "chapter roles are exactly hook, problem, feature, payoff_cta):\n"
@@ -230,6 +232,7 @@ def run_production(
     session_id: str,
     task: str,
     target_seconds: int = 60,
+    format: Format = "insta",
     message: str | None = None,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
@@ -279,6 +282,7 @@ def run_production(
             asset_id=asset_id,
             created_utc=datetime.now(UTC).isoformat(timespec="seconds"),
             task=task,
+            format=format,
             target_seconds=float(target_seconds),
         )
         board = Board.create(root, meta)

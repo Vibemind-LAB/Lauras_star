@@ -23,6 +23,10 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+
+# Pure-pydantic leaf: safe at runtime even without the optional 'autoshort' extra, unlike
+# short_creator.board below.
+from ..short_creator.board_models import Format
 from ..util import new_id
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -41,6 +45,8 @@ class AutoShortRequest(BaseModel):
 class ProductionCreateRequest(BaseModel):
     task: str = Field(min_length=1, max_length=2000)
     target_seconds: int = Field(default=60, gt=0, le=600)
+    # Delivery format picks the canvas: "insta" 9:16 reel, "x" native 16:9, "linkedin" 1:1.
+    format: Format = "insta"
 
 
 class ProductionMessageRequest(BaseModel):
@@ -248,6 +254,7 @@ def create_production(
             "session_id": session_id,
             "task": body.task,
             "target_seconds": body.target_seconds,
+            "format": body.format,
         },
         max_attempts=1,
     )

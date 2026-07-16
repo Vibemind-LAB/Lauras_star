@@ -121,7 +121,41 @@ def test_create_production_enqueues_job_and_creates_session(
         "session_id": body["session_id"],
         "task": "Make a 30s recap",
         "target_seconds": 45,
+        "format": "insta",  # the reel stays the default when the request omits a format
     }
+
+
+def test_create_production_carries_the_requested_format_to_the_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A landscape delivery must survive the hop to the worker — the canvas is decided there."""
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "Hackathon demo", "target_seconds": 180, "format": "x"},
+        headers=_H,
+    )
+    assert r.status_code == 202, r.text
+    job = repos.get_job(db, r.json()["job_id"])
+    assert job is not None
+    assert json.loads(job["payload_json"])["format"] == "x"
+
+
+def test_create_production_rejects_an_unknown_format(tmp_path: Path, monkeypatch: Any) -> None:
+    """Typos must not silently ship a reel — 422 at the boundary, not a surprise on YouTube."""
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "Hackathon demo", "format": "youtube"},
+        headers=_H,
+    )
+    assert r.status_code == 422, r.text
 
 
 def test_create_production_unknown_asset_404(tmp_path: Path) -> None:

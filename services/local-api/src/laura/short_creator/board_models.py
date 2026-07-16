@@ -14,6 +14,23 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# Platform format presets: (vertical, (out_w, out_h)). "x" is the native 16:9 pass-through.
+# The canvas belongs to the format, and the format belongs to the production — a screen
+# recording delivered to YouTube must not be cropped to a reel just because the reel is
+# the default.
+FORMAT_PRESETS: dict[str, tuple[bool, tuple[int, int]]] = {
+    "insta": (True, (1080, 1920)),
+    "x": (False, (1920, 1080)),
+    "linkedin": (True, (1080, 1080)),
+}
+
+Format = Literal["insta", "x", "linkedin"]
+
+
+def canvas_for(fmt: Format) -> tuple[bool, tuple[int, int]]:
+    """``(vertical, (out_w, out_h))`` for a delivery format."""
+    return FORMAT_PRESETS[fmt]
+
 
 class Roi(BaseModel):
     """Normalized region of interest (fractions of source width/height)."""
@@ -295,6 +312,6 @@ class BoardMeta(BaseModel):
     asset_id: str
     created_utc: str
     task: str
-    format: str = "insta"
+    format: Format = "insta"
     target_seconds: float = Field(gt=0.0)
     status: str = "active"
