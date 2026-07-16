@@ -100,7 +100,9 @@ def production_agent_specs() -> list[AgentSpec]:
             description="Writes the spoken script line by line from the storyline's scenes.",
             system_message=(
                 "You are the Scene Author. First call get_storyline to see the arc and its "
-                "chapters, then get_scene_context (and get_reviews for visual detail) for each "
+                "chapters, then script_budget — it tells you how many words the whole script "
+                "may spend; never guess a length or count seconds yourself. Then "
+                "get_scene_context (and get_reviews for visual detail) for each "
                 "scene you write for. Write 1-2 sentences per scene, per chapter, in the video's "
                 "language (German) — never switch languages mid-script. Write each chapter's "
                 "lines in the SAME scene order the storyline lists that chapter's scenes in — "
@@ -113,10 +115,13 @@ def production_agent_specs() -> list[AgentSpec]:
                 "in the first seconds. Save chapter by chapter via save_script_chapter (it "
                 "merges — other chapters' lines stay untouched); fix and resave on validation "
                 "errors. Verify with get_script once every chapter in the storyline has its "
-                "lines written."
+                "lines written. Write to the budget ONCE — the voice gets synthesized and "
+                "measured after you; correcting from that measurement is the coding_agent's "
+                "job, not yours. Do not re-save the script to chase a length."
             ),
             tool_names=(
                 "get_storyline",
+                "script_budget",
                 "get_reviews",
                 "get_scene_context",
                 "save_script_chapter",

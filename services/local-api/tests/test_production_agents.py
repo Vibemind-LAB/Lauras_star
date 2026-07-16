@@ -58,7 +58,16 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
         4,
     ),
     "scene_author": (
-        ("get_storyline", "get_reviews", "get_scene_context", "save_script_chapter", "get_script"),
+        # script_budget leads the writing tools on purpose: the author asks for the word
+        # count instead of guessing a length (a guessed one burned a run on 34 saves).
+        (
+            "get_storyline",
+            "script_budget",
+            "get_reviews",
+            "get_scene_context",
+            "save_script_chapter",
+            "get_script",
+        ),
         6,
     ),
     "coding_agent": (

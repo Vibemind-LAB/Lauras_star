@@ -99,7 +99,7 @@ import math
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -606,6 +606,48 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
         return []
 
 
+# Fitted over every ElevenLabs synthesis this board produced:
+#    78 words -> 38.5s (0.49 s/word) | 89 -> 57.3s (0.64)
+#   179 words -> 108.4s (0.61)       | 228 -> 158.0s (0.69)
+# The per-word rate genuinely moves with word length, punctuation and phrasing, so this
+# rate carries a real +/-20% spread and is a STARTING budget, never a promise.
+#
+# A per-line pause term was tried first and looked exact on the one sample it was fitted
+# to — then missed another by 9s (+23% on a third). TTS pauses at punctuation, not at line
+# breaks: the 179-word script had 51 lines but only ~20 audible pauses. Dropped on purpose.
+_VOICE_SECONDS_PER_WORD = 0.58
+_VOICE_RATE_TOLERANCE = 0.20
+
+
+def estimate_voice_seconds(words: int) -> float:
+    """Roughly how long TTS speaks *words*. Good to about +/-20% — synthesize to know."""
+    return words * _VOICE_SECONDS_PER_WORD
+
+
+def word_budget_for(target_seconds: float) -> int:
+    """A STARTING word count for *target_seconds*.
+
+    Write to it ONCE, synthesize, then correct against the MEASURED ``voice_s`` — the rate
+    varies +/-20% per script. Iterating the script by feel instead is what burned a whole
+    job on 34 saves that never reached a render.
+    """
+    return max(0, int(target_seconds / _VOICE_SECONDS_PER_WORD))
+
+
+def storyline_material_seconds(windows: Iterable[tuple[BestWindow, float]]) -> float:
+    """The longest video worth cutting from these ``(window, scene_duration_s)`` refs.
+
+    This is the QUALITY ceiling — the sum of the moments the reviewer actually marked, each
+    floored at the segment floor and clamped inside its scene. Segments *can* stretch past
+    their window when the voice runs long (see ``_scale_chapter_durations``), but that pads
+    with footage nobody reviewed. Write narration against this number, not the hard one.
+    """
+    return sum(
+        min(max(window.duration_s, _SEGMENT_FLOOR_S), scene_duration_s)
+        for window, scene_duration_s in windows
+    )
+
+
 def _segment_duration_s(
     *, target_seconds: float, n_scenes: int, window: BestWindow, scene_duration_s: float
 ) -> float:
@@ -934,6 +976,61 @@ def build_production_tool_specs(
             if storyline is None:
                 return {"ok": False, "reason": "no storyline on the board"}
             return {"ok": True, "storyline": storyline.model_dump()}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def script_budget() -> dict[str, Any]:
+        """How many words the script may spend — ask this instead of guessing a length.
+
+        Reads the saved storyline, adds up the reviewed windows it references, and turns
+        that into a word count. Call it ONCE before writing, write to ``words``, then
+        synthesize and correct against the MEASURED ``voice_s`` from render_production.
+        Do not iterate the script by feel: that burned a whole run on 34 saves that never
+        reached a render.
+        """
+        try:
+            storyline = board.load("storyline")
+            if not isinstance(storyline, Storyline):
+                return {"ok": False, "reason": "no storyline on the board; save_storyline first"}
+            reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
+            asset = repos.get_asset(db, asset_id)
+            fps = _fps(db, asset) if asset is not None else 30.0
+            resolved: list[tuple[BestWindow, float]] = []
+            missing: list[int] = []
+            for chapter in storyline.arc:
+                for entry in chapter.scene_numbers:
+                    scene_number, window_idx = as_scene_window(entry)
+                    scene = _resolve_scene(db, asset_id, scene_number)
+                    if scene is None:
+                        missing.append(scene_number)
+                        continue
+                    src_start, src_end, _text = scene
+                    scene_duration_s = (src_end - src_start) / fps
+                    review = reviews_by_scene.get(scene_number)
+                    if review is not None and window_idx < len(review.windows):
+                        window = review.windows[window_idx]
+                    else:
+                        window = BestWindow(
+                            offset_s=0.0, duration_s=min(_DEFAULT_WINDOW_S, scene_duration_s)
+                        )
+                    resolved.append((window, scene_duration_s))
+
+            material = storyline_material_seconds(resolved)
+            return {
+                "ok": True,
+                "material_seconds": round(material, 1),
+                "words": word_budget_for(material),
+                "seconds_per_word": _VOICE_SECONDS_PER_WORD,
+                "tolerance": _VOICE_RATE_TOLERANCE,
+                "segments": len(resolved),
+                "unresolved_scenes": missing,
+                "how": (
+                    "material_seconds is the sum of the reviewed windows this storyline "
+                    "references — the longest video worth cutting. Write about 'words' "
+                    "words total, then synthesize ONCE and correct from the measured "
+                    f"voice_s; the rate is only good to +/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                ),
+            }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
@@ -1508,6 +1605,7 @@ def build_production_tool_specs(
         get_reviews,
         save_storyline,
         get_storyline,
+        script_budget,
         save_script_chapter,
         get_script,
         synthesize_script_voice,
