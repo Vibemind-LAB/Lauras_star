@@ -698,23 +698,40 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
 # A per-line pause term was tried first and looked exact on the one sample it was fitted
 # to — then missed another by 9s (+23% on a third). TTS pauses at punctuation, not at line
 # breaks: the 179-word script had 51 lines but only ~20 audible pauses. Dropped on purpose.
-_VOICE_SECONDS_PER_WORD = 0.58
+# Seconds per spoken word, per language — measured on real ElevenLabs syntheses of this
+# project's own scripts, never guessed. German: 0.58 (fitted over four scripts, +-20%
+# spread). English: 0.340 (one script — 308 words -> 104.77s, verified by script_hash).
+# German is slower because its compounds are long words: the same word count fills 1.7x the
+# time. One shared constant made script_budget lie to an English author by that factor — it
+# asked for 300 words where 174 seconds needed 512, and the film came out half length.
+_SECONDS_PER_WORD: dict[str, float] = {"German": 0.58, "English": 0.340}
+_DEFAULT_LANGUAGE = "German"
 _VOICE_RATE_TOLERANCE = 0.20
 
 
-def estimate_voice_seconds(words: int) -> float:
-    """Roughly how long TTS speaks *words*. Good to about +/-20% — synthesize to know."""
-    return words * _VOICE_SECONDS_PER_WORD
+def seconds_per_word(language: str) -> float:
+    """The measured TTS rate for *language*.
+
+    An unmeasured language falls back to German's rate: the pipeline shipped on it, and an
+    invented number would be worse than a known one nobody can audit.
+    """
+    return _SECONDS_PER_WORD.get(language, _SECONDS_PER_WORD[_DEFAULT_LANGUAGE])
 
 
-def word_budget_for(target_seconds: float) -> int:
-    """A STARTING word count for *target_seconds*.
+def estimate_voice_seconds(words: int, language: str = _DEFAULT_LANGUAGE) -> float:
+    """Roughly how long TTS speaks *words* in *language*. Good to about +/-20% —
+    synthesize to know."""
+    return words * seconds_per_word(language)
+
+
+def word_budget_for(target_seconds: float, language: str = _DEFAULT_LANGUAGE) -> int:
+    """A STARTING word count for *target_seconds* in *language*.
 
     Write to it ONCE, synthesize, then correct against the MEASURED ``voice_s`` — the rate
     varies +/-20% per script. Iterating the script by feel instead is what burned a whole
     job on 34 saves that never reached a render.
     """
-    return max(0, int(target_seconds / _VOICE_SECONDS_PER_WORD))
+    return max(0, int(target_seconds / seconds_per_word(language)))
 
 
 def storyline_material_seconds(windows: Iterable[tuple[BestWindow, float]]) -> float:
@@ -1109,19 +1126,22 @@ def build_production_tool_specs(
                     resolved.append((window, scene_duration_s))
 
             material = storyline_material_seconds(resolved)
+            language = board.meta().language
             return {
                 "ok": True,
                 "material_seconds": round(material, 1),
-                "words": word_budget_for(material),
-                "seconds_per_word": _VOICE_SECONDS_PER_WORD,
+                "words": word_budget_for(material, language),
+                "language": language,
+                "seconds_per_word": seconds_per_word(language),
                 "tolerance": _VOICE_RATE_TOLERANCE,
                 "segments": len(resolved),
                 "unresolved_scenes": missing,
                 "how": (
                     "material_seconds is the sum of the reviewed windows this storyline "
-                    "references — the longest video worth cutting. Write about 'words' "
-                    "words total, then synthesize ONCE and correct from the measured "
-                    f"voice_s; the rate is only good to +/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                    f"references — the longest video worth cutting. Write about 'words' "
+                    f"words of {language} total, then synthesize ONCE and correct from the "
+                    f"measured voice_s; the rate is only good to "
+                    f"+/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
                 ),
             }
         except Exception as exc:  # tool must never kill the agent loop
