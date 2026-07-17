@@ -41,6 +41,7 @@ from laura.short_creator.board_models import (
     VoiceArtifact,
 )
 from laura.short_creator.production_tools import (
+    _MAX_RENDER_CYCLES,
     ProductionDeps,
     build_production_tool_specs,
     script_text,
@@ -395,6 +396,37 @@ def test_render_production_requires_cutlist(tmp_path: Path) -> None:
     out = specs["render_production"].func()
     assert out["ok"] is False
     assert "voice" in out["reason"]
+
+
+def test_render_production_stops_after_the_revision_cap(tmp_path: Path) -> None:
+    """A hard cap on real renders — the net for a loop that revises for some reason the
+    budget fix cannot remove.
+
+    Live finding: even with voice_fits satisfiable, gpt-5-mini rendered four times and
+    gpt-5.5 rendered repeatedly, each render rebuilding the whole chain. The prompt's "one
+    revise round" was ignored — a prompt does not enforce a limit. So render_production
+    refuses to spend another render once the cap is reached: it returns the last one as final
+    instead of calling the (expensive) renderer again. The turn budget stops the rest.
+    """
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    for _ in range(_MAX_RENDER_CYCLES):
+        out = specs["render_production"].func()
+        assert out.get("ok") is True, out
+    assert len(fake.calls) == _MAX_RENDER_CYCLES, "every render up to the cap really rendered"
+
+    capped = specs["render_production"].func()
+
+    assert len(fake.calls) == _MAX_RENDER_CYCLES, "the cap must not spend another render"
+    assert capped["ok"] is True
+    assert capped["final"] is True
+    assert "limit" in capped["note"].lower()
+    assert capped["export_id"], "the last successful render is still shipped"
 
 
 def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

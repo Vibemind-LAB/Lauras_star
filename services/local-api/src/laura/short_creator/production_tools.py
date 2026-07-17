@@ -203,6 +203,12 @@ def _roi_rule(*, src_w: int, src_h: int, out_w: int, out_h: int) -> str:
 
 _RENDER_POLL_INTERVAL_S = 2.0
 _VOICE_FIT_TOLERANCE_S = 0.05
+# A hard cap on real renders per production — the net for a loop that keeps revising for a
+# reason the budget fix cannot remove (a QA verdict, the model second-guessing itself). One
+# render plus one revise round is the charter; past that, render_production ships the last cut
+# instead of spending another render, and the turn budget stops the rest. A prompt saying "one
+# revise round" did not hold — gpt-5-mini rendered four times, gpt-5.5 more.
+_MAX_RENDER_CYCLES = 2
 
 
 def _shape_of(out_w: int, out_h: int) -> str:
@@ -882,6 +888,17 @@ def _scale_chapter_durations(
 
 
 # --- tool builder ----------------------------------------------------------------------------
+
+
+def _renders_so_far(board: Board) -> int:
+    """How many real renders this production has done — the highest render_report version ever
+    reached. ``board.save`` stamps ``max(current, *archived) + 1``, so the number survives the
+    invalidation an upstream re-save causes: it is the true render count, not the current one.
+    """
+    archived = board.versions("render_report")
+    current = board.load("render_report")
+    current_v = current.version if isinstance(current, RenderReport) else 0
+    return max([0, current_v, *archived])
 
 
 def _storyline_material(
@@ -1616,6 +1633,30 @@ def build_production_tool_specs(
                     "ok": False,
                     "reason": "no storyline on the board; run save_storyline first",
                 }
+
+            # Revision cap: once this production has rendered _MAX_RENDER_CYCLES times, do not
+            # spend another render. Ship the last one instead. An upstream re-save may have
+            # invalidated the current render_report — restore the newest archived one so the
+            # finished export is still reported.
+            if _renders_so_far(board) >= _MAX_RENDER_CYCLES:
+                last = board.load("render_report")
+                if not isinstance(last, RenderReport):
+                    newest = max(board.versions("render_report"), default=0)
+                    if newest > 0:
+                        board.revert("render_report", newest)
+                        last = board.load("render_report")
+                if isinstance(last, RenderReport):
+                    return {
+                        "ok": True,
+                        "final": True,
+                        "export_id": last.export_id,
+                        "checks": [c.model_dump() for c in last.checks],
+                        "note": (
+                            f"revision limit reached ({_MAX_RENDER_CYCLES} renders); shipping "
+                            "this cut instead of rendering again"
+                        ),
+                    }
+
             ordered_lines = _lines_in_storyline_order(script, storyline)
 
             asset = repos.get_asset(db, asset_id)
