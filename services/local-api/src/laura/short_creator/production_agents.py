@@ -35,8 +35,12 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 MAX_TURNS = 30
 
 
-def production_agent_specs() -> list[AgentSpec]:
+def production_agent_specs(language: str = "German") -> list[AgentSpec]:
     """The fixed v2 production-team roster. Pure — no autogen, no db.
+
+    ``language`` is the board's — the words the scene_author writes. It was hard-coded to
+    German, which no task string could argue with: a submission whose jury reads English got a
+    German script however often the goal asked for English.
 
     Tool names must exist in :func:`production_tools.build_production_tool_specs` (cross-checked
     in tests). The five specialists judge in a fixed pipeline, each reading and writing the
@@ -103,8 +107,9 @@ def production_agent_specs() -> list[AgentSpec]:
                 "chapters, then script_budget — it tells you how many words the whole script "
                 "may spend; never guess a length or count seconds yourself. Then "
                 "get_scene_context (and get_reviews for visual detail) for each "
-                "scene you write for. Write 1-2 sentences per scene, per chapter, in the video's "
-                "language (German) — never switch languages mid-script. Write each chapter's "
+                "scene you write for. Write 1-2 sentences per scene, per chapter, in "
+                f"{language} — the video's language, never switch languages mid-script. "
+                "Write each chapter's "
                 "lines in the SAME scene order the storyline lists that chapter's scenes in — "
                 "voice and captions play back in that order, not the order you type them in. A "
                 "chapter may list the same scene several times with different windows — write "
@@ -246,7 +251,7 @@ def build_production_team(
             system_message=spec.system_message,
             max_tool_iterations=spec.max_tool_iterations,
         )
-        for spec in production_agent_specs()
+        for spec in production_agent_specs(board.meta().language)
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
     return MagenticOneGroupChat(participants=agents, model_client=orchestrator, max_turns=MAX_TURNS)

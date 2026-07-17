@@ -15,6 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from laura.short_creator.board_models import BoardMeta, canvas_for
+from laura.short_creator.production_agents import production_agent_specs
 from laura.short_creator.production_tools import _qa_prompt, _roi_rule, _shape_of
 
 
@@ -104,3 +105,28 @@ def test_unknown_source_dimensions_keep_the_cropping_rule() -> None:
     """Metrics can be missing; the v1 behaviour must stay the fallback, not a silent change."""
     rule = _roi_rule(src_w=0, src_h=0, out_w=1080, out_h=1920)
     assert "ONE region" in rule
+
+
+# --- the script language belongs to the production, not to the source code ----------------
+# Live finding: the roster hard-coded "in the video's language (German) — never switch
+# languages mid-script", and the orchestrator's task template repeated it. A goal that said
+# ENGLISH twice still produced a German script: a task string cannot argue a system prompt out
+# of a hard-coded language, and a hackathon jury reads English.
+
+
+def test_german_stays_the_default_so_nothing_regresses() -> None:
+    assert _meta("insta").language == "German"
+    spec = next(s for s in production_agent_specs() if s.name == "scene_author")
+    assert "German" in spec.system_message
+
+
+def test_the_roster_writes_in_the_board_s_language() -> None:
+    spec = next(s for s in production_agent_specs("English") if s.name == "scene_author")
+    assert "English" in spec.system_message
+    assert "German" not in spec.system_message
+
+
+def test_the_language_rule_still_forbids_switching_mid_script() -> None:
+    """The useful half of the old instruction must survive the parameterisation."""
+    spec = next(s for s in production_agent_specs("English") if s.name == "scene_author")
+    assert "never switch languages mid-script" in spec.system_message

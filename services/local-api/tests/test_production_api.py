@@ -122,6 +122,7 @@ def test_create_production_enqueues_job_and_creates_session(
         "task": "Make a 30s recap",
         "target_seconds": 45,
         "format": "insta",  # the reel stays the default when the request omits a format
+        "language": "German",  # ...and so does the language this workspace ships
     }
 
 
@@ -142,6 +143,25 @@ def test_create_production_carries_the_requested_format_to_the_job(
     job = repos.get_job(db, r.json()["job_id"])
     assert job is not None
     assert json.loads(job["payload_json"])["format"] == "x"
+
+
+def test_create_production_carries_the_requested_language_to_the_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A jury that reads English must not get a German script because the roster says so."""
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "Hackathon demo", "format": "x", "language": "English"},
+        headers=_H,
+    )
+    assert r.status_code == 202, r.text
+    job = repos.get_job(db, r.json()["job_id"])
+    assert job is not None
+    assert json.loads(job["payload_json"])["language"] == "English"
 
 
 def test_create_production_rejects_an_unknown_format(tmp_path: Path, monkeypatch: Any) -> None:

@@ -313,5 +313,10 @@ class BoardMeta(BaseModel):
     created_utc: str
     task: str
     format: Format = "insta"
+    # The spoken/caption language, named as the script should be written ("German", "English").
+    # German is the default because that is what this workspace ships; a submission with an
+    # international jury asks for English, and a task string cannot argue a system prompt out
+    # of a hard-coded language.
+    language: str = Field(default="German", min_length=2, max_length=40)
     target_seconds: float = Field(gt=0.0)
     status: str = "active"

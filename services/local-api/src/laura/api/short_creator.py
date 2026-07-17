@@ -47,6 +47,8 @@ class ProductionCreateRequest(BaseModel):
     target_seconds: int = Field(default=60, gt=0, le=600)
     # Delivery format picks the canvas: "insta" 9:16 reel, "x" native 16:9, "linkedin" 1:1.
     format: Format = "insta"
+    # The script's language, named as it should be written ("German", "English").
+    language: str = Field(default="German", min_length=2, max_length=40)
 
 
 class ProductionMessageRequest(BaseModel):
@@ -255,6 +257,7 @@ def create_production(
             "task": body.task,
             "target_seconds": body.target_seconds,
             "format": body.format,
+            "language": body.language,
         },
         max_attempts=1,
     )

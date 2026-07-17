@@ -122,6 +122,7 @@ def handle_production_run(
     if raw_format not in FORMAT_PRESETS:
         raise ValueError(f"production.run: unknown format {raw_format!r}")
     board_format = cast(Format, raw_format)
+    language = str(payload.get("language") or "German")
     # Whitespace-only messages must behave like no message (a stripped-blank follow-up is not a
     # real follow-up request).
     message = (payload.get("message") or "").strip() or None
@@ -150,6 +151,7 @@ def handle_production_run(
         task=task,
         target_seconds=target_seconds,
         format=board_format,
+        language=language,
         message=message,
         execute=execute,
         deps=deps,

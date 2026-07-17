@@ -91,7 +91,7 @@ def build_production_task(
        contact sheet -> render -> qa) plus the contact-sheet checkpoint as a known pattern:
        stopping at the Kontaktbogen or rendering later is steered purely by follow-up
        messages against the normal resume flow - no extra session state;
-    5. the German-script language rule plus the coding-agent's ``voice_fits`` charter;
+    5. the board's script language plus the coding-agent's ``voice_fits`` charter;
     6. the QA revision-round limit (one revise round, then ship with findings as warnings);
     7. only when ``message`` is set: the user's follow-up request text (capped at 2000 chars)
        plus instructions for interpreting it against the board status above - going back to an
@@ -164,8 +164,8 @@ def build_production_task(
         "rendering; a later message (e.g. 'render jetzt') resumes at render_production through "
         "the normal resume flow.\n"
         "\n"
-        "5) LANGUAGE + CHARTER: the script MUST be written in German (the source video's "
-        "language) - never switch languages mid-script. Coding-agent charter: if voice_fits "
+        f"5) LANGUAGE + CHARTER: the script MUST be written in {meta.language} - never switch "
+        "languages mid-script. Coding-agent charter: if voice_fits "
         "comes back False, never shorten the voice - rebuild the cutlist with a longer "
         "per-chapter time budget and render again.\n"
         "\n"
@@ -233,6 +233,7 @@ def run_production(
     task: str,
     target_seconds: int = 60,
     format: Format = "insta",
+    language: str = "German",
     message: str | None = None,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
@@ -283,6 +284,7 @@ def run_production(
             created_utc=datetime.now(UTC).isoformat(timespec="seconds"),
             task=task,
             format=format,
+            language=language,
             target_seconds=float(target_seconds),
         )
         board = Board.create(root, meta)
