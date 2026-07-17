@@ -305,9 +305,14 @@ def run_production(
     expected_scenes = _expected_scene_numbers(db, asset_id)
     render_report = board.load("render_report")
     export_id = render_report.export_id if isinstance(render_report, RenderReport) else None
+    resume_point = board.resume_point(expected_scenes)
 
     return {
+        # ok is the agent LOOP's status: it ran without a hard failure. It does not mean a
+        # video exists — a live run reported ok=True with export_id=None and half a board.
+        # complete is the production's status; the board always knew, the result never said.
         "ok": outcome.status == "ok",
+        "complete": resume_point == "done",
         "status": outcome.status,
         "stage": outcome.stage,
         "team": outcome.team,
@@ -317,5 +322,5 @@ def run_production(
         "session_id": session_id,
         "board": board.status(),
         "export_id": export_id,
-        "resume_point": board.resume_point(expected_scenes),
+        "resume_point": resume_point,
     }

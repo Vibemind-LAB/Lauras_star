@@ -469,3 +469,77 @@ def test_run_production_never_raises(tmp_path: Path) -> None:
     assert result["status"] == "hard_fail"
     assert result["escalated"] is True
     assert calls == [("A", "magentic"), ("B", "magentic")]
+
+
+# --- ok is the loop's status; complete is the production's ---------------------------------
+# Live finding: a run returned ok=true, weak=true, export_id=null, resume_point="script".
+# Every field was accurate and the whole was misleading — ok says the agent loop did not
+# hard-fail, nothing about whether a video exists. A caller reads ok=true as "there is a
+# video". There was none. resume_point already knew ("done" only when the chain is complete);
+# the result just never asked.
+
+
+def _fill_chain(board: Board) -> None:
+    """Save one valid artifact for every step of the chain, so resume_point == 'done'."""
+    from laura.short_creator.board_models import (
+        ContactSheet,
+        ContactSheetTile,
+        Cutlist,
+        CutSegment,
+        QaReport,
+        RenderCheck,
+        Script,
+        ScriptLine,
+        VoiceArtifact,
+    )
+
+    board.save("storyline", Storyline(red_thread="t", arc=[Chapter(
+        chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0)]))
+    board.save("script", Script(
+        language="German", lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo")]))
+    board.save("voice", VoiceArtifact(script_hash="h", mp3_path="/tmp/v.mp3", voice_s=3.0))
+    board.save("cutlist", Cutlist(segments=[CutSegment(
+        order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)]))
+    board.save("contact_sheet", ContactSheet(png_path="/tmp/s.png", cols=1, rows=1, tiles=[
+        ContactSheetTile(order=0, scene_number=1, frame=45, label="0 S1")]))
+    board.save("render_report", RenderReport(
+        export_id="exp1", video_s=3.0, voice_s=3.0, width=1920, height=1080,
+        checks=[RenderCheck(name="export_ready", ok=True)]))
+    board.save("qa_report", QaReport(verdict="ship"))
+
+
+def test_a_run_that_stopped_early_reports_ok_but_not_complete(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    execute, _calls = _make_execute({"A": ("ok", True)})  # loop survives, writes no board
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess_early", task="demo", execute=execute)
+
+    assert result["ok"] is True, "the loop really did survive — that meaning is unchanged"
+    assert result["complete"] is False, "but nothing was produced, and the result must say so"
+    assert result["export_id"] is None
+
+
+def test_a_finished_board_reports_complete(tmp_path: Path) -> None:
+    """resume_point already knew; the result just never asked."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess_done")
+    meta = BoardMeta(
+        session_id="sess_done",
+        asset_id=asset_id,
+        created_utc="2026-01-01T00:00:00+00:00",
+        task="demo",
+        target_seconds=20.0,
+    )
+    board = Board.create(root, meta)
+    board.save_scene_review(_review(1))
+    _fill_chain(board)
+    config = providers.resolve_from_env({})
+    execute, _calls = _make_execute({"A": ("ok", False)})
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess_done", task="demo", execute=execute)
+
+    assert result["complete"] is True
+    assert result["resume_point"] == "done"
