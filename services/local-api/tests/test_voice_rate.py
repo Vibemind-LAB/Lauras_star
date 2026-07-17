@@ -1,10 +1,11 @@
 """Speech rate is a property of the language, not a constant.
 
 Measured on real ElevenLabs syntheses of this project's own scripts: German 0.58 s/word
-(four scripts, +-20% spread), English 0.340 s/word (one script: 308 words -> 104.77s,
-verified by script_hash). German runs slower because its compounds are long words. A single
-shared constant made script_budget ask an English author for 300 words where 174 seconds
-needed 512 — and the delivered film came out at half its target length.
+(four scripts, +-20% spread), English 0.41 s/word (aggregate over three: 308w->104.8s,
+407w->156.4s, 462w->219.9s = 481.1s/1177w = 0.409). An earlier English figure of 0.340 came
+from ONE terse hand-written script and was optimistic — natural agent prose runs slower.
+German runs slower still because its compounds are long words. A single shared constant made
+script_budget ask an English author for the wrong count and the delivered film missed length.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ def test_german_keeps_the_rate_that_shipped() -> None:
 
 
 def test_english_is_measurably_faster() -> None:
-    """1.7x faster — far outside the +-20% tolerance the single constant claimed."""
-    assert seconds_per_word("English") == pytest.approx(0.340)
+    """Faster than German — outside the +-20% tolerance the single constant claimed."""
+    assert seconds_per_word("English") == pytest.approx(0.41)
     assert seconds_per_word("English") < seconds_per_word("German") * 0.8
 
 
@@ -34,14 +35,14 @@ def test_an_unmeasured_language_falls_back_to_german() -> None:
 
 
 def test_the_english_budget_is_the_measured_one() -> None:
-    """174s of English needs ~512 words; the old single constant said 300."""
-    assert word_budget_for(174.0, "English") == 511
+    """174s of English needs ~424 words at the aggregate 0.41 rate."""
+    assert word_budget_for(174.0, "English") == 424
     assert word_budget_for(174.0, "German") == 300
 
 
-def test_estimate_round_trips_against_the_live_measurement() -> None:
-    """308 English words really did synthesize to 104.77s."""
-    assert estimate_voice_seconds(308, "English") == pytest.approx(104.7, abs=0.5)
+def test_estimate_tracks_the_aggregate_english_measurement() -> None:
+    """The three real syntheses averaged 0.409 s/word — a 400-word script speaks ~164s."""
+    assert estimate_voice_seconds(400, "English") == pytest.approx(164.0, abs=1.0)
 
 
 def test_both_budget_directions_agree() -> None:

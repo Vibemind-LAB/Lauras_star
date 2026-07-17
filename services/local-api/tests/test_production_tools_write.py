@@ -255,8 +255,33 @@ def test_save_script_chapter_merges_per_chapter(tmp_path: Path) -> None:
         (1, "line d"),
         (2, "line c"),
     ]
-    assert got["script"]["language"] == "de"
+    # The script's language follows the board's, not a hard-coded "de". This board is German
+    # (the default), so the saved script says German.
+    assert got["script"]["language"] == "German"
     assert board.load("voice") is None  # downstream invalidated by the re-save
+
+
+def test_save_script_chapter_language_follows_the_board(tmp_path: Path) -> None:
+    """Live finding: save_script_chapter stamped every script "de" regardless of the board.
+    Both an English gpt-5-mini run and an English gpt-5.5 run produced English text tagged
+    language="de" — the artifact lied about its own contents."""
+    db, asset_id = _seed_scene(tmp_path)
+    meta = BoardMeta(
+        session_id="s2",
+        asset_id=asset_id,
+        created_utc="2026-07-17T00:00:00Z",
+        task="demo",
+        language="English",
+        target_seconds=20.0,
+    )
+    board = Board.create(tmp_path / "en_board", meta)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "an english line"}]
+    )
+
+    assert specs["get_script"].func()["script"]["language"] == "English"
 
 
 def test_save_script_chapter_validation_error(tmp_path: Path) -> None:
@@ -295,5 +320,5 @@ def test_get_storyline_and_script_roundtrip(tmp_path: Path) -> None:
     got_script = specs["get_script"].func()
     assert got_script["ok"] is True
     assert got_script["script"]["version"] == 1
-    assert got_script["script"]["language"] == "de"
+    assert got_script["script"]["language"] == "German"  # follows the board (default German)
     assert got_script["script"]["lines"] == [{"chapter": 1, "scene_number": 1, "text": "hi"}]

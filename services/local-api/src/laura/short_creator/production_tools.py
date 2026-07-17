@@ -700,11 +700,11 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
 # breaks: the 179-word script had 51 lines but only ~20 audible pauses. Dropped on purpose.
 # Seconds per spoken word, per language — measured on real ElevenLabs syntheses of this
 # project's own scripts, never guessed. German: 0.58 (fitted over four scripts, +-20%
-# spread). English: 0.340 (one script — 308 words -> 104.77s, verified by script_hash).
-# German is slower because its compounds are long words: the same word count fills 1.7x the
-# time. One shared constant made script_budget lie to an English author by that factor — it
-# asked for 300 words where 174 seconds needed 512, and the film came out half length.
-_SECONDS_PER_WORD: dict[str, float] = {"German": 0.58, "English": 0.340}
+# spread). English: 0.41 (aggregate over three real syntheses — 308w->104.8s, 407w->156.4s,
+# 462w->219.9s = 481.1s/1177w = 0.409). An earlier 0.340 came from ONE terse hand-written
+# script and was optimistic: natural agent prose, with names and numbers and pauses, runs
+# slower. German is slower still because its compounds are long words.
+_SECONDS_PER_WORD: dict[str, float] = {"German": 0.58, "English": 0.41}
 _DEFAULT_LANGUAGE = "German"
 _VOICE_RATE_TOLERANCE = 0.20
 
@@ -1150,19 +1150,21 @@ def build_production_tool_specs(
     def save_script_chapter(chapter: int, lines: list[dict[str, Any]]) -> dict[str, Any]:
         """Replace one chapter's script lines; every other chapter's lines are kept as-is
         (merge semantics). Lines are validated (each needs scene_number + text; a malformed
-        line is rejected with field-level validation errors). language defaults to "de" on
-        the first write. Saving invalidates every downstream artifact (voice, cutlist,
-        render report, qa report) so they get regenerated from the new script."""
+        line is rejected with field-level validation errors). The script's language follows the
+        board's — an English board produces an English-tagged script. Saving invalidates every
+        downstream artifact (voice, cutlist, render report, qa report) so they get regenerated
+        from the new script."""
         try:
             try:
                 new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
             except ValidationError as exc:
                 return {"ok": False, "errors": _validation_errors(exc)}
             existing = board.load("script")
-            language = "de"
+            # The board decides the language, not a hard-coded "de": two English runs wrote
+            # English text tagged "de" because this line ignored the board.
+            language = board.meta().language
             kept: list[ScriptLine] = []
             if isinstance(existing, Script):
-                language = existing.language
                 kept = [line for line in existing.lines if line.chapter != chapter]
             merged = sorted(kept + new_lines, key=lambda line: line.chapter)
             version = board.save("script", Script(language=language, lines=merged))
