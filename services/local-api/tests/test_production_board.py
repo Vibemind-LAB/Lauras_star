@@ -145,7 +145,12 @@ def test_cutlist_save_archives_contact_sheet(tmp_path: Path) -> None:
     assert isinstance(loaded, ContactSheet)
     assert loaded.tiles[0].scene_number == 1
 
-    board.save("cutlist", _cutlist())  # -> cutlist v2, invalidates contact_sheet + downstream
+    # A CHANGED cutlist -> v2, invalidating the contact sheet built against the old one. (An
+    # identical re-save is a no-op now — see test_saving_identical_content_does_not_invalidate
+    # — so the change has to be real to exercise the chain propagation this test is about.)
+    changed_cutlist = Cutlist(segments=[CutSegment(
+        order=0, scene_number=1, start_frame=0, end_frame_exclusive=240)])
+    board.save("cutlist", changed_cutlist)
 
     assert board.load("contact_sheet") is None
     assert board.versions("contact_sheet") == [1]  # archived, not lost
@@ -209,3 +214,32 @@ def test_status_shape(tmp_path: Path) -> None:
     assert status["scene_reviews"] == {"count": 1, "scenes": [1]}
     assert status["artifacts"]["storyline"] == {"version": 2, "archived_versions": [1]}
     assert status["artifacts"]["qa_report"] == {"version": None, "archived_versions": []}
+
+
+def test_saving_identical_content_does_not_invalidate_downstream(tmp_path: Path) -> None:
+    """Live finding: an agent re-saved upstream artifacts three times in one run. Each save
+    wiped the chain below, it rebuilt, and the turn budget ran out with only voice on the
+    board and no render. A save that changes nothing has made nothing stale."""
+    board = Board.create(tmp_path / "board", _meta())
+    board.save("storyline", _storyline("one app"))
+    board.save("script", _script())
+    board.save("cutlist", _cutlist())
+
+    version = board.save("storyline", _storyline("one app"))  # identical content
+
+    assert board.load("script") is not None, "an unchanged storyline must not drop the script"
+    assert board.load("cutlist") is not None
+    assert version == 1, "an unchanged save keeps the current version — it is not a new one"
+    assert board.versions("storyline") == [], "and it archives nothing"
+
+
+def test_saving_changed_content_still_invalidates_downstream(tmp_path: Path) -> None:
+    """The contract that matters survives untouched: a real change makes downstream stale."""
+    board = Board.create(tmp_path / "board", _meta())
+    board.save("storyline", _storyline("one app"))
+    board.save("script", _script())
+
+    version = board.save("storyline", _storyline("a different thread"))
+
+    assert board.load("script") is None, "a changed storyline must drop the script"
+    assert version == 2

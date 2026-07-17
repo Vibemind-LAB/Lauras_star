@@ -71,6 +71,11 @@ def _write_atomic(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _same_content(a: BaseModel, b: BaseModel) -> bool:
+    """Do two artifacts carry the same content? ``version`` is bookkeeping, not content."""
+    return a.model_dump(exclude={"version"}) == b.model_dump(exclude={"version"})
+
+
 class Board:
     """One production session's artifact store."""
 
@@ -135,6 +140,11 @@ class Board:
             old = model_type.model_validate_json(path.read_text(encoding="utf-8"))
             old_versioned = cast(_Versioned, old)
             current_version = int(old_versioned.version)
+            # A save that changes nothing has made nothing downstream stale. Re-saving an
+            # identical artifact used to wipe the whole chain below it and force a rebuild —
+            # a live run burned its turn budget doing exactly that three times over.
+            if _same_content(old, artifact):
+                return current_version
             self._archive(name, current_version, path)
         version = max([current_version, *self.versions(name)]) + 1
         stamped = artifact.model_copy(update={"version": version})
