@@ -19,6 +19,7 @@ from laura.short_creator.production_tools import (
     _VOICE_RATE_TOLERANCE,
     estimate_voice_seconds,
     storyline_material_seconds,
+    usable_budget_seconds,
     word_budget_for,
 )
 
@@ -69,3 +70,32 @@ def test_material_never_exceeds_the_scene_itself() -> None:
 
 def test_empty_storyline_has_no_material() -> None:
     assert storyline_material_seconds([]) == 0.0
+
+
+# --- the usable length: never more than the target, never more than the material ----------
+# Live finding: script_budget budgeted against material, get_script's shortfall against
+# target. When the footage (142s) fell short of the target (180s), the shortfall drove the
+# author PAST the material — the voice ran longer than any cut of the scenes could cover,
+# voice_fits failed unsatisfiably, and the loop thrashed the whole render chain trying to
+# fix an impossible task. The two tools must agree, and they must agree on this number.
+
+
+def test_short_material_caps_the_budget_at_the_footage() -> None:
+    """142s of footage for a 180s target: the script may only fill the footage."""
+    assert usable_budget_seconds(material_seconds=142.0, target_seconds=180.0) == 142.0
+
+
+def test_plenty_of_material_caps_the_budget_at_the_target() -> None:
+    """250s of footage for a 180s target: the script must not overshoot the target."""
+    assert usable_budget_seconds(material_seconds=250.0, target_seconds=180.0) == 180.0
+
+
+def test_no_material_falls_back_to_the_target() -> None:
+    """Without a storyline there is no material yet — the target is the only bound."""
+    assert usable_budget_seconds(material_seconds=0.0, target_seconds=180.0) == 180.0
+
+
+def test_the_usable_budget_is_symmetric_in_the_bound_that_binds() -> None:
+    """It is exactly the smaller of the two whenever both are positive."""
+    assert usable_budget_seconds(material_seconds=90.0, target_seconds=120.0) == 90.0
+    assert usable_budget_seconds(material_seconds=120.0, target_seconds=90.0) == 90.0

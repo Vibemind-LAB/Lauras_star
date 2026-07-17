@@ -734,6 +734,20 @@ def word_budget_for(target_seconds: float, language: str = _DEFAULT_LANGUAGE) ->
     return max(0, int(target_seconds / seconds_per_word(language)))
 
 
+def usable_budget_seconds(*, material_seconds: float, target_seconds: float) -> float:
+    """The length the script may actually fill: the smaller of the target and the material.
+
+    Two bounds, and the tighter one wins. Never more than the target (a longer material must
+    not overshoot the requested length). Never more than the material (the footage cannot hold
+    more voice than there is video to cover it — asking for more is the unsatisfiable
+    voice_fits that made the agent thrash the whole render chain). Zero material means no
+    storyline yet, so the target is the only bound.
+    """
+    if material_seconds <= 0.0:
+        return target_seconds
+    return min(target_seconds, material_seconds)
+
+
 def storyline_material_seconds(windows: Iterable[tuple[BestWindow, float]]) -> float:
     """The longest video worth cutting from these ``(window, scene_duration_s)`` refs.
 
@@ -868,6 +882,41 @@ def _scale_chapter_durations(
 
 
 # --- tool builder ----------------------------------------------------------------------------
+
+
+def _storyline_material(
+    db: Database, board: Board, asset_id: str, storyline: Storyline
+) -> tuple[float, list[int], int]:
+    """``(material_seconds, missing_scenes, resolved_count)`` for the storyline's windows.
+
+    material is the sum of the reviewed windows (the longest video worth cutting). Shared by
+    ``script_budget`` and ``get_script`` so the word count and the shortfall it is checked
+    against are computed from the SAME number — the two diverging is what let the shortfall
+    drive the script past the footage.
+    """
+    reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
+    asset = repos.get_asset(db, asset_id)
+    fps = _fps(db, asset) if asset is not None else 30.0
+    resolved: list[tuple[BestWindow, float]] = []
+    missing: list[int] = []
+    for chapter in storyline.arc:
+        for entry in chapter.scene_numbers:
+            scene_number, window_idx = as_scene_window(entry)
+            scene = _resolve_scene(db, asset_id, scene_number)
+            if scene is None:
+                missing.append(scene_number)
+                continue
+            src_start, src_end, _text = scene
+            scene_duration_s = (src_end - src_start) / fps
+            review = reviews_by_scene.get(scene_number)
+            if review is not None and window_idx < len(review.windows):
+                window = review.windows[window_idx]
+            else:
+                window = BestWindow(
+                    offset_s=0.0, duration_s=min(_DEFAULT_WINDOW_S, scene_duration_s)
+                )
+            resolved.append((window, scene_duration_s))
+    return storyline_material_seconds(resolved), missing, len(resolved)
 
 
 def build_production_tool_specs(
@@ -1102,46 +1151,26 @@ def build_production_tool_specs(
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
                 return {"ok": False, "reason": "no storyline on the board; save_storyline first"}
-            reviews_by_scene = {r.scene_number: r for r in board.scene_reviews()}
-            asset = repos.get_asset(db, asset_id)
-            fps = _fps(db, asset) if asset is not None else 30.0
-            resolved: list[tuple[BestWindow, float]] = []
-            missing: list[int] = []
-            for chapter in storyline.arc:
-                for entry in chapter.scene_numbers:
-                    scene_number, window_idx = as_scene_window(entry)
-                    scene = _resolve_scene(db, asset_id, scene_number)
-                    if scene is None:
-                        missing.append(scene_number)
-                        continue
-                    src_start, src_end, _text = scene
-                    scene_duration_s = (src_end - src_start) / fps
-                    review = reviews_by_scene.get(scene_number)
-                    if review is not None and window_idx < len(review.windows):
-                        window = review.windows[window_idx]
-                    else:
-                        window = BestWindow(
-                            offset_s=0.0, duration_s=min(_DEFAULT_WINDOW_S, scene_duration_s)
-                        )
-                    resolved.append((window, scene_duration_s))
-
-            material = storyline_material_seconds(resolved)
+            material, missing, n_segments = _storyline_material(db, board, asset_id, storyline)
+            target = board.meta().target_seconds
+            usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
             language = board.meta().language
             return {
                 "ok": True,
                 "material_seconds": round(material, 1),
-                "words": word_budget_for(material, language),
+                "usable_seconds": round(usable, 1),
+                "words": word_budget_for(usable, language),
                 "language": language,
                 "seconds_per_word": seconds_per_word(language),
                 "tolerance": _VOICE_RATE_TOLERANCE,
-                "segments": len(resolved),
+                "segments": n_segments,
                 "unresolved_scenes": missing,
                 "how": (
-                    "material_seconds is the sum of the reviewed windows this storyline "
-                    f"references — the longest video worth cutting. Write about 'words' "
-                    f"words of {language} total, then synthesize ONCE and correct from the "
-                    f"measured voice_s; the rate is only good to "
-                    f"+/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                    "usable_seconds is the smaller of the target and material_seconds (the sum "
+                    "of the reviewed windows this storyline references). Write about 'words' "
+                    f"words of {language} to fill it — no more, or the voice runs past the "
+                    "footage. Synthesize ONCE and correct from the measured voice_s; the rate "
+                    f"is only good to +/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
                 ),
             }
         except Exception as exc:  # tool must never kill the agent loop
@@ -1186,7 +1215,17 @@ def build_production_tool_specs(
                 return {"ok": False, "reason": "no script on the board"}
             language = board.meta().language
             words = len(script_text(script.lines).split())
-            budget = word_budget_for(board.meta().target_seconds, language)
+            # Budget against the SAME usable length script_budget uses: the smaller of the
+            # target and the material. Measuring the shortfall against the raw target is what
+            # drove the author to write more voice than the footage could ever cover.
+            storyline = board.load("storyline")
+            target = board.meta().target_seconds
+            if isinstance(storyline, Storyline):
+                material, _missing, _n = _storyline_material(db, board, asset_id, storyline)
+                usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
+            else:
+                usable = target
+            budget = word_budget_for(usable, language)
             shortfall = 0.0 if budget <= 0 else max(0.0, (budget - words) / budget * 100.0)
             return {
                 "ok": True,
