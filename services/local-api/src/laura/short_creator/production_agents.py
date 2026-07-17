@@ -120,9 +120,12 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "in the first seconds. Save chapter by chapter via save_script_chapter (it "
                 "merges — other chapters' lines stay untouched); fix and resave on validation "
                 "errors. Verify with get_script once every chapter in the storyline has its "
-                "lines written. Write to the budget ONCE — the voice gets synthesized and "
-                "measured after you; correcting from that measurement is the coding_agent's "
-                "job, not yours. Do not re-save the script to chase a length."
+                "lines written — it reports words against budget_words and a shortfall_pct; a "
+                "shortfall above 15% means the film comes out that much shorter than its "
+                "target, so write the missing words BEFORE the voice is synthesized. Write to "
+                "the budget ONCE — the voice gets synthesized and measured after you; "
+                "correcting from that measurement is the coding_agent's job, not yours. Do not "
+                "re-save the script to chase a length."
             ),
             tool_names=(
                 "get_storyline",

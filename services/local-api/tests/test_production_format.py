@@ -11,12 +11,26 @@ These tests pin the seam: format -> canvas -> render call, QA prompt, and report
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from laura.short_creator.board_models import BoardMeta, canvas_for
+from laura.config import Settings
+from laura.db.database import Database, create_database
+from laura.short_creator.board import Board
+from laura.short_creator.board_models import BoardMeta, Script, ScriptLine, canvas_for
 from laura.short_creator.production_agents import production_agent_specs
-from laura.short_creator.production_tools import _qa_prompt, _roi_rule, _shape_of
+from laura.short_creator.production_tools import (
+    _qa_prompt,
+    _roi_rule,
+    _shape_of,
+    build_production_tool_specs,
+)
+
+
+def _bare_db(tmp_path: Path) -> Database:
+    return create_database(Settings(workspace_root=tmp_path))
 
 
 def _meta(fmt: str) -> BoardMeta:
@@ -130,3 +144,45 @@ def test_the_language_rule_still_forbids_switching_mid_script() -> None:
     """The useful half of the old instruction must survive the parameterisation."""
     spec = next(s for s in production_agent_specs("English") if s.name == "scene_author")
     assert "never switch languages mid-script" in spec.system_message
+
+
+# --- the script's own shortfall must be visible where the author checks its work ---------
+# Live finding: the scene_author wrote 140 words against a 300-word budget and called
+# get_script to verify. Nothing compared the two, so nothing said the film would come out
+# at half its target. A chapter's video length IS its share of the voice, so a short script
+# is a short film — this is the number that decides the whole shape.
+
+
+def test_get_script_reports_the_gap_between_what_was_written_and_the_budget(
+    tmp_path: Path,
+) -> None:
+    board = Board.create(
+        tmp_path / "b",
+        BoardMeta(
+            session_id="s1",
+            asset_id="a1",
+            created_utc="2026-07-17T00:00:00+00:00",
+            task="demo",
+            format="x",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    board.save(
+        "script",
+        Script(
+            language="English",
+            lines=[ScriptLine(chapter=1, scene_number=1, text=" ".join(["word"] * 140))],
+        ),
+    )
+
+    specs = {
+        s.name: s
+        for s in build_production_tool_specs(_bare_db(tmp_path), board, asset_id="a1")
+    }
+    out = specs["get_script"].func()
+
+    assert out["words"] == 140
+    assert out["budget_words"] == 511  # 174s of English at the measured 0.340 s/word
+    assert out["estimated_voice_s"] == pytest.approx(47.6, abs=0.5)
+    assert out["shortfall_pct"] == pytest.approx(72.6, abs=1.0)

@@ -1171,12 +1171,29 @@ def build_production_tool_specs(
             return {"ok": False, "reason": str(exc)[:200]}
 
     def get_script() -> dict[str, Any]:
-        """The board's current script, or a not-found reason if none has been saved yet."""
+        """The board's current script, plus how it measures against its word budget, or a
+        not-found reason if none has been saved yet.
+
+        A chapter's video length is its share of the voice, so a short script is a short film
+        — the author wrote 140 words against a 300-word budget once and nothing said the film
+        would come out half length. ``shortfall_pct`` is that gap, reported where the author
+        verifies its own work."""
         try:
             script = board.load("script")
-            if script is None:
+            if not isinstance(script, Script):
                 return {"ok": False, "reason": "no script on the board"}
-            return {"ok": True, "script": script.model_dump()}
+            language = board.meta().language
+            words = len(script_text(script.lines).split())
+            budget = word_budget_for(board.meta().target_seconds, language)
+            shortfall = 0.0 if budget <= 0 else max(0.0, (budget - words) / budget * 100.0)
+            return {
+                "ok": True,
+                "script": script.model_dump(),
+                "words": words,
+                "budget_words": budget,
+                "estimated_voice_s": round(estimate_voice_seconds(words, language), 1),
+                "shortfall_pct": round(shortfall, 1),
+            }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
