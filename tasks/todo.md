@@ -395,3 +395,56 @@ Interchange/Analyse/Rough-Cut/Playback folgen in weiteren Sessions.
 - `[!]` WhisperX Version-Churn → isolierte uv-Extra-Gruppe, hart gepinnt.
 - `[!]` FCPXML-Adapter → nur guarded + Fixtures.
 - `[!]` libmpv-Electron-Bindings je OS → Phase „Härtung", früh Spike einplanen.
+
+---
+
+## Portion 20 — Kohärenz der Produktionskette  `[~]`  ← **Kern-Risiko, aus Live-Befunden**
+
+**Der gemeinsame Nenner aller Fehler vom 18.07.2026:** Die Kette prüft nie, ob ihre Glieder
+*zueinander* gehören. Jedes Artefakt wird einzeln gespeichert, die Kettenposition entscheidet
+allein die Dateipräsenz — und was ein Artefakt woraus abgeleitet wurde, hält nichts fest.
+
+Live gemessen auf Board `094f92a8`:
+
+| Artefakt | Version | Stimme | gehört zu |
+|---|---|---|---|
+| `script` | v39 | — | 82 Worte, 2 von 6 Kapiteln |
+| `voice` | v3 | 29.4s | Skript v39 |
+| `render_report` | v2 | 108.8s | **Skript v14** (262 Worte) |
+
+Das `voice_fits: OK` darauf war wahr — für eine Paarung, die es nicht mehr gibt. Vier von sechs
+Storyline-Kapiteln hatten null Worte, und niemand hat es bemerkt. `voice` hält mit `script_hash`
+bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie geprüft.
+
+### 20.A — Provenienz & Kohärenz  `[ ]`
+- [ ] Jedes abgeleitete Artefakt hält fest, woraus es gebaut wurde (`voice.script_hash` als Vorbild:
+      `cutlist` → voice+script, `render_report` → cutlist+voice)
+- [ ] `Board.status()` meldet pro Kettenglied `stale: true|false` statt nur Präsenz
+- [ ] Der Render-Cap-Guard (`b511639`) darf einen Render, der zum aktuellen Skript nicht mehr passt,
+      **nicht** als `final` ausgeben — er muss „letzter Render ist veraltet" melden
+- **Exit:** ein Board mit Skript v39 + Render aus v14 meldet das, statt Erfolg zu behaupten
+
+### 20.B — Vollständigkeit des Skripts  `[ ]`
+- [ ] `get_script` meldet Storyline-Kapitel ohne Zeilen (live: Kapitel 3–6 stumm)
+- [ ] Ein Skript mit leeren Kapiteln gilt nicht als fertiges Kettenglied
+- **Exit:** ein 2-von-6-Kapitel-Skript kann nicht unbemerkt in den Schnitt
+
+### 20.C — Preflight statt „Connection error."  `[ ]`
+- [ ] Provider vor dem Enqueue prüfen (Key vorhanden, Modell gesetzt) — mit klarer Meldung
+- [ ] Konfigurationsfehler von Transportfehler unterscheiden (live: fehlender
+      `LAURA_AGENT_API_KEY` meldete sich als „Connection error.")
+- [ ] Unbekannter `LAURA_AGENT_PROVIDER` darf nicht still auf einen anderen zurückfallen
+- **Exit:** ein Lauf ohne Key startet gar nicht erst und sagt warum
+
+### 20.D — Lebenszeichen  `[ ]`
+- [ ] `GET /production/{sid}` zeigt Job-Status und letzten Fortschritt (heute: kein Lebenszeichen —
+      ein toter Lauf sah 55 Minuten lang aus wie ein arbeitender)
+- [ ] `review_scene` ohne konfiguriertes VLM scheitert einmal laut, statt pro Szene still zu degradieren
+- **Exit:** ein hängender Lauf ist von außen als solcher erkennbar
+
+### 20.E — Bekannt, belegt, noch offen  `[ ]`
+- [ ] `hook_score` belohnt Bewegung → gehaltene Screens bekommen 1-Sekunden-Fenster (Reel-Logik)
+- [ ] Skript-Thrashing unbegrenzt außer durch `max_turns` (live: v39 in einem Lauf)
+
+**Erledigt aus diesem Befundkreis:** Job-Ergebnis-Kontrakt (`35361d6`), `BoardMeta.status` mit
+Schreiber, `degraded_count`/`checks_ok` in `Board.status()`, Kapazitäts-Budget (`56abc5b`).
