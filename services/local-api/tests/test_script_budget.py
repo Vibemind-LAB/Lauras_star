@@ -18,6 +18,7 @@ from laura.short_creator.board_models import BestWindow
 from laura.short_creator.production_tools import (
     _VOICE_RATE_TOLERANCE,
     budget_words_for,
+    chapter_word_budgets,
     estimate_voice_seconds,
     storyline_material_seconds,
     usable_budget_seconds,
@@ -133,3 +134,38 @@ def test_the_headroom_does_not_waste_the_material() -> None:
 def test_headroom_applies_to_every_language() -> None:
     for language in ("German", "English"):
         assert budget_words_for(120.0, language) < word_budget_for(120.0, language)
+
+
+# --- per chapter: a global budget can be right while every chapter is wrong ----------------
+# Live finding: 161s of voice against 170s of material looked healthy, and the film still
+# failed voice_fits by 13s. Per chapter it was badly skewed — chapter 3 carried 26.8s of
+# narration against a 1.0s reviewed window, chapter 4 18.6s against 5.0s, while chapters 5
+# and 6 left 48s of reviewed material unused. The cutlist cannot cover voice that its scenes
+# do not hold, so the video came out short no matter how the total added up.
+
+
+def test_each_chapter_gets_the_budget_its_own_material_holds() -> None:
+    """The 1-second window that broke the run: its chapter may carry almost no words."""
+    budgets = chapter_word_budgets({1: 45.0, 3: 1.0}, "English")
+
+    assert budgets[3] < 5, "a 1s window cannot carry a 27s beat — say so"
+    assert budgets[1] > 80
+
+
+def test_the_chapter_budgets_add_up_to_the_whole() -> None:
+    """Splitting must not invent or lose budget: the parts are the whole."""
+    materials = {1: 15.0, 2: 15.0, 3: 40.0}
+    parts = sum(chapter_word_budgets(materials, "English").values())
+    whole = budget_words_for(sum(materials.values()), "English")
+
+    assert abs(parts - whole) <= len(materials), "only integer rounding may differ"
+
+
+def test_every_chapter_carries_the_same_headroom() -> None:
+    """A chapter is budgeted like the film: below its material, not at it."""
+    budgets = chapter_word_budgets({1: 100.0}, "English")
+    assert budgets[1] == budget_words_for(100.0, "English")
+
+
+def test_an_empty_storyline_budgets_nothing() -> None:
+    assert chapter_word_budgets({}, "English") == {}

@@ -832,6 +832,25 @@ def budget_words_for(usable_seconds: float, language: str = _DEFAULT_LANGUAGE) -
     return word_budget_for(usable_seconds * (1.0 - _BUDGET_HEADROOM), language)
 
 
+def chapter_word_budgets(
+    material_per_chapter: dict[int, float], language: str = _DEFAULT_LANGUAGE
+) -> dict[int, int]:
+    """Words each chapter may spend, from the material that chapter's own windows hold.
+
+    Live finding: a correct TOTAL hides a broken distribution. 161s of voice against 170s of
+    material looked healthy while chapter 3 carried 26.8s of narration for a 1.0s reviewed
+    window and chapters 5 and 6 left 48s unused. The cutlist cannot cover voice its scenes do
+    not hold, so the video came out 13s short of the audio however well the total added up.
+
+    A chapter budgeted at almost nothing is not a bug in this function — it is the storyline
+    saying that beat has one second of reviewed footage, which is the thing worth seeing.
+    """
+    return {
+        chapter: budget_words_for(seconds, language)
+        for chapter, seconds in material_per_chapter.items()
+    }
+
+
 def usable_budget_seconds(*, material_seconds: float, target_seconds: float) -> float:
     """The length the script may actually fill: the smaller of the target and the material.
 
@@ -995,8 +1014,11 @@ def _renders_so_far(board: Board) -> int:
 
 def _storyline_material(
     db: Database, board: Board, asset_id: str, storyline: Storyline
-) -> tuple[float, list[int], int]:
-    """``(material_seconds, missing_scenes, resolved_count)`` for the storyline's windows.
+) -> tuple[dict[int, float], list[int], int]:
+    """``(material_seconds PER CHAPTER, missing_scenes, resolved_count)``.
+
+    Per chapter, not just the total: a correct total hides a broken distribution — 161s of
+    voice against 170s of material while one chapter carried 27s of narration for a 1s window.
 
     material is the sum of the reviewed windows (the longest video worth cutting). Shared by
     ``script_budget`` and ``get_script`` so the word count and the shortfall it is checked
@@ -1008,7 +1030,9 @@ def _storyline_material(
     fps = _fps(db, asset) if asset is not None else 30.0
     resolved: list[tuple[BestWindow, float]] = []
     missing: list[int] = []
+    per_chapter: dict[int, float] = {}
     for chapter in storyline.arc:
+        windows: list[tuple[BestWindow, float]] = []
         for entry in chapter.scene_numbers:
             scene_number, window_idx = as_scene_window(entry)
             scene = _resolve_scene(db, asset_id, scene_number)
@@ -1024,8 +1048,10 @@ def _storyline_material(
                 window = BestWindow(
                     offset_s=0.0, duration_s=min(_DEFAULT_WINDOW_S, scene_duration_s)
                 )
+            windows.append((window, scene_duration_s))
             resolved.append((window, scene_duration_s))
-    return storyline_material_seconds(resolved), missing, len(resolved)
+        per_chapter[chapter.chapter] = storyline_material_seconds(windows)
+    return per_chapter, missing, len(resolved)
 
 
 def build_production_tool_specs(
@@ -1260,15 +1286,29 @@ def build_production_tool_specs(
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
                 return {"ok": False, "reason": "no storyline on the board; save_storyline first"}
-            material, missing, n_segments = _storyline_material(db, board, asset_id, storyline)
+            per_chapter, missing, n_segments = _storyline_material(
+                db, board, asset_id, storyline
+            )
+            material = sum(per_chapter.values())
             target = board.meta().target_seconds
             usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
             language = board.meta().language
+            # Per chapter as well as in total: a right total over a wrong distribution still
+            # breaks the film — one chapter carried 27s of narration for a 1s window.
+            chapter_budgets = chapter_word_budgets(per_chapter, language)
             return {
                 "ok": True,
                 "material_seconds": round(material, 1),
                 "usable_seconds": round(usable, 1),
                 "words": budget_words_for(usable, language),
+                "per_chapter": [
+                    {
+                        "chapter": ch,
+                        "material_seconds": round(per_chapter[ch], 1),
+                        "words": chapter_budgets[ch],
+                    }
+                    for ch in sorted(per_chapter)
+                ],
                 "language": language,
                 "seconds_per_word": seconds_per_word(language),
                 "tolerance": _VOICE_RATE_TOLERANCE,
@@ -1278,8 +1318,13 @@ def build_production_tool_specs(
                     "usable_seconds is the smaller of the target and material_seconds (the sum "
                     "of the reviewed windows this storyline references). Write about 'words' "
                     f"words of {language} to fill it — no more, or the voice runs past the "
-                    "footage. Synthesize ONCE and correct from the measured voice_s; the rate "
-                    f"is only good to +/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                    "footage. Spend them PER CHAPTER as per_chapter says: a right total over a "
+                    "wrong split still breaks the film, because a chapter's video cannot cover "
+                    "voice its own scenes do not hold. A chapter budgeted at almost nothing "
+                    "means its window is a second long — say less there, or give that beat a "
+                    "longer window in the storyline. Synthesize ONCE and correct from the "
+                    f"measured voice_s; the rate is only good to "
+                    f"+/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
                 ),
             }
         except Exception as exc:  # tool must never kill the agent loop
@@ -1349,8 +1394,10 @@ def build_production_tool_specs(
             storyline = board.load("storyline")
             target = board.meta().target_seconds
             if isinstance(storyline, Storyline):
-                material, _missing, _n = _storyline_material(db, board, asset_id, storyline)
-                usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
+                per_chapter, _missing, _n = _storyline_material(db, board, asset_id, storyline)
+                usable = usable_budget_seconds(
+                    material_seconds=sum(per_chapter.values()), target_seconds=target
+                )
             else:
                 usable = target
             budget = budget_words_for(usable, language)

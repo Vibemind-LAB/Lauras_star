@@ -105,7 +105,12 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
             system_message=(
                 "You are the Scene Author. First call get_storyline to see the arc and its "
                 "chapters, then script_budget — it tells you how many words the whole script "
-                "may spend; never guess a length or count seconds yourself. Then "
+                "may spend AND how many each chapter may spend in per_chapter; never guess a "
+                "length or count seconds yourself. Spend the PER-CHAPTER numbers, not just the "
+                "total: a chapter's video cannot cover voice its own scenes do not hold, so a "
+                "right total over a wrong split still breaks the film. A chapter budgeted at "
+                "almost nothing means its reviewed window is about a second long — write "
+                "barely anything there rather than borrowing from the total. Then "
                 "get_scene_context (and get_reviews for visual detail) for each "
                 "scene you write for. Write 1-2 sentences per scene, per chapter, in "
                 f"{language} — the video's language, never switch languages mid-script. "
