@@ -21,12 +21,14 @@ from pathlib import Path
 from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BoardMeta,
+    Chapter,
     RenderCheck,
     RenderReport,
     Script,
     ScriptLine,
+    Storyline,
 )
-from laura.short_creator.production_tools import script_hash
+from laura.short_creator.production_tools import script_hash, silent_chapters
 
 
 def _board(tmp_path: Path) -> Board:
@@ -147,3 +149,59 @@ def test_artifacts_that_carry_no_provenance_report_no_staleness(tmp_path: Path) 
     board.save("script", _script("some line"))
 
     assert "stale" not in board.status()["artifacts"]["script"]
+
+
+# --- the script must serve every chapter the storyline planned -----------------------------
+# Live finding (run E): the storyline planned six chapters summing to exactly the 174s target.
+# The script covered chapters 1 and 2 — 82 words — and chapters 3, 4, 5 and 6 had NO lines at
+# all. The film came out at 109s. Nothing noticed: save_script_chapter validates a chapter it
+# is given, and no one ever asked which chapters were never given.
+#
+# This is the same disease as the stale render, one link up: the script was a valid artifact
+# that did not correspond to the storyline it was written against.
+
+
+def _storyline(n_chapters: int) -> Storyline:
+    return Storyline(
+        red_thread="a demo",
+        arc=[
+            Chapter(
+                chapter=i,
+                role="hook" if i == 1 else "feature",
+                message=f"beat {i}",
+                scene_numbers=[i],
+                target_seconds=29.0,
+            )
+            for i in range(1, n_chapters + 1)
+        ],
+    )
+
+
+def _script_for_chapters(chapters: list[int]) -> Script:
+    return Script(
+        language="English",
+        lines=[ScriptLine(chapter=c, scene_number=c, text=f"a line for {c}") for c in chapters],
+    )
+
+
+def test_the_chapters_the_author_never_wrote_are_named() -> None:
+    """Run E exactly: six chapters planned, two written."""
+    assert silent_chapters(_script_for_chapters([1, 2]), _storyline(6)) == [3, 4, 5, 6]
+
+
+def test_a_complete_script_reports_no_silence() -> None:
+    assert silent_chapters(_script_for_chapters([1, 2, 3]), _storyline(3)) == []
+
+
+def test_a_chapter_with_any_line_counts_as_written() -> None:
+    """The check is about coverage, not length — length is the budget's job."""
+    assert silent_chapters(_script_for_chapters([1, 2, 3]), _storyline(3)) == []
+
+
+def test_lines_for_a_chapter_the_storyline_does_not_have_are_not_silence() -> None:
+    """A stray line is a different fault; do not report it as a missing chapter."""
+    assert silent_chapters(_script_for_chapters([1, 2, 9]), _storyline(2)) == []
+
+
+def test_without_a_storyline_nothing_can_be_called_missing() -> None:
+    assert silent_chapters(_script_for_chapters([1]), None) == []

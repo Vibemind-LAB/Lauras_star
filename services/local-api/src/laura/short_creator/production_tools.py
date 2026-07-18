@@ -653,6 +653,23 @@ def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[Scri
 script_text = _script_text
 
 
+def silent_chapters(script: Script, storyline: Storyline | None) -> list[int]:
+    """Storyline chapters the script never wrote a line for.
+
+    Live finding: a storyline planned six chapters summing to the full target and the script
+    covered two. The film came out at 63% of its length. Nothing noticed, because
+    ``save_script_chapter`` validates the chapter it is handed and nobody ever asked which
+    chapters were never handed to it — the same gap as the stale render, one link up: a valid
+    artifact that does not correspond to the one above it.
+
+    Coverage only. Whether a chapter has ENOUGH words is the budget's question, not this one.
+    """
+    if storyline is None:
+        return []
+    written = {line.chapter for line in script.lines}
+    return [chapter.chapter for chapter in storyline.arc if chapter.chapter not in written]
+
+
 # script_hash lives with the model it hashes (board_models) so the board can compute it too —
 # it is the one identity every derived artifact is checked against, and a second copy of that
 # rule is precisely the drift these checks exist to catch. Re-exported here for its callers.
@@ -1437,6 +1454,11 @@ def build_production_tool_specs(
                 f"{r.description} {r.whats_happening}" for r in board.scene_reviews()
             )
             ungrounded = ungrounded_terms(script_text(script.lines), grounding)
+            # Which planned chapters were never written at all. A live run left four of six
+            # silent and shipped a 109s film against a 174s target; the shortfall percentage
+            # alone reads like "write more", not "you skipped two thirds of the story".
+            planned = storyline if isinstance(storyline, Storyline) else None
+            silent = silent_chapters(script, planned)
             return {
                 "ok": True,
                 "script": script.model_dump(),
@@ -1445,6 +1467,8 @@ def build_production_tool_specs(
                 "estimated_voice_s": round(estimate_voice_seconds(words, language), 1),
                 "shortfall_pct": round(shortfall, 1),
                 "ungrounded_terms": ungrounded,
+                "silent_chapters": silent,
+                "chapters_written": sorted({line.chapter for line in script.lines}),
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

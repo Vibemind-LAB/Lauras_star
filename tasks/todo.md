@@ -425,9 +425,13 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
 - **Exit:** ein Board mit Skript v39 + Render aus v14 meldet das, statt Erfolg zu behaupten
 
 ### 20.B — Vollständigkeit des Skripts  `[ ]`
-- [ ] `get_script` meldet Storyline-Kapitel ohne Zeilen (live: Kapitel 3–6 stumm)
-- [ ] Ein Skript mit leeren Kapiteln gilt nicht als fertiges Kettenglied
-- **Exit:** ein 2-von-6-Kapitel-Skript kann nicht unbemerkt in den Schnitt
+- [x] `get_script` meldet Storyline-Kapitel ohne Zeilen (live: Kapitel 3–6 stumm) + `chapters_written`
+- [x] Der `scene_author`-Prompt nennt `silent_chapters` und die eine legitime Ausnahme
+- [~] ~~Ein Skript mit leeren Kapiteln gilt nicht als fertiges Kettenglied~~ — **revidiert.**
+      Ein Kapitel ohne Sprechertext ist eine legitime filmische Entscheidung (Bildbeat mit Musik).
+      Ein harter Block würde Handwerk verbieten, um einen Fehler zu fangen. Also melden, nicht
+      blockieren — dieselbe Schlussfolgerung wie beim `resume_point`, aber aus besserem Grund.
+- **Exit:** ein 2-von-6-Kapitel-Skript ist benannt, wo der Autor seine Arbeit prüft ✓
 
 ### 20.C — Preflight statt „Connection error."  `[ ]`
 - [ ] Provider vor dem Enqueue prüfen (Key vorhanden, Modell gesetzt) — mit klarer Meldung
