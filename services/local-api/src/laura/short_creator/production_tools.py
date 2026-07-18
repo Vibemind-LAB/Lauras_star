@@ -832,6 +832,17 @@ def budget_words_for(usable_seconds: float, language: str = _DEFAULT_LANGUAGE) -
     return word_budget_for(usable_seconds * (1.0 - _BUDGET_HEADROOM), language)
 
 
+def segment_capacity_seconds(window: BestWindow, scene_duration_s: float) -> float:
+    """How long the CUT can make this segment — the stretch cap build_cutlist applies.
+
+    The reviewed window is a quality mark, not a length limit: build_cutlist starts a segment
+    at the window's offset and stretches it toward the scene's end when the voice needs it.
+    Budgeting against the window instead measured a different quantity than the cut delivers —
+    chapter 3 was offered two words for a 1s window inside a 45s scene the cut could fill.
+    """
+    return min(scene_duration_s, max(_SEGMENT_FLOOR_S, scene_duration_s - window.offset_s))
+
+
 def chapter_word_budgets(
     material_per_chapter: dict[int, float], language: str = _DEFAULT_LANGUAGE
 ) -> dict[int, int]:
@@ -849,6 +860,24 @@ def chapter_word_budgets(
         chapter: budget_words_for(seconds, language)
         for chapter, seconds in material_per_chapter.items()
     }
+
+
+def allocate_chapter_seconds(
+    capacity_per_chapter: dict[int, float], *, usable_seconds: float
+) -> dict[int, float]:
+    """Share the film's usable length out across the chapters, in proportion to capacity.
+
+    Capacity says what a chapter CAN hold; the target says what the film SHOULD run. Budgeting
+    every chapter at its own capacity asks for the sum of the capacities — 266s of script for a
+    174s film on the live board. Scaling down keeps each chapter inside its own capacity, so the
+    cut can still cover whatever the voice turns out to be. Scarce capacity is left alone: when
+    the footage is short the film is short, which is the honest answer.
+    """
+    total = sum(capacity_per_chapter.values())
+    if total <= usable_seconds or total <= 0.0:
+        return dict(capacity_per_chapter)
+    scale = usable_seconds / total
+    return {chapter: seconds * scale for chapter, seconds in capacity_per_chapter.items()}
 
 
 def usable_budget_seconds(*, material_seconds: float, target_seconds: float) -> float:
@@ -1050,7 +1079,11 @@ def _storyline_material(
                 )
             windows.append((window, scene_duration_s))
             resolved.append((window, scene_duration_s))
-        per_chapter[chapter.chapter] = storyline_material_seconds(windows)
+        # Capacity, not the reviewed window: this must be the length the CUT can deliver, or
+        # the script is budgeted against a different quantity than the video is built from.
+        per_chapter[chapter.chapter] = sum(
+            segment_capacity_seconds(w, scene_len) for w, scene_len in windows
+        )
     return per_chapter, missing, len(resolved)
 
 
@@ -1295,7 +1328,8 @@ def build_production_tool_specs(
             language = board.meta().language
             # Per chapter as well as in total: a right total over a wrong distribution still
             # breaks the film — one chapter carried 27s of narration for a 1s window.
-            chapter_budgets = chapter_word_budgets(per_chapter, language)
+            shares = allocate_chapter_seconds(per_chapter, usable_seconds=usable)
+            chapter_budgets = chapter_word_budgets(shares, language)
             return {
                 "ok": True,
                 "material_seconds": round(material, 1),
@@ -1305,6 +1339,7 @@ def build_production_tool_specs(
                     {
                         "chapter": ch,
                         "material_seconds": round(per_chapter[ch], 1),
+                        "seconds": round(shares[ch], 1),
                         "words": chapter_budgets[ch],
                     }
                     for ch in sorted(per_chapter)
@@ -1594,12 +1629,7 @@ def build_production_tool_specs(
                     # as its start and never crosses the scene's end (the 2s floor still wins
                     # over an offset too close to the end — the frame clamp below pulls the
                     # start back for exactly that case, as before).
-                    stretch_caps.append(
-                        min(
-                            scene_duration_s,
-                            max(_SEGMENT_FLOOR_S, scene_duration_s - window.offset_s),
-                        )
-                    )
+                    stretch_caps.append(segment_capacity_seconds(window, scene_duration_s))
 
                 audio_window = audio_windows.get(chapter.chapter)
                 if audio_window is not None:

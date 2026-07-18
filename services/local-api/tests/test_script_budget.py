@@ -17,9 +17,11 @@ import pytest
 from laura.short_creator.board_models import BestWindow
 from laura.short_creator.production_tools import (
     _VOICE_RATE_TOLERANCE,
+    allocate_chapter_seconds,
     budget_words_for,
     chapter_word_budgets,
     estimate_voice_seconds,
+    segment_capacity_seconds,
     storyline_material_seconds,
     usable_budget_seconds,
     word_budget_for,
@@ -169,3 +171,77 @@ def test_every_chapter_carries_the_same_headroom() -> None:
 
 def test_an_empty_storyline_budgets_nothing() -> None:
     assert chapter_word_budgets({}, "English") == {}
+
+
+# --- capacity: budget what the CUT can deliver, not what the reviewer marked ---------------
+# Live finding: chapter 3's reviewed window was 1.0s, so the budget offered it two words —
+# and the author, correctly, refused to write a story beat in two words. But the cutlist does
+# not stop at the window: it stretches a segment toward the scene's own length, and scene 2
+# is 45s long. The cut could have covered 45s there. Budget and cutlist were measuring
+# different quantities, so the voice and the picture could not agree by construction.
+#
+# Reviewed windows stay the QUALITY signal. Capacity is the LENGTH signal, and length is
+# what voice_fits is about.
+
+
+def test_capacity_follows_the_scene_not_the_tiny_window() -> None:
+    """The 1s window in a 45s scene: the cut can still cover the scene."""
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=0.0, duration_s=1.0), scene_duration_s=45.0
+    ) == pytest.approx(45.0)
+
+
+def test_capacity_never_exceeds_the_scene() -> None:
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=0.0, duration_s=99.0), scene_duration_s=12.0
+    ) == pytest.approx(12.0)
+
+
+def test_a_late_offset_costs_the_footage_before_it() -> None:
+    """A window starting 34s into a 45s scene leaves 11s to stretch into."""
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=34.0, duration_s=5.0), scene_duration_s=45.0
+    ) == pytest.approx(11.0)
+
+
+def test_capacity_keeps_the_segment_floor() -> None:
+    """Even a window pinned at the very end earns the 2s floor the cutlist gives it."""
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=44.5, duration_s=0.5), scene_duration_s=45.0
+    ) == pytest.approx(2.0)
+
+
+# --- allocation: capacity is what CAN be filled, the target is what SHOULD be --------------
+# Budgeting each chapter at its own capacity was safe only while the capacities happened to
+# add up to about the target. Measured on the live board they add up to 266s against a 174s
+# target — so the per-chapter budgets would have asked for a 266-second film. The usable
+# length has to be SHARED OUT across the chapters, in proportion to what each can hold.
+
+
+def test_plenty_of_capacity_is_shared_out_to_the_usable_length() -> None:
+    """The live numbers: 266s of capacity for a 174s film."""
+    shares = allocate_chapter_seconds({1: 45.0, 2: 30.0, 3: 45.0, 4: 146.0}, usable_seconds=174.0)
+    assert sum(shares.values()) == pytest.approx(174.0)
+
+
+def test_the_share_is_proportional_to_what_each_chapter_can_hold() -> None:
+    shares = allocate_chapter_seconds({1: 30.0, 2: 90.0}, usable_seconds=60.0)
+    assert shares[1] == pytest.approx(15.0)
+    assert shares[2] == pytest.approx(45.0)
+
+
+def test_no_chapter_is_ever_asked_for_more_than_it_can_hold() -> None:
+    """Scaling down preserves the invariant that made capacity worth measuring."""
+    capacity = {1: 45.0, 2: 30.0, 3: 45.0}
+    shares = allocate_chapter_seconds(capacity, usable_seconds=60.0)
+    assert all(shares[ch] <= capacity[ch] for ch in capacity)
+
+
+def test_scarce_capacity_is_left_alone_rather_than_stretched_to_the_target() -> None:
+    """When the footage is short, the film is short — inventing length is the old bug."""
+    shares = allocate_chapter_seconds({1: 20.0, 2: 20.0}, usable_seconds=174.0)
+    assert shares == {1: 20.0, 2: 20.0}
+
+
+def test_allocating_across_nothing_is_empty() -> None:
+    assert allocate_chapter_seconds({}, usable_seconds=174.0) == {}
