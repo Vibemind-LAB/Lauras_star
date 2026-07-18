@@ -97,6 +97,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import subprocess
 import tempfile
 import time
@@ -741,6 +742,96 @@ def word_budget_for(target_seconds: float, language: str = _DEFAULT_LANGUAGE) ->
     return max(0, int(target_seconds / seconds_per_word(language)))
 
 
+# Words too ordinary to carry a claim — a term made only of these is prose, not a capability.
+# Kept as readable prose rather than 150 quoted literals.
+_STOPWORD_TEXT = (
+    "a an the and or but so then than that this these those it its is are was were be been "
+    "am do does did have has had can could will would shall should may might must of in on "
+    "at to for with from by as if not no yes you your we our they their he she his her i me "
+    "my what which who whom when where why how all any both each few more most other some "
+    "such only own same too very just now here there also into over under again once about "
+    "because while during before after above below up down out off further one two three "
+    "you're it's don't cannot every real live full clear exact whole plain single next "
+    "screen show shows shown see seen watch run runs running work works step steps thing "
+    "things use uses used make makes made need needs needed give gives given ask asks asked "
+    "human agent agents system demo video first second last"
+)
+_GROUNDING_STOPWORDS = frozenset(_STOPWORD_TEXT.split())
+# Invented capabilities land on a small set of nouns — a fabricated claim is almost always
+# "<qualifier> <capability-noun>": "prompt histories", "health-check endpoint", "signed-off
+# config". Scanning for those heads instead of every phrase is what makes the check precise
+# enough to be worth reading: ordinary prose ("Engineers inspect agent", "the picker lists")
+# does not end on one, so it never trips.
+_CAPABILITY_NOUNS = (
+    "endpoint|endpoints|hash|hashes|schema|schemas|id|ids|config|configs|configuration"
+    "|metadata|knob|knobs|history|histories|contract|contracts|trail|trails|budget|budgets"
+    "|artifact|artifacts|checksum|checksums|manifest|manifests|token|tokens|sdk|api|apis"
+    "|webhook|webhooks|dashboard|dashboards|telemetry|audit|audits|ledger|ledgers|policy"
+    "|policies|quota|quotas|namespace|namespaces|registry|registries"
+)
+_CLAIM_PHRASE = re.compile(
+    rf"\b((?:[a-z][a-z0-9-]*\s+){{1,2}}(?:{_CAPABILITY_NOUNS}))\b", re.IGNORECASE
+)
+
+
+def _seen_in(word: str, ground: str) -> bool:
+    """Was *word* seen, allowing a trailing plural? "lists" counts as seen for "list"."""
+    if word in ground:
+        return True
+    return len(word) > 3 and word.endswith("s") and word[:-1] in ground
+
+
+def ungrounded_terms(script_text_: str, grounding_text: str) -> list[str]:
+    """Multi-word technical claims in *script_text_* that appear nowhere in *grounding_text*.
+
+    Live finding: filling a word budget from held screens, the author invented nine
+    capabilities — "health-check endpoint", "code hashes", "prompt histories" — none of them
+    in any review. The film's own claim is that the system does not fabricate.
+
+    Reports rather than rejects: no mechanical check can judge whether prose is true, only
+    whether a specific term was ever seen. False positives are cheap (the author reads the
+    list); a silent invention is not.
+    """
+    ground = grounding_text.lower()
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _CLAIM_PHRASE.finditer(script_text_):
+        phrase = match.group(1).strip()
+        words = [w for w in re.split(r"[\s-]+", phrase.lower()) if w]
+        if len(words) < 2 or all(w in _GROUNDING_STOPWORDS for w in words):
+            continue
+        # Only flag when NO content word of the phrase was ever seen — one shared term is
+        # enough to call it grounded, so "SQLite for state" passes on "SQLite".
+        # The head noun carries the claim: "code hashes" is invented even though a code editor
+        # is on screen. Judge the head, not the qualifier that happens to be grounded.
+        if _seen_in(words[-1], ground):
+            continue
+        key = phrase.lower()
+        if key not in seen:
+            seen.add(key)
+            found.append(phrase)
+    return found
+
+
+# The two directions are not equally bad. A voice that runs long truncates the ending (the
+# export is cut to the shorter stream); one that runs short holds the last frames a moment
+# longer. So the word budget aims BELOW the usable length rather than at it. 10% covers the
+# overshoot actually measured (0.431 s/word against the table's 0.41) with room to spare, and
+# still spends ~90% of the footage. The same margin lowers the pressure that made the author
+# pad a grounded line with an invented one to reach the count.
+_BUDGET_HEADROOM = 0.10
+
+
+def budget_words_for(usable_seconds: float, language: str = _DEFAULT_LANGUAGE) -> int:
+    """The word count to ASK FOR — the usable length minus headroom for the rate's variance.
+
+    ``word_budget_for`` converts seconds to words at the measured rate; this is the number a
+    script should actually be written to. Live finding: budgeting the full usable length put
+    the voice 2s past the video and voice_fits failed.
+    """
+    return word_budget_for(usable_seconds * (1.0 - _BUDGET_HEADROOM), language)
+
+
 def usable_budget_seconds(*, material_seconds: float, target_seconds: float) -> float:
     """The length the script may actually fill: the smaller of the target and the material.
 
@@ -1177,7 +1268,7 @@ def build_production_tool_specs(
                 "ok": True,
                 "material_seconds": round(material, 1),
                 "usable_seconds": round(usable, 1),
-                "words": word_budget_for(usable, language),
+                "words": budget_words_for(usable, language),
                 "language": language,
                 "seconds_per_word": seconds_per_word(language),
                 "tolerance": _VOICE_RATE_TOLERANCE,
@@ -1262,8 +1353,14 @@ def build_production_tool_specs(
                 usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
             else:
                 usable = target
-            budget = word_budget_for(usable, language)
+            budget = budget_words_for(usable, language)
             shortfall = 0.0 if budget <= 0 else max(0.0, (budget - words) / budget * 100.0)
+            # Filling a budget from held screens made the author invent capabilities. Report
+            # the specifics no review ever saw, so padding is visible where the work is checked.
+            grounding = " ".join(
+                f"{r.description} {r.whats_happening}" for r in board.scene_reviews()
+            )
+            ungrounded = ungrounded_terms(script_text(script.lines), grounding)
             return {
                 "ok": True,
                 "script": script.model_dump(),
@@ -1271,6 +1368,7 @@ def build_production_tool_specs(
                 "budget_words": budget,
                 "estimated_voice_s": round(estimate_voice_seconds(words, language), 1),
                 "shortfall_pct": round(shortfall, 1),
+                "ungrounded_terms": ungrounded,
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

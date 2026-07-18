@@ -183,6 +183,7 @@ def test_get_script_reports_the_gap_between_what_was_written_and_the_budget(
     out = specs["get_script"].func()
 
     assert out["words"] == 140
-    assert out["budget_words"] == 424  # 174s of English at the aggregate 0.41 s/word
+    # 174s of English at 0.41 s/word, minus the 10% headroom the rate's variance needs.
+    assert out["budget_words"] == 381
     assert out["estimated_voice_s"] == pytest.approx(57.4, abs=0.5)
-    assert out["shortfall_pct"] == pytest.approx(67.0, abs=1.0)
+    assert out["shortfall_pct"] == pytest.approx(63.3, abs=1.0)

@@ -17,6 +17,7 @@ import pytest
 from laura.short_creator.board_models import BestWindow
 from laura.short_creator.production_tools import (
     _VOICE_RATE_TOLERANCE,
+    budget_words_for,
     estimate_voice_seconds,
     storyline_material_seconds,
     usable_budget_seconds,
@@ -99,3 +100,36 @@ def test_the_usable_budget_is_symmetric_in_the_bound_that_binds() -> None:
     """It is exactly the smaller of the two whenever both are positive."""
     assert usable_budget_seconds(material_seconds=90.0, target_seconds=120.0) == 90.0
     assert usable_budget_seconds(material_seconds=120.0, target_seconds=90.0) == 90.0
+
+
+# --- headroom: the two directions are not equally bad -------------------------------------
+# Live finding: with usable=170s the budget asked for ~415 words. The synthesis came back at
+# 171.6s (0.431 s/word against the table's 0.41 — inside the +-20% tolerance, but 5% over),
+# so the voice ran 2s past the video and voice_fits failed. The same overshoot pressure also
+# pushed the author to pad: it wrote a grounded first line per chapter, then a second line of
+# invented capabilities to reach the count.
+#
+# Overshooting truncates the ending. Undershooting holds the last frames a moment longer.
+# Those are not equally bad, so the budget must not aim at the middle of the estimate.
+
+
+def test_the_budget_leaves_room_for_the_rate_to_run_slow() -> None:
+    """Asking for exactly usable-seconds-worth of words overshoots half the time."""
+    assert budget_words_for(170.0, "English") < word_budget_for(170.0, "English")
+
+
+def test_the_headroom_covers_the_overshoot_that_shipped() -> None:
+    """The run that failed: 170s usable, synthesis at the measured 0.431 s/word."""
+    words = budget_words_for(170.0, "English")
+    assert words * 0.431 <= 170.0, "the budget must fit even when the rate runs slow"
+
+
+def test_the_headroom_does_not_waste_the_material() -> None:
+    """Headroom is insurance, not a haircut — most of the footage still gets used."""
+    words = budget_words_for(170.0, "English")
+    assert words * 0.41 >= 170.0 * 0.85, "at the table rate it should still fill ~90%"
+
+
+def test_headroom_applies_to_every_language() -> None:
+    for language in ("German", "English"):
+        assert budget_words_for(120.0, language) < word_budget_for(120.0, language)
