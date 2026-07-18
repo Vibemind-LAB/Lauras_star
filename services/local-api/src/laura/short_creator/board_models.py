@@ -331,6 +331,9 @@ class QaReport(BaseModel):
     findings: list[QaFinding] = Field(default_factory=list)
 
 
+BoardStatus = Literal["active", "failed", "complete"]
+
+
 class BoardMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -345,4 +348,7 @@ class BoardMeta(BaseModel):
     # of a hard-coded language.
     language: str = Field(default="German", min_length=2, max_length=40)
     target_seconds: float = Field(gt=0.0)
-    status: str = "active"
+    # A lifecycle value, not free text. It was a bare ``str`` that only ``Board.create`` ever
+    # wrote, so it read "active" forever — including for 55 minutes after a run had died. A
+    # closed set plus ``Board.set_status`` makes it answerable.
+    status: BoardStatus = "active"

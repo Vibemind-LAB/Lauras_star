@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from laura.short_creator.board_models import (
     BoardMeta,
+    BoardStatus,
     ContactSheet,
     Cutlist,
     QaReport,
@@ -47,6 +48,14 @@ _CHAIN: tuple[str, ...] = (
     "render_report",
     "qa_report",
 )
+def _failed_checks(artifact: BaseModel | None) -> list[str] | None:
+    """Names of this artifact's failed checks, or None when it records no checks at all."""
+    checks = getattr(artifact, "checks", None)
+    if checks is None:
+        return None
+    return [c.name for c in checks if not c.ok]
+
+
 _SINGLETONS: dict[str, type[BaseModel]] = {
     "storyline": Storyline,
     "script": Script,
@@ -209,20 +218,42 @@ class Board:
 
     # -- progress -----------------------------------------------------------
 
+    def set_status(self, value: BoardStatus) -> None:
+        """Record the run's lifecycle on the board itself.
+
+        The board is the store an operator reads; the job result is a different store. When a run
+        hard-failed, only the job result knew, so the session endpoint kept reporting a serene
+        "active" for a run that had been dead for the better part of an hour.
+        """
+        meta = self.meta().model_copy(update={"status": value})
+        _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
+
     def resume_point(self, expected_scenes: list[int]) -> str:
         """First missing artifact — where a (re)started session job continues."""
         have = {r.scene_number for r in self.scene_reviews()}
         missing = [n for n in expected_scenes if n not in have]
         if missing:
             return f"scene_reviews:{missing[0]}"
+        # Presence decides the chain, deliberately. It is tempting to also refuse a render_report
+        # whose export_ready check failed — the chain does advance to QA over a render that never
+        # became watchable. But that check is a snapshot taken when the poll gave up, not a
+        # property of the artifact: an export that finished a moment after the timeout would be
+        # re-rendered forever on the strength of a stale False. It also collides with
+        # _MAX_RENDER_CYCLES, which refuses the re-render such a rule demands, and with status()
+        # below, which stays presence-based — the agent prompt would then read "render_report is
+        # DONE, do not redo it" and "resume at render_report" in the same breath.
+        # The honest repair is at the WRITE site (do not record a render that did not happen) plus
+        # a re-poll rather than a re-render, and that is a design, not a guard. Until then the
+        # failure is at least VISIBLE: status() reports checks_ok and failed_checks.
         for name in _CHAIN:
             if self.load(name) is None:
                 return name
         return "done"
 
     def status(self) -> dict[str, Any]:
-        """Board summary for the session API (versions + presence)."""
+        """Board summary for the session API (versions + presence + whether the work happened)."""
         reviews = self.scene_reviews()
+        degraded = [r.scene_number for r in reviews if r.degraded]
         artifacts: dict[str, Any] = {}
         for name in _CHAIN:
             cur = self.load(name)
@@ -231,15 +262,28 @@ class Board:
                 version = int(cur_versioned.version)
             else:
                 version = None
-            artifacts[name] = {
+            entry: dict[str, Any] = {
                 "version": version,
                 "archived_versions": self.versions(name),
             }
+            # An artifact can be present and still record that its work did not come off. The
+            # presence alone used to be the whole story, which is how a timed-out render read
+            # as a finished one.
+            failed = _failed_checks(cur)
+            if failed is not None:
+                entry["checks_ok"] = not failed
+                entry["failed_checks"] = failed
+            artifacts[name] = entry
         return {
             "meta": json.loads(self.meta().model_dump_json()),
             "scene_reviews": {
                 "count": len(reviews),
                 "scenes": [r.scene_number for r in reviews],
+                # A degraded review is one the VLM never actually produced: neutral score, one
+                # default window. The count alone cannot tell a fully analysed board from one
+                # with no visual analysis at all.
+                "degraded_count": len(degraded),
+                "degraded_scenes": degraded,
             },
             "artifacts": artifacts,
         }

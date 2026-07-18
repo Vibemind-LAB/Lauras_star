@@ -256,14 +256,24 @@ def test_board_status_and_get_reviews(tmp_path: Path) -> None:
     assert before["ok"] is True
     assert before["expected_scenes"] == [1]
     assert before["resume_point"] == "scene_reviews:1"
-    assert before["scene_reviews"] == {"count": 0, "scenes": []}
+    assert before["scene_reviews"] == {
+        "count": 0,
+        "scenes": [],
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
     assert "artifacts" in before
 
     specs["review_scene"].func(scene_number=1)
 
     after = specs["board_status"].func()
     assert after["resume_point"] == "storyline"  # next artifact in the chain
-    assert after["scene_reviews"] == {"count": 1, "scenes": [1]}
+    assert after["scene_reviews"] == {
+        "count": 1,
+        "scenes": [1],
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
 
     reviews = specs["get_reviews"].func()
     assert reviews["ok"] is True

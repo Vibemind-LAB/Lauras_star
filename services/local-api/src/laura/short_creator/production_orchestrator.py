@@ -307,6 +307,14 @@ def run_production(
     export_id = render_report.export_id if isinstance(render_report, RenderReport) else None
     resume_point = board.resume_point(expected_scenes)
 
+    # Tell the BOARD how this ended, not just the caller. The result dict goes into the job row;
+    # the board is what the session endpoint reads. A run that hard-failed on a missing API key
+    # left the board reporting "active" for 55 minutes because only the result was ever told.
+    if outcome.status == "hard_fail":
+        board.set_status("failed")
+    elif resume_point == "done":
+        board.set_status("complete")
+
     return {
         # ok is the agent LOOP's status: it ran without a hard failure. It does not mean a
         # video exists — a live run reported ok=True with export_id=None and half a board.

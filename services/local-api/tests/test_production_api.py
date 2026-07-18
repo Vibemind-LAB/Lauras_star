@@ -285,7 +285,12 @@ def test_get_production_status_shape(tmp_path: Path) -> None:
 
     assert set(body) >= {"meta", "scene_reviews", "artifacts", "resume_point"}
     assert body["meta"]["session_id"] == "sess_002"
-    assert body["scene_reviews"] == {"count": 0, "scenes": []}
+    assert body["scene_reviews"] == {
+        "count": 0,
+        "scenes": [],
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
     assert set(body["artifacts"]) == {
         "storyline", "script", "voice", "cutlist", "contact_sheet", "render_report", "qa_report",
     }

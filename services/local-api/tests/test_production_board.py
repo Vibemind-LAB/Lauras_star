@@ -211,7 +211,13 @@ def test_status_shape(tmp_path: Path) -> None:
     board.save("storyline", _storyline("b"))
     status = board.status()
     assert status["meta"]["session_id"] == "s1"
-    assert status["scene_reviews"] == {"count": 1, "scenes": [1]}
+    assert status["scene_reviews"] == {
+        "count": 1,
+        "scenes": [1],
+        # A count alone cannot tell a reviewed board from one whose VLM never ran.
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
     assert status["artifacts"]["storyline"] == {"version": 2, "archived_versions": [1]}
     assert status["artifacts"]["qa_report"] == {"version": None, "archived_versions": []}
 
