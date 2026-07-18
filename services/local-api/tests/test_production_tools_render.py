@@ -425,8 +425,59 @@ def test_render_production_stops_after_the_revision_cap(tmp_path: Path) -> None:
     assert len(fake.calls) == _MAX_RENDER_CYCLES, "the cap must not spend another render"
     assert capped["ok"] is True
     assert capped["final"] is True
+    assert capped["stale"] is False, "the script has not moved, so the cut still speaks it"
     assert "limit" in capped["note"].lower()
     assert capped["export_id"], "the last successful render is still shipped"
+
+
+def test_the_cap_says_so_when_the_shipped_cut_no_longer_speaks_the_script(
+    tmp_path: Path,
+) -> None:
+    """The live failure: a v14-era render shipped as final onto a v39 board.
+
+    Hitting the cap restores the newest archived render so the finished export is still
+    reported. If the script moved on in the meantime, that restored cut speaks words the board
+    no longer contains — and its own voice_fits check still reads OK, because it was true when
+    it was written. Shipping it remains right at the cap; presenting it as a finished film of
+    the current script is what made a broken board look verified.
+    """
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    for _ in range(_MAX_RENDER_CYCLES):
+        specs["render_production"].func()
+
+    # The author rewrites the script after the last render. That save invalidates voice and
+    # cutlist too, and the run rebuilds both — which is exactly what the live timeline shows
+    # (script -> voice -> cutlist -> render). Only the render stays the restored old one.
+    rendered = board.load("script")
+    assert isinstance(rendered, Script)
+    voice, cutlist = board.load("voice"), board.load("cutlist")
+    board.save(
+        "script",
+        Script(
+            language=rendered.language,
+            lines=[
+                line.model_copy(update={"text": f"{line.text} and something else entirely"})
+                for line in rendered.lines
+            ],
+        ),
+    )
+    assert voice is not None and cutlist is not None
+    board.save("voice", voice)
+    board.save("cutlist", cutlist)
+    board.revert("render_report", max(board.versions("render_report")))
+
+    capped = specs["render_production"].func()
+
+    assert capped["final"] is True, "the cap still ships the last cut"
+    assert capped["stale"] is True
+    assert capped["ok"] is False, "a cut that speaks a different script is not a good outcome"
+    assert "earlier script" in capped["note"]
 
 
 def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

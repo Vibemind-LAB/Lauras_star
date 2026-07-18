@@ -9,6 +9,7 @@ frames, end-exclusive.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Literal
 
@@ -219,6 +220,26 @@ def stage_direction_label(text: str) -> str | None:
     return match.group(1) if match is not None else None
 
 
+def script_text(lines: list[ScriptLine]) -> str:
+    """The spoken text of the given (ordered) lines, joined — the basis of the identity below.
+
+    Callers pass lines already in a stable, playback-meaningful order (see
+    ``_lines_in_storyline_order``).
+    """
+    return " ".join(line.text for line in lines)
+
+
+def script_hash(lines: list[ScriptLine]) -> str:
+    """sha256 over :func:`script_text` — the identity every derived artifact is checked against.
+
+    Originally just the voice-synthesis cache key: unchanged ordered text hits the cache, a
+    storyline reorder busts it. It now serves double duty as provenance. A render that records
+    the hash it was made from can be told apart from one whose script has moved on — the live
+    failure where a board carried script v39 beside a render built from v14.
+    """
+    return hashlib.sha256(script_text(lines).encode("utf-8")).hexdigest()
+
+
 class Script(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -313,6 +334,11 @@ class RenderReport(BaseModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     checks: list[RenderCheck] = Field(default_factory=list)
+    # What this render was made from. Live finding: a board carried script v39 while its
+    # render_report came from v14 — its voice_fits check read OK for a pairing that no longer
+    # existed. VoiceArtifact already carried script_hash; the render needs it for the same
+    # reason. Empty means a board written before provenance existed: unknown, not current.
+    script_hash: str = ""
 
 
 class QaFinding(BaseModel):

@@ -94,7 +94,6 @@ instead of raising, matching every other tool's error contract.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -137,6 +136,8 @@ from .board_models import (
     canvas_for,
     stage_direction_label,
 )
+from .board_models import script_hash as _script_hash
+from .board_models import script_text as _script_text
 from .describe import DescribeBackend, resolve_describe_backend
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
 from .voice import VoiceBackend, resolve_voice_backend
@@ -649,20 +650,13 @@ def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[Scri
     return ordered
 
 
-def script_text(lines: list[ScriptLine]) -> str:
-    """The given lines' spoken text, joined with a single space, in the given order. This exact
-    string is what goes to the voice backend and is hashed (:func:`script_hash`) as the
-    synthesis cache key — callers pass lines already in a stable, playback-meaningful order
-    (see :func:`_lines_in_storyline_order`)."""
-    return " ".join(line.text for line in lines)
+script_text = _script_text
 
 
-def script_hash(lines: list[ScriptLine]) -> str:
-    """sha256 hex digest over :func:`script_text` of the given (ordered) lines — the
-    voice-synthesis cache key (Task 5): an unchanged ordered text (even across an unrelated
-    re-save) hits the cache instead of re-synthesizing, while a storyline reorder changes the
-    text and therefore correctly busts the cache."""
-    return hashlib.sha256(script_text(lines).encode("utf-8")).hexdigest()
+# script_hash lives with the model it hashes (board_models) so the board can compute it too —
+# it is the one identity every derived artifact is checked against, and a second copy of that
+# rule is precisely the drift these checks exist to catch. Re-exported here for its callers.
+script_hash = _script_hash
 
 
 def line_starts(
@@ -1841,15 +1835,30 @@ def build_production_tool_specs(
                         board.revert("render_report", newest)
                         last = board.load("render_report")
                 if isinstance(last, RenderReport):
+                    # The restored render may predate the script now on the board — live, a
+                    # v14-era render sat on a v39 board and its voice_fits check read OK for a
+                    # pairing that no longer existed. Shipping it is still the right call at the
+                    # cap, but calling it final without saying that is how the board came to
+                    # claim a finished film nobody had made.
+                    current_hash = script_hash(_lines_in_storyline_order(script, storyline))
+                    stale = bool(last.script_hash) and last.script_hash != current_hash
+                    note = (
+                        f"revision limit reached ({_MAX_RENDER_CYCLES} renders); shipping "
+                        "this cut instead of rendering again"
+                    )
+                    if stale:
+                        note += (
+                            " — WARNING: this render was made from an earlier script; the "
+                            "script on the board has changed since and is NOT what this cut "
+                            "speaks"
+                        )
                     return {
-                        "ok": True,
+                        "ok": not stale,
                         "final": True,
+                        "stale": stale,
                         "export_id": last.export_id,
                         "checks": [c.model_dump() for c in last.checks],
-                        "note": (
-                            f"revision limit reached ({_MAX_RENDER_CYCLES} renders); shipping "
-                            "this cut instead of rendering again"
-                        ),
+                        "note": note,
                     }
 
             ordered_lines = _lines_in_storyline_order(script, storyline)
@@ -1932,6 +1941,9 @@ def build_production_tool_specs(
                 width=out_w,
                 height=out_h,
                 checks=checks,
+                # Provenance: which script this cut actually speaks. Without it a restored
+                # render cannot be told apart from a current one.
+                script_hash=script_hash(ordered_lines),
             )
             board.save("render_report", report)
             ok = all(c.ok for c in checks)

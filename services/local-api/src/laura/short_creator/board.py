@@ -31,6 +31,7 @@ from laura.short_creator.board_models import (
     Script,
     Storyline,
     VoiceArtifact,
+    script_hash,
 )
 
 
@@ -48,6 +49,20 @@ _CHAIN: tuple[str, ...] = (
     "render_report",
     "qa_report",
 )
+def _is_stale(artifact: BaseModel | None, current_script_hash: str | None) -> bool | None:
+    """Whether this artifact was built from a script the board has since moved past.
+
+    Three answers, and the third one matters: True (proven mismatch), False (proven match), and
+    None — the artifact records no provenance, or there is no script to compare against. Boards
+    written before provenance existed fall in the third case, and calling those "current" would
+    repeat the original bug in a new place: asserting a freshness nobody established.
+    """
+    recorded = getattr(artifact, "script_hash", None)
+    if not isinstance(recorded, str) or not recorded or not current_script_hash:
+        return None
+    return recorded != current_script_hash
+
+
 def _failed_checks(artifact: BaseModel | None) -> list[str] | None:
     """Names of this artifact's failed checks, or None when it records no checks at all."""
     checks = getattr(artifact, "checks", None)
@@ -254,6 +269,8 @@ class Board:
         """Board summary for the session API (versions + presence + whether the work happened)."""
         reviews = self.scene_reviews()
         degraded = [r.scene_number for r in reviews if r.degraded]
+        script = self.load("script")
+        current_hash = script_hash(script.lines) if isinstance(script, Script) else None
         artifacts: dict[str, Any] = {}
         for name in _CHAIN:
             cur = self.load(name)
@@ -273,6 +290,10 @@ class Board:
             if failed is not None:
                 entry["checks_ok"] = not failed
                 entry["failed_checks"] = failed
+            # Presence says an artifact exists; provenance says whether it still belongs to the
+            # board it sits on. A render built from a script 25 versions old looked finished.
+            if hasattr(cur, "script_hash"):
+                entry["stale"] = _is_stale(cur, current_hash)
             artifacts[name] = entry
         return {
             "meta": json.loads(self.meta().model_dump_json()),
