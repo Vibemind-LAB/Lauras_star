@@ -32,6 +32,19 @@ def canvas_for(fmt: Format) -> tuple[bool, tuple[int, int]]:
     return FORMAT_PRESETS[fmt]
 
 
+# Script-format labels a screenplay uses and a voice must never speak. Live finding: three
+# autonomous runs labelled their lines instead of bracketing them, so the bracket rule missed
+# it entirely and every synthesis spoke "Narration:" and "CAPTION:" eight times each. The
+# label must be a marker — a standalone token before a colon — so ordinary prose keeps its
+# colons ("why it wants each one: filesystem, memory") and the word "caption" stays usable.
+_STAGE_DIRECTION_LABEL = re.compile(
+    r"(?:^|[\s.;!?\"'-])"
+    r"(NARRATION|NARRATOR|CAPTION|SUBTITLE|VOICEOVER|VOICE-OVER|VO|SFX|MUSIC|B-ROLL|BROLL"
+    r"|ON-SCREEN|ONSCREEN|TITLE|TEXT ON SCREEN|CUT TO|SCENE)\s*:",
+    re.IGNORECASE,
+)
+
+
 class Roi(BaseModel):
     """Normalized region of interest (fractions of source width/height)."""
 
@@ -191,6 +204,19 @@ class ScriptLine(BaseModel):
                 "text contains brackets — narration only, no stage directions or notes"
             )
         return self
+
+
+def stage_direction_label(text: str) -> str | None:
+    """The screenplay label in *text* that a voice must never speak, or None.
+
+    Checked on the WRITE path (``save_script_chapter``), deliberately not in the model
+    validator: the model also runs on every load, and rejecting there would make a board
+    written before this rule unreadable. Stripping the label is not enough either — in
+    "CAPTION: Cold open, org chart on screen" the whole clause after the label is screen
+    description, so the line has to be rewritten, not trimmed.
+    """
+    match = _STAGE_DIRECTION_LABEL.search(text)
+    return match.group(1) if match is not None else None
 
 
 class Script(BaseModel):

@@ -284,6 +284,51 @@ def test_save_script_chapter_language_follows_the_board(tmp_path: Path) -> None:
     assert specs["get_script"].func()["script"]["language"] == "English"
 
 
+def test_save_script_chapter_rejects_spoken_stage_directions(tmp_path: Path) -> None:
+    """Live finding: three autonomous runs wrote screenplay labels into the narration, and the
+    voice spoke them — "Narration:" and "CAPTION:" eight times each per film. Rejected on the
+    write path so the author rewrites the line; stripping the label would leave the screen
+    description behind it standing."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_script_chapter"].func(
+        chapter=1,
+        lines=[
+            {
+                "scene_number": 1,
+                "text": "Narration: One input produced a full org chart. "
+                "CAPTION: Cold open, org chart on screen.",
+            }
+        ],
+    )
+
+    assert out["ok"] is False
+    assert "stage-direction" in out["reason"].lower()
+    assert "narration" in out["reason"].lower()
+    assert board.load("script") is None, "nothing malformed reaches the board"
+
+
+def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: Path) -> None:
+    """The rule catches labels, not punctuation — spoken prose keeps its colons."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_script_chapter"].func(
+        chapter=1,
+        lines=[
+            {
+                "scene_number": 1,
+                "text": "It writes down why it wants each one: filesystem, memory, reasoning.",
+            }
+        ],
+    )
+
+    assert out["ok"] is True, out
+
+
 def test_save_script_chapter_validation_error(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)

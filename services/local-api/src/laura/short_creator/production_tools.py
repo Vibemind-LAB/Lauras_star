@@ -134,6 +134,7 @@ from .board_models import (
     VoiceArtifact,
     as_scene_window,
     canvas_for,
+    stage_direction_label,
 )
 from .describe import DescribeBackend, resolve_describe_backend
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
@@ -1205,6 +1206,25 @@ def build_production_tool_specs(
                 new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
             except ValidationError as exc:
                 return {"ok": False, "errors": _validation_errors(exc)}
+            # Screenplay labels go straight into the voice: three autonomous runs spoke
+            # "Narration:" and "CAPTION:" eight times each. Rejected here, on the write path,
+            # rather than in the model — the model also validates on load, and a board written
+            # before this rule must stay readable.
+            spoken_labels = [
+                (line.scene_number, label)
+                for line in new_lines
+                if (label := stage_direction_label(line.text)) is not None
+            ]
+            if spoken_labels:
+                detail = "; ".join(f"scene {n}: '{label}:'" for n, label in spoken_labels)
+                return {
+                    "ok": False,
+                    "reason": (
+                        f"stage-direction labels would be read out loud ({detail}). Write only "
+                        f"the spoken words — what is on screen is already on screen, so narrate "
+                        f"what it MEANS instead of describing it."
+                    ),
+                }
             existing = board.load("script")
             # The board decides the language, not a hard-coded "de": two English runs wrote
             # English text tagged "de" because this line ignored the board.
