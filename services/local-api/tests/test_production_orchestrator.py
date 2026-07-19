@@ -543,3 +543,34 @@ def test_a_finished_board_reports_complete(tmp_path: Path) -> None:
 
     assert result["complete"] is True
     assert result["resume_point"] == "done"
+
+
+def test_the_charter_names_the_way_out_of_scarce_footage(tmp_path: Path) -> None:
+    """Pins the escape hatch the run-M deadlock was missing.
+
+    The charter forbade shortening the voice; capacity said the scenes could not stretch
+    further. Cornered between the two, the orchestrator invented a third option — acquiring
+    longer scene files from an "asset owner" — and spent twenty minutes instructing agents to
+    contact a person who does not exist, ending the run with no render. The contract now
+    closes that door (the footage is fixed, nobody to ask) and opens the honest one: a
+    shorter script, pre-authorized, no permission loop.
+    """
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-charter")
+    meta = BoardMeta(
+        session_id="sess-charter",
+        asset_id=asset_id,
+        created_utc="2026-07-19T00:00:00+00:00",
+        task="demo",
+        target_seconds=174.0,
+    )
+    board = Board.create(root, meta)
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=174
+    )
+
+    assert "THE FOOTAGE IS FIXED" in task
+    assert "never plan around acquiring material" in task
+    assert "SHORTER SCRIPT" in task
+    assert "capacity_warning" in task
