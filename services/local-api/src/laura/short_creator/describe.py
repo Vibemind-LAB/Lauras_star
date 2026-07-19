@@ -115,7 +115,12 @@ class OllamaDescribeBackend:
                 "top_k": 1,
                 "top_p": 1.0,
                 "seed": 0,
-                "num_predict": 200,
+                # 200 truncated every review reply mid-JSON (done_reason=length, measured
+                # thrice at exactly eval=200) — the parser then failed and five of six scenes
+                # degraded with empty descriptions and no error anywhere. The review JSON
+                # (description + whats_happening + up to 4 windows with ROIs) needs 300-500
+                # tokens; the OpenRouter path learned the same lesson on 2026-07-15.
+                "num_predict": 1024,
                 # 8192 was NOT enough for the real workload: three frames plus the review
                 # prompt overflow it, and Ollama's context handling for vision models does not
                 # truncate — it crashes the runner (GGML_ASSERT ne[2]*4 == ne[0], HTTP 500).

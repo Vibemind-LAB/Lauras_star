@@ -223,3 +223,21 @@ def test_available_shares_the_same_serialization(monkeypatch: pytest.MonkeyPatch
     prober.join()
 
     assert not any(overlapped)
+
+
+def test_the_reply_budget_holds_the_full_review_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the num_predict floor with its reason.
+
+    200 truncated every review reply mid-JSON — done_reason=length at exactly eval=200,
+    measured three times on the live workload. The parser then failed on the incomplete
+    object and five of six scenes degraded with empty descriptions and no error anywhere.
+    The review JSON (description, whats_happening, up to four windows with ROIs, notes)
+    needs 300-500 tokens. The OpenRouter path learned this same lesson on 2026-07-15.
+    """
+    recorder = _Recorder([{"message": {"content": "ok"}}])
+    monkeypatch.setattr(describe_mod, "_http_json", recorder)
+    OllamaDescribeBackend(model="m").describe([b"jpg"], "p")
+
+    payload = recorder.calls[0]
+    assert payload is not None
+    assert payload["options"]["num_predict"] >= 1024

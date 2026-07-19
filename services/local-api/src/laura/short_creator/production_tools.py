@@ -95,6 +95,7 @@ instead of raising, matching every other tool's error contract.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import subprocess
@@ -144,6 +145,8 @@ from .toolset import RENDER_WAIT_SECONDS, ToolSpec
 from .voice import VoiceBackend, resolve_voice_backend
 
 # Signature of laura.mcp.tools.tool_render_segments — wired in from Task 6 on.
+logger = logging.getLogger(__name__)
+
 RenderSegmentsFn = Callable[..., dict[str, Any]]
 
 _MIN_WINDOW_S = 0.01
@@ -1192,6 +1195,16 @@ def build_production_tool_specs(
                 )
                 reply = backend.describe(frames, prompt)
                 parsed = _parse_review_reply(reply) if reply else None
+                if reply and parsed is None:
+                    # A reply that came back but did not parse must not vanish silently: a
+                    # truncated-JSON bug (num_predict too small) once degraded five of six
+                    # scenes with empty descriptions and not one line of evidence anywhere.
+                    logger.warning(
+                        "review_scene %s: VLM reply unparseable (%d chars): %.120s",
+                        scene_number,
+                        len(reply),
+                        reply,
+                    )
 
             if parsed is None:
                 review = SceneReview(
