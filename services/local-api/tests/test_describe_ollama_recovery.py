@@ -1,15 +1,20 @@
-"""A local VLM 500 means "this loaded instance is broken", and the cure is a fresh load.
+"""Local VLM 500s: recover once via a fresh load, and never overflow the context.
 
-Live finding (run cb068b06): the model had been loaded by a TEXT request; every subsequent
-image describe against that resident instance answered HTTP 500. describe() treated each 500
-as final and returned "" — so all six scene reviews degraded, the orchestrator spent the run
-retrying them, and no storyline was ever saved. The instance healed the moment it was
-UNLOADED and freshly loaded by an image request — verified by replaying the exact payload and
-the exact backend path after the keep_alive expired.
+Two runs (cb068b06, 4a8624e2) degraded every scene review on Ollama HTTP 500s. The first
+diagnosis — "an instance loaded by a text request cannot serve images" — was WRONG, and the
+unload-retry built on it did not save the second run. Capturing the 500 body found the truth:
 
-So a 5xx from the local server now triggers exactly one recovery: force-unload the model
-(``keep_alive: 0``) and retry the same request against the fresh load. Transport errors and
-4xx stay final — retrying a request the server rejects as malformed only doubles the damage.
+    GGML_ASSERT(a->ne[2] * 4 == b->ne[0]) failed
+
+Three frames plus the review prompt overflow num_ctx 8192, and Ollama's vision path does not
+truncate an overflowing context — it crashes the runner. Reproduced deterministically: same
+frames + short prompt fine, + the 936-char review prompt crash, num_ctx 16384 fine. (The
+earlier short-prompt repros "worked" only because they fit — they proved nothing about the
+instance.)
+
+The unload-retry stays: the GGML assert genuinely kills the runner, so the request AFTER a
+crash can hit a half-restarted server, and one forced fresh load rides that out. Transport
+errors and 4xx stay final — retrying a request the server rejects only doubles the damage.
 """
 
 from __future__ import annotations
@@ -117,3 +122,22 @@ def test_a_failing_unload_does_not_mask_the_recovery_attempt(
     backend = OllamaDescribeBackend(model="m")
 
     assert backend.describe([b"jpg"], "p") == "recovered"
+
+
+def test_the_context_window_holds_three_frames_plus_the_review_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the num_ctx floor with its reason.
+
+    8192 overflowed on the real workload (three frames + the review prompt), and Ollama's
+    vision path does not truncate an overflowing context — it crashes the runner with a GGML
+    shape assert and answers 500. Two whole runs degraded every single review on this. If a
+    future edit lowers the window again, this is the test that says why it must not.
+    """
+    recorder = _Recorder([{"message": {"content": "ok"}}])
+    monkeypatch.setattr(describe_mod, "_http_json", recorder)
+    OllamaDescribeBackend(model="m").describe([b"jpg"] * 3, "p" * 1000)
+
+    payload = recorder.calls[0]
+    assert payload is not None
+    assert payload["options"]["num_ctx"] >= 16384

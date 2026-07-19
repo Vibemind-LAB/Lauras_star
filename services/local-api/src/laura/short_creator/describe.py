@@ -98,7 +98,13 @@ class OllamaDescribeBackend:
                 "top_p": 1.0,
                 "seed": 0,
                 "num_predict": 200,
-                "num_ctx": 8192,
+                # 8192 was NOT enough for the real workload: three frames plus the review
+                # prompt overflow it, and Ollama's context handling for vision models does not
+                # truncate — it crashes the runner (GGML_ASSERT ne[2]*4 == ne[0], HTTP 500).
+                # Reproduced deterministically: same frames + short prompt fine, + the 936-char
+                # review prompt crash, num_ctx 16384 fine. Two whole runs degraded every review
+                # on this before the error body was captured.
+                "num_ctx": 16384,
             },
         }
         try:
