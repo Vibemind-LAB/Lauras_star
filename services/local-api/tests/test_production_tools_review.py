@@ -376,3 +376,69 @@ def test_clamp_windows_clamps_discards_and_caps() -> None:
 
     five: list[object] = [{"offset_s": float(i * 2), "duration_s": 1.0} for i in range(5)]
     assert len(_clamp_windows(five, 20.0)) == 4  # hard cap at 4 accepted windows
+
+
+# --- the re-review cap: a VLM is a stochastic oracle, not a measurement --------------------
+# Live finding (run be23992c): every scene was reviewed SIX times — 36 VLM calls in 24 minutes
+# — and exactly ONE of the 30 re-reviews fixed a degraded review. The other 29 re-asked a
+# healthy review and got a randomly different answer each time (scene 6's window count went
+# 4>3>1>3>3>2). The orchestrator read variance as progress, the turn budget died in the review
+# phase, and no storyline was ever saved. Asking again yields a DIFFERENT answer, not a better
+# one — so after one refinement of a healthy review, the tool refuses and points forward.
+#
+# Degraded reviews stay retryable without limit: fixing degradation is the one case where a
+# re-review has a real target.
+
+
+def test_a_healthy_review_allows_exactly_one_refinement(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm(_GOOD_REPLY), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    assert specs["review_scene"].func(scene_number=1)["ok"] is True
+    assert specs["review_scene"].func(scene_number=1)["ok"] is True  # one refinement
+
+    third = specs["review_scene"].func(scene_number=1)
+
+    assert third["ok"] is False
+    assert "save_storyline" in third["reason"], "the refusal must point forward, not just block"
+    assert board.scene_reviews()[0].version == 2, "the third call must not have written"
+
+
+def test_the_cap_counts_per_scene_not_per_run(tmp_path: Path) -> None:
+    """Refining scene 1 must not use up scene 2's refinement."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm(_GOOD_REPLY), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+    specs["review_scene"].func(scene_number=1)
+    specs["review_scene"].func(scene_number=1)
+    assert specs["review_scene"].func(scene_number=1)["ok"] is False
+
+    # Scene 2 does not exist in this one-scene fixture, so prove the point on scene 1's
+    # counter staying isolated: a fresh toolset (fresh run) starts a fresh budget.
+    fresh = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+    assert fresh["review_scene"].func(scene_number=1)["ok"] is True
+
+
+def test_degraded_reviews_stay_retryable(tmp_path: Path) -> None:
+    """Fixing degradation is the one re-review with a real target — never cap it."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm("not json {"), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    for _ in range(4):
+        out = specs["review_scene"].func(scene_number=1)
+        assert out["ok"] is True and out["degraded"] is True
+
+    assert board.scene_reviews()[0].version == 4

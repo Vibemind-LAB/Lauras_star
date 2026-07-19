@@ -1125,6 +1125,13 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    # Per-run refinement budget for healthy reviews. A VLM is a stochastic oracle: asked
+    # twice about the same frames it gives a different answer, not a better one. A live run
+    # reviewed every scene six times — 36 VLM calls, 24 minutes, exactly one of which fixed
+    # anything — and died at the turn budget with no storyline. Degraded reviews are exempt:
+    # fixing degradation is the one re-review with a real target.
+    healthy_re_reviews: dict[int, int] = {}
+
     def review_scene(scene_number: int) -> dict[str, Any]:
         """Look at 3 real frames (start/middle/end) of a scene with the VLM and write a
         validated SceneReview to the board. The VLM proposes 1-4 non-overlapping strong
@@ -1138,6 +1145,21 @@ def build_production_tool_specs(
             resolved = _resolve_scene(db, asset_id, scene_number)
             if resolved is None:
                 return {"ok": False, "reason": "unknown scene"}
+            existing = next(
+                (r for r in board.scene_reviews() if r.scene_number == scene_number), None
+            )
+            if existing is not None and not existing.degraded:
+                if healthy_re_reviews.get(scene_number, 0) >= 1:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            f"scene {scene_number} already has a healthy review "
+                            f"(v{existing.version}, {len(existing.windows)} windows) and was "
+                            "already refined once this run. Another look yields a different "
+                            "answer, not a better one — move on: save_storyline."
+                        ),
+                    }
+                healthy_re_reviews[scene_number] = healthy_re_reviews.get(scene_number, 0) + 1
             src_start, src_end_exclusive, text = resolved
             asset = repos.get_asset(db, asset_id)
             fps = _fps(db, asset) if asset is not None else 30.0
