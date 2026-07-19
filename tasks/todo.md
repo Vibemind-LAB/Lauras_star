@@ -462,8 +462,21 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
 - **Exit:** ✓ ein hängender/toter Lauf ist am Endpunkt erkennbar, auch ohne Board
 
 ### 20.E — Bekannt, belegt, noch offen  `[ ]`
-- [ ] `hook_score` belohnt Bewegung → gehaltene Screens bekommen 1-Sekunden-Fenster (Reel-Logik)
-- [ ] Skript-Thrashing unbegrenzt außer durch `max_turns` (live: v39 in einem Lauf)
+- [ ] `hook_score` belohnt Bewegung → gehaltene Screens bekommen kurze Fenster (Reel-Logik;
+      mildert sich durch Kapazitäts-Budget, Fenster sind nur noch Gewichte)
+- [x] ~~Skript-Thrashing~~ — die drei Treiber sind einzeln gefallen: Wipe durch Reihenfolge/
+      Struktur (`160e784`), Schrumpfen-als-Wachsen (`1d94859`), Review-Gewitter (`c6101cc`)
+- [ ] Orchestrator-Delegations-Ping-Pong (Agenten rätseln, wer welche Tools hat — Lauf J/L
+      verlor Turns an „request the board operator"; Tool-Besitz gehört in den Task-Text)
+
+### 20.F — Meilenstein: erster vollständig agentengebauter Film  `[x]` (2026-07-19)
+Lauf `ee65e23a`, Export `d3ce3129` (workspace-livetest/exports/): **146,8s, 1920×1080,
+h264+aac, echte Screens mit Captions.** 6/6 gesunde VLM-Reviews (lokal, qwen2.5vl:7b),
+Kette einmal sauber durchgebaut, `render_stale=False`, Skript 367 Worte über alle 6 Kapitel.
+Offener Rest: `voice_fits` −26s — Summe stimmte, Verteilung nicht (Kapitel 3: 62 Worte für
+11,5s Kapazität). Gegenmittel `ce7a194`: `capacity_warning` im Save-Reply. Nächster Lauf
+verifiziert. Auf dem Weg dorthin fielen: VLM-Kontext-Crash (`3328f25`), Antwort-Trunkierung
+(`c678db7`), Parallel-Aushungern (`53d9bbe`), Blackbox-Läufe (`c03fc72`).
 
 **Erledigt aus diesem Befundkreis:** Job-Ergebnis-Kontrakt (`35361d6`), `BoardMeta.status` mit
 Schreiber, `degraded_count`/`checks_ok` in `Board.status()`, Kapazitäts-Budget (`56abc5b`).
