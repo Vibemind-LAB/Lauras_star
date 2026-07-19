@@ -184,6 +184,30 @@ def test_create_production_unknown_asset_404(tmp_path: Path) -> None:
     assert r.status_code == 404, r.text
 
 
+def test_create_production_refuses_an_unusable_agent_config_503(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The live incident at the endpoint: openai-compat with no key must never enqueue.
+
+    A job that cannot possibly reach a model was created, ran, and looked alive for 55 minutes.
+    Preflight turns that into a 503 before any board or job exists — and the message names the
+    missing variable instead of the eventual "Connection error."
+    """
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setenv("LAURA_AGENT_PROVIDER", "openai-compat")
+    monkeypatch.setenv("LAURA_AGENT_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.delenv("LAURA_AGENT_API_KEY", raising=False)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(f"/assets/{asset_id}/production", json={"task": "recap"}, headers=_H)
+
+    assert r.status_code == 503, r.text
+    assert "LAURA_AGENT_API_KEY" in r.text
+    # Nothing was enqueued: the refusal is before the board and the job.
+    assert all(j["kind"] != "production.run" for j in repos.list_jobs(db, limit=50))
+
+
 def test_create_production_empty_task_422(tmp_path: Path, monkeypatch: Any) -> None:
     client, db = _app(tmp_path)
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)

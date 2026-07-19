@@ -82,6 +82,23 @@ def _require_autoshort() -> None:
         )
 
 
+def _require_usable_agent_config() -> None:
+    """Raise 503 unless the configured agent provider could actually be reached.
+
+    Live incident: a run was started against ``openai-compat`` with no ``LAURA_AGENT_API_KEY``.
+    It was enqueued, created a board, spent both escalation stages and came back "Connection
+    error." — then looked alive for 55 minutes. The extra was checked; the credential was not.
+    """
+    from laura.short_creator.providers import config_problems, resolve_from_env
+
+    problems = config_problems(resolve_from_env())
+    if problems:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "the agent provider is not usable: " + "; ".join(problems),
+        )
+
+
 def _get_asset_or_404(db: Database, asset_id: str) -> dict[str, Any]:
     """Return the asset row for *asset_id*, or raise 404 if it does not exist."""
     asset = repos.get_asset(db, asset_id)
@@ -133,6 +150,7 @@ def auto_short(
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
+    _require_usable_agent_config()
     payload: dict[str, Any] = {
         "asset_id": asset_id,
         "topic": body.topic,
@@ -164,6 +182,7 @@ def auto_short_stream(
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
+    _require_usable_agent_config()
     from ..short_creator.providers import resolve_from_env
     from ..short_creator.stream import run_short_creator_stream
 
@@ -241,6 +260,7 @@ def create_production(
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
+    _require_usable_agent_config()
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
@@ -287,6 +307,7 @@ def send_production_message(
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
     _require_autoshort()
+    _require_usable_agent_config()
     asset_id = str(session["asset_id"])
     board = _open_board_or_404(db, asset_id, session_id)
     meta = board.meta()
