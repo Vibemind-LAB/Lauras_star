@@ -281,6 +281,7 @@ def create_production(
         },
         max_attempts=1,
     )
+    repos.set_production_session_job(db, session_id, job_id)
     return {"session_id": session_id, "job_id": job_id}
 
 
@@ -325,6 +326,7 @@ def send_production_message(
         },
         max_attempts=1,
     )
+    repos.set_production_session_job(db, session_id, job_id)
     return {"session_id": session_id, "job_id": job_id}
 
 
@@ -334,26 +336,59 @@ def get_production_status(
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("read"))],
 ) -> dict[str, Any]:
-    """Read-only board status for *session_id*: ``board.status()`` plus the resume point.
+    """Read-only status for *session_id*: the running job's liveness, plus the board when ready.
 
-    404 if the session is unknown, 404 if it has no board yet. Never enqueues anything and
-    never requires the 'autoshort' extra — this is a pure read of what is already on disk.
+    404 only if the session is unknown. A session whose board does not exist yet — queued, or
+    died before building one — returns ``{"job": ..., "board_ready": false}`` rather than 404,
+    because that dead-before-a-board run is exactly the case liveness has to surface. Never
+    enqueues anything and never requires the 'autoshort' extra — a pure read of what is on disk.
     A present contact_sheet artifact additionally carries its ``png_path``/``labeled``/``tiles``
     inside the artifacts block (next to the chain-standard version fields), so a client can
     show the checkpoint without a second lookup; the image bytes come from
     ``GET /production/{session_id}/contact-sheet``.
     """
+    from ..short_creator.board import Board
     from ..short_creator.board_models import ContactSheet
+    from ..short_creator.production_orchestrator import board_root_for
 
     db = _db(request)
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
     asset_id = str(session["asset_id"])
-    board = _open_board_or_404(db, asset_id, session_id)
+
+    # Liveness: the one field the incident needed and did not have. The job is the authority on
+    # whether the run is alive — a hanging run is a "running" job with an expired lease, a dead
+    # run is a "failed" job — and it is looked up BEFORE the board, because the very failure
+    # this closes is a run that died before a readable board existed. The board alone kept
+    # reading "active" for 55 minutes; requiring it to answer would hide exactly the dead run.
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    job_view = (
+        {
+            "id": job["id"],
+            "status": job["status"],
+            "attempt": job["attempt"],
+            "updated_at": job["updated_at"],
+            "lease_expires_at": job["lease_expires_at"],
+            "finished_at": job["finished_at"],
+        }
+        if job is not None
+        else None
+    )
+
+    try:
+        board = Board.open(board_root_for(db, asset_id, session_id))
+    except (ValueError, FileNotFoundError):
+        # No board yet — the run is queued, or it died before building one. That is a state to
+        # report, not a 404: the job view carries the answer.
+        return {"session_id": session_id, "job": job_view, "board_ready": False}
+
     expected_scenes = _expected_scenes_for(db, asset_id)
     result = board.status()
     result["resume_point"] = board.resume_point(expected_scenes)
+    result["job"] = job_view
+    result["board_ready"] = True
     sheet = board.load("contact_sheet")
     if isinstance(sheet, ContactSheet):
         result["artifacts"]["contact_sheet"].update(

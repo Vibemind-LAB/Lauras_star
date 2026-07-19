@@ -433,18 +433,23 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
       blockieren — dieselbe Schlussfolgerung wie beim `resume_point`, aber aus besserem Grund.
 - **Exit:** ein 2-von-6-Kapitel-Skript ist benannt, wo der Autor seine Arbeit prüft ✓
 
-### 20.C — Preflight statt „Connection error."  `[ ]`
-- [ ] Provider vor dem Enqueue prüfen (Key vorhanden, Modell gesetzt) — mit klarer Meldung
-- [ ] Konfigurationsfehler von Transportfehler unterscheiden (live: fehlender
-      `LAURA_AGENT_API_KEY` meldete sich als „Connection error.")
-- [ ] Unbekannter `LAURA_AGENT_PROVIDER` darf nicht still auf einen anderen zurückfallen
-- **Exit:** ein Lauf ohne Key startet gar nicht erst und sagt warum
+### 20.C — Preflight statt „Connection error."  `[x]` (`ad8f957`)
+- [x] Provider vor dem Enqueue prüfen (`config_problems` an allen 4 Enqueue-Endpunkten, 503)
+- [x] Konfigurationsfehler von Transportfehler unterscheiden — strukturell: kein Modellaufruf
+      ohne erreichbaren Provider, also heißt „Connection error." danach wirklich Transport
+- [x] Unbekannter `LAURA_AGENT_PROVIDER` wird gemeldet statt still zu ersetzen (Resolver merkt
+      sich den Rohwert)
+- **Exit:** ✓ live gegen die echte `.env` verifiziert — fehlender Key UND Tippfehler `openai` gefangen
 
-### 20.D — Lebenszeichen  `[ ]`
-- [ ] `GET /production/{sid}` zeigt Job-Status und letzten Fortschritt (heute: kein Lebenszeichen —
-      ein toter Lauf sah 55 Minuten lang aus wie ein arbeitender)
-- [ ] `review_scene` ohne konfiguriertes VLM scheitert einmal laut, statt pro Szene still zu degradieren
-- **Exit:** ein hängender Lauf ist von außen als solcher erkennbar
+### 20.D — Lebenszeichen  `[x]` (`0033`-Migration)
+- [x] Session hält `latest_job_id`; `GET /production/{sid}` gibt `job` (status/attempt/
+      updated_at/lease_expires_at) aus — hängender Lauf = laufender Job mit abgelaufenem Lease
+- [x] Lebenszeichen wird VOR dem Board geholt: ein Lauf, der vor dem Board stirbt, liefert
+      `{"job": …, "board_ready": false}` statt 404 — genau der Vorfall
+- [ ] `review_scene` ohne konfiguriertes VLM scheitert einmal laut, statt pro Szene still zu
+      degradieren — **verschoben nach 20.A-Muster:** `degraded_count` macht es bereits sichtbar;
+      lautes Scheitern wäre eine Verhaltensänderung, die einen eigenen Lauf braucht
+- **Exit:** ✓ ein hängender/toter Lauf ist am Endpunkt erkennbar, auch ohne Board
 
 ### 20.E — Bekannt, belegt, noch offen  `[ ]`
 - [ ] `hook_score` belohnt Bewegung → gehaltene Screens bekommen 1-Sekunden-Fenster (Reel-Logik)
