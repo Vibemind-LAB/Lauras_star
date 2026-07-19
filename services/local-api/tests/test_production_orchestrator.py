@@ -13,6 +13,7 @@ team via ``asyncio.run``) is manual-to-verify, same as v1's ``orchestrator._defa
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import cast
 
@@ -574,3 +575,37 @@ def test_the_charter_names_the_way_out_of_scarce_footage(tmp_path: Path) -> None
     assert "never plan around acquiring material" in task
     assert "SHORTER SCRIPT" in task
     assert "capacity_warning" in task
+
+
+def test_the_task_names_every_agents_tools(tmp_path: Path) -> None:
+    """Pins the tool-ownership roster, measured across three runs of delegation confusion.
+
+    The magentic orchestrator repeatedly routed writes to agents that do not hold the tool:
+    run J's coding_agent was told to save the storyline ("no exposed save endpoint for me"),
+    run N ended with the orchestrator and story_architect asking EACH OTHER to call
+    save_script_chapter — thirteen save_storyline attempts, sixteen refusals, no script, and
+    a hallucinated "finished film" in the closing statement. Agents cannot discover each
+    other's toolsets; the contract now prints the roster, derived from the same AgentSpec
+    definitions the team is built from, so it cannot drift.
+    """
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-roster")
+    meta = BoardMeta(
+        session_id="sess-roster",
+        asset_id=asset_id,
+        created_utc="2026-07-19T00:00:00+00:00",
+        task="demo",
+        target_seconds=174.0,
+    )
+    board = Board.create(root, meta)
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=174
+    )
+
+    assert "TOOL OWNERSHIP" in task
+    # The two misroutings that actually happened, pinned by name.
+    assert re.search(r"story_architect:[^\n]*save_storyline", task)
+    assert re.search(r"scene_author:[^\n]*save_script_chapter", task)
+    assert re.search(r"coding_agent:[^\n]*render_production", task)
+    assert "ONLY the named agent can call its tools" in task

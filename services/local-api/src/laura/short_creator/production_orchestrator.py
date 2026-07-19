@@ -179,7 +179,32 @@ def build_production_task(
         "6) QA LIMIT: after ONE revise verdict, at most one revision round is allowed - if the "
         "next QA pass still finds issues, deliver anyway with the findings recorded as "
         "warnings instead of looping again.\n"
+        "\n"
+        f"{_tool_ownership_section(meta.language)}"
         f"{follow_up}"
+    )
+
+
+def _tool_ownership_section(language: str) -> str:
+    """The roster of who holds which tool, derived from the same specs the team is built from.
+
+    Agents cannot discover each other's toolsets, and across three runs the orchestrator
+    routed writes to agents that do not hold the tool — ending once with the orchestrator and
+    story_architect asking EACH OTHER to call save_script_chapter while the budget died.
+    Generated, not hand-written, so the list cannot drift from the real team.
+    """
+    from .production_agents import production_agent_specs
+
+    lines = "\n".join(
+        f"   - {spec.name}: {', '.join(spec.tool_names)}"
+        for spec in production_agent_specs(language)
+    )
+    return (
+        "7) TOOL OWNERSHIP (exhaustive - no other agent has these):\n"
+        f"{lines}\n"
+        "   ONLY the named agent can call its tools. Never instruct any other agent - or "
+        "yourself - to call a tool it does not hold; route the WORK to the agent that owns "
+        "the tool and let it make the call itself.\n"
     )
 
 
