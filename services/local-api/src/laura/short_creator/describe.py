@@ -16,6 +16,7 @@ Real model output is manual-to-verify (no model/key in CI); tests fake the HTTP 
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -101,12 +102,38 @@ class OllamaDescribeBackend:
             },
         }
         try:
-            data = _http_json(f"{self.host}/api/chat", payload, timeout=600.0)
-            content = data.get("message", {}).get("content", "")
-            return str(content).strip()
+            return self._chat(payload)
+        except urllib.error.HTTPError as exc:
+            # A local 5xx means "this loaded instance is broken", and the observed cure is a
+            # fresh load: a run once got 500 for EVERY image describe because the resident
+            # instance had been loaded by a text request — all six reviews degraded, no
+            # storyline, dead run. The moment the model was unloaded and reloaded by an image
+            # request it answered correctly. So: force-unload, retry once. 4xx stays final —
+            # a request the server rejects does not get better on a fresh load.
+            if exc.code < 500:
+                logger.warning("ollama describe failed: %s", exc)
+                return ""
+            logger.warning("ollama describe got %s — unloading the model and retrying", exc)
+            # Even a failing unload does not cancel the retry — it can only help.
+            with contextlib.suppress(urllib.error.URLError, OSError, ValueError):
+                _http_json(
+                    f"{self.host}/api/chat",
+                    {"model": self.model, "messages": [], "keep_alive": 0},
+                    timeout=60.0,
+                )
+            try:
+                return self._chat(payload)
+            except (urllib.error.URLError, OSError, ValueError, KeyError) as retry_exc:
+                logger.warning("ollama describe failed after reload: %s", retry_exc)
+                return ""
         except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
             logger.warning("ollama describe failed: %s", exc)
             return ""  # never block the pipeline on a model hiccup
+
+    def _chat(self, payload: dict[str, Any]) -> str:
+        data = _http_json(f"{self.host}/api/chat", payload, timeout=600.0)
+        content = data.get("message", {}).get("content", "")
+        return str(content).strip()
 
 
 class OpenRouterDescribeBackend:
