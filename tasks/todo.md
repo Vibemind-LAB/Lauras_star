@@ -398,7 +398,17 @@ Interchange/Analyse/Rough-Cut/Playback folgen in weiteren Sessions.
 
 ---
 
-## Portion 20 — Kohärenz der Produktionskette  `[~]`  ← **Kern-Risiko, aus Live-Befunden**
+## Portion 20 — Kohärenz der Produktionskette  `[x]`  ← **Kern-Risiko, aus Live-Befunden; alle 4 Säulen shipped**
+
+**Abschluss-Review (adversarial, 6 Perspektiven, jede Erkenntnis widerlegt bevor geglaubt —
+9 Befunde, 5 überlebt, 4 widerlegt):** fand 2 echte Fehler *in den Fixes selbst*, beide behoben
+(`3eb195d`): (1) Staleness-Check hashte die Speicher- statt der Storyline-Reihenfolge →
+`lines_in_storyline_order` lebt jetzt in board_models neben `script_hash`; (2) der 200-statt-404-
+Vertrag am Status-Endpunkt crashte ChatPanels SessionChips im Pre-Board-Fenster →
+`ProductionStatus` ist eine diskriminierte Union auf `board_ready` (Compiler erzwingt Narrowing),
+vitest 360/360 + tsc grün. **Merke:** Ein während eines Laufs laufendes Backend hat den Stand
+seines Starts — Lauf F lief auf `a7580a5`, dessen `stale`-Feld kann bei umsortierten Szenen
+falsch-True zeigen.
 
 **Der gemeinsame Nenner aller Fehler vom 18.07.2026:** Die Kette prüft nie, ob ihre Glieder
 *zueinander* gehören. Jedes Artefakt wird einzeln gespeichert, die Kettenposition entscheidet
