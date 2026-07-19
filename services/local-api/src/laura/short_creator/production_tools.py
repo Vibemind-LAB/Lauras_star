@@ -1465,11 +1465,35 @@ def build_production_tool_specs(
             # English text tagged "de" because this line ignored the board.
             language = board.meta().language
             kept: list[ScriptLine] = []
+            replaced: list[ScriptLine] = []
             if isinstance(existing, Script):
                 kept = [line for line in existing.lines if line.chapter != chapter]
+                replaced = [line for line in existing.lines if line.chapter == chapter]
             merged = sorted(kept + new_lines, key=lambda line: line.chapter)
             version = board.save("script", Script(language=language, lines=merged))
-            return {"ok": True, "version": version, "total_lines": len(merged)}
+            # The word arithmetic, in the reply the agent actually reads. This save REPLACES
+            # the chapter, and "replace" reads as "append" under expansion pressure: a live
+            # run told to ADD ~200 words saved only the new lines per chapter, six times, and
+            # 263 words fell to 123 — a 174s film with ~50s of voice — without anyone
+            # noticing, because the reply named only version and line count.
+            words_before = sum(len(line.text.split()) for line in replaced)
+            words_after = sum(len(line.text.split()) for line in new_lines)
+            result: dict[str, Any] = {
+                "ok": True,
+                "version": version,
+                "total_lines": len(merged),
+                "total_words": sum(len(line.text.split()) for line in merged),
+                "chapter_words_before": words_before,
+                "chapter_words_after": words_after,
+            }
+            if words_after < words_before:
+                result["warning"] = (
+                    f"chapter {chapter} REPLACED: {words_before} words -> {words_after}. This "
+                    "tool replaces the chapter's lines with exactly what you pass — it does "
+                    "not append. To EXPAND a chapter, pass its existing lines plus the new "
+                    "ones."
+                )
+            return result
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 

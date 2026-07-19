@@ -268,12 +268,26 @@ def test_save_script_chapter_merges_per_chapter(tmp_path: Path) -> None:
             {"scene_number": 1, "text": "line b"},
         ],
     )
-    assert out1 == {"ok": True, "version": 1, "total_lines": 2}
+    assert out1 == {
+        "ok": True,
+        "version": 1,
+        "total_lines": 2,
+        "total_words": 4,
+        "chapter_words_before": 0,
+        "chapter_words_after": 4,
+    }
 
     out2 = specs["save_script_chapter"].func(
         chapter=2, lines=[{"scene_number": 1, "text": "line c"}]
     )
-    assert out2 == {"ok": True, "version": 2, "total_lines": 3}
+    assert out2 == {
+        "ok": True,
+        "version": 2,
+        "total_lines": 3,
+        "total_words": 6,
+        "chapter_words_before": 0,
+        "chapter_words_after": 2,
+    }
 
     # Seed a downstream artifact directly to prove the next script write invalidates it.
     board.save("voice", VoiceArtifact(script_hash="x", mp3_path="v.mp3"))
@@ -282,7 +296,11 @@ def test_save_script_chapter_merges_per_chapter(tmp_path: Path) -> None:
     out3 = specs["save_script_chapter"].func(
         chapter=1, lines=[{"scene_number": 1, "text": "line d"}]
     )
-    assert out3 == {"ok": True, "version": 3, "total_lines": 2}
+    # Chapter 1 shrinks from 4 words ("line a", "line b") to 2 — the reply says so, and
+    # the warning names the replace semantics that once cost a run half its script.
+    assert out3["ok"] is True and out3["version"] == 3 and out3["total_lines"] == 2
+    assert out3["chapter_words_before"] == 4 and out3["chapter_words_after"] == 2
+    assert "REPLACED" in out3["warning"]
 
     got = specs["get_script"].func()
     assert got["ok"] is True
@@ -540,3 +558,63 @@ def test_an_identical_storyline_resave_stays_a_complete_noop(tmp_path: Path) -> 
 
     assert out == {"ok": True, "version": 1}, "identical content — same version, no ceremony"
     assert board.load("cutlist") is not None, "the no-op must stay a no-op"
+
+
+# --- the save must say what it did to the words, because "replace" reads as "append" -------
+# Live finding (run 85f0f884): told to EXPAND the script by ~200 words, the author saved only
+# the NEW lines per chapter. save_script_chapter replaces a chapter's lines with what is
+# passed, so each "expansion" actually shrank the script — 263 words fell to 123 across six
+# saves, and nobody noticed because the response reports only version and line count. The
+# film would have carried ~50s of voice against a 174s target.
+
+
+def test_the_save_reports_the_word_delta(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _seed_storyline(board)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    first = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "one two three four five six"}]
+    )
+    assert first["total_words"] == 6
+
+    second = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "one two"}]
+    )
+
+    assert second["total_words"] == 2
+    assert second["chapter_words_before"] == 6
+    assert second["chapter_words_after"] == 2
+
+
+def test_a_shrinking_save_is_named_as_a_replacement(tmp_path: Path) -> None:
+    """The trap in one sentence, in the reply the agent actually reads."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _seed_storyline(board)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "a long existing line with many words"}]
+    )
+
+    out = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "just the new line"}]
+    )
+
+    assert "REPLACED" in out["warning"]
+    assert "append" in out["warning"].lower()
+
+
+def test_a_growing_save_carries_no_warning(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _seed_storyline(board)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "short"}])
+
+    out = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "short plus quite a few more words now"}]
+    )
+
+    assert "warning" not in out
