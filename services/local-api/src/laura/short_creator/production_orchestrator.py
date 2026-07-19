@@ -22,6 +22,7 @@ imported at this module's top level.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -195,13 +196,23 @@ def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
     )
 
 
-def _make_default_execute(board: Board, asset_id: str, deps: ProductionDeps | None) -> ExecuteFn:
+def _make_default_execute(
+    board: Board,
+    asset_id: str,
+    deps: ProductionDeps | None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+) -> ExecuteFn:
     """The default ``ExecuteFn``: lazily builds and runs the real production team.
 
-    Mirrors :func:`orchestrator._default_execute` (build the team, ``asyncio.run`` its ``run``,
-    any exception is a hard fail), but the v2 team is board-bound
+    Mirrors :func:`orchestrator._default_execute`, but the v2 team is board-bound
     (:func:`production_agents.build_production_team` needs ``board``/``asset_id``/``deps``), so
     those are captured in this closure instead of being ``ExecuteFn`` parameters.
+
+    The team runs via ``run_stream`` and every normalized event goes to *event_sink* (the job
+    handler points it at the session run log). A run once spent 44 minutes in its script phase
+    and saved nothing, and the log held exactly two lines — meta and done; which tool was
+    called and what it refused was unknowable. Observability only: a missing or crashing sink
+    never affects the run.
     """
 
     def execute(
@@ -209,11 +220,29 @@ def _make_default_execute(board: Board, asset_id: str, deps: ProductionDeps | No
     ) -> StageOutcome:
         import asyncio  # local: only the real run needs the event loop
 
-        try:
+        from .stream import _map_event
+
+        async def _run() -> Any:
             team = build_production_team(
                 db, board, config, asset_id=asset_id, stage=stage, deps=deps
             )
-            result = asyncio.run(team.run(task=task))
+            final: Any = None
+            async for raw in team.run_stream(task=task):
+                if type(raw).__name__ == "TaskResult":
+                    final = raw
+                    continue
+                if event_sink is None:
+                    continue
+                mapped = _map_event(raw, "magentic")
+                if mapped is not None:
+                    try:
+                        event_sink(mapped)
+                    except Exception:  # noqa: BLE001 — logging must never fail the film
+                        logger.warning("production event sink failed; continuing")
+            return final
+
+        try:
+            result = asyncio.run(_run())
         except Exception as exc:
             logger.warning("magentic production team failed at stage %s: %s", stage, exc)
             return StageOutcome(
@@ -237,6 +266,7 @@ def run_production(
     message: str | None = None,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run the v2 production team for one session: resume-aware board + magentic-only A/B ladder.
 
@@ -293,7 +323,7 @@ def run_production(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
     )
     run: ExecuteFn = execute if execute is not None else _make_default_execute(
-        board, asset_id, deps
+        board, asset_id, deps, event_sink
     )
 
     outcome = _safe_execute(run, db, config, "A", "magentic", task_text)

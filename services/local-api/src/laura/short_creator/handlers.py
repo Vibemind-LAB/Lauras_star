@@ -155,6 +155,9 @@ def handle_production_run(
         message=message,
         execute=execute,
         deps=deps,
+        # Every team event lands in the session run log, flushed per line — a stalled phase
+        # used to leave a two-line log (meta + done) and 44 minutes of nothing to diagnose.
+        event_sink=lambda event: _append_run_log_line(log_file, log_path, event),
     )
 
     _append_run_log_line(
