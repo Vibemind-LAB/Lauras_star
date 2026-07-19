@@ -469,6 +469,15 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
 - [ ] Orchestrator-Delegations-Ping-Pong (Agenten rätseln, wer welche Tools hat — Lauf J/L
       verlor Turns an „request the board operator"; Tool-Besitz gehört in den Task-Text)
 
+### 20.G — Verifikation: `voice_fits` OK + QA `ship`  `[x]` (2026-07-19, Lauf `1f0438b8`)
+Export `3bba59b3` (workspace-livetest/exports/): **135,0s Video / 134,4s Stimme — Δ 0,6s,
+alle drei Render-Checks OK, QA-Urteil `ship`** (Minor: Bildschirm-Tippfehler, Watermark-Rest;
+Info: 135s statt 174s — von der Charter autorisiert). Skript 310 Worte, kein Kapitel über
+Kapazität. Kette in 15 Min durchgebaut, QA lief erstmals. Wirksam bewiesen: Kapazitätsbudget
+(`56abc5b`+`ce7a194`), Charter-Ausweg (`7f6e15d`), Tool-Roster (`323e0a4`). Rest-Schönheits-
+fehler: Post-QA-Revise invalidierte den finalen `render_report` (Job-Result sagt export None,
+Archiv v2 + Export sind da) — bekannter, bewusst nicht blockierter Inkohärenz-Fall.
+
 ### 20.F — Meilenstein: erster vollständig agentengebauter Film  `[x]` (2026-07-19)
 Lauf `ee65e23a`, Export `d3ce3129` (workspace-livetest/exports/): **146,8s, 1920×1080,
 h264+aac, echte Screens mit Captions.** 6/6 gesunde VLM-Reviews (lokal, qwen2.5vl:7b),
