@@ -624,6 +624,19 @@ _lines_in_storyline_order = _lines_in_storyline_order_impl
 script_text = _script_text
 
 
+def _chapter_structure(storyline: Storyline) -> list[tuple[int, list[tuple[int, int]]]]:
+    """What the SCRIPT structurally depends on: chapters and their (scene, window) refs.
+
+    Messages, targets and the red thread are presentation — changing them does not make a
+    written script wrong. Refs are normalized via ``as_scene_window`` so plain ``1`` and
+    ``{"scene": 1, "window": 0}`` compare equal: notation is not structure.
+    """
+    return [
+        (chapter.chapter, [as_scene_window(entry) for entry in chapter.scene_numbers])
+        for chapter in storyline.arc
+    ]
+
+
 def silent_chapters(script: Script, storyline: Storyline | None) -> list[int]:
     """Storyline chapters the script never wrote a line for.
 
@@ -1273,8 +1286,43 @@ def build_production_tool_specs(
                     for s, w in bad_refs
                 )
                 return {"ok": False, "reason": detail}
+            # A storyline save invalidates the whole chain below — including a script that is
+            # still perfectly right. Live finding (run 48d5660a): a re-save changing ONLY
+            # messages and target_seconds wiped a finished script and its voice; the author
+            # rebuilt from memory and the run died at the turn budget with no film. When the
+            # chapter STRUCTURE (chapters + scene/window refs) is unchanged, the script and
+            # voice are carried over; the cutlist stays invalidated — targets do change cuts.
+            old_storyline = board.load("storyline")
+            old_script = board.load("script")
+            old_voice = board.load("voice")
             version = board.save("storyline", storyline)
-            return {"ok": True, "version": version}
+            result: dict[str, Any] = {"ok": True, "version": version}
+            # Carry over ONLY when the save actually invalidated something. An identical
+            # re-save is a complete no-op (board.save short-circuits it) and the script is
+            # still on the board — "rescuing" it then would bump versions and wipe the very
+            # cutlist the no-op rule exists to protect.
+            if isinstance(old_script, Script) and board.load("script") is None:
+                same_structure = isinstance(
+                    old_storyline, Storyline
+                ) and _chapter_structure(old_storyline) == _chapter_structure(storyline)
+                if same_structure:
+                    board.save("script", old_script)
+                    carried = ["script"]
+                    if isinstance(old_voice, VoiceArtifact):
+                        board.save("voice", old_voice)
+                        carried.append("voice")
+                    result["carried_over"] = carried
+                    result["note"] = (
+                        "chapter structure unchanged — script"
+                        + (" and voice" if len(carried) > 1 else "")
+                        + " carried over; cutlist and below must be rebuilt for the new targets"
+                    )
+                else:
+                    result["note"] = (
+                        f"script v{old_script.version} was archived and invalidated by this "
+                        "structural storyline change — rewrite every chapter"
+                    )
+            return result
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
@@ -1355,6 +1403,18 @@ def build_production_tool_specs(
         downstream artifact (voice, cutlist, render report, qa report) so they get regenerated
         from the new script."""
         try:
+            # The chain is storyline -> script, and a save_storyline wipes everything below.
+            # A script written FIRST is doomed work: a live run wrote a complete 433-word
+            # script before its storyline, and the storyline save erased all of it. The prompt
+            # mandates the order; prompts do not bind — so the contract lives here.
+            if not isinstance(board.load("storyline"), Storyline):
+                return {
+                    "ok": False,
+                    "reason": (
+                        "no storyline on the board — call save_storyline first. A script "
+                        "written before the storyline is wiped by the storyline save."
+                    ),
+                }
             try:
                 new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
             except ValidationError as exc:

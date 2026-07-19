@@ -17,7 +17,16 @@ from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
 from laura.short_creator.board import Board
-from laura.short_creator.board_models import BestWindow, BoardMeta, SceneReview, VoiceArtifact
+from laura.short_creator.board_models import (
+    BestWindow,
+    BoardMeta,
+    Chapter,
+    Cutlist,
+    CutSegment,
+    SceneReview,
+    Storyline,
+    VoiceArtifact,
+)
 from laura.short_creator.production_tools import build_production_tool_specs
 
 FPS = 30
@@ -128,6 +137,22 @@ def _chapter(
     }
 
 
+def _seed_storyline(board: Board) -> None:
+    """Straight-to-board storyline so save_script_chapter's order guard is satisfied in tests
+    that are about OTHER rules (language, hygiene, validation)."""
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0
+                )
+            ],
+        ),
+    )
+
+
 def test_save_storyline_happy_and_versioned(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
@@ -223,7 +248,18 @@ def test_save_storyline_rejects_duplicate_scene_window(tmp_path: Path) -> None:
 def test_save_script_chapter_merges_per_chapter(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    _review(board, 2)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    # The storyline comes first now — a script written before it is doomed work (order guard).
+    saved = specs["save_storyline"].func(
+        red_thread="r",
+        chapters=[
+            _chapter(chapter=1),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[2]),
+        ],
+    )
+    assert saved["ok"] is True, saved
 
     out1 = specs["save_script_chapter"].func(
         chapter=1,
@@ -275,6 +311,7 @@ def test_save_script_chapter_language_follows_the_board(tmp_path: Path) -> None:
         target_seconds=20.0,
     )
     board = Board.create(tmp_path / "en_board", meta)
+    _seed_storyline(board)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     specs["save_script_chapter"].func(
@@ -291,6 +328,7 @@ def test_save_script_chapter_rejects_spoken_stage_directions(tmp_path: Path) -> 
     description behind it standing."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
+    _seed_storyline(board)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     out = specs["save_script_chapter"].func(
@@ -314,6 +352,7 @@ def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: 
     """The rule catches labels, not punctuation — spoken prose keeps its colons."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
+    _seed_storyline(board)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     out = specs["save_script_chapter"].func(
@@ -332,6 +371,7 @@ def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: 
 def test_save_script_chapter_validation_error(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
+    _seed_storyline(board)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     out = specs["save_script_chapter"].func(
@@ -367,3 +407,136 @@ def test_get_storyline_and_script_roundtrip(tmp_path: Path) -> None:
     assert got_script["script"]["version"] == 1
     assert got_script["script"]["language"] == "German"  # follows the board (default German)
     assert got_script["script"]["lines"] == [{"chapter": 1, "scene_number": 1, "text": "hi"}]
+
+
+# --- the order and the wipe: how run F lost a finished script twice ------------------------
+# Live finding (run 48d5660a): the author wrote a COMPLETE 433-word script (v1-v6, all six
+# chapters) BEFORE saving the storyline. The storyline save then invalidated the whole thing —
+# the chain is storyline -> script, and nothing required the storyline to exist first. The
+# author rebuilt v7-v11, and at minute 37 a second storyline save wiped that too. Its diff:
+# chapter structure IDENTICAL, only messages and target_seconds changed — nothing that made
+# the script invalid. v12 was then merged against an empty board (one chapter), the voice was
+# gone, and the run ended at the turn budget with no film.
+#
+# The prompt mandates the order. Prompt rules do not bind — the contract moves into code.
+
+
+def test_save_script_chapter_requires_a_storyline_first(tmp_path: Path) -> None:
+    """The 433-word accident: a script written before the storyline is a script that will be
+    wiped by the storyline save. Refuse loudly instead of accepting doomed work."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "a line"}]
+    )
+
+    assert out["ok"] is False
+    assert "save_storyline" in out["reason"]
+    assert board.load("script") is None, "doomed work must not be accepted"
+
+
+def test_a_structure_preserving_storyline_save_keeps_script_and_voice(tmp_path: Path) -> None:
+    """The minute-37 wipe: same chapters, same scenes — only messages and targets changed.
+
+    That change does not make the script wrong, so the script (and the voice spoken from it)
+    survive. The cutlist and below stay invalidated: targets DO change segment durations.
+    """
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="v1", chapters=[_chapter()])
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+    board.save("voice", VoiceArtifact(script_hash="h", mp3_path="v.mp3"))
+
+    out = specs["save_storyline"].func(
+        red_thread="reworded entirely",
+        chapters=[{**_chapter(), "message": "a different beat", "target_seconds": 9.0}],
+    )
+
+    assert out["ok"] is True
+    assert out["carried_over"] == ["script", "voice"]
+    script = board.load("script")
+    assert script is not None, "the 64 words must survive a cosmetic storyline change"
+    assert board.load("voice") is not None
+    assert board.load("cutlist") is None, "targets changed — the cut must be rebuilt"
+
+
+def test_a_structural_storyline_change_still_invalidates_and_says_what_was_lost(
+    tmp_path: Path,
+) -> None:
+    """A changed scene structure CAN invalidate the script — but silently is how 64 words
+    vanished. The response names the archived version so the author knows what to rebuild."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    _review(board, 2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="v1", chapters=[_chapter(scene_numbers=[1])])
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+
+    out = specs["save_storyline"].func(
+        red_thread="v2", chapters=[_chapter(scene_numbers=[2])]
+    )
+
+    assert out["ok"] is True
+    assert "script v1" in out["note"]
+    assert board.load("script") is None
+
+
+def test_the_first_storyline_save_keeps_its_bare_response(tmp_path: Path) -> None:
+    """No prior script, nothing carried, nothing lost — no noise in the reply."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(red_thread="v1", chapters=[_chapter()])
+
+    assert out == {"ok": True, "version": 1}
+
+
+def test_window_notation_and_plain_scene_numbers_compare_as_the_same_structure(
+    tmp_path: Path,
+) -> None:
+    """{"scene": 1, "window": 0} IS plain 1 — notation must not read as a structural change."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="v1", chapters=[_chapter(scene_numbers=[1])])
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+
+    out = specs["save_storyline"].func(
+        red_thread="v2", chapters=[_chapter(scene_numbers=[{"scene": 1, "window": 0}])]
+    )
+
+    assert out["carried_over"] == ["script"]
+    assert board.load("script") is not None
+
+
+def test_an_identical_storyline_resave_stays_a_complete_noop(tmp_path: Path) -> None:
+    """Board.save short-circuits identical content without invalidating (an agent once re-saved
+    upstream artifacts three times per run and each save wiped the chain below). The carry-over
+    must not undo that: nothing was invalidated, so nothing may be re-saved — or the "rescue"
+    itself would wipe the cutlist the no-op protected."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+    board.save("voice", VoiceArtifact(script_hash="h", mp3_path="v.mp3"))
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)]
+        ),
+    )
+
+    out = specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    assert out == {"ok": True, "version": 1}, "identical content — same version, no ceremony"
+    assert board.load("cutlist") is not None, "the no-op must stay a no-op"
