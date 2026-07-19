@@ -618,3 +618,44 @@ def test_a_growing_save_carries_no_warning(tmp_path: Path) -> None:
     )
 
     assert "warning" not in out
+
+
+# --- a chapter that overflows its scenes must hear it at write time ------------------------
+# Live finding (run ee65e23a, the first full agent-built film): the budget offered chapter 3
+# nineteen words for the 11.5s its scenes hold; the author wrote 62 — ~25s of voice. The
+# TOTAL was perfect (367 words vs 378 budget), the distribution was not, and 14 seconds of
+# narration ended with no picture to carry them: video 146.8s vs voice 173.1s, voice_fits
+# FAIL. The per-chapter table existed in script_budget; the author read the total.
+# The overflow now speaks at the moment of the save, where it can still be fixed cheaply.
+
+
+def test_a_chapter_overflowing_its_scenes_is_warned_at_save_time(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # scene 1 is 5.0s long (SCENE_FRAMES @ 30fps)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    # 5s of scene capacity; 40 German words are ~23s of voice.
+    out = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 40)}]
+    )
+
+    assert out["ok"] is True, "reporting, not blocking — shortening is the author's move"
+    assert "capacity_warning" in out
+    assert "5.0s" in out["capacity_warning"]
+
+
+def test_a_chapter_inside_its_capacity_gets_no_capacity_warning(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    out = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": "vier kurze worte hier"}]
+    )
+
+    assert out["ok"] is True
+    assert "capacity_warning" not in out

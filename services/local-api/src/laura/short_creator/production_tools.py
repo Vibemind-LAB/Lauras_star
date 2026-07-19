@@ -1506,6 +1506,27 @@ def build_production_tool_specs(
                     "not append. To EXPAND a chapter, pass its existing lines plus the new "
                     "ones."
                 )
+            # A chapter can only be as long as its scenes: voice beyond that has no picture.
+            # The first full agent-built film shipped 62 words into an 11.5s chapter — the
+            # TOTAL was on budget, the distribution was not, and 14s of narration fell off the
+            # end (voice_fits FAIL by 26s). Say it here, where redistribution is still cheap.
+            storyline_now = board.load("storyline")
+            if isinstance(storyline_now, Storyline):
+                per_chapter, _missing, _n = _storyline_material(
+                    db, board, asset_id, storyline_now
+                )
+                capacity = per_chapter.get(chapter)
+                voice_s = estimate_voice_seconds(words_after, language)
+                # capacity 0.0 means the chapter's scenes could not be RESOLVED (unknown), not
+                # that they hold nothing — a "0.0s" false alarm teaches agents to ignore the
+                # real one.
+                if capacity is not None and capacity > 0.0 and voice_s > capacity + 0.5:
+                    result["capacity_warning"] = (
+                        f"chapter {chapter}: {words_after} words are ~{voice_s:.1f}s of voice, "
+                        f"but its scenes hold only {capacity:.1f}s — the overflow will have no "
+                        "picture. Move the extra words to a chapter with spare capacity (see "
+                        "script_budget's per_chapter) or cut them."
+                    )
             return result
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
