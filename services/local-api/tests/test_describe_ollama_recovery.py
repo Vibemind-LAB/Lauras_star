@@ -141,3 +141,85 @@ def test_the_context_window_holds_three_frames_plus_the_review_prompt(
     payload = recorder.calls[0]
     assert payload is not None
     assert payload["options"]["num_ctx"] >= 16384
+
+
+def test_concurrent_describes_are_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 12GB local server serves one vision request at a time — pretending otherwise
+    starves every caller.
+
+    Live finding (run 85f0f884): autogen executes batched tool calls on a thread pool, so five
+    review_scene calls hit Ollama CONCURRENTLY. Not one describe error was logged — the
+    parallel load made ``available()``'s tags probe time out, and five of six scenes silently
+    degraded before a single frame was ever sent. The whole downstream chain then built on
+    default windows.
+    """
+    import threading
+
+    active = 0
+    overlapped: list[bool] = []
+    lock = threading.Lock()
+
+    def slow_http(url: str, payload: dict[str, Any] | None = None, **_: Any) -> Any:
+        nonlocal active
+        with lock:
+            active += 1
+            overlapped.append(active > 1)
+        try:
+            import time
+
+            time.sleep(0.05)
+            return {"message": {"content": "seen"}}
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(describe_mod, "_http_json", slow_http)
+    backend = OllamaDescribeBackend(model="m")
+
+    threads = [
+        threading.Thread(target=lambda: backend.describe([b"jpg"], "p")) for _ in range(5)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not any(overlapped), "two describes ran at once — the local server cannot do that"
+
+
+def test_available_shares_the_same_serialization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """available() probing WHILE another thread's describe loads the model is exactly the
+    timeout that silently degraded five scenes — it must wait its turn instead."""
+    import threading
+
+    active = 0
+    overlapped: list[bool] = []
+    lock = threading.Lock()
+
+    def slow_http(url: str, payload: dict[str, Any] | None = None, **_: Any) -> Any:
+        nonlocal active
+        with lock:
+            active += 1
+            overlapped.append(active > 1)
+        try:
+            import time
+
+            time.sleep(0.05)
+            if url.endswith("/api/tags"):
+                return {"models": [{"name": "m"}]}
+            return {"message": {"content": "seen"}}
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(describe_mod, "_http_json", slow_http)
+    backend = OllamaDescribeBackend(model="m")
+
+    describer = threading.Thread(target=lambda: backend.describe([b"jpg"], "p"))
+    prober = threading.Thread(target=backend.available)
+    describer.start()
+    prober.start()
+    describer.join()
+    prober.join()
+
+    assert not any(overlapped)

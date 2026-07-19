@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -68,7 +69,17 @@ def _http_json(
 
 
 class OllamaDescribeBackend:
-    """DescribeBackend over a local Ollama server (default model ``qwen3-vl:8b``)."""
+    """DescribeBackend over a local Ollama server (default model ``qwen3-vl:8b``).
+
+    All requests are serialized through one process-wide lock. A 12GB local server serves one
+    vision request at a time; autogen executes batched tool calls on a thread pool, and a live
+    run sent five review describes concurrently — not one errored, but the parallel load made
+    the ``available()`` probe time out and five of six scenes silently degraded before a single
+    frame was sent. Waiting in line is the behavior a local GPU actually supports.
+    """
+
+    # Class-level: every instance talks to the same GPU.
+    _serial = threading.Lock()
 
     def __init__(self, *, host: str | None = None, model: str | None = None) -> None:
         self.host = (host or os.environ.get("LAURA_OLLAMA_HOST") or DEFAULT_HOST).rstrip("/")
@@ -77,15 +88,22 @@ class OllamaDescribeBackend:
     def _tags(self) -> list[dict[str, Any]]:
         try:
             data = _http_json(f"{self.host}/api/tags", timeout=10.0)
-        except (urllib.error.URLError, OSError, ValueError):
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # Silence here once cost a run five degraded reviews with an empty log.
+            logger.warning("ollama tags probe failed: %s", exc)
             return []
         models = data.get("models") if isinstance(data, dict) else None
         return models if isinstance(models, list) else []
 
     def available(self) -> bool:
-        return any(str(m.get("name")) == self.model for m in self._tags())
+        with self._serial:
+            return any(str(m.get("name")) == self.model for m in self._tags())
 
     def describe(self, frames: list[bytes], prompt: str) -> str:
+        with self._serial:
+            return self._describe_locked(frames, prompt)
+
+    def _describe_locked(self, frames: list[bytes], prompt: str) -> str:
         images = [base64.b64encode(f).decode("ascii") for f in frames]
         payload = {
             "model": self.model,
@@ -110,12 +128,10 @@ class OllamaDescribeBackend:
         try:
             return self._chat(payload)
         except urllib.error.HTTPError as exc:
-            # A local 5xx means "this loaded instance is broken", and the observed cure is a
-            # fresh load: a run once got 500 for EVERY image describe because the resident
-            # instance had been loaded by a text request — all six reviews degraded, no
-            # storyline, dead run. The moment the model was unloaded and reloaded by an image
-            # request it answered correctly. So: force-unload, retry once. 4xx stays final —
-            # a request the server rejects does not get better on a fresh load.
+            # A local 5xx usually means the runner just crashed (the num_ctx overflow above
+            # kills it with a GGML assert) — so the NEXT request can hit a half-restarted
+            # server. One forced fresh load (unload + retry) rides that out. 4xx stays final:
+            # a request the server rejects does not get better on a reload.
             if exc.code < 500:
                 logger.warning("ollama describe failed: %s", exc)
                 return ""
