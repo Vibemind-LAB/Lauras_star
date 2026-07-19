@@ -229,6 +229,45 @@ def script_text(lines: list[ScriptLine]) -> str:
     return " ".join(line.text for line in lines)
 
 
+def lines_in_storyline_order(script: Script, storyline: Storyline) -> list[ScriptLine]:
+    """The script's lines reordered to follow the STORYLINE's playback order.
+
+    For each chapter in ``storyline.arc`` (in arc order), for each scene_number in that
+    chapter's ``scene_numbers`` (in list order), appends the matching line(s) — same chapter +
+    scene_number, preserving their relative order for multiple lines per scene. This is the
+    order the VIDEO plays in (``build_cutlist`` walks the arc the same way), so it is also the
+    order the voice, captions and zoom timing must walk.
+
+    Lines the storyline does not reference (a stale chapter/scene left over from an earlier
+    draft) are appended at the end, in their original order — never dropped, since the voice
+    must contain every line the author wrote. Window references collapse to their scene: a
+    scene listed several times in a chapter speaks its line(s) once, at its FIRST occurrence.
+
+    Lives here, with the models and :func:`script_hash`, because this ordering DEFINES the text
+    identity every derived artifact records: the write sites hash the played order, so any
+    check site must reproduce exactly this ordering or fresh artifacts read as stale. (Review
+    finding: the board hashed the stored order instead and cried wolf on every chapter whose
+    storyline reordered its scenes.)
+    """
+    by_key: dict[tuple[int, int], list[ScriptLine]] = {}
+    for line in script.lines:
+        by_key.setdefault((line.chapter, line.scene_number), []).append(line)
+
+    placed: set[tuple[int, int]] = set()
+    ordered: list[ScriptLine] = []
+    for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
+        for entry in chapter.scene_numbers:
+            key = (chapter.chapter, as_scene_window(entry)[0])
+            if key in by_key and key not in placed:
+                ordered.extend(by_key[key])
+                placed.add(key)
+
+    for line in script.lines:
+        if (line.chapter, line.scene_number) not in placed:
+            ordered.append(line)
+    return ordered
+
+
 def script_hash(lines: list[ScriptLine]) -> str:
     """sha256 over :func:`script_text` — the identity every derived artifact is checked against.
 

@@ -119,6 +119,44 @@ def test_the_live_drift_is_reported_as_stale(tmp_path: Path) -> None:
     assert board.status()["artifacts"]["render_report"]["stale"] is True
 
 
+def test_a_fresh_render_is_not_stale_when_the_storyline_reorders_scenes(tmp_path: Path) -> None:
+    """Review finding: the check site hashed the STORED line order, the write sites hash the
+    STORYLINE order. A chapter whose storyline plays scene 2 before scene 1 — a normal
+    narrative choice — made a just-rendered report read stale=True. A provenance signal that
+    cries wolf on fresh renders teaches everyone to ignore the real v14-on-v39 case.
+    """
+    board = _board(tmp_path)
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="a demo",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="m",
+                    # Scene 2 opens the chapter; the author wrote the lines in 1, 2 order.
+                    scene_numbers=[2, 1],
+                    target_seconds=10.0,
+                )
+            ],
+        ),
+    )
+    script = Script(
+        language="English",
+        lines=[
+            ScriptLine(chapter=1, scene_number=1, text="the line for scene one"),
+            ScriptLine(chapter=1, scene_number=2, text="the line for scene two"),
+        ],
+    )
+    board.save("script", script)
+    # The write sites stamp the hash over the STORYLINE order — scene 2's line first.
+    played_order = [script.lines[1], script.lines[0]]
+    board.save("render_report", _render(script_hash_=script_hash(played_order)))
+
+    assert board.status()["artifacts"]["render_report"]["stale"] is False
+
+
 def test_unknown_provenance_is_not_claimed_to_be_either(tmp_path: Path) -> None:
     """An old board cannot be proven stale OR current — say so rather than guess.
 

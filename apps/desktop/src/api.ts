@@ -708,14 +708,33 @@ export interface AutoShortRequest {
   target_seconds?: number;
 }
 
-/** Presence + version bookkeeping for one artifact slot on a v2 production session board. */
+/** Presence + version bookkeeping for one artifact slot on a v2 production session board.
+ * Some artifacts additionally record whether their work actually came off (checks_ok /
+ * failed_checks) and whether they still match the script on the board (stale — null when the
+ * artifact predates provenance and cannot be judged either way). */
 export interface ProductionArtifactState {
   version: number | null;
   archived_versions: number[];
+  checks_ok?: boolean;
+  failed_checks?: string[];
+  stale?: boolean | null;
 }
 
-/** Read-only board status for a v2 production session (GET /production/{sessionId}). */
-export interface ProductionStatus {
+/** The job currently running a production session — the authority on whether it is alive.
+ * A hanging run is a "running" job with an expired lease; a dead run is a "failed" job. */
+export interface ProductionJobState {
+  id: string;
+  status: string;
+  attempt: number;
+  updated_at: string;
+  lease_expires_at: string | null;
+  finished_at: string | null;
+}
+
+/** GET /production/{sessionId} when the board exists: full board status + liveness. */
+export interface ProductionBoardStatus {
+  board_ready: true;
+  job: ProductionJobState | null;
   meta: {
     session_id: string;
     asset_id: string;
@@ -725,13 +744,31 @@ export interface ProductionStatus {
     target_seconds: number;
     status: string;
   };
-  scene_reviews: { count: number; scenes: number[] };
+  scene_reviews: {
+    count: number;
+    scenes: number[];
+    degraded_count: number;
+    degraded_scenes: number[];
+  };
   artifacts: Record<
     "storyline" | "script" | "voice" | "cutlist" | "render_report" | "qa_report",
     ProductionArtifactState
   >;
   resume_point: string;
 }
+
+/** GET /production/{sessionId} before a board exists — queued, or died before building one.
+ * This used to be a 404; it is a state worth showing, and the job block carries the answer.
+ * Every consumer MUST narrow on board_ready before touching board fields: the live bug this
+ * type prevents was a chips renderer dereferencing scene_reviews on exactly this shape. */
+export interface ProductionPendingStatus {
+  board_ready: false;
+  job: ProductionJobState | null;
+  session_id: string;
+}
+
+/** Read-only status for a v2 production session (GET /production/{sessionId}). */
+export type ProductionStatus = ProductionBoardStatus | ProductionPendingStatus;
 
 /** Accepted response from creating a v2 production session or posting a follow-up message. */
 export interface ProductionCreated {

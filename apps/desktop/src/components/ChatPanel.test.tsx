@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentEvent, JobStatus, LauraClient, ProductionStatus } from "../api";
+import type { AgentEvent, JobStatus, LauraClient, ProductionBoardStatus } from "../api";
 import { ChatPanel, pickHighlights } from "./ChatPanel";
 
 // v2 session-mode tests write a `laura.production.<assetId>` localStorage entry via
@@ -195,8 +195,10 @@ function job(overrides: Partial<JobStatus> = {}): JobStatus {
   };
 }
 
-function boardStatus(overrides: Partial<ProductionStatus> = {}): ProductionStatus {
+function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): ProductionBoardStatus {
   return {
+    board_ready: true,
+    job: null,
     meta: {
       session_id: "s1",
       asset_id: "a1",
@@ -206,7 +208,7 @@ function boardStatus(overrides: Partial<ProductionStatus> = {}): ProductionStatu
       target_seconds: 30,
       status: "active",
     },
-    scene_reviews: { count: 0, scenes: [] },
+    scene_reviews: { count: 0, scenes: [], degraded_count: 0, degraded_scenes: [] },
     artifacts: {
       storyline: { version: null, archived_versions: [] },
       script: { version: null, archived_versions: [] },
@@ -261,7 +263,7 @@ describe("ChatPanel session mode (v2)", () => {
 
   it("running renders the resume_point and board chips (reviews + artifact versions)", async () => {
     const status = boardStatus({
-      scene_reviews: { count: 5, scenes: [1, 2, 3, 4, 5] },
+      scene_reviews: { count: 5, scenes: [1, 2, 3, 4, 5], degraded_count: 0, degraded_scenes: [] },
       artifacts: {
         ...boardStatus().artifacts,
         storyline: { version: 2, archived_versions: [1] },
@@ -287,6 +289,38 @@ describe("ChatPanel session mode (v2)", () => {
     expect(screen.getByText("🎬 5")).toBeTruthy();
     expect(screen.getByText("storyline v2")).toBeTruthy();
     expect(screen.getByText("script v1")).toBeTruthy();
+  });
+
+  it("running survives the pre-board window: pending status renders the job state, no crash", async () => {
+    // Review finding: GET /production/{sid} now answers 200 {job, board_ready:false} before a
+    // board exists (it used to 404). Every new session passes through this window, and the
+    // chips renderer dereferenced scene_reviews on that shape — a TypeError on the first poll.
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue({
+        board_ready: false,
+        session_id: "s1",
+        job: {
+          id: "j1",
+          status: "queued",
+          attempt: 0,
+          updated_at: "2026-01-01T00:00:00Z",
+          lease_expires_at: null,
+          finished_at: null,
+        },
+      }),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("⚙ queued …")).toBeTruthy();
   });
 
   it("done shows a follow-up input; sending it calls sendMessage with the typed text", async () => {

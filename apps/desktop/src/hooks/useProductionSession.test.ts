@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { JobStatus, LauraClient, ProductionStatus } from "../api";
+import type { JobStatus, LauraClient, ProductionBoardStatus } from "../api";
 import { useProductionSession } from "./useProductionSession";
 
 function job(overrides: Partial<JobStatus> = {}): JobStatus {
@@ -21,8 +21,10 @@ function job(overrides: Partial<JobStatus> = {}): JobStatus {
   };
 }
 
-function boardStatus(overrides: Partial<ProductionStatus> = {}): ProductionStatus {
+function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): ProductionBoardStatus {
   return {
+    board_ready: true,
+    job: null,
     meta: {
       session_id: "s1",
       asset_id: "asset-1",
@@ -32,7 +34,7 @@ function boardStatus(overrides: Partial<ProductionStatus> = {}): ProductionStatu
       target_seconds: 30,
       status: "active",
     },
-    scene_reviews: { count: 0, scenes: [] },
+    scene_reviews: { count: 0, scenes: [], degraded_count: 0, degraded_scenes: [] },
     artifacts: {
       storyline: { version: null, archived_versions: [] },
       script: { version: null, archived_versions: [] },

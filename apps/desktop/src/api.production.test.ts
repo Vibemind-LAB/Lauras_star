@@ -27,6 +27,8 @@ function mockFetchError(status: number, text: string) {
 afterEach(() => vi.restoreAllMocks());
 
 const status: ProductionStatus = {
+  board_ready: true,
+  job: null,
   meta: {
     session_id: "s1",
     asset_id: "a1",
@@ -36,7 +38,7 @@ const status: ProductionStatus = {
     target_seconds: 60,
     status: "active",
   },
-  scene_reviews: { count: 2, scenes: [1, 2] },
+  scene_reviews: { count: 2, scenes: [1, 2], degraded_count: 0, degraded_scenes: [] },
   artifacts: {
     storyline: { version: 1, archived_versions: [] },
     script: { version: 1, archived_versions: [] },

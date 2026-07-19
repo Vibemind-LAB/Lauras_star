@@ -258,6 +258,10 @@ const SESSION_ARTIFACT_LABELS: Record<(typeof SESSION_ARTIFACT_ORDER)[number], s
 /** Board chips: a review-count chip when any exist, then one version chip per present artifact
  * (chain order) — e.g. "🎬 5", "storyline v2", "script v1". */
 function SessionChips({ status }: { status: ProductionStatus }): ReactElement | null {
+  // Before the board exists there is nothing to chip — and dereferencing the board fields on
+  // that shape was a live crash: every new session passes through a queued/running window in
+  // which the endpoint reports only { job, board_ready: false }.
+  if (!status.board_ready) return null;
   const chips: { key: string; text: string }[] = [];
   if (status.scene_reviews.count > 0) {
     chips.push({ key: "reviews", text: `🎬 ${status.scene_reviews.count}` });
@@ -370,7 +374,11 @@ function SessionPanel({
         {state.phase === "running" && (
           <>
             <div className="mb-1 animate-pulse text-content-faint">
-              {state.status !== null ? `⚙ ${state.status.resume_point} …` : "läuft …"}
+              {state.status !== null && state.status.board_ready
+                ? `⚙ ${state.status.resume_point} …`
+                : state.status !== null && state.status.job !== null
+                  ? `⚙ ${state.status.job.status} …`
+                  : "läuft …"}
             </div>
             {state.status !== null && <SessionChips status={state.status} />}
           </>

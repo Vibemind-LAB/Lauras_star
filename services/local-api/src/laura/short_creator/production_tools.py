@@ -136,6 +136,7 @@ from .board_models import (
     canvas_for,
     stage_direction_label,
 )
+from .board_models import lines_in_storyline_order as _lines_in_storyline_order_impl
 from .board_models import script_hash as _script_hash
 from .board_models import script_text as _script_text
 from .describe import DescribeBackend, resolve_describe_backend
@@ -613,41 +614,11 @@ def _validation_errors(exc: ValidationError) -> list[str]:
 # --- voice + cutlist (pure) -------------------------------------------------------------------
 
 
-def _lines_in_storyline_order(script: Script, storyline: Storyline) -> list[ScriptLine]:
-    """The script's lines reordered to follow the STORYLINE's playback order.
-
-    For each chapter in ``storyline.arc`` (in arc order), for each scene_number in that
-    chapter's ``scene_numbers`` (in list order), appends the matching line(s) — same chapter +
-    scene_number, preserving their relative order for multiple lines per scene. This is the
-    order the VIDEO plays in (:func:`build_cutlist` walks ``storyline.arc``/``scene_numbers`` the
-    same way), so it is also the order the voice, captions and zoom timing must walk — writing
-    a chapter's lines in a different order than its ``scene_numbers`` would otherwise desync
-    narration from picture.
-
-    Lines the storyline does not reference (a stale chapter/scene left over from an earlier
-    script draft) are appended at the end, in their original ``script.lines`` order — never
-    dropped, since the voice must contain every line the author wrote.
-
-    Window references collapse to their scene: a scene listed several times in a chapter
-    (with different windows) speaks its line(s) once, at its FIRST occurrence.
-    """
-    by_key: dict[tuple[int, int], list[ScriptLine]] = {}
-    for line in script.lines:
-        by_key.setdefault((line.chapter, line.scene_number), []).append(line)
-
-    placed: set[tuple[int, int]] = set()
-    ordered: list[ScriptLine] = []
-    for chapter in sorted(storyline.arc, key=lambda c: c.chapter):
-        for entry in chapter.scene_numbers:
-            key = (chapter.chapter, as_scene_window(entry)[0])
-            if key in by_key and key not in placed:
-                ordered.extend(by_key[key])
-                placed.add(key)
-
-    for line in script.lines:
-        if (line.chapter, line.scene_number) not in placed:
-            ordered.append(line)
-    return ordered
+# Moved to board_models next to script_hash: the played order DEFINES the text identity every
+# derived artifact records, and the board's own staleness check must reproduce it exactly.
+# (Review finding: a second copy of the ordering here and a raw-order hash in the board made
+# fresh renders read stale.) Aliased for this module's many callers.
+_lines_in_storyline_order = _lines_in_storyline_order_impl
 
 
 script_text = _script_text

@@ -31,6 +31,7 @@ from laura.short_creator.board_models import (
     Script,
     Storyline,
     VoiceArtifact,
+    lines_in_storyline_order,
     script_hash,
 )
 
@@ -270,7 +271,20 @@ class Board:
         reviews = self.scene_reviews()
         degraded = [r.scene_number for r in reviews if r.degraded]
         script = self.load("script")
-        current_hash = script_hash(script.lines) if isinstance(script, Script) else None
+        storyline = self.load("storyline")
+        if isinstance(script, Script):
+            # The identity every write site records is the PLAYED order (the storyline's), not
+            # the stored one. Hashing the stored order made a just-rendered report read stale
+            # whenever a chapter's storyline reordered its scenes — a provenance signal that
+            # cries wolf teaches everyone to ignore the case it exists for.
+            lines = (
+                lines_in_storyline_order(script, storyline)
+                if isinstance(storyline, Storyline)
+                else script.lines
+            )
+            current_hash: str | None = script_hash(lines)
+        else:
+            current_hash = None
         artifacts: dict[str, Any] = {}
         for name in _CHAIN:
             cur = self.load(name)
