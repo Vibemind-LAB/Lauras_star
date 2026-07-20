@@ -15,6 +15,7 @@ runs *downstream* along ``_CHAIN`` — never upstream — so cached upstream wor
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -31,6 +32,7 @@ from laura.short_creator.board_models import (
     Script,
     Storyline,
     VoiceArtifact,
+    content_hash,
     lines_in_storyline_order,
     script_hash,
 )
@@ -62,6 +64,30 @@ def _is_stale(artifact: BaseModel | None, current_script_hash: str | None) -> bo
     if not isinstance(recorded, str) or not recorded or not current_script_hash:
         return None
     return recorded != current_script_hash
+
+
+def _parents_stale(
+    load: Callable[[str], BaseModel | None], artifact: BaseModel
+) -> bool | None:
+    """Staleness via the parents chain: any drifted parent means stale.
+
+    True — at least one recorded parent is present and its content hash differs.
+    False — every recorded parent is present and matches.
+    None — at least one recorded parent is missing (nothing to compare against).
+    Only meaningful for artifacts with non-empty ``parents``; callers gate on that.
+    """
+    parents = getattr(artifact, "parents", None)
+    if not isinstance(parents, dict) or not parents:
+        return None
+    saw_missing = False
+    for name, recorded in parents.items():
+        current = load(name)
+        if current is None:
+            saw_missing = True
+            continue
+        if content_hash(current) != recorded:
+            return True
+    return None if saw_missing else False
 
 
 def _failed_checks(artifact: BaseModel | None) -> list[str] | None:
@@ -306,8 +332,12 @@ class Board:
                 entry["failed_checks"] = failed
             # Presence says an artifact exists; provenance says whether it still belongs to the
             # board it sits on. A render built from a script 25 versions old looked finished.
-            if hasattr(cur, "script_hash"):
-                entry["stale"] = _is_stale(cur, current_hash)
+            if hasattr(cur, "script_hash") or bool(getattr(cur, "parents", None)):
+                parents_verdict = _parents_stale(self.load, cur) if cur is not None else None
+                if getattr(cur, "parents", None):
+                    entry["stale"] = parents_verdict
+                else:
+                    entry["stale"] = _is_stale(cur, current_hash)
             artifacts[name] = entry
         return {
             "meta": json.loads(self.meta().model_dump_json()),

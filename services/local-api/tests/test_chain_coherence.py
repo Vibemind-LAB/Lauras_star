@@ -296,3 +296,80 @@ def test_old_boards_without_cutlist_provenance_still_load_as_unknown(tmp_path: P
     )
 
     assert board.status()["artifacts"]["cutlist"]["stale"] is None
+
+
+# --- staleness generalizes to parents: any drifted parent makes the artifact stale ---------
+# script_hash-based staleness only saw the script. With parents, a reverted VOICE (script
+# unchanged) correctly marks the render stale — the case the review proved script_hash-based
+# checks could never see.
+
+
+def test_parents_all_matching_reports_fresh(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    board = _board(tmp_path)
+    script = _script("the rendered line")
+    board.save("script", script)
+    current_script = board.load("script")
+    assert current_script is not None
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id="e1",
+            video_s=100.0,
+            width=1920,
+            height=1080,
+            parents={"script": content_hash(current_script)},
+        ),
+    )
+
+    assert board.status()["artifacts"]["render_report"]["stale"] is False
+
+
+def test_a_single_drifted_parent_reports_stale(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    board = _board(tmp_path)
+    board.save("script", _script("the rendered line"))
+    old = board.load("script")
+    assert old is not None
+    old_hash = content_hash(old)
+    render = RenderReport(
+        export_id="e1",
+        video_s=100.0,
+        width=1920,
+        height=1080,
+        parents={"script": old_hash},
+    )
+    board.save("render_report", render)
+    # The script moves on; put the render back the way the cap guard does.
+    board.save("script", _script("a different line"))
+    board.revert("render_report", 1)
+
+    assert board.status()["artifacts"]["render_report"]["stale"] is True
+
+
+def test_a_missing_parent_reports_unknown(tmp_path: Path) -> None:
+    board = _board(tmp_path)
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id="e1",
+            video_s=100.0,
+            width=1920,
+            height=1080,
+            parents={"cutlist": "somehash"},
+        ),
+    )
+
+    assert board.status()["artifacts"]["render_report"]["stale"] is None
+
+
+def test_empty_parents_falls_back_to_script_hash_logic(tmp_path: Path) -> None:
+    """Old boards keep the behaviour they shipped with — no parents, script_hash decides."""
+    board = _board(tmp_path)
+    script = _script("the line that was rendered")
+    board.save("script", script)
+    board.save("render_report", _render(script_hash_=script_hash(script.lines)))
+
+    assert board.status()["artifacts"]["render_report"]["stale"] is False
