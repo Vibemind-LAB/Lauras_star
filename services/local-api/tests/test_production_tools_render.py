@@ -192,11 +192,26 @@ def _save_voice(
     """Seed the board's voice artifact directly with a real sidecar file on disk (as
     build_cutlist reads it from timings_path, not from a fake backend) — mirrors
     test_production_tools_cutlist.py's helper, plus an explicit voice_s override so the render
-    tests can force a voice_fits pass/fail deterministically."""
+    tests can force a voice_fits pass/fail deterministically.
+
+    The hash is the CURRENT script's (storyline-ordered): build_cutlist refuses a voice whose
+    script_hash disagrees with the script it is cutting for, so the seed must satisfy the
+    real contract.
+    """
+    from laura.short_creator.board_models import lines_in_storyline_order, script_hash
+
     timings_path = tmp_path / "voice.mp3.timings.json"
     timings_path.write_text(json.dumps({"words": words}), encoding="utf-8")
+    script = board.load("script")
+    storyline = board.load("storyline")
+    assert isinstance(script, Script), "seed the script before the voice"
+    lines = (
+        lines_in_storyline_order(script, storyline)
+        if isinstance(storyline, Storyline)
+        else script.lines
+    )
     artifact = VoiceArtifact(
-        script_hash="irrelevant-for-cutlist",
+        script_hash=script_hash(lines),
         mp3_path=str(tmp_path / "voice.mp3"),
         timings_path=str(timings_path),
         voice_s=voice_s,

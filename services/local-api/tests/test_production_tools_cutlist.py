@@ -189,13 +189,28 @@ class _FakeVoiceBackend:
 
 def _save_voice(board: Board, tmp_path: Path, words: list[dict[str, Any]]) -> None:
     """Seed the board's voice artifact directly with a real sidecar file on disk (as
-    build_cutlist reads it from ``timings_path``, not from the fake backend)."""
+    build_cutlist reads it from ``timings_path``, not from the fake backend).
+
+    The hash is computed from the script actually on the board — build_cutlist now refuses a
+    voice whose script_hash disagrees with the current script (a reverted voice would poison
+    the downstream provenance to stale=False), so the seed must satisfy the real contract.
+    """
+    from laura.short_creator.board_models import Storyline, lines_in_storyline_order
+
     timings_path = tmp_path / "voice.mp3.timings.json"
     timings_path.write_text(json.dumps({"words": words}), encoding="utf-8")
+    script = board.load("script")
+    storyline = board.load("storyline")
+    assert isinstance(script, Script), "seed the script before the voice"
+    lines = (
+        lines_in_storyline_order(script, storyline)
+        if isinstance(storyline, Storyline)
+        else script.lines
+    )
     board.save(
         "voice",
         VoiceArtifact(
-            script_hash="irrelevant-for-cutlist",
+            script_hash=script_hash(lines),
             mp3_path=str(tmp_path / "voice.mp3"),
             timings_path=str(timings_path),
         ),
@@ -981,4 +996,37 @@ def test_build_cutlist_rejects_out_of_range_window_ref(tmp_path: Path) -> None:
 
     assert out["ok"] is False
     assert "window 2" in out["reason"] and "scene 1" in out["reason"]
+    assert board.load("cutlist") is None
+
+
+def test_build_cutlist_refuses_a_voice_from_a_different_script(tmp_path: Path) -> None:
+    """Review finding: build_cutlist presence-checked the voice and never asked WHOSE voice.
+
+    The cut's audio windows and zoom timings come from that voice's timings sidecar, and the
+    render muxes its mp3 as the film's audio. revert_artifact("voice", vOld) is a documented
+    follow-up flow — after it, the current script and the voice disagree, and a cutlist built
+    from the pair would carry the current script's hash while cutting to a different take:
+    stale=False on a film whose narration is not the script. The mismatch must refuse loudly
+    with the correcting tool named, exactly like every other order guard.
+    """
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    timings_path = tmp_path / "old-take.mp3.timings.json"
+    timings_path.write_text(json.dumps({"words": []}), encoding="utf-8")
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="a-different-scripts-hash",
+            mp3_path=str(tmp_path / "old-take.mp3"),
+            timings_path=str(timings_path),
+        ),
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is False
+    assert "synthesize_script_voice" in out["reason"]
     assert board.load("cutlist") is None

@@ -90,7 +90,6 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
             "get_storyline",
             "get_script",
             "review_export",
-            "save_contact_sheet",
             "save_qa_report",
         ),
         6,
@@ -225,7 +224,11 @@ def test_prompts_carry_contracts() -> None:
     assert "never cut the voice" in by_name["coding_agent"].system_message.lower()
     assert "save_contact_sheet" in by_name["coding_agent"].system_message
     assert "ship or revise" in by_name["qa_reviewer"].system_message.lower()
-    assert "save_contact_sheet" in by_name["qa_reviewer"].system_message
+    # QA judges the board; it never writes to the chain except its verdict. Its sheet
+    # "restore" clause wiped render+qa on every call (random PNG path = never a no-op) and
+    # then hit the QA order guard with no way to render — the run-1f0438b8 mechanism.
+    assert "save_contact_sheet" not in by_name["qa_reviewer"].system_message
+    assert "never WRITE to the chain" in by_name["qa_reviewer"].system_message
 
 
 # --- build_production_team ---------------------------------------------------------------------

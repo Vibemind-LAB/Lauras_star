@@ -1696,6 +1696,20 @@ def build_production_tool_specs(
             asset = repos.get_asset(db, asset_id)
             fps = _fps(db, asset) if asset is not None else 30.0
             ordered_lines = _lines_in_storyline_order(script, storyline)
+            # WHOSE voice, not just whether one exists. The cut's audio windows and zoom
+            # timings come from this voice's sidecar and the render muxes its mp3 — a voice
+            # reverted to an older take (revert_artifact is a documented follow-up flow)
+            # would cut the current script's pictures to a different narration, and the
+            # cutlist would still stamp the current hash: stale=False on a film that lies.
+            if voice.script_hash and voice.script_hash != script_hash(ordered_lines):
+                return {
+                    "ok": False,
+                    "reason": (
+                        "the voice on the board was synthesized from a DIFFERENT script than "
+                        "the current one — run synthesize_script_voice first so the cut and "
+                        "the narration agree"
+                    ),
+                }
             words = _read_words(voice.timings_path)
             line_map = line_starts(ordered_lines, words)
             audio_windows = chapter_audio_windows(ordered_lines, words)

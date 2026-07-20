@@ -205,17 +205,18 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "revise, saved via save_qa_report together with concrete findings — every finding "
                 "must name WHERE (which scene or timestamp) and WHAT is wrong, no vague words "
                 "like 'looks off'. Use the board's contact sheet as your segment map — its "
-                "tiles are labeled '<order> S<scene_number>' — and if it is missing or stale "
-                "after a cutlist change, call save_contact_sheet to restore the user's visual "
-                "checkpoint. If save_qa_report returns validation errors, fix exactly what "
-                "it names and save again."
+                "tiles are labeled '<order> S<scene_number>'. You judge the board; you never "
+                "WRITE to the chain except your own verdict — if the sheet or the render is "
+                "missing, that is a revise finding for the coding_agent, not something you "
+                "rebuild yourself. If save_qa_report returns validation errors, fix exactly "
+                "what it names and save again; if it says there is no render on the board, "
+                "report that as your finding instead of judging a film that does not exist."
             ),
             tool_names=(
                 "board_status",
                 "get_storyline",
                 "get_script",
                 "review_export",
-                "save_contact_sheet",
                 "save_qa_report",
             ),
             max_tool_iterations=6,

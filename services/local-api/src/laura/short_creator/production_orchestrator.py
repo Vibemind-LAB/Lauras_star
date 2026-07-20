@@ -125,7 +125,7 @@ def build_production_task(
     if message:
         follow_up = (
             "\n"
-            "7) USER FOLLOW-UP REQUEST:\n"
+            "8) USER FOLLOW-UP REQUEST:\n"
             f"   {message[:2000]}\n"
             "   Interpret this request against the BOARD STATUS above. Going back to an "
             "earlier version: coding_agent calls revert_artifact(name, version), using the "
@@ -350,10 +350,16 @@ def run_production(
         )
         board = Board.create(root, meta)
 
-    # A post-QA revise can orphan a finished render whose text the author then reverted to;
-    # the board brings it back exactly when the provenance matches, so the resume contract
-    # reads DONE instead of ordering a re-render of a film that already exists.
-    board.restore_render_matching_script()
+    # Deliberately NO automatic restore of an orphaned render here. It was tried (a resume
+    # brought back the newest archived render when its script_hash matched the current
+    # script) and review killed it with a live repro: a render is a projection of the CUTLIST
+    # and the VOICE as much as of the script text, and neither is covered by script_hash — a
+    # reverted cutlist plus unchanged script resurrected the wrong film as stale=False. Worse,
+    # in the very scenario that motivated it (script revise back to the rendered text) the
+    # revise also wiped voice+cutlist+sheet, so the mandated rebuild re-invalidated the
+    # restored render before anything used it, while the entry task text claimed it was DONE.
+    # The honest repair is a provenance CHAIN (render -> cutlist -> voice) plus a full-suffix
+    # restore — a design of its own, not an entry-time guard.
 
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message

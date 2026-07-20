@@ -613,12 +613,16 @@ def test_the_task_names_every_agents_tools(tmp_path: Path) -> None:
     assert "ONLY the named agent can call its tools" in task
 
 
-# --- a revise must not orphan a finished render the current script still matches -----------
-# Live finding (run 1f0438b8): after QA, a revise invalidated the final render_report; the run
-# ended and its result said export None — while the archived render v2 and its READY export
-# sat on disk. The next run would have re-rendered (burning a render cycle) a film that
-# already existed. Provenance makes the repair safe: restore the archived render ONLY when
-# its script_hash matches the script now on the board — a stale render stays archived.
+# --- the automatic render restore was tried, review-killed, and stays out ------------------
+# It brought back the newest archived render when its script_hash matched the current script.
+# Review refuted it with a live repro on this branch: a render is a projection of the CUTLIST
+# and the VOICE as much as of the script text, and script_hash covers neither. Reverting the
+# cutlist (a documented follow-up flow) while the script stayed identical resurrected a film
+# cut from the ABANDONED cutlist — reported stale=False, checks_ok=True. And in the scenario
+# that motivated the restore (script revise back to the rendered text), the revise had also
+# wiped voice+cutlist+sheet, so the mandated rebuild re-invalidated the restored render before
+# anything used it, while the entry task text claimed it was DONE. The honest repair is a
+# provenance CHAIN (render -> cutlist -> voice) plus a full-suffix restore — its own design.
 
 
 def _script_artifact(text: str) -> Script:
@@ -629,7 +633,7 @@ def _render_for(script: Script) -> RenderReport:
     from laura.short_creator.board_models import RenderCheck, script_hash
 
     return RenderReport(
-        export_id="e-restored",
+        export_id="e-orphaned",
         video_s=135.0,
         width=1920,
         height=1080,
@@ -638,14 +642,15 @@ def _render_for(script: Script) -> RenderReport:
     )
 
 
-def test_a_matching_archived_render_is_restored_on_resume(tmp_path: Path) -> None:
+def test_an_orphaned_render_stays_orphaned_and_that_is_deliberate(tmp_path: Path) -> None:
+    """Pins the rejection: no resume-time resurrection keyed on script text alone."""
     db, asset_id = _seed_scene(tmp_path)
     config = providers.resolve_from_env({})
-    root = production_orchestrator.board_root_for(db, asset_id, "sess-restore")
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-norestore")
     board = Board.create(
         root,
         BoardMeta(
-            session_id="sess-restore",
+            session_id="sess-norestore",
             asset_id=asset_id,
             created_utc="2026-07-19T00:00:00+00:00",
             task="demo",
@@ -656,8 +661,6 @@ def test_a_matching_archived_render_is_restored_on_resume(tmp_path: Path) -> Non
     final = _script_artifact("the line that was rendered")
     board.save("script", final)
     board.save("render_report", _render_for(final))
-    # The revise: a different script wipes the render, then the author reverts to the
-    # rendered text (same content, new version) — the film on disk matches again.
     board.save("script", _script_artifact("a different draft"))
     board.save("script", final.model_copy(deep=True))
     assert board.load("render_report") is None, "the revise really orphaned the render"
@@ -667,49 +670,11 @@ def test_a_matching_archived_render_is_restored_on_resume(tmp_path: Path) -> Non
         db,
         config,
         asset_id=asset_id,
-        session_id="sess-restore",
-        task="demo",
-        target_seconds=174,
-        execute=execute,
-    )
-
-    assert result["export_id"] == "e-restored"
-    restored = board.load("render_report")
-    assert restored is not None, "the archived render is back on the board"
-
-
-def test_a_stale_archived_render_stays_archived(tmp_path: Path) -> None:
-    """A render whose script moved on must NOT come back — that lie was fixed in 6f702dc."""
-    db, asset_id = _seed_scene(tmp_path)
-    config = providers.resolve_from_env({})
-    root = production_orchestrator.board_root_for(db, asset_id, "sess-stale")
-    board = Board.create(
-        root,
-        BoardMeta(
-            session_id="sess-stale",
-            asset_id=asset_id,
-            created_utc="2026-07-19T00:00:00+00:00",
-            task="demo",
-            language="English",
-            target_seconds=174.0,
-        ),
-    )
-    old = _script_artifact("the old rendered line")
-    board.save("script", old)
-    board.save("render_report", _render_for(old))
-    board.save("script", _script_artifact("the new script that was never rendered"))
-    assert board.load("render_report") is None
-
-    execute, _calls = _make_execute({"A": ("ok", False)})
-    result = production_orchestrator.run_production(
-        db,
-        config,
-        asset_id=asset_id,
-        session_id="sess-stale",
+        session_id="sess-norestore",
         task="demo",
         target_seconds=174,
         execute=execute,
     )
 
     assert result["export_id"] is None
-    assert board.load("render_report") is None, "a stale render must stay archived"
+    assert board.load("render_report") is None, "no resurrection on script text alone"

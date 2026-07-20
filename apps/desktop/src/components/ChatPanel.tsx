@@ -1,6 +1,11 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-import type { AgentEvent, LauraClient, ProductionStatus } from "../api";
+import type {
+  AgentEvent,
+  LauraClient,
+  ProductionArtifactState,
+  ProductionStatus,
+} from "../api";
 import {
   type ProductionSessionController,
   useProductionSession,
@@ -282,8 +287,10 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
     });
   }
   for (const name of SESSION_ARTIFACT_ORDER) {
-    const info = status.artifacts[name];
-    if (info.version === null) continue;
+    // Defensive: a pre-Kontaktbogen backend does not send the contact_sheet key at all —
+    // the type says required, the wire decides. A missing key must skip, never crash.
+    const info = status.artifacts[name] as ProductionArtifactState | undefined;
+    if (info === undefined || info.version === null) continue;
     const warnings: string[] = [];
     if (info.stale === true) {
       warnings.push("gehört zu einem älteren Skript (stale)");
@@ -291,10 +298,13 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
     if (info.checks_ok === false) {
       warnings.push(`Checks fehlgeschlagen: ${(info.failed_checks ?? []).join(", ")}`);
     }
+    // Unknown is not current: null means the artifact predates provenance and cannot be
+    // judged either way — saying nothing here would present it as proven-fresh.
+    const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
     chips.push({
       key: name,
       text: `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`,
-      title: warnings.length > 0 ? warnings.join(" · ") : undefined,
+      title: warnings.length > 0 ? warnings.join(" · ") : unknown,
     });
   }
   if (chips.length === 0) return null;

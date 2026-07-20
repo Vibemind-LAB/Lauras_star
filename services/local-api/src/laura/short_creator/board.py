@@ -234,44 +234,6 @@ class Board:
 
     # -- progress -----------------------------------------------------------
 
-    def restore_render_matching_script(self) -> bool:
-        """Bring back the newest archived render IF the current script still matches it.
-
-        A post-QA revise invalidates the render; when the author's edit round ends on the very
-        text that was already rendered, the finished film sits orphaned in ``versions/`` while
-        the chain reads "re-render". The check happens BEFORE the revert: peeking the archived
-        file first means a non-matching render is never even momentarily current. A render
-        whose script moved on stays archived — restoring that was the original v14-on-v39 lie.
-        """
-        if self.load("render_report") is not None:
-            return False
-        newest = max(self.versions("render_report"), default=0)
-        if newest <= 0:
-            return False
-        script = self.load("script")
-        if not isinstance(script, Script):
-            return False
-        archived_path = self.root / "versions" / f"render_report.v{newest}.json"
-        try:
-            archived = RenderReport.model_validate_json(
-                archived_path.read_text(encoding="utf-8")
-            )
-        except (OSError, ValueError):
-            return False
-        # Same ordering rule as status(): the played order defines the identity when a
-        # storyline exists, the stored order otherwise.
-        storyline = self.load("storyline")
-        lines = (
-            lines_in_storyline_order(script, storyline)
-            if isinstance(storyline, Storyline)
-            else script.lines
-        )
-        current_hash = script_hash(lines)
-        if not archived.script_hash or archived.script_hash != current_hash:
-            return False
-        self.revert("render_report", newest)
-        return True
-
     def set_status(self, value: BoardStatus) -> None:
         """Record the run's lifecycle on the board itself.
 
