@@ -314,7 +314,12 @@ def run_production(
     :func:`orchestrator._safe_execute`, so a raising ``execute`` never propagates out of here.
     """
     if repos.get_asset(db, asset_id) is None:
-        return {"ok": False, "error": "asset not found", "session_id": session_id}
+        return {
+            "ok": False,
+            "error": "asset not found",
+            "session_id": session_id,
+            "restored": [],
+        }
 
     try:
         root = board_root_for(db, asset_id, session_id)
@@ -328,6 +333,7 @@ def run_production(
             "error": "project not found",
             "asset_id": asset_id,
             "session_id": session_id,
+            "restored": [],
         }
     try:
         board = Board.open(root)
@@ -338,6 +344,7 @@ def run_production(
                 "error": "unknown session (no board)",
                 "asset_id": asset_id,
                 "session_id": session_id,
+                "restored": [],
             }
         meta = BoardMeta(
             session_id=session_id,

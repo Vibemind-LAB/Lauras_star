@@ -257,7 +257,10 @@ def test_run_production_creates_board_and_reports(tmp_path: Path) -> None:
     missing = production_orchestrator.run_production(
         db, config, asset_id="does-not-exist", session_id="sess1", task="t"
     )
-    assert missing == {"ok": False, "error": "asset not found", "session_id": "sess1"}
+    assert missing["ok"] is False
+    assert missing["error"] == "asset not found"
+    assert missing["session_id"] == "sess1"
+    assert missing["restored"] == []  # RED: preflight-failure returns ALWAYS carry restored
 
     execute, calls = _make_execute({"A": ("ok", False)})
     result = production_orchestrator.run_production(
@@ -301,12 +304,11 @@ def test_run_production_message_on_fresh_board_is_error(tmp_path: Path) -> None:
         execute=execute,
     )
 
-    assert result == {
-        "ok": False,
-        "error": "unknown session (no board)",
-        "asset_id": asset_id,
-        "session_id": "sess1",
-    }
+    assert result["ok"] is False
+    assert result["error"] == "unknown session (no board)"
+    assert result["asset_id"] == asset_id
+    assert result["session_id"] == "sess1"
+    assert result["restored"] == []  # RED: preflight-failure returns ALWAYS carry restored
     assert calls == []  # never reached team execution
     root = production_orchestrator.board_root_for(db, asset_id, "sess1")
     assert not root.exists()
@@ -379,12 +381,11 @@ def test_run_production_orphaned_asset_never_raises(tmp_path: Path) -> None:
         db, config, asset_id=asset_id, session_id="sess1", task="t", execute=execute
     )
 
-    assert result == {
-        "ok": False,
-        "error": "project not found",
-        "asset_id": asset_id,
-        "session_id": "sess1",
-    }
+    assert result["ok"] is False
+    assert result["error"] == "project not found"
+    assert result["asset_id"] == asset_id
+    assert result["session_id"] == "sess1"
+    assert result["restored"] == []  # RED: preflight-failure returns ALWAYS carry restored
     assert calls == []  # never reached team execution
 
 
@@ -748,9 +749,18 @@ def test_run_production_reports_empty_restored_when_nothing_came_back(tmp_path: 
     db, asset_id = _seed_scene(tmp_path)
     config = providers.resolve_from_env({})
     execute, _calls = _make_execute({"A": ("ok", False)})
+    events: list[dict[str, object]] = []
 
     result = production_orchestrator.run_production(
-        db, config, asset_id=asset_id, session_id="sess-plain", task="demo", execute=execute
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-plain",
+        task="demo",
+        execute=execute,
+        event_sink=events.append,
     )
 
     assert result["restored"] == []
+    # RED: no restored event should be emitted when nothing was restored
+    assert not any(event.get("type") == "restored" for event in events)
