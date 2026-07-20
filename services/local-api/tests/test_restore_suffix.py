@@ -207,16 +207,141 @@ def test_partial_suffix_stops_at_the_first_unmatched_link(tmp_path: Path) -> Non
     assert board.load("cutlist") is None
 
 
-def test_empty_parents_never_restore(tmp_path: Path) -> None:
-    """Pre-provenance archives are unknown, and unknown is not coherent."""
+def test_storyline_reorder_blocks_voice_restore(tmp_path: Path) -> None:
+    """Spec's deliberate over-caution (§6): a storyline reorder blocks voice restore even
+    though the script text underneath it never moved."""
     board = _board(tmp_path)
-    board.save("script", _script("old world"))
-    board.save("render_report", RenderReport(export_id="e", video_s=9.0, width=1920, height=1080))
-    board.save("script", _script("new world"))
-    board.save("script", _script("old world"))
-    assert board.load("render_report") is None
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m1", scene_numbers=[1, 2], target_seconds=10.0
+                ),
+                Chapter(
+                    chapter=2,
+                    role="problem",
+                    message="m2",
+                    scene_numbers=[3, 4],
+                    target_seconds=20.0,
+                ),
+            ],
+        ),
+    )
+    board.save("script", _script("unchanged text"))
+    storyline_s1 = board.load("storyline")
+    script = board.load("script")
+    assert storyline_s1 is not None and script is not None
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="cache-key",
+            mp3_path="voiceovers/unchanged.mp3",
+            parents={
+                "storyline": content_hash(storyline_s1),
+                "script": content_hash(script),
+            },
+        ),
+    )
 
-    assert board.restore_coherent_suffix() == []
+    # Reorder the storyline's arc: different content, different content_hash. This archives
+    # (and removes) script + voice -- everything downstream of storyline.
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="problem",
+                    message="m2",
+                    scene_numbers=[3, 4],
+                    target_seconds=20.0,
+                ),
+                Chapter(
+                    chapter=2, role="hook", message="m1", scene_numbers=[1, 2], target_seconds=10.0
+                ),
+            ],
+        ),
+    )
+    assert board.load("script") is None and board.load("voice") is None
+
+    # Re-save the script with IDENTICAL content: content_hash ignores ``version``, so voice's
+    # recorded script-parent hash still matches -- only the storyline parent is now wrong.
+    board.save("script", _script("unchanged text"))
+    assert board.load("script") is not None
+
+    restored = board.restore_coherent_suffix()
+
+    assert restored == [], "storyline drift must block voice even with the script unchanged"
+    assert board.load("voice") is None
+
+
+def test_empty_parents_candidate_is_rejected_when_reached(tmp_path: Path) -> None:
+    """A candidate with empty ``parents`` is rejected only once the walk actually reaches it.
+
+    The previous version of this test never saved ``storyline`` at all, so the walk halted at
+    the missing root before it ever inspected an empty-parents candidate -- it passed, but for
+    the wrong reason (root-missing, not empty-parents-rejected). This construction makes the
+    walk restore ``contact_sheet`` first (proof it got that far), and only THEN reject
+    ``render_report``'s sole archive for its empty parents.
+    """
+    board = _board(tmp_path)
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=10.0)
+            ],
+        ),
+    )
+    board.save("script", _script("steady"))
+    script = board.load("script")
+    assert script is not None
+    voice = VoiceArtifact(
+        script_hash="cache-key",
+        mp3_path="voiceovers/steady.mp3",
+        parents={"script": content_hash(script)},
+    )
+    board.save("voice", voice)
+    cur_voice = board.load("voice")
+    assert cur_voice is not None
+    board.save(
+        "cutlist",
+        _cut(order0_end=240).model_copy(
+            update={"parents": {"script": content_hash(script), "voice": content_hash(cur_voice)}}
+        ),
+    )
+    cut_a = board.load("cutlist")
+    assert cut_a is not None
+    board.save(
+        "contact_sheet", _sheet().model_copy(update={"parents": {"cutlist": content_hash(cut_a)}})
+    )
+    # render_report saved with the DEFAULT empty parents -- the pre-provenance / unstamped case.
+    board.save("render_report", RenderReport(export_id="e", video_s=9.0, width=1920, height=1080))
+
+    # Revise the cutlist (wipes sheet+render), then revert to the ORIGINAL content: the sheet's
+    # recorded parent hash matches again, but only one render archive exists and it has {} parents.
+    board.save(
+        "cutlist",
+        _cut(order0_end=480).model_copy(
+            update={"parents": {"script": content_hash(script), "voice": content_hash(cur_voice)}}
+        ),
+    )
+    board.save(
+        "cutlist",
+        _cut(order0_end=240).model_copy(
+            update={"parents": {"script": content_hash(script), "voice": content_hash(cur_voice)}}
+        ),
+    )
+    assert board.load("contact_sheet") is None and board.load("render_report") is None
+
+    restored = board.restore_coherent_suffix()
+
+    # The walk must genuinely REACH render_report for this assertion to mean anything.
+    assert restored == ["contact_sheet"], "the walk must reach render_report to reject it"
     assert board.load("render_report") is None
 
 
