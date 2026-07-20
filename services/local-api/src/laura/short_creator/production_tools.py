@@ -137,6 +137,7 @@ from .board_models import (
     canvas_for,
     stage_direction_label,
 )
+from .board_models import content_hash as _content_hash
 from .board_models import lines_in_storyline_order as _lines_in_storyline_order_impl
 from .board_models import script_hash as _script_hash
 from .board_models import script_text as _script_text
@@ -1445,7 +1446,8 @@ def build_production_tool_specs(
             # A script written FIRST is doomed work: a live run wrote a complete 433-word
             # script before its storyline, and the storyline save erased all of it. The prompt
             # mandates the order; prompts do not bind — so the contract lives here.
-            if not isinstance(board.load("storyline"), Storyline):
+            storyline_for_guard = board.load("storyline")
+            if not isinstance(storyline_for_guard, Storyline):
                 return {
                     "ok": False,
                     "reason": (
@@ -1486,7 +1488,12 @@ def build_production_tool_specs(
                 kept = [line for line in existing.lines if line.chapter != chapter]
                 replaced = [line for line in existing.lines if line.chapter == chapter]
             merged = sorted(kept + new_lines, key=lambda line: line.chapter)
-            version = board.save("script", Script(language=language, lines=merged))
+            merged_script = Script(
+                language=language,
+                lines=merged,
+                parents={"storyline": _content_hash(storyline_for_guard)},
+            )
+            version = board.save("script", merged_script)
             # The word arithmetic, in the reply the agent actually reads. This save REPLACES
             # the chapter, and "replace" reads as "append" under expansion pressure: a live
             # run told to ADD ~200 words saved only the new lines per chapter, six times, and
@@ -1641,6 +1648,10 @@ def build_production_tool_specs(
                 mp3_path=str(out_path),
                 timings_path=result.get("timings_path"),
                 voice_s=voice_s,
+                parents={
+                    "storyline": _content_hash(storyline),
+                    "script": _content_hash(script),
+                },
             )
             version = board.save("voice", artifact)
             return {
@@ -1818,7 +1829,15 @@ def build_production_tool_specs(
 
             board.save(
                 "cutlist",
-                Cutlist(segments=segments, script_hash=script_hash(ordered_lines)),
+                Cutlist(
+                    segments=segments,
+                    script_hash=script_hash(ordered_lines),
+                    parents={
+                        "storyline": _content_hash(storyline),
+                        "script": _content_hash(script),
+                        "voice": _content_hash(voice),
+                    },
+                ),
             )
             total_seconds = sum((s.end_frame_exclusive - s.start_frame) / fps for s in segments)
             with_zoom = sum(1 for s in segments if s.zoom_start_s is not None)
@@ -1923,6 +1942,7 @@ def build_production_tool_specs(
                 # provenance rather than recomputing it — the two can never disagree, and an
                 # unknown (pre-provenance) cutlist propagates its unknown honestly.
                 script_hash=cutlist.script_hash,
+                parents={"cutlist": _content_hash(cutlist)},
             )
             version = board.save("contact_sheet", artifact)
             return {
@@ -2107,6 +2127,12 @@ def build_production_tool_specs(
                 # Provenance: which script this cut actually speaks. Without it a restored
                 # render cannot be told apart from a current one.
                 script_hash=script_hash(ordered_lines),
+                parents={
+                    "storyline": _content_hash(storyline),
+                    "script": _content_hash(script),
+                    "voice": _content_hash(voice),
+                    "cutlist": _content_hash(cutlist),
+                },
             )
             board.save("render_report", report)
             ok = all(c.ok for c in checks)
@@ -2165,7 +2191,8 @@ def build_production_tool_specs(
             # QA judges a render. A live run saved a fresh ship-verdict onto a board whose
             # render had just been invalidated by a revise — a verdict sitting on top of a
             # missing film. Same order-guard pattern as script-before-storyline, last link.
-            if not isinstance(board.load("render_report"), RenderReport):
+            render_for_guard = board.load("render_report")
+            if not isinstance(render_for_guard, RenderReport):
                 return {
                     "ok": False,
                     "reason": (
@@ -2178,6 +2205,7 @@ def build_production_tool_specs(
                 qa_report = QaReport(
                     verdict=verdict,  # type: ignore[arg-type]
                     findings=[QaFinding(**f) for f in findings],
+                    parents={"render_report": _content_hash(render_for_guard)},
                 )
             except ValidationError as exc:
                 return {"ok": False, "errors": _validation_errors(exc)}

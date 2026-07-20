@@ -700,3 +700,44 @@ def test_save_qa_report_works_once_a_render_exists(tmp_path: Path) -> None:
     out = specs["save_qa_report"].func(verdict="ship", findings=[])
 
     assert out == {"ok": True, "version": 1}
+
+
+# --- every write stamps its parents: the chain of custody the restore walks ---------------
+
+
+def test_save_script_chapter_stamps_the_storyline_parent(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+    storyline = board.load("storyline")
+    assert storyline is not None
+
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+
+    script = board.load("script")
+    assert script is not None
+    assert script.parents == {"storyline": content_hash(storyline)}
+
+
+def test_save_qa_report_stamps_the_render_parent(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import RenderReport, content_hash
+
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save(
+        "render_report",
+        RenderReport(export_id="e1", video_s=10.0, width=1920, height=1080),
+    )
+    render = board.load("render_report")
+    assert render is not None
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    specs["save_qa_report"].func(verdict="ship", findings=[])
+
+    qa = board.load("qa_report")
+    assert qa is not None
+    assert qa.parents == {"render_report": content_hash(render)}

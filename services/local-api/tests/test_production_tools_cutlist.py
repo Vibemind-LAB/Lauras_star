@@ -162,6 +162,19 @@ def _script() -> Script:
     )
 
 
+def _words() -> list[dict[str, Any]]:
+    """Word timings for ``_script()``'s six whitespace tokens (same numbers as
+    ``test_synthesize_uses_cache_on_same_hash``) — reused by the provenance stamp tests."""
+    return [
+        {"text": "Stopp", "start_s": 0.0, "end_s": 0.3},
+        {"text": "dein", "start_s": 0.3, "end_s": 0.6},
+        {"text": "Team", "start_s": 0.6, "end_s": 1.0},
+        {"text": "Ein", "start_s": 1.2, "end_s": 1.4},
+        {"text": "Klick", "start_s": 1.4, "end_s": 1.7},
+        {"text": "genügt", "start_s": 1.7, "end_s": 2.1},
+    ]
+
+
 class _FakeVoiceBackend:
     """Fake VoiceBackend: writes a dummy mp3 + a timings sidecar with caller-supplied word
     times (so the cutlist zoom test can hand-compute expected values), and counts calls."""
@@ -997,6 +1010,58 @@ def test_build_cutlist_rejects_out_of_range_window_ref(tmp_path: Path) -> None:
     assert out["ok"] is False
     assert "window 2" in out["reason"] and "scene 1" in out["reason"]
     assert board.load("cutlist") is None
+
+
+def test_build_cutlist_stamps_storyline_script_and_voice_parents(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    _save_voice(board, tmp_path, _words())
+    storyline = board.load("storyline")
+    script = board.load("script")
+    voice = board.load("voice")
+    assert storyline is not None and script is not None and voice is not None
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+    assert out["ok"] is True, out
+
+    cutlist = board.load("cutlist")
+    assert cutlist is not None
+    assert cutlist.parents == {
+        "storyline": content_hash(storyline),
+        "script": content_hash(script),
+        "voice": content_hash(voice),
+    }
+
+
+def test_synthesize_stamps_storyline_and_script_parents(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    storyline = board.load("storyline")
+    script = board.load("script")
+    assert storyline is not None and script is not None
+    deps = ProductionDeps(voice_backend=_FakeVoiceBackend(words=_words()))
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["synthesize_script_voice"].func()
+    assert out["ok"] is True, out
+
+    voice = board.load("voice")
+    assert voice is not None
+    assert voice.parents == {
+        "storyline": content_hash(storyline),
+        "script": content_hash(script),
+    }
 
 
 def test_build_cutlist_refuses_a_voice_from_a_different_script(tmp_path: Path) -> None:

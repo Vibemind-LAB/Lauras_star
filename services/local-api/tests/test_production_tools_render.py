@@ -495,6 +495,36 @@ def test_the_cap_says_so_when_the_shipped_cut_no_longer_speaks_the_script(
     assert "earlier script" in capped["note"]
 
 
+def test_render_and_voice_and_sheet_stamp_their_parents(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    storyline = board.load("storyline")
+    script = board.load("script")
+    voice = board.load("voice")
+    cutlist = board.load("cutlist")
+    assert storyline and script and voice and cutlist
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+    assert out["ok"] is True, out
+
+    render = board.load("render_report")
+    assert render is not None
+    assert render.parents == {
+        "storyline": content_hash(storyline),
+        "script": content_hash(script),
+        "voice": content_hash(voice),
+        "cutlist": content_hash(cutlist),
+    }
+    # The voice artifact in this builder is seeded directly; synthesize_script_voice's own
+    # stamp is asserted in test_production_tools_cutlist.py's synthesis test below.
+
+
 def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db, asset_id = _seed_asset(tmp_path)
     board = _board(tmp_path, asset_id)

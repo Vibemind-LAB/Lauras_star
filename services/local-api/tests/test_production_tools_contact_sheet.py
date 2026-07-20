@@ -28,6 +28,7 @@ from laura.short_creator.board_models import (
     Cutlist,
     CutSegment,
     canvas_for,
+    content_hash,
 )
 from laura.short_creator.production_tools import build_production_tool_specs
 
@@ -170,6 +171,11 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
     assert saved.png_path == out["png_path"]
     assert saved.version == 1
     assert [t.scene_number for t in saved.tiles] == [1, 2, 3]
+
+    cutlist_now = board.load("cutlist")
+    sheet = board.load("contact_sheet")
+    assert cutlist_now is not None and sheet is not None
+    assert sheet.parents == {"cutlist": content_hash(cutlist_now)}
 
 
 def test_save_contact_sheet_versions_are_separate_files(tmp_path: Path) -> None:
