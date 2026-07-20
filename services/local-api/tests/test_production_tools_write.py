@@ -24,6 +24,8 @@ from laura.short_creator.board_models import (
     Cutlist,
     CutSegment,
     SceneReview,
+    Script,
+    ScriptLine,
     Storyline,
     VoiceArtifact,
 )
@@ -480,6 +482,82 @@ def test_a_structure_preserving_storyline_save_keeps_script_and_voice(tmp_path: 
     assert script is not None, "the 64 words must survive a cosmetic storyline change"
     assert board.load("voice") is not None
     assert board.load("cutlist") is None, "targets changed — the cut must be rebuilt"
+
+
+# --- the carry-over is itself a write against the NEW storyline ---------------------------
+# Task 4 (f8783f9) stamped `parents["storyline"]` on every script/voice write, checked at
+# read time via Board.status()'s parents-based staleness. The carry-over above re-saves the
+# OLD script/voice objects verbatim — including their OLD `parents["storyline"]`, which still
+# names the storyline instance they were built against, not the new one now on the board.
+# status() then reports them stale=True, directly contradicting the carry-over's own note
+# ("chapter structure unchanged — script and voice carried over"). The fix re-stamps
+# `parents["storyline"]` to the new storyline's content hash when re-saving the carried-over
+# copies — and leaves an empty (pre-provenance) `parents` dict empty, never fabricating
+# provenance for a board written before Task 1.
+
+
+def test_a_carried_over_script_and_voice_are_not_reported_stale(tmp_path: Path) -> None:
+    """The carry-over's own claim ("still valid") must match what status() reports."""
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="v1", chapters=[_chapter()])
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+    storyline = board.load("storyline")
+    script = board.load("script")
+    assert isinstance(storyline, Storyline) and isinstance(script, Script)
+    # Task-4-style stamp, as synthesize_script_voice would have written it.
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="h",
+            mp3_path="v.mp3",
+            parents={
+                "storyline": content_hash(storyline),
+                "script": content_hash(script),
+            },
+        ),
+    )
+
+    out = specs["save_storyline"].func(
+        red_thread="reworded entirely",
+        chapters=[{**_chapter(), "message": "a different beat", "target_seconds": 9.0}],
+    )
+
+    assert out["carried_over"] == ["script", "voice"]
+    status = board.status()["artifacts"]
+    assert status["script"]["stale"] is False, "carried-over script is still valid"
+    assert status["voice"]["stale"] is False, "carried-over voice is still valid"
+
+
+def test_a_carried_over_pre_provenance_artifact_stays_empty_parents(tmp_path: Path) -> None:
+    """Empty parents means unknown provenance — a carry-over must never invent an entry for a
+    board written before Task 1's `parents` field existed."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="v1", chapters=[_chapter()])
+    # Pre-provenance script/voice: parents deliberately empty, as on a board predating Task 1.
+    board.save(
+        "script",
+        Script(language="German", lines=[ScriptLine(chapter=1, scene_number=1, text="a line")]),
+    )
+    board.save("voice", VoiceArtifact(script_hash="h", mp3_path="v.mp3"))
+
+    out = specs["save_storyline"].func(
+        red_thread="reworded entirely",
+        chapters=[{**_chapter(), "message": "a different beat", "target_seconds": 9.0}],
+    )
+
+    assert out["carried_over"] == ["script", "voice"]
+    carried_script = board.load("script")
+    carried_voice = board.load("voice")
+    assert isinstance(carried_script, Script) and carried_script.parents == {}
+    assert isinstance(carried_voice, VoiceArtifact) and carried_voice.parents == {}
 
 
 def test_a_structural_storyline_change_still_invalidates_and_says_what_was_lost(

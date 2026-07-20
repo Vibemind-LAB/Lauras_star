@@ -104,7 +104,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
@@ -629,6 +629,27 @@ _lines_in_storyline_order = _lines_in_storyline_order_impl
 
 
 script_text = _script_text
+
+
+_Reparentable = TypeVar("_Reparentable", Script, VoiceArtifact)
+
+
+def _reparent(artifact: _Reparentable, updates: dict[str, str]) -> _Reparentable:
+    """Copy ``artifact`` with its recorded parent hashes refreshed to CURRENT values.
+
+    Only keys the artifact already records are touched, and only when ``updates`` supplies a
+    replacement for them — an unrecorded key stays absent and an empty ``parents`` (a
+    pre-provenance board) stays empty. Never fabricates provenance that was not already there.
+    Used by ``save_storyline``'s structure-preserving carry-over: it re-saves an unchanged
+    script/voice against a NEW storyline, so their ``parents["storyline"]`` (and, since content
+    hashes fold in the WHOLE model including ``parents``, the script's own re-stamp changes its
+    hash too — anything that recorded that hash, i.e. voice's ``parents["script"]``, must move
+    with it or a corrected script would itself read as a drifted parent) need to move with it.
+    """
+    if not artifact.parents:
+        return artifact
+    refreshed = {**artifact.parents, **{k: v for k, v in updates.items() if k in artifact.parents}}
+    return artifact.model_copy(update={"parents": refreshed})
 
 
 def _chapter_structure(storyline: Storyline) -> list[tuple[int, list[tuple[int, int]]]]:
@@ -1345,10 +1366,33 @@ def build_production_tool_specs(
                     old_storyline, Storyline
                 ) and _chapter_structure(old_storyline) == _chapter_structure(storyline)
                 if same_structure:
-                    board.save("script", old_script)
+                    # The carry-over is itself a write against the NEW storyline: it re-asserts
+                    # script/voice as valid for it, so it must re-stamp exactly the "storyline"
+                    # parent — or status()'s parents-based staleness sees the OLD hash and
+                    # reports a false positive, contradicting this branch's own "still valid"
+                    # claim (review finding on f8783f9). ``_reparent`` only touches keys already
+                    # present (an empty dict — pre-provenance — stays empty, never fabricated).
+                    new_storyline = board.load("storyline")
+                    new_hash = (
+                        _content_hash(new_storyline)
+                        if isinstance(new_storyline, Storyline)
+                        else None
+                    )
+                    script_to_save = old_script
+                    if new_hash is not None:
+                        script_to_save = _reparent(old_script, {"storyline": new_hash})
+                    board.save("script", script_to_save)
                     carried = ["script"]
                     if isinstance(old_voice, VoiceArtifact):
-                        board.save("voice", old_voice)
+                        # The script re-stamp above changes ITS OWN content hash (content_hash
+                        # folds in the whole model, "parents" included) — so voice's recorded
+                        # "script" parent must move to match, or the very fix that clears
+                        # script's staleness would newly drift voice's.
+                        voice_updates = {"script": _content_hash(script_to_save)}
+                        if new_hash is not None:
+                            voice_updates["storyline"] = new_hash
+                        voice_to_save = _reparent(old_voice, voice_updates)
+                        board.save("voice", voice_to_save)
                         carried.append("voice")
                     result["carried_over"] = carried
                     result["note"] = (
