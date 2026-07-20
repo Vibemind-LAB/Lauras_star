@@ -242,6 +242,7 @@ const SESSION_ARTIFACT_ORDER = [
   "script",
   "voice",
   "cutlist",
+  "contact_sheet",
   "render_report",
   "qa_report",
 ] as const;
@@ -251,6 +252,7 @@ const SESSION_ARTIFACT_LABELS: Record<(typeof SESSION_ARTIFACT_ORDER)[number], s
   script: "script",
   voice: "voice",
   cutlist: "cutlist",
+  contact_sheet: "Bogen",
   render_report: "Export",
   qa_report: "QA",
 };
@@ -262,15 +264,38 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
   // that shape was a live crash: every new session passes through a queued/running window in
   // which the endpoint reports only { job, board_ready: false }.
   if (!status.board_ready) return null;
-  const chips: { key: string; text: string }[] = [];
+  const chips: { key: string; text: string; title?: string }[] = [];
   if (status.scene_reviews.count > 0) {
-    chips.push({ key: "reviews", text: `🎬 ${status.scene_reviews.count}` });
+    // A degraded review is one the VLM never actually produced — a board with zero visual
+    // analysis used to look identical to a fully reviewed one in this very chip.
+    const degraded = status.scene_reviews.degraded_count;
+    chips.push({
+      key: "reviews",
+      text:
+        degraded > 0
+          ? `🎬 ${status.scene_reviews.count} (${degraded}⚠)`
+          : `🎬 ${status.scene_reviews.count}`,
+      title:
+        degraded > 0
+          ? `${degraded} Review(s) ohne echte Bildanalyse (Szenen ${status.scene_reviews.degraded_scenes.join(", ")})`
+          : undefined,
+    });
   }
   for (const name of SESSION_ARTIFACT_ORDER) {
-    const { version } = status.artifacts[name];
-    if (version !== null) {
-      chips.push({ key: name, text: `${SESSION_ARTIFACT_LABELS[name]} v${version}` });
+    const info = status.artifacts[name];
+    if (info.version === null) continue;
+    const warnings: string[] = [];
+    if (info.stale === true) {
+      warnings.push("gehört zu einem älteren Skript (stale)");
     }
+    if (info.checks_ok === false) {
+      warnings.push(`Checks fehlgeschlagen: ${(info.failed_checks ?? []).join(", ")}`);
+    }
+    chips.push({
+      key: name,
+      text: `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`,
+      title: warnings.length > 0 ? warnings.join(" · ") : undefined,
+    });
   }
   if (chips.length === 0) return null;
   return (
@@ -278,6 +303,7 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
       {chips.map((chip) => (
         <span
           key={chip.key}
+          title={chip.title}
           className="inline-block rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] text-content-strong"
         >
           {chip.text}

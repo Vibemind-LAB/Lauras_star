@@ -40,6 +40,7 @@ function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): Production
       script: { version: null, archived_versions: [] },
       voice: { version: null, archived_versions: [] },
       cutlist: { version: null, archived_versions: [] },
+      contact_sheet: { version: null, archived_versions: [] },
       render_report: { version: null, archived_versions: [] },
       qa_report: { version: null, archived_versions: [] },
     },

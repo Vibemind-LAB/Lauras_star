@@ -751,7 +751,13 @@ export interface ProductionBoardStatus {
     degraded_scenes: number[];
   };
   artifacts: Record<
-    "storyline" | "script" | "voice" | "cutlist" | "render_report" | "qa_report",
+    | "storyline"
+    | "script"
+    | "voice"
+    | "cutlist"
+    | "contact_sheet"
+    | "render_report"
+    | "qa_report",
     ProductionArtifactState
   >;
   resume_point: string;
