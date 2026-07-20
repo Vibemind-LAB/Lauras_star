@@ -150,7 +150,7 @@ def test_handle_production_run_asset_missing_returns_ok_false_no_raise(tmp_path:
 
     out = handlers.handle_production_run(_ctx(db, payload))
 
-    assert out == {"ok": False, "error": "asset not found", "session_id": "sess1"}
+    assert out == {"ok": False, "error": "asset not found", "session_id": "sess1", "restored": []}
 
 
 # --- coarse NDJSON run log -----------------------------------------------------------------
