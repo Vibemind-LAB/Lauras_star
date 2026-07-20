@@ -42,9 +42,10 @@ word-time map and the picture all walk the same sequence; a sha256 of that ORDER
 while a storyline reorder (which changes the text) correctly busts the cache. ``build_cutlist``
 is a *pure derivation* — no model or backend calls — turning storyline + script + voice into a
 frame-accurate ``Cutlist``: one ``CutSegment`` per scene entry in arc order, cut from the review
-window the entry references (offset, duration cap, per-window roi), clamped inside its own
-source range, with an optional zoom timed to when the scene's script line is actually spoken
-(the voice sidecar's word ``start_s``, via :func:`line_starts`, offset by ``transition_lead_s``).
+window the entry references (offset, per-window roi — duration is budget-driven, never the
+window's own duration), clamped inside its own source range, with an optional zoom timed to when
+the scene's script line is actually spoken (the voice sidecar's word ``start_s``, via
+:func:`line_starts`, offset by ``transition_lead_s``).
 Segment durations are coupled to that same sidecar: :func:`chapter_audio_windows` tiles the
 voice track into per-chapter windows (boundaries midway between adjacent chapters' words, the
 last chapter running to voice end + a short tail) and ``_scale_chapter_durations`` rescales each
@@ -1717,14 +1718,15 @@ def build_production_tool_specs(
         """Deterministically derive a frame-accurate cutlist from storyline + script + voice:
         one CutSegment per scene entry in arc order (chapter, then that chapter's
         scene_numbers order). An entry that references a review window ({"scene": N,
-        "window": K}) is cut from THAT window — its offset is the segment start, its length
-        the base-duration cap, its roi the zoom region (falling back to the review-level
-        roi) — so the same scene can appear several times with different windows. Segment
+        "window": K}) is cut from THAT window — its offset is the segment start, its roi
+        the zoom region (falling back to the review-level roi); the segment's LENGTH comes
+        from the chapter's time budget / audio window, never from the window's duration —
+        so the same scene can appear several times with different windows. Segment
         lengths are COUPLED TO THE VOICE so picture chapters stay in sync with the one
         continuous voice track: each chapter's audio window (from the word-timings sidecar;
         boundaries midway between adjacent chapters' words, the last chapter running to voice
         end + a short tail) is distributed over its segments proportionally to their
-        target_seconds/window base durations — 2s floor per segment, each segment starting at
+        per-scene chapter budget — 2s floor per segment, each segment starting at
         its window's offset and stretching past the window's duration_s if needed, but never
         past its scene's end. A chapter the sidecar doesn't cover (or a missing sidecar)
         falls back to the plain target_seconds budget. An optional zoom-in is timed to when

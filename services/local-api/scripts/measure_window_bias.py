@@ -3,11 +3,13 @@
     uv run python scripts/measure_window_bias.py [AGENT_RUNS_DIR]
 
 Reads every board's CURRENT scene reviews under ``AGENT_RUNS_DIR`` (default
-``workspace-livetest/agent-runs`` relative to the CWD; archived ``versions/`` stay out of
-scope) and prints one row per review — scene length, window count, min/median window
-duration, hook_score, a static-content indicator — plus a static-vs-moving summary over the
-live (non-degraded) rows. Baseline table and purpose:
-docs/superpowers/specs/2026-07-20-window-bias-design.md.
+``workspace-livetest/agent-runs`` anchored to this script's own location on disk, not the
+CWD — the same default resolves correctly no matter which directory the script is invoked
+from; archived ``versions/`` stay out of scope) and prints one row per review — scene
+length, window count, min/median window duration, hook_score, a static-content indicator —
+plus a static-vs-moving summary over the live (non-degraded) rows, and a classification-free
+headline (live reviews with a sub-second window, independent of the static/moving regex).
+Baseline table and purpose: docs/superpowers/specs/2026-07-20-window-bias-design.md.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_ROOT = Path("workspace-livetest") / "agent-runs"
+_DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "workspace-livetest" / "agent-runs"
 _FPS = 30.0
 _STATIC_RX = re.compile(
     r"no significant change|static|remains|unchanged|slightly|stationary|little change",
@@ -60,6 +62,18 @@ def scan_reviews(root: Path, fps: float = _FPS) -> list[dict[str, Any]]:
     return rows
 
 
+def count_subsecond(rows: list[dict[str, Any]]) -> int:
+    """Live (non-degraded) reviews whose min window is sub-second — classification-free.
+
+    Independent of ``_STATIC_RX``: the new window-rubric prompt (spec
+    2026-07-20-window-bias-design.md) itself uses "held"/"static" vocabulary the VLM may
+    echo back in ``description``/``whats_happening``, which shifts static-vs-moving group
+    membership in a before/after comparison. This headline can't drift with the regex
+    because it doesn't use it.
+    """
+    return sum(1 for r in rows if not r["degraded"] and r["min_window_s"] < 1.0)
+
+
 def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Static-vs-moving summary over the LIVE (non-degraded) rows."""
     live = [r for r in rows if not r["degraded"]]
@@ -68,7 +82,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         group = [r for r in live if r["static"] is (name == "static")]
         if not group:
             continue
-        hooks = [r["hook_score"] for r in group if isinstance(r["hook_score"], int)]
+        hooks = [
+            r["hook_score"]
+            for r in group
+            if isinstance(r["hook_score"], (int, float))
+            and not isinstance(r["hook_score"], bool)
+        ]
         out[name] = {
             "n": len(group),
             "median_window_median_s": round(
@@ -103,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{r['min_window_s']:<8}{r['median_window_s']:<8}{str(r['hook_score']):<6}"
             f"{r['static']}"
         )
+    print(f"live_subsecond_reviews={count_subsecond(rows)}")
     for name, stats in summarize(rows).items():
         print(
             f"{name}: n={stats['n']} "

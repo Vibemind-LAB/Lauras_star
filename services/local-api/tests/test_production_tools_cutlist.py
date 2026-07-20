@@ -1148,3 +1148,20 @@ def test_build_cutlist_gives_short_and_long_windows_equal_time(tmp_path: Path) -
     # 3.0s each (90 frames @ 30fps), starting at each window's offset.
     assert (seg0.start_frame, seg0.end_frame_exclusive) == (0, 90)
     assert (seg1.start_frame, seg1.end_frame_exclusive) == (300, 390)
+
+
+def test_build_cutlist_tool_description_teaches_offset_only_window_contract(
+    tmp_path: Path,
+) -> None:
+    """The agent team reads ``ToolSpec.description`` (harvested from ``build_cutlist``'s
+    docstring), not the source. It must not teach the removed semantics — a review window
+    capping a segment's length — or the agent will keep believing the window IS the weight
+    (spec 2026-07-20-window-bias-design.md §2)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    description = specs["build_cutlist"].description
+
+    assert "base-duration cap" not in description
+    assert "never from the window's duration" in description

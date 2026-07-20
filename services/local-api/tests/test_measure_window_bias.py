@@ -98,6 +98,8 @@ def test_scan_and_summary_over_fixture_boards(tmp_path: Path) -> None:
     assert moving_row["median_window_s"] == 8.0  # best_window fallback for windows == []
     assert degraded_row["degraded"] is True
 
+    assert mod.count_subsecond(rows) == 1  # only the static row has min 0.5; degraded excluded
+
     summary = mod.summarize(rows)
     assert summary["static"] == {
         "n": 1,
