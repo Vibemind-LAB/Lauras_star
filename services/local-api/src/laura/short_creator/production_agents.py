@@ -35,8 +35,12 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 MAX_TURNS = 30
 
 
-def production_agent_specs() -> list[AgentSpec]:
+def production_agent_specs(language: str = "German") -> list[AgentSpec]:
     """The fixed v2 production-team roster. Pure — no autogen, no db.
+
+    ``language`` is the board's — the words the scene_author writes. It was hard-coded to
+    German, which no task string could argue with: a submission whose jury reads English got a
+    German script however often the goal asked for English.
 
     Tool names must exist in :func:`production_tools.build_production_tool_specs` (cross-checked
     in tests). The five specialists judge in a fixed pipeline, each reading and writing the
@@ -101,10 +105,16 @@ def production_agent_specs() -> list[AgentSpec]:
             system_message=(
                 "You are the Scene Author. First call get_storyline to see the arc and its "
                 "chapters, then script_budget — it tells you how many words the whole script "
-                "may spend; never guess a length or count seconds yourself. Then "
+                "may spend AND how many each chapter may spend in per_chapter; never guess a "
+                "length or count seconds yourself. Spend the PER-CHAPTER numbers, not just the "
+                "total: a chapter's video cannot cover voice its own scenes do not hold, so a "
+                "right total over a wrong split still breaks the film. A chapter budgeted at "
+                "almost nothing means its reviewed window is about a second long — write "
+                "barely anything there rather than borrowing from the total. Then "
                 "get_scene_context (and get_reviews for visual detail) for each "
-                "scene you write for. Write 1-2 sentences per scene, per chapter, in the video's "
-                "language (German) — never switch languages mid-script. Write each chapter's "
+                "scene you write for. Write 1-2 sentences per scene, per chapter, in "
+                f"{language} — the video's language, never switch languages mid-script. "
+                "Write each chapter's "
                 "lines in the SAME scene order the storyline lists that chapter's scenes in — "
                 "voice and captions play back in that order, not the order you type them in. A "
                 "chapter may list the same scene several times with different windows — write "
@@ -115,9 +125,22 @@ def production_agent_specs() -> list[AgentSpec]:
                 "in the first seconds. Save chapter by chapter via save_script_chapter (it "
                 "merges — other chapters' lines stay untouched); fix and resave on validation "
                 "errors. Verify with get_script once every chapter in the storyline has its "
-                "lines written. Write to the budget ONCE — the voice gets synthesized and "
-                "measured after you; correcting from that measurement is the coding_agent's "
-                "job, not yours. Do not re-save the script to chase a length."
+                "lines written — it reports words against budget_words, a shortfall_pct, "
+                "ungrounded_terms, and silent_chapters. silent_chapters names storyline "
+                "chapters you wrote no line for at all: a run once left four of six silent and "
+                "the film came out at 63% of its length. A chapter may stay silent ONLY as a "
+                "deliberate visual beat — say so in that case; otherwise write it. "
+                "A shortfall above 15% means the film comes out that much "
+                "shorter than its target, so write the missing words BEFORE the voice is "
+                "synthesized — but ONLY words the reviews support. The budget is a CEILING, "
+                "never a quota: if the scenes do not hold enough to say, write less and let "
+                "the film be shorter. A short honest film beats a full one that invents a "
+                "capability the product does not have. ungrounded_terms lists the specifics "
+                "no review ever saw — each one is unsupported, so cut it or rewrite it into "
+                "something the frames actually show. Write to "
+                "the budget ONCE — the voice gets synthesized and measured after you; "
+                "correcting from that measurement is the coding_agent's job, not yours. Do not "
+                "re-save the script to chase a length."
             ),
             tool_names=(
                 "get_storyline",
@@ -182,17 +205,18 @@ def production_agent_specs() -> list[AgentSpec]:
                 "revise, saved via save_qa_report together with concrete findings — every finding "
                 "must name WHERE (which scene or timestamp) and WHAT is wrong, no vague words "
                 "like 'looks off'. Use the board's contact sheet as your segment map — its "
-                "tiles are labeled '<order> S<scene_number>' — and if it is missing or stale "
-                "after a cutlist change, call save_contact_sheet to restore the user's visual "
-                "checkpoint. If save_qa_report returns validation errors, fix exactly what "
-                "it names and save again."
+                "tiles are labeled '<order> S<scene_number>'. You judge the board; you never "
+                "WRITE to the chain except your own verdict — if the sheet or the render is "
+                "missing, that is a revise finding for the coding_agent, not something you "
+                "rebuild yourself. If save_qa_report returns validation errors, fix exactly "
+                "what it names and save again; if it says there is no render on the board, "
+                "report that as your finding instead of judging a film that does not exist."
             ),
             tool_names=(
                 "board_status",
                 "get_storyline",
                 "get_script",
                 "review_export",
-                "save_contact_sheet",
                 "save_qa_report",
             ),
             max_tool_iterations=6,
@@ -246,7 +270,7 @@ def build_production_team(
             system_message=spec.system_message,
             max_tool_iterations=spec.max_tool_iterations,
         )
-        for spec in production_agent_specs()
+        for spec in production_agent_specs(board.meta().language)
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
     return MagenticOneGroupChat(participants=agents, model_client=orchestrator, max_turns=MAX_TURNS)

@@ -22,6 +22,7 @@ imported at this module's top level.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,8 +31,8 @@ from ..db import repos
 from ..db.database import Database
 from . import context
 from .board import Board
-from .board_models import BoardMeta, QaReport, RenderReport
-from .orchestrator import ExecuteFn, StageOutcome, _safe_execute
+from .board_models import BoardMeta, Format, QaReport, RenderReport, canvas_for
+from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
 from .production_agents import build_production_team
 from .production_tools import ProductionDeps
 from .providers import AgentConfig, Stage
@@ -91,7 +92,7 @@ def build_production_task(
        contact sheet -> render -> qa) plus the contact-sheet checkpoint as a known pattern:
        stopping at the Kontaktbogen or rendering later is steered purely by follow-up
        messages against the normal resume flow - no extra session state;
-    5. the German-script language rule plus the coding-agent's ``voice_fits`` charter;
+    5. the board's script language plus the coding-agent's ``voice_fits`` charter;
     6. the QA revision-round limit (one revise round, then ship with findings as warnings);
     7. only when ``message`` is set: the user's follow-up request text (capped at 2000 chars)
        plus instructions for interpreting it against the board status above - going back to an
@@ -124,7 +125,7 @@ def build_production_task(
     if message:
         follow_up = (
             "\n"
-            "7) USER FOLLOW-UP REQUEST:\n"
+            "8) USER FOLLOW-UP REQUEST:\n"
             f"   {message[:2000]}\n"
             "   Interpret this request against the BOARD STATUS above. Going back to an "
             "earlier version: coding_agent calls revert_artifact(name, version), using the "
@@ -135,9 +136,11 @@ def build_production_task(
             "request does not ask to change.\n"
         )
 
+    _, (out_w, out_h) = canvas_for(meta.format)
     return (
         f"1) GOAL: {task}\n"
-        f"   Format: {meta.format}. Target length: ~{target_seconds}s vertical short.\n"
+        f"   Format: {meta.format} — renders {out_w}x{out_h}. "
+        f"Target length: ~{target_seconds}s.\n"
         "\n"
         "2) FIXED VIRAL ARC (structural contract - every short follows this shape; "
         "chapter roles are exactly hook, problem, feature, payoff_cta):\n"
@@ -162,16 +165,66 @@ def build_production_task(
         "rendering; a later message (e.g. 'render jetzt') resumes at render_production through "
         "the normal resume flow.\n"
         "\n"
-        "5) LANGUAGE + CHARTER: the script MUST be written in German (the source video's "
-        "language) - never switch languages mid-script. Coding-agent charter: if voice_fits "
+        f"5) LANGUAGE + CHARTER: the script MUST be written in {meta.language} - never switch "
+        "languages mid-script. Coding-agent charter: if voice_fits "
         "comes back False, never shorten the voice - rebuild the cutlist with a longer "
-        "per-chapter time budget and render again.\n"
+        "per-chapter time budget and render again. THE FOOTAGE IS FIXED: there is no asset "
+        "owner, no admin, no upload channel, and no way to obtain new or longer scene files - "
+        "never plan around acquiring material. When the scenes cannot cover the voice even at "
+        "full stretch (a capacity_warning names this), the correct and pre-authorized move is "
+        "a SHORTER SCRIPT and therefore a shorter film: trim or redistribute the flagged "
+        "chapter's words and continue. A finished shorter film always beats an unfinished "
+        "longer one.\n"
         "\n"
         "6) QA LIMIT: after ONE revise verdict, at most one revision round is allowed - if the "
         "next QA pass still finds issues, deliver anyway with the findings recorded as "
         "warnings instead of looping again.\n"
+        "\n"
+        f"{_tool_ownership_section(meta.language)}"
         f"{follow_up}"
     )
+
+
+def _tool_ownership_section(language: str) -> str:
+    """The roster of who holds which tool, derived from the same specs the team is built from.
+
+    Agents cannot discover each other's toolsets, and across three runs the orchestrator
+    routed writes to agents that do not hold the tool — ending once with the orchestrator and
+    story_architect asking EACH OTHER to call save_script_chapter while the budget died.
+    Generated, not hand-written, so the list cannot drift from the real team.
+    """
+    from .production_agents import production_agent_specs
+
+    lines = "\n".join(
+        f"   - {spec.name}: {', '.join(spec.tool_names)}"
+        for spec in production_agent_specs(language)
+    )
+    return (
+        "7) TOOL OWNERSHIP (exhaustive - no other agent has these):\n"
+        f"{lines}\n"
+        "   ONLY the named agent can call its tools. Never instruct any other agent - or "
+        "yourself - to call a tool it does not hold; route the WORK to the agent that owns "
+        "the tool and let it make the call itself.\n"
+    )
+
+
+def _qa_weak(board: Board) -> bool:
+    """Whether the board's QA verdict marks this production as weak.
+
+    Reads the board's structured ``QaReport`` (``verdict="ship"|"revise"``), not message
+    scanning: a missing report or a "revise" verdict is weak, and only an explicit "ship"
+    verdict is not. Shared by :func:`_parse_outcome` (a team just ran) and the full-restore
+    short-circuit in :func:`run_production` (no team ran, but the board already carries a
+    verdict) — both need the exact same read of the same board state.
+    """
+    qa = board.load("qa_report")
+    return not (isinstance(qa, QaReport) and qa.verdict == "ship")
+
+
+def _export_id_of(board: Board) -> str | None:
+    """The render's export id, if the board carries a ``RenderReport``."""
+    render_report = board.load("render_report")
+    return render_report.export_id if isinstance(render_report, RenderReport) else None
 
 
 def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
@@ -186,20 +239,28 @@ def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
     for msg in getattr(result, "messages", None) or []:
         to_text = getattr(msg, "to_model_text", None)
         text += (to_text() if callable(to_text) else str(getattr(msg, "content", ""))) + "\n"
-    qa = board.load("qa_report")
-    weak = not (isinstance(qa, QaReport) and qa.verdict == "ship")
     return StageOutcome(
-        status="ok", weak=weak, summary=text.strip()[:2000], team="magentic", stage=stage
+        status="ok", weak=_qa_weak(board), summary=text.strip()[:2000], team="magentic", stage=stage
     )
 
 
-def _make_default_execute(board: Board, asset_id: str, deps: ProductionDeps | None) -> ExecuteFn:
+def _make_default_execute(
+    board: Board,
+    asset_id: str,
+    deps: ProductionDeps | None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
+) -> ExecuteFn:
     """The default ``ExecuteFn``: lazily builds and runs the real production team.
 
-    Mirrors :func:`orchestrator._default_execute` (build the team, ``asyncio.run`` its ``run``,
-    any exception is a hard fail), but the v2 team is board-bound
+    Mirrors :func:`orchestrator._default_execute`, but the v2 team is board-bound
     (:func:`production_agents.build_production_team` needs ``board``/``asset_id``/``deps``), so
     those are captured in this closure instead of being ``ExecuteFn`` parameters.
+
+    The team runs via ``run_stream`` and every normalized event goes to *event_sink* (the job
+    handler points it at the session run log). A run once spent 44 minutes in its script phase
+    and saved nothing, and the log held exactly two lines — meta and done; which tool was
+    called and what it refused was unknowable. Observability only: a missing or crashing sink
+    never affects the run.
     """
 
     def execute(
@@ -207,11 +268,29 @@ def _make_default_execute(board: Board, asset_id: str, deps: ProductionDeps | No
     ) -> StageOutcome:
         import asyncio  # local: only the real run needs the event loop
 
-        try:
+        from .stream import _map_event
+
+        async def _run() -> Any:
             team = build_production_team(
                 db, board, config, asset_id=asset_id, stage=stage, deps=deps
             )
-            result = asyncio.run(team.run(task=task))
+            final: Any = None
+            async for raw in team.run_stream(task=task):
+                if type(raw).__name__ == "TaskResult":
+                    final = raw
+                    continue
+                if event_sink is None:
+                    continue
+                mapped = _map_event(raw, "magentic")
+                if mapped is not None:
+                    try:
+                        event_sink(mapped)
+                    except Exception:  # noqa: BLE001 — logging must never fail the film
+                        logger.warning("production event sink failed; continuing")
+            return final
+
+        try:
+            result = asyncio.run(_run())
         except Exception as exc:
             logger.warning("magentic production team failed at stage %s: %s", stage, exc)
             return StageOutcome(
@@ -222,6 +301,49 @@ def _make_default_execute(board: Board, asset_id: str, deps: ProductionDeps | No
     return execute
 
 
+def _completed_result(
+    board: Board,
+    *,
+    session_id: str,
+    restored: list[str],
+    status: Status,
+    stage: Stage,
+    team: TeamKind,
+    weak: bool,
+    escalated: bool,
+    summary: str,
+    export_id: str | None,
+    resume_point: str,
+) -> dict[str, Any]:
+    """The result dict :func:`run_production` returns, built once for both completion paths:
+    the full-restore short-circuit (no team turn) and the normal completion tail (a team ran).
+
+    A future key added to only one of the two call sites would silently miss the other — the
+    exact way a past bug happened, since both built the same 13-key dict literal independently.
+
+    ``ok`` is the agent LOOP's status: it ran without a hard failure. It does not mean a video
+    exists — a live run reported ``ok=True`` with ``export_id=None`` and half a board. ``complete``
+    is the production's status; the board always knows via ``resume_point``, so both are derived
+    here from ``status``/``resume_point`` rather than passed in separately, since both call sites
+    compute them the same way.
+    """
+    return {
+        "ok": status == "ok",
+        "complete": resume_point == "done",
+        "status": status,
+        "stage": stage,
+        "team": team,
+        "weak": weak,
+        "escalated": escalated,
+        "summary": summary,
+        "session_id": session_id,
+        "board": board.status(),
+        "export_id": export_id,
+        "resume_point": resume_point,
+        "restored": restored,
+    }
+
+
 def run_production(
     db: Database,
     config: AgentConfig,
@@ -230,9 +352,12 @@ def run_production(
     session_id: str,
     task: str,
     target_seconds: int = 60,
+    format: Format = "insta",
+    language: str = "German",
     message: str | None = None,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run the v2 production team for one session: resume-aware board + magentic-only A/B ladder.
 
@@ -249,7 +374,12 @@ def run_production(
     :func:`orchestrator._safe_execute`, so a raising ``execute`` never propagates out of here.
     """
     if repos.get_asset(db, asset_id) is None:
-        return {"ok": False, "error": "asset not found", "session_id": session_id}
+        return {
+            "ok": False,
+            "error": "asset not found",
+            "session_id": session_id,
+            "restored": [],
+        }
 
     try:
         root = board_root_for(db, asset_id, session_id)
@@ -263,6 +393,7 @@ def run_production(
             "error": "project not found",
             "asset_id": asset_id,
             "session_id": session_id,
+            "restored": [],
         }
     try:
         board = Board.open(root)
@@ -273,21 +404,59 @@ def run_production(
                 "error": "unknown session (no board)",
                 "asset_id": asset_id,
                 "session_id": session_id,
+                "restored": [],
             }
         meta = BoardMeta(
             session_id=session_id,
             asset_id=asset_id,
             created_utc=datetime.now(UTC).isoformat(timespec="seconds"),
             task=task,
+            format=format,
+            language=language,
             target_seconds=float(target_seconds),
         )
         board = Board.create(root, meta)
+
+    # Full-suffix restore (spec 2026-07-20-provenance-chain-design.md): bring back the
+    # longest archived suffix whose parent-instance hashes match the board. Runs BEFORE
+    # build_production_task so the resume contract reads DONE for what came back — the
+    # task-text lie that killed the single-link restore is structurally impossible here.
+    restored = board.restore_coherent_suffix()
+    if restored and event_sink is not None:
+        try:
+            event_sink({"type": "restored", "artifacts": list(restored)})
+        except Exception:  # noqa: BLE001 — observability must never fail the run
+            logger.warning("restored-event sink failed; continuing")
+
+    # Computed once and reused below (the short-circuit condition and the completion tail both
+    # need it); build_production_task computes its own copy internally for its other callers.
+    expected_scenes = _expected_scene_numbers(db, asset_id)
+
+    # Spec decision 2 (2026-07-20-provenance-chain-design.md, §Entscheidungen (User)): a fully
+    # coherent board reaches complete WITHOUT an agent-team turn. A follow-up ``message`` is
+    # itself a request for a team turn (e.g. "make the hook punchier" against an already-done
+    # board), so the short-circuit applies only to a plain resume/restart with no message.
+    if message is None and board.resume_point(expected_scenes) == "done":
+        board.set_status("complete")
+        return _completed_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            status="ok",
+            stage="A",
+            team="magentic",
+            weak=_qa_weak(board),
+            escalated=False,
+            summary="board already coherent through qa_report; no team turn needed",
+            export_id=_export_id_of(board),
+            resume_point="done",
+        )
 
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
     )
     run: ExecuteFn = execute if execute is not None else _make_default_execute(
-        board, asset_id, deps
+        board, asset_id, deps, event_sink
     )
 
     outcome = _safe_execute(run, db, config, "A", "magentic", task_text)
@@ -296,20 +465,27 @@ def run_production(
         outcome = _safe_execute(run, db, config, "B", "magentic", task_text)
         escalated = True
 
-    expected_scenes = _expected_scene_numbers(db, asset_id)
-    render_report = board.load("render_report")
-    export_id = render_report.export_id if isinstance(render_report, RenderReport) else None
+    export_id = _export_id_of(board)
+    resume_point = board.resume_point(expected_scenes)
 
-    return {
-        "ok": outcome.status == "ok",
-        "status": outcome.status,
-        "stage": outcome.stage,
-        "team": outcome.team,
-        "weak": outcome.weak,
-        "escalated": escalated,
-        "summary": outcome.summary,
-        "session_id": session_id,
-        "board": board.status(),
-        "export_id": export_id,
-        "resume_point": board.resume_point(expected_scenes),
-    }
+    # Tell the BOARD how this ended, not just the caller. The result dict goes into the job row;
+    # the board is what the session endpoint reads. A run that hard-failed on a missing API key
+    # left the board reporting "active" for 55 minutes because only the result was ever told.
+    if outcome.status == "hard_fail":
+        board.set_status("failed")
+    elif resume_point == "done":
+        board.set_status("complete")
+
+    return _completed_result(
+        board,
+        session_id=session_id,
+        restored=restored,
+        status=outcome.status,
+        stage=outcome.stage,
+        team=outcome.team,
+        weak=outcome.weak,
+        escalated=escalated,
+        summary=outcome.summary,
+        export_id=export_id,
+        resume_point=resume_point,
+    )

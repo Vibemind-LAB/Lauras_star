@@ -395,3 +395,101 @@ Interchange/Analyse/Rough-Cut/Playback folgen in weiteren Sessions.
 - `[!]` WhisperX Version-Churn → isolierte uv-Extra-Gruppe, hart gepinnt.
 - `[!]` FCPXML-Adapter → nur guarded + Fixtures.
 - `[!]` libmpv-Electron-Bindings je OS → Phase „Härtung", früh Spike einplanen.
+
+---
+
+## Portion 20 — Kohärenz der Produktionskette  `[x]`  ← **Kern-Risiko, aus Live-Befunden; alle 4 Säulen shipped**
+
+**Abschluss-Review (adversarial, 6 Perspektiven, jede Erkenntnis widerlegt bevor geglaubt —
+9 Befunde, 5 überlebt, 4 widerlegt):** fand 2 echte Fehler *in den Fixes selbst*, beide behoben
+(`3eb195d`): (1) Staleness-Check hashte die Speicher- statt der Storyline-Reihenfolge →
+`lines_in_storyline_order` lebt jetzt in board_models neben `script_hash`; (2) der 200-statt-404-
+Vertrag am Status-Endpunkt crashte ChatPanels SessionChips im Pre-Board-Fenster →
+`ProductionStatus` ist eine diskriminierte Union auf `board_ready` (Compiler erzwingt Narrowing),
+vitest 360/360 + tsc grün. **Merke:** Ein während eines Laufs laufendes Backend hat den Stand
+seines Starts — Lauf F lief auf `a7580a5`, dessen `stale`-Feld kann bei umsortierten Szenen
+falsch-True zeigen.
+
+**Der gemeinsame Nenner aller Fehler vom 18.07.2026:** Die Kette prüft nie, ob ihre Glieder
+*zueinander* gehören. Jedes Artefakt wird einzeln gespeichert, die Kettenposition entscheidet
+allein die Dateipräsenz — und was ein Artefakt woraus abgeleitet wurde, hält nichts fest.
+
+Live gemessen auf Board `094f92a8`:
+
+| Artefakt | Version | Stimme | gehört zu |
+|---|---|---|---|
+| `script` | v39 | — | 82 Worte, 2 von 6 Kapiteln |
+| `voice` | v3 | 29.4s | Skript v39 |
+| `render_report` | v2 | 108.8s | **Skript v14** (262 Worte) |
+
+Das `voice_fits: OK` darauf war wahr — für eine Paarung, die es nicht mehr gibt. Vier von sechs
+Storyline-Kapiteln hatten null Worte, und niemand hat es bemerkt. `voice` hält mit `script_hash`
+bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie geprüft.
+
+### 20.A — Provenienz & Kohärenz  `[x]` (6f702dc + 3eb195d)
+- [x] `RenderReport.script_hash` (voice hatte es schon); `script_hash`/`lines_in_storyline_order`
+      leben in board_models — EINE Definition der Identität, Budget/Schnitt/Board teilen sie
+- [x] `cutlist`/`contact_sheet`/`render_report`/`qa_report` tragen `parents` (Content-Hash-
+      Kette); `Board.restore_coherent_suffix()` restauriert beim Resume den längsten
+      kohärenten Suffix bis inkl. QA — Spec 2026-07-20-provenance-chain-design.md
+- [x] `Board.status()` meldet pro Kettenglied `stale: true|false|null` (unbekannt ≠ aktuell)
+- [x] Der Render-Cap-Guard meldet `stale` + Warnung statt ok/final für einen v14-Render auf v39
+- **Exit:** ✓ per Test (test_chain_coherence) — inkl. Storyline-Reihenfolge-Fix aus dem Review
+
+### 20.B — Vollständigkeit des Skripts  `[ ]`
+- [x] `get_script` meldet Storyline-Kapitel ohne Zeilen (live: Kapitel 3–6 stumm) + `chapters_written`
+- [x] Der `scene_author`-Prompt nennt `silent_chapters` und die eine legitime Ausnahme
+- [~] ~~Ein Skript mit leeren Kapiteln gilt nicht als fertiges Kettenglied~~ — **revidiert.**
+      Ein Kapitel ohne Sprechertext ist eine legitime filmische Entscheidung (Bildbeat mit Musik).
+      Ein harter Block würde Handwerk verbieten, um einen Fehler zu fangen. Also melden, nicht
+      blockieren — dieselbe Schlussfolgerung wie beim `resume_point`, aber aus besserem Grund.
+- **Exit:** ein 2-von-6-Kapitel-Skript ist benannt, wo der Autor seine Arbeit prüft ✓
+
+### 20.C — Preflight statt „Connection error."  `[x]` (`ad8f957`)
+- [x] Provider vor dem Enqueue prüfen (`config_problems` an allen 4 Enqueue-Endpunkten, 503)
+- [x] Konfigurationsfehler von Transportfehler unterscheiden — strukturell: kein Modellaufruf
+      ohne erreichbaren Provider, also heißt „Connection error." danach wirklich Transport
+- [x] Unbekannter `LAURA_AGENT_PROVIDER` wird gemeldet statt still zu ersetzen (Resolver merkt
+      sich den Rohwert)
+- **Exit:** ✓ live gegen die echte `.env` verifiziert — fehlender Key UND Tippfehler `openai` gefangen
+
+### 20.D — Lebenszeichen  `[x]` (`0033`-Migration)
+- [x] Session hält `latest_job_id`; `GET /production/{sid}` gibt `job` (status/attempt/
+      updated_at/lease_expires_at) aus — hängender Lauf = laufender Job mit abgelaufenem Lease
+- [x] Lebenszeichen wird VOR dem Board geholt: ein Lauf, der vor dem Board stirbt, liefert
+      `{"job": …, "board_ready": false}` statt 404 — genau der Vorfall
+- [ ] `review_scene` ohne konfiguriertes VLM scheitert einmal laut, statt pro Szene still zu
+      degradieren — **verschoben nach 20.A-Muster:** `degraded_count` macht es bereits sichtbar;
+      lautes Scheitern wäre eine Verhaltensänderung, die einen eigenen Lauf braucht
+- **Exit:** ✓ ein hängender/toter Lauf ist am Endpunkt erkennbar, auch ohne Board
+
+### 20.E — Bekannt, belegt, noch offen  `[x]`
+- [x] `hook_score` belohnt Bewegung → Fenster-Rubrik im Review-Prompt + Cutlist-Gewichte von
+      Fensterlängen entkoppelt (Fenster = Startmarke, nicht Gewicht); Baseline 88 Reviews
+      (static: Hook 5,0, 8× Sub-Sekunden-Fenster vs. moving: 6,5, 5×) via
+      scripts/measure_window_bias.py — Spec 2026-07-20-window-bias-design.md
+- [x] ~~Skript-Thrashing~~ — die drei Treiber sind einzeln gefallen: Wipe durch Reihenfolge/
+      Struktur (`160e784`), Schrumpfen-als-Wachsen (`1d94859`), Review-Gewitter (`c6101cc`)
+- [x] Orchestrator-Delegations-Ping-Pong → `323e0a4`: TOOL-OWNERSHIP-Sektion im Task-Text,
+      aus den AgentSpec-Definitionen generiert; Lauf O baute die Kette danach in 15 Min
+
+### 20.G — Verifikation: `voice_fits` OK + QA `ship`  `[x]` (2026-07-19, Lauf `1f0438b8`)
+Export `3bba59b3` (workspace-livetest/exports/): **135,0s Video / 134,4s Stimme — Δ 0,6s,
+alle drei Render-Checks OK, QA-Urteil `ship`** (Minor: Bildschirm-Tippfehler, Watermark-Rest;
+Info: 135s statt 174s — von der Charter autorisiert). Skript 310 Worte, kein Kapitel über
+Kapazität. Kette in 15 Min durchgebaut, QA lief erstmals. Wirksam bewiesen: Kapazitätsbudget
+(`56abc5b`+`ce7a194`), Charter-Ausweg (`7f6e15d`), Tool-Roster (`323e0a4`). Rest-Schönheits-
+fehler: Post-QA-Revise invalidierte den finalen `render_report` (Job-Result sagt export None,
+Archiv v2 + Export sind da) — bekannter, bewusst nicht blockierter Inkohärenz-Fall.
+
+### 20.F — Meilenstein: erster vollständig agentengebauter Film  `[x]` (2026-07-19)
+Lauf `ee65e23a`, Export `d3ce3129` (workspace-livetest/exports/): **146,8s, 1920×1080,
+h264+aac, echte Screens mit Captions.** 6/6 gesunde VLM-Reviews (lokal, qwen2.5vl:7b),
+Kette einmal sauber durchgebaut, `render_stale=False`, Skript 367 Worte über alle 6 Kapitel.
+Offener Rest: `voice_fits` −26s — Summe stimmte, Verteilung nicht (Kapitel 3: 62 Worte für
+11,5s Kapazität). Gegenmittel `ce7a194`: `capacity_warning` im Save-Reply. Nächster Lauf
+verifiziert. Auf dem Weg dorthin fielen: VLM-Kontext-Crash (`3328f25`), Antwort-Trunkierung
+(`c678db7`), Parallel-Aushungern (`53d9bbe`), Blackbox-Läufe (`c03fc72`).
+
+**Erledigt aus diesem Befundkreis:** Job-Ergebnis-Kontrakt (`35361d6`), `BoardMeta.status` mit
+Schreiber, `degraded_count`/`checks_ok` in `Board.status()`, Kapazitäts-Budget (`56abc5b`).

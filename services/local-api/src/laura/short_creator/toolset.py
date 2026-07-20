@@ -24,6 +24,7 @@ from ..db.database import Database
 from ..mcp import tools as t
 from ..util import new_id
 from . import context
+from .board_models import FORMAT_PRESETS
 from .voice import resolve_voice_backend
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -42,13 +43,6 @@ _EXTRACT_POLL_INTERVAL = 2.0
 # Weight of the length-fit penalty when ranking candidates for a target duration: score minus
 # (relative length deviation × weight). 2.0 lets a strong-but-far candidate lose to a good fit.
 _LENGTH_FIT_WEIGHT = 2.0
-
-# Platform format presets: (vertical, (out_w, out_h)). "x" is the native 16:9 pass-through.
-FORMAT_PRESETS: dict[str, tuple[bool, tuple[int, int]]] = {
-    "insta": (True, (1080, 1920)),
-    "x": (False, (1920, 1080)),
-    "linkedin": (True, (1080, 1080)),
-}
 
 
 def _scene_segments(

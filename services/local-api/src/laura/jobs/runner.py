@@ -22,7 +22,7 @@ from ..db.database import Database
 from ..metrics import JOBS
 from ..telemetry import span
 from ..util import new_id, utcnow_iso
-from .errors import trace_from_exception
+from .errors import LauraJobError, trace_from_exception
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,30 @@ def enqueue(
         return job_id
 
 
+def job_failure_from_result(result: object) -> str | None:
+    """The failure a handler reported in its return value, or None if it reported none.
+
+    The runner used to treat "the handler returned" as "the work succeeded", so a production run
+    that died on a missing API key was written to the jobs table as ``succeeded`` — result_json
+    saying ``hard_fail`` right beside it, and the Prometheus counter agreeing with the status.
+
+    The tempting discriminator, ``ok is False``, is wrong: ``shorts.embed_frames`` returns
+    ``{"ok": False, "skipped": "no visual backend"}`` as its normal outcome on any install
+    without the optional visual extra — the default here — and marking those failed would break
+    healthy installs to fix a reporting bug. The handlers already separate the two cases: a
+    graceful skip carries ``skipped`` and no ``error``. So the error is the signal.
+    """
+    if not isinstance(result, dict):
+        return None
+    error = result.get("error")
+    if isinstance(error, str) and error.strip():
+        return error
+    if result.get("status") == "hard_fail":
+        summary = result.get("summary")
+        return str(summary) if summary else "the run hard-failed"
+    return None
+
+
 class JobRunner:
     """Runs jobs from the DB. Use ``run_once`` for deterministic tests, or
     ``start``/``stop`` for a background polling thread."""
@@ -181,6 +205,19 @@ class JobRunner:
                 "UPDATE jobs SET status='succeeded', result_json=?, finished_at=?, "
                 "updated_at=? WHERE id=?",
                 (json.dumps(result or {}), now, now, job_id),
+            )
+
+    def _store_result(self, job_id: str, result: dict[str, Any] | None) -> None:
+        """Keep the handler's payload without claiming the job succeeded.
+
+        A handler that reports its own failure still returns the context needed to diagnose it
+        (the production board, the stage it died in, the summary). That belongs in result_json
+        whichever way the job ends; _finish_fail writes only error_json.
+        """
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE jobs SET result_json=?, updated_at=? WHERE id=?",
+                (json.dumps(result or {}), utcnow_iso(), job_id),
             )
 
     def _finish_fail(self, job: dict[str, Any], error: BaseException | str) -> None:
@@ -263,9 +300,26 @@ class JobRunner:
             # heartbeat stopping and the status write, causing a double-run.
             try:
                 result = handler(ctx)
-                sp.set_attribute("job.status", "succeeded")
-                self._finish_ok(str(job["id"]), result)
-                JOBS.labels(kind, "succeeded").inc()
+                failure = job_failure_from_result(result)
+                if failure is None:
+                    sp.set_attribute("job.status", "succeeded")
+                    self._finish_ok(str(job["id"]), result)
+                    JOBS.labels(kind, "succeeded").inc()
+                else:
+                    # "The handler returned" is not "the work succeeded". A production run that
+                    # died on a missing API key returned its failure as data and was recorded as
+                    # a succeeded job for 55 minutes, metric included. The payload is still
+                    # written first: it carries the board state and the summary that make the
+                    # failure diagnosable, and _finish_fail only touches error_json.
+                    sp.set_attribute("job.status", "failed")
+                    self._store_result(str(job["id"]), result)
+                    self._finish_fail(
+                        job,
+                        LauraJobError(
+                            failure, code="handler_reported_failure", retriable=False
+                        ),
+                    )
+                    JOBS.labels(kind, "failed").inc()
             except Exception as exc:  # noqa: BLE001 - we record any handler failure
                 sp.set_attribute("job.status", "failed")
                 self._finish_fail(job, exc)

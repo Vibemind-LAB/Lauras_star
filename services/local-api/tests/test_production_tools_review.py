@@ -256,14 +256,24 @@ def test_board_status_and_get_reviews(tmp_path: Path) -> None:
     assert before["ok"] is True
     assert before["expected_scenes"] == [1]
     assert before["resume_point"] == "scene_reviews:1"
-    assert before["scene_reviews"] == {"count": 0, "scenes": []}
+    assert before["scene_reviews"] == {
+        "count": 0,
+        "scenes": [],
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
     assert "artifacts" in before
 
     specs["review_scene"].func(scene_number=1)
 
     after = specs["board_status"].func()
     assert after["resume_point"] == "storyline"  # next artifact in the chain
-    assert after["scene_reviews"] == {"count": 1, "scenes": [1]}
+    assert after["scene_reviews"] == {
+        "count": 1,
+        "scenes": [1],
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
 
     reviews = specs["get_reviews"].func()
     assert reviews["ok"] is True
@@ -366,3 +376,97 @@ def test_clamp_windows_clamps_discards_and_caps() -> None:
 
     five: list[object] = [{"offset_s": float(i * 2), "duration_s": 1.0} for i in range(5)]
     assert len(_clamp_windows(five, 20.0)) == 4  # hard cap at 4 accepted windows
+
+
+# --- the re-review cap: a VLM is a stochastic oracle, not a measurement --------------------
+# Live finding (run be23992c): every scene was reviewed SIX times — 36 VLM calls in 24 minutes
+# — and exactly ONE of the 30 re-reviews fixed a degraded review. The other 29 re-asked a
+# healthy review and got a randomly different answer each time (scene 6's window count went
+# 4>3>1>3>3>2). The orchestrator read variance as progress, the turn budget died in the review
+# phase, and no storyline was ever saved. Asking again yields a DIFFERENT answer, not a better
+# one — so after one refinement of a healthy review, the tool refuses and points forward.
+#
+# Degraded reviews stay retryable without limit: fixing degradation is the one case where a
+# re-review has a real target.
+
+
+def test_a_healthy_review_allows_exactly_one_refinement(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm(_GOOD_REPLY), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    assert specs["review_scene"].func(scene_number=1)["ok"] is True
+    assert specs["review_scene"].func(scene_number=1)["ok"] is True  # one refinement
+
+    third = specs["review_scene"].func(scene_number=1)
+
+    assert third["ok"] is False
+    assert "save_storyline" in third["reason"], "the refusal must point forward, not just block"
+    assert board.scene_reviews()[0].version == 2, "the third call must not have written"
+
+
+def test_the_cap_counts_per_scene_not_per_run(tmp_path: Path) -> None:
+    """Refining scene 1 must not use up scene 2's refinement."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm(_GOOD_REPLY), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+    specs["review_scene"].func(scene_number=1)
+    specs["review_scene"].func(scene_number=1)
+    assert specs["review_scene"].func(scene_number=1)["ok"] is False
+
+    # Scene 2 does not exist in this one-scene fixture, so prove the point on scene 1's
+    # counter staying isolated: a fresh toolset (fresh run) starts a fresh budget.
+    fresh = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+    assert fresh["review_scene"].func(scene_number=1)["ok"] is True
+
+
+def test_degraded_reviews_stay_retryable(tmp_path: Path) -> None:
+    """Fixing degradation is the one re-review with a real target — never cap it."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    deps = ProductionDeps(describe_backend=_Vlm("not json {"), frame_extract=_extract_stub)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    for _ in range(4):
+        out = specs["review_scene"].func(scene_number=1)
+        assert out["ok"] is True and out["degraded"] is True
+
+    assert board.scene_reviews()[0].version == 4
+
+
+def test_the_review_rubric_does_not_punish_held_screens() -> None:
+    """Pins the hook rubric against reel logic.
+
+    Live finding (commit 592e771's era, still measurable later): the reviewer handed held
+    screens one-second windows and low hook scores — motion scored, stillness did not. That
+    is reel logic; this product's footage is screen recordings, where a held, readable frame
+    IS the content. The prompt must say so, or the VLM defaults to its social-video prior.
+    """
+    from laura.short_creator.production_tools import _REVIEW_PROMPT
+
+    assert "held" in _REVIEW_PROMPT or "static" in _REVIEW_PROMPT
+    assert "not a penalty" in _REVIEW_PROMPT or "not lower the score" in _REVIEW_PROMPT
+
+
+def test_review_prompt_window_rubric_counters_reel_logic() -> None:
+    """Pins the WINDOW rubric against reel logic — the score rubric's sibling.
+
+    Baseline (spec 2026-07-20-window-bias-design.md): 8 of 36 static-scene reviews carried
+    sub-second windows; the shipped films cut a 45s org chart from three 0.5s windows while
+    other runs gave the SAME scene 15s or 45s. The prompt must say a held readable screen is
+    ONE long window, or the VLM defaults to its social-video prior.
+    """
+    from laura.short_creator.production_tools import _REVIEW_PROMPT
+
+    assert "ONE window spanning the whole readable stretch" in _REVIEW_PROMPT
+    assert "sub-second" in _REVIEW_PROMPT

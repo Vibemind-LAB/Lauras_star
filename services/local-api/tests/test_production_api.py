@@ -121,13 +121,91 @@ def test_create_production_enqueues_job_and_creates_session(
         "session_id": body["session_id"],
         "task": "Make a 30s recap",
         "target_seconds": 45,
+        "format": "insta",  # the reel stays the default when the request omits a format
+        "language": "German",  # ...and so does the language this workspace ships
     }
+
+
+def test_create_production_carries_the_requested_format_to_the_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A landscape delivery must survive the hop to the worker — the canvas is decided there."""
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "Hackathon demo", "target_seconds": 180, "format": "x"},
+        headers=_H,
+    )
+    assert r.status_code == 202, r.text
+    job = repos.get_job(db, r.json()["job_id"])
+    assert job is not None
+    assert json.loads(job["payload_json"])["format"] == "x"
+
+
+def test_create_production_carries_the_requested_language_to_the_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A jury that reads English must not get a German script because the roster says so."""
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "Hackathon demo", "format": "x", "language": "English"},
+        headers=_H,
+    )
+    assert r.status_code == 202, r.text
+    job = repos.get_job(db, r.json()["job_id"])
+    assert job is not None
+    assert json.loads(job["payload_json"])["language"] == "English"
+
+
+def test_create_production_rejects_an_unknown_format(tmp_path: Path, monkeypatch: Any) -> None:
+    """Typos must not silently ship a reel — 422 at the boundary, not a surprise on YouTube."""
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "Hackathon demo", "format": "youtube"},
+        headers=_H,
+    )
+    assert r.status_code == 422, r.text
 
 
 def test_create_production_unknown_asset_404(tmp_path: Path) -> None:
     client, _db = _app(tmp_path)
     r = client.post("/assets/does-not-exist/production", json={"task": "recap"}, headers=_H)
     assert r.status_code == 404, r.text
+
+
+def test_create_production_refuses_an_unusable_agent_config_503(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The live incident at the endpoint: openai-compat with no key must never enqueue.
+
+    A job that cannot possibly reach a model was created, ran, and looked alive for 55 minutes.
+    Preflight turns that into a 503 before any board or job exists — and the message names the
+    missing variable instead of the eventual "Connection error."
+    """
+    client, db = _app(tmp_path)
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setenv("LAURA_AGENT_PROVIDER", "openai-compat")
+    monkeypatch.setenv("LAURA_AGENT_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.delenv("LAURA_AGENT_API_KEY", raising=False)
+    asset_id, _project_id = _seed_asset(db)
+
+    r = client.post(f"/assets/{asset_id}/production", json={"task": "recap"}, headers=_H)
+
+    assert r.status_code == 503, r.text
+    assert "LAURA_AGENT_API_KEY" in r.text
+    # Nothing was enqueued: the refusal is before the board and the job.
+    assert all(j["kind"] != "production.run" for j in repos.list_jobs(db, limit=50))
 
 
 def test_create_production_empty_task_422(tmp_path: Path, monkeypatch: Any) -> None:
@@ -231,7 +309,12 @@ def test_get_production_status_shape(tmp_path: Path) -> None:
 
     assert set(body) >= {"meta", "scene_reviews", "artifacts", "resume_point"}
     assert body["meta"]["session_id"] == "sess_002"
-    assert body["scene_reviews"] == {"count": 0, "scenes": []}
+    assert body["scene_reviews"] == {
+        "count": 0,
+        "scenes": [],
+        "degraded_count": 0,
+        "degraded_scenes": [],
+    }
     assert set(body["artifacts"]) == {
         "storyline", "script", "voice", "cutlist", "contact_sheet", "render_report", "qa_report",
     }

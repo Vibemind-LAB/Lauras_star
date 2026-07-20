@@ -23,6 +23,10 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+
+# Pure-pydantic leaf: safe at runtime even without the optional 'autoshort' extra, unlike
+# short_creator.board below.
+from ..short_creator.board_models import Format
 from ..util import new_id
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -41,6 +45,10 @@ class AutoShortRequest(BaseModel):
 class ProductionCreateRequest(BaseModel):
     task: str = Field(min_length=1, max_length=2000)
     target_seconds: int = Field(default=60, gt=0, le=600)
+    # Delivery format picks the canvas: "insta" 9:16 reel, "x" native 16:9, "linkedin" 1:1.
+    format: Format = "insta"
+    # The script's language, named as it should be written ("German", "English").
+    language: str = Field(default="German", min_length=2, max_length=40)
 
 
 class ProductionMessageRequest(BaseModel):
@@ -74,6 +82,23 @@ def _require_autoshort() -> None:
         )
 
 
+def _require_usable_agent_config() -> None:
+    """Raise 503 unless the configured agent provider could actually be reached.
+
+    Live incident: a run was started against ``openai-compat`` with no ``LAURA_AGENT_API_KEY``.
+    It was enqueued, created a board, spent both escalation stages and came back "Connection
+    error." — then looked alive for 55 minutes. The extra was checked; the credential was not.
+    """
+    from laura.short_creator.providers import config_problems, resolve_from_env
+
+    problems = config_problems(resolve_from_env())
+    if problems:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "the agent provider is not usable: " + "; ".join(problems),
+        )
+
+
 def _get_asset_or_404(db: Database, asset_id: str) -> dict[str, Any]:
     """Return the asset row for *asset_id*, or raise 404 if it does not exist."""
     asset = repos.get_asset(db, asset_id)
@@ -97,6 +122,29 @@ def _open_board_or_404(db: Database, asset_id: str, session_id: str) -> Board:
         return Board.open(root)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "board missing") from exc
+
+
+def _restored_from_job(job: dict[str, Any]) -> list[str]:
+    """The artifact names a resume restored from the provenance chain, read off *job*'s result.
+
+    ``run_production`` always writes a ``restored`` key into its result dict (empty when nothing
+    was restored), but this is a pure status read: a job with no result yet (still queued), an
+    unparseable ``result_json``, or a result missing/mistyping the key must degrade to ``[]``
+    rather than raise or 500 the whole status endpoint.
+    """
+    raw = job.get("result_json")
+    if not raw:
+        return []
+    try:
+        result = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(result, dict):
+        return []
+    restored = result.get("restored")
+    if not isinstance(restored, list):
+        return []
+    return [item for item in restored if isinstance(item, str)]
 
 
 def _expected_scenes_for(db: Database, asset_id: str) -> list[int]:
@@ -125,6 +173,7 @@ def auto_short(
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
+    _require_usable_agent_config()
     payload: dict[str, Any] = {
         "asset_id": asset_id,
         "topic": body.topic,
@@ -156,6 +205,7 @@ def auto_short_stream(
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
+    _require_usable_agent_config()
     from ..short_creator.providers import resolve_from_env
     from ..short_creator.stream import run_short_creator_stream
 
@@ -233,6 +283,7 @@ def create_production(
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
+    _require_usable_agent_config()
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
@@ -248,9 +299,12 @@ def create_production(
             "session_id": session_id,
             "task": body.task,
             "target_seconds": body.target_seconds,
+            "format": body.format,
+            "language": body.language,
         },
         max_attempts=1,
     )
+    repos.set_production_session_job(db, session_id, job_id)
     return {"session_id": session_id, "job_id": job_id}
 
 
@@ -277,6 +331,7 @@ def send_production_message(
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
     _require_autoshort()
+    _require_usable_agent_config()
     asset_id = str(session["asset_id"])
     board = _open_board_or_404(db, asset_id, session_id)
     meta = board.meta()
@@ -294,6 +349,7 @@ def send_production_message(
         },
         max_attempts=1,
     )
+    repos.set_production_session_job(db, session_id, job_id)
     return {"session_id": session_id, "job_id": job_id}
 
 
@@ -303,26 +359,60 @@ def get_production_status(
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("read"))],
 ) -> dict[str, Any]:
-    """Read-only board status for *session_id*: ``board.status()`` plus the resume point.
+    """Read-only status for *session_id*: the running job's liveness, plus the board when ready.
 
-    404 if the session is unknown, 404 if it has no board yet. Never enqueues anything and
-    never requires the 'autoshort' extra — this is a pure read of what is already on disk.
+    404 only if the session is unknown. A session whose board does not exist yet — queued, or
+    died before building one — returns ``{"job": ..., "board_ready": false}`` rather than 404,
+    because that dead-before-a-board run is exactly the case liveness has to surface. Never
+    enqueues anything and never requires the 'autoshort' extra — a pure read of what is on disk.
     A present contact_sheet artifact additionally carries its ``png_path``/``labeled``/``tiles``
     inside the artifacts block (next to the chain-standard version fields), so a client can
     show the checkpoint without a second lookup; the image bytes come from
     ``GET /production/{session_id}/contact-sheet``.
     """
+    from ..short_creator.board import Board
     from ..short_creator.board_models import ContactSheet
+    from ..short_creator.production_orchestrator import board_root_for
 
     db = _db(request)
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
     asset_id = str(session["asset_id"])
-    board = _open_board_or_404(db, asset_id, session_id)
+
+    # Liveness: the one field the incident needed and did not have. The job is the authority on
+    # whether the run is alive — a hanging run is a "running" job with an expired lease, a dead
+    # run is a "failed" job — and it is looked up BEFORE the board, because the very failure
+    # this closes is a run that died before a readable board existed. The board alone kept
+    # reading "active" for 55 minutes; requiring it to answer would hide exactly the dead run.
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    job_view = (
+        {
+            "id": job["id"],
+            "status": job["status"],
+            "attempt": job["attempt"],
+            "updated_at": job["updated_at"],
+            "lease_expires_at": job["lease_expires_at"],
+            "finished_at": job["finished_at"],
+            "restored": _restored_from_job(job),
+        }
+        if job is not None
+        else None
+    )
+
+    try:
+        board = Board.open(board_root_for(db, asset_id, session_id))
+    except (ValueError, FileNotFoundError):
+        # No board yet — the run is queued, or it died before building one. That is a state to
+        # report, not a 404: the job view carries the answer.
+        return {"session_id": session_id, "job": job_view, "board_ready": False}
+
     expected_scenes = _expected_scenes_for(db, asset_id)
     result = board.status()
     result["resume_point"] = board.resume_point(expected_scenes)
+    result["job"] = job_view
+    result["board_ready"] = True
     sheet = board.load("contact_sheet")
     if isinstance(sheet, ContactSheet):
         result["artifacts"]["contact_sheet"].update(

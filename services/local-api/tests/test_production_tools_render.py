@@ -28,6 +28,7 @@ from laura.short_creator.board_models import (
     Chapter,
     Cutlist,
     CutSegment,
+    Format,
     QaReport,
     RenderCheck,
     RenderReport,
@@ -40,6 +41,7 @@ from laura.short_creator.board_models import (
     VoiceArtifact,
 )
 from laura.short_creator.production_tools import (
+    _MAX_RENDER_CYCLES,
     ProductionDeps,
     build_production_tool_specs,
     script_text,
@@ -122,12 +124,13 @@ def _seed_asset(tmp_path: Path) -> tuple[Database, str]:
     return db, str(asset["id"])
 
 
-def _board(tmp_path: Path, asset_id: str) -> Board:
+def _board(tmp_path: Path, asset_id: str, board_format: Format = "insta") -> Board:
     meta = BoardMeta(
         session_id="s1",
         asset_id=asset_id,
         created_utc="2026-07-13T00:00:00Z",
         task="overview short",
+        format=board_format,
         target_seconds=20.0,
     )
     return Board.create(tmp_path / "board", meta)
@@ -189,11 +192,26 @@ def _save_voice(
     """Seed the board's voice artifact directly with a real sidecar file on disk (as
     build_cutlist reads it from timings_path, not from a fake backend) — mirrors
     test_production_tools_cutlist.py's helper, plus an explicit voice_s override so the render
-    tests can force a voice_fits pass/fail deterministically."""
+    tests can force a voice_fits pass/fail deterministically.
+
+    The hash is the CURRENT script's (storyline-ordered): build_cutlist refuses a voice whose
+    script_hash disagrees with the script it is cutting for, so the seed must satisfy the
+    real contract.
+    """
+    from laura.short_creator.board_models import lines_in_storyline_order, script_hash
+
     timings_path = tmp_path / "voice.mp3.timings.json"
     timings_path.write_text(json.dumps({"words": words}), encoding="utf-8")
+    script = board.load("script")
+    storyline = board.load("storyline")
+    assert isinstance(script, Script), "seed the script before the voice"
+    lines = (
+        lines_in_storyline_order(script, storyline)
+        if isinstance(storyline, Storyline)
+        else script.lines
+    )
     artifact = VoiceArtifact(
-        script_hash="irrelevant-for-cutlist",
+        script_hash=script_hash(lines),
         mp3_path=str(tmp_path / "voice.mp3"),
         timings_path=str(timings_path),
         voice_s=voice_s,
@@ -228,7 +246,11 @@ class _FakeRenderSegments:
 
 
 def _build_board_to_cutlist(
-    tmp_path: Path, *, scene2_roi: Roi | None, voice_s: float | None
+    tmp_path: Path,
+    *,
+    scene2_roi: Roi | None,
+    voice_s: float | None,
+    board_format: Format = "insta",
 ) -> tuple[Database, str, Board]:
     """A full board up to (and including) a real cutlist — reviews, storyline, script, voice,
     then the actual build_cutlist tool. Same word timings as
@@ -239,7 +261,7 @@ def _build_board_to_cutlist(
     without roi -> zoom entry None" case render_production must pass through unchanged).
     """
     db, asset_id = _seed_two_scenes(tmp_path)
-    board = _board(tmp_path, asset_id)
+    board = _board(tmp_path, asset_id, board_format)
     _review(
         board,
         1,
@@ -316,6 +338,36 @@ def test_render_production_passes_zoom_and_reports(tmp_path: Path) -> None:
     assert row["status"] == "ready"
 
 
+def test_render_production_renders_landscape_for_a_format_x_board(tmp_path: Path) -> None:
+    """The board's format reaches the renderer — the reason a 16:9 demo is possible at all.
+
+    Everything above this seam (reviews, storyline, script, cutlist, rois) is format-agnostic;
+    only the canvas changes. A 9:16 crop of a screen recording throws away the half of the
+    frame that carries the content, so this must not silently fall back to the reel.
+    """
+    db, asset_id, board = _build_board_to_cutlist(
+        tmp_path, scene2_roi=None, voice_s=3.4, board_format="x"
+    )
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    call = fake.calls[0]
+    assert call["vertical"] is False, "landscape must not go through the vertical fit path"
+    assert call["out_size"] == (1920, 1080)
+    # The segments themselves are unchanged — the format decides the canvas, nothing else.
+    assert call["segments"] == [(30, 90), (300, 360)]
+
+    assert out["ok"] is True
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert (report.width, report.height) == (1920, 1080), "the report must record what shipped"
+
+
 def test_render_production_voice_fit_check_fails(tmp_path: Path) -> None:
     db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=100.0)
     fake = _FakeRenderSegments(status="ready")
@@ -359,6 +411,118 @@ def test_render_production_requires_cutlist(tmp_path: Path) -> None:
     out = specs["render_production"].func()
     assert out["ok"] is False
     assert "voice" in out["reason"]
+
+
+def test_render_production_stops_after_the_revision_cap(tmp_path: Path) -> None:
+    """A hard cap on real renders — the net for a loop that revises for some reason the
+    budget fix cannot remove.
+
+    Live finding: even with voice_fits satisfiable, gpt-5-mini rendered four times and
+    gpt-5.5 rendered repeatedly, each render rebuilding the whole chain. The prompt's "one
+    revise round" was ignored — a prompt does not enforce a limit. So render_production
+    refuses to spend another render once the cap is reached: it returns the last one as final
+    instead of calling the (expensive) renderer again. The turn budget stops the rest.
+    """
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    for _ in range(_MAX_RENDER_CYCLES):
+        out = specs["render_production"].func()
+        assert out.get("ok") is True, out
+    assert len(fake.calls) == _MAX_RENDER_CYCLES, "every render up to the cap really rendered"
+
+    capped = specs["render_production"].func()
+
+    assert len(fake.calls) == _MAX_RENDER_CYCLES, "the cap must not spend another render"
+    assert capped["ok"] is True
+    assert capped["final"] is True
+    assert capped["stale"] is False, "the script has not moved, so the cut still speaks it"
+    assert "limit" in capped["note"].lower()
+    assert capped["export_id"], "the last successful render is still shipped"
+
+
+def test_the_cap_says_so_when_the_shipped_cut_no_longer_speaks_the_script(
+    tmp_path: Path,
+) -> None:
+    """The live failure: a v14-era render shipped as final onto a v39 board.
+
+    Hitting the cap restores the newest archived render so the finished export is still
+    reported. If the script moved on in the meantime, that restored cut speaks words the board
+    no longer contains — and its own voice_fits check still reads OK, because it was true when
+    it was written. Shipping it remains right at the cap; presenting it as a finished film of
+    the current script is what made a broken board look verified.
+    """
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    for _ in range(_MAX_RENDER_CYCLES):
+        specs["render_production"].func()
+
+    # The author rewrites the script after the last render. That save invalidates voice and
+    # cutlist too, and the run rebuilds both — which is exactly what the live timeline shows
+    # (script -> voice -> cutlist -> render). Only the render stays the restored old one.
+    rendered = board.load("script")
+    assert isinstance(rendered, Script)
+    voice, cutlist = board.load("voice"), board.load("cutlist")
+    board.save(
+        "script",
+        Script(
+            language=rendered.language,
+            lines=[
+                line.model_copy(update={"text": f"{line.text} and something else entirely"})
+                for line in rendered.lines
+            ],
+        ),
+    )
+    assert voice is not None and cutlist is not None
+    board.save("voice", voice)
+    board.save("cutlist", cutlist)
+    board.revert("render_report", max(board.versions("render_report")))
+
+    capped = specs["render_production"].func()
+
+    assert capped["final"] is True, "the cap still ships the last cut"
+    assert capped["stale"] is True
+    assert capped["ok"] is False, "a cut that speaks a different script is not a good outcome"
+    assert "earlier script" in capped["note"]
+
+
+def test_render_and_voice_and_sheet_stamp_their_parents(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    storyline = board.load("storyline")
+    script = board.load("script")
+    voice = board.load("voice")
+    cutlist = board.load("cutlist")
+    assert storyline and script and voice and cutlist
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+    assert out["ok"] is True, out
+
+    render = board.load("render_report")
+    assert isinstance(render, RenderReport)
+    assert render.parents == {
+        "storyline": content_hash(storyline),
+        "script": content_hash(script),
+        "voice": content_hash(voice),
+        "cutlist": content_hash(cutlist),
+    }
+    # The voice artifact in this builder is seeded directly; synthesize_script_voice's own
+    # stamp is asserted in test_production_tools_cutlist.py's synthesis test below.
 
 
 def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -518,6 +682,11 @@ def test_review_export_skips_failed_frame_grabs(
 def test_save_qa_report_validates(tmp_path: Path) -> None:
     db, asset_id = _seed_asset(tmp_path)
     board = _board(tmp_path, asset_id)
+    # QA judges a render, so one must exist (order guard) before any verdict is accepted.
+    board.save(
+        "render_report",
+        RenderReport(export_id="e1", video_s=10.0, width=1920, height=1080),
+    )
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     bad = specs["save_qa_report"].func(verdict="maybe", findings=[])

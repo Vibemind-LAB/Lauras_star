@@ -13,10 +13,11 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, cast
 
 from ..db import repos
 from ..jobs.runner import JobContext, JobHandler
+from .board_models import FORMAT_PRESETS, Format
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
     from ..db.database import Database
@@ -101,8 +102,8 @@ def _open_run_log(
 def handle_production_run(
     ctx: JobContext, *, execute: ExecuteFn | None = None, deps: ProductionDeps | None = None
 ) -> dict[str, Any]:
-    """Payload ``{asset_id, session_id, task, target_seconds?, message?}`` → the v2 production
-    run's result dict (:func:`production_orchestrator.run_production`), unchanged.
+    """Payload ``{asset_id, session_id, task, target_seconds?, format?, message?}`` → the v2
+    production run's result dict (:func:`production_orchestrator.run_production`), unchanged.
 
     Also writes a coarse two-line NDJSON session run log (a ``meta`` line before the run, a
     ``done`` line after) to ``<workspace>/agent-runs/<session_id>/runs/<UTC>Z.ndjson`` for
@@ -115,6 +116,13 @@ def handle_production_run(
     session_id = str(payload["session_id"])
     task = str(payload["task"])
     target_seconds = int(payload.get("target_seconds", 60))
+    # The API validates format against the same vocabulary; a hand-enqueued payload must not
+    # silently fall back to a reel when it asked for something else.
+    raw_format = str(payload.get("format") or "insta")
+    if raw_format not in FORMAT_PRESETS:
+        raise ValueError(f"production.run: unknown format {raw_format!r}")
+    board_format = cast(Format, raw_format)
+    language = str(payload.get("language") or "German")
     # Whitespace-only messages must behave like no message (a stripped-blank follow-up is not a
     # real follow-up request).
     message = (payload.get("message") or "").strip() or None
@@ -142,9 +150,14 @@ def handle_production_run(
         session_id=session_id,
         task=task,
         target_seconds=target_seconds,
+        format=board_format,
+        language=language,
         message=message,
         execute=execute,
         deps=deps,
+        # Every team event lands in the session run log, flushed per line — a stalled phase
+        # used to leave a two-line log (meta + done) and 44 minutes of nothing to diagnose.
+        event_sink=lambda event: _append_run_log_line(log_file, log_path, event),
     )
 
     _append_run_log_line(

@@ -60,6 +60,11 @@ class AgentConfig:
     openai_base_url: str | None
     openai_api_key: str | None
     model_pool: tuple[str, ...] = ()
+    # The raw LAURA_AGENT_PROVIDER value when it was not a known provider and the default was
+    # substituted. Kept so preflight can say so: "openai" is a plausible typo for
+    # "openai-compat", and silently running ollama instead is a wrong answer delivered quietly.
+    unknown_provider: str | None = None
+    unknown_escalate_provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,14 @@ def _provider(raw: str | None, default: Provider) -> Provider:
     if value in _KNOWN_PROVIDERS:
         return value  # type: ignore[return-value]  # narrowed by membership check
     return default
+
+
+def _unknown_provider(raw: str | None) -> str | None:
+    """The raw value when it was set but is not a provider — unset is a choice, not a mistake."""
+    value = (raw or "").strip()
+    if not value or value.lower() in _KNOWN_PROVIDERS:
+        return None
+    return value
 
 
 def _positive_int(raw: str | None, default: int) -> int:
@@ -119,7 +132,76 @@ def resolve_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
         openai_base_url=_clean(e.get("LAURA_AGENT_BASE_URL")),
         openai_api_key=_clean(e.get("LAURA_AGENT_API_KEY")),
         model_pool=model_pool,
+        unknown_provider=_unknown_provider(e.get("LAURA_AGENT_PROVIDER")),
+        unknown_escalate_provider=_unknown_provider(e.get("LAURA_AGENT_ESCALATE_PROVIDER")),
     )
+
+
+_PROVIDER_KEY_ENV: dict[str, str] = {
+    "9router": "LAURA_9ROUTER_API_KEY",
+    "openai-compat": "LAURA_AGENT_API_KEY",
+}
+
+
+def _provider_problem(provider: Provider, api_key: str | None, *, where: str) -> str | None:
+    """The reason this provider cannot be reached, or None if it can."""
+    env_name = _PROVIDER_KEY_ENV.get(provider)
+    if env_name is None or api_key:  # ollama needs no credential
+        return None
+    return f"{where} provider {provider!r} needs {env_name}, which is not set"
+
+
+def config_problems(config: AgentConfig) -> list[str]:
+    """Everything about this config that makes a run impossible, named in the operator's terms.
+
+    Live incident: a run started against ``openai-compat`` with no ``LAURA_AGENT_API_KEY``. It
+    created a board, spent both escalation stages, and came back "Connection error." — a
+    configuration mistake wearing a transport error's clothes, then invisible for 55 minutes.
+    Checking first makes the distinction structural: a config that cannot reach a model never
+    reaches a model call, so a transport error afterwards means what it says.
+
+    Empty list means usable. It cannot promise the credential is VALID — only the provider knows
+    that — but it catches every case where nothing was configured at all.
+    """
+    problems: list[str] = []
+    if config.unknown_provider is not None:
+        problems.append(
+            f"LAURA_AGENT_PROVIDER={config.unknown_provider!r} is not a known provider "
+            f"({', '.join(sorted(_KNOWN_PROVIDERS))}); fell back to {config.provider!r} — "
+            "the run would use a different backend than configured"
+        )
+    if config.unknown_escalate_provider is not None and config.auto_escalate:
+        problems.append(
+            f"LAURA_AGENT_ESCALATE_PROVIDER={config.unknown_escalate_provider!r} is not a known "
+            f"provider; escalation fell back to {config.escalate_provider!r}"
+        )
+
+    primary = _provider_problem(config.provider, _key_for(config, config.provider), where="agent")
+    if primary is not None:
+        problems.append(primary)
+
+    # Stage B only matters when it can fire unasked. A manual escalation is the operator's
+    # decision at the time, not a precondition of starting.
+    if config.auto_escalate:
+        escalation = _provider_problem(
+            config.escalate_provider,
+            _key_for(config, config.escalate_provider),
+            where="escalation",
+        )
+        if escalation is not None:
+            problems.append(escalation)
+
+    if not config.agent_model.strip():
+        problems.append("LAURA_AGENT_MODEL is empty")
+    return problems
+
+
+def _key_for(config: AgentConfig, provider: Provider) -> str | None:
+    if provider == "9router":
+        return config.nine_router_api_key
+    if provider == "openai-compat":
+        return config.openai_api_key
+    return None
 
 
 def plan_client(config: AgentConfig, *, role: Role = "agent", stage: Stage = "A") -> ClientSpec:

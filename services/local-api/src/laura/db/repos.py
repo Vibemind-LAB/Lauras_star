@@ -2279,6 +2279,19 @@ def create_production_session(
         )
 
 
+def set_production_session_job(db: Database, session_id: str, job_id: str) -> None:
+    """Point a session at the job currently running it — the source of its liveness.
+
+    Called on every run enqueued for the session (create and each follow-up), so the status
+    endpoint always reports the LATEST run's state, not the first one's.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE production_sessions SET latest_job_id=? WHERE session_id=?",
+            (job_id, session_id),
+        )
+
+
 def get_production_session(db: Database, session_id: str) -> dict[str, Any] | None:
     """Get a production session by session_id, or None if not found."""
     with db.connection() as conn:

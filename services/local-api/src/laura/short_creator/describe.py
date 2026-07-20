@@ -16,9 +16,11 @@ Real model output is manual-to-verify (no model/key in CI); tests fake the HTTP 
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -67,7 +69,17 @@ def _http_json(
 
 
 class OllamaDescribeBackend:
-    """DescribeBackend over a local Ollama server (default model ``qwen3-vl:8b``)."""
+    """DescribeBackend over a local Ollama server (default model ``qwen3-vl:8b``).
+
+    All requests are serialized through one process-wide lock. A 12GB local server serves one
+    vision request at a time; autogen executes batched tool calls on a thread pool, and a live
+    run sent five review describes concurrently — not one errored, but the parallel load made
+    the ``available()`` probe time out and five of six scenes silently degraded before a single
+    frame was sent. Waiting in line is the behavior a local GPU actually supports.
+    """
+
+    # Class-level: every instance talks to the same GPU.
+    _serial = threading.Lock()
 
     def __init__(self, *, host: str | None = None, model: str | None = None) -> None:
         self.host = (host or os.environ.get("LAURA_OLLAMA_HOST") or DEFAULT_HOST).rstrip("/")
@@ -76,15 +88,22 @@ class OllamaDescribeBackend:
     def _tags(self) -> list[dict[str, Any]]:
         try:
             data = _http_json(f"{self.host}/api/tags", timeout=10.0)
-        except (urllib.error.URLError, OSError, ValueError):
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # Silence here once cost a run five degraded reviews with an empty log.
+            logger.warning("ollama tags probe failed: %s", exc)
             return []
         models = data.get("models") if isinstance(data, dict) else None
         return models if isinstance(models, list) else []
 
     def available(self) -> bool:
-        return any(str(m.get("name")) == self.model for m in self._tags())
+        with self._serial:
+            return any(str(m.get("name")) == self.model for m in self._tags())
 
     def describe(self, frames: list[bytes], prompt: str) -> str:
+        with self._serial:
+            return self._describe_locked(frames, prompt)
+
+    def _describe_locked(self, frames: list[bytes], prompt: str) -> str:
         images = [base64.b64encode(f).decode("ascii") for f in frames]
         payload = {
             "model": self.model,
@@ -96,17 +115,52 @@ class OllamaDescribeBackend:
                 "top_k": 1,
                 "top_p": 1.0,
                 "seed": 0,
-                "num_predict": 200,
-                "num_ctx": 8192,
+                # 200 truncated every review reply mid-JSON (done_reason=length, measured
+                # thrice at exactly eval=200) — the parser then failed and five of six scenes
+                # degraded with empty descriptions and no error anywhere. The review JSON
+                # (description + whats_happening + up to 4 windows with ROIs) needs 300-500
+                # tokens; the OpenRouter path learned the same lesson on 2026-07-15.
+                "num_predict": 1024,
+                # 8192 was NOT enough for the real workload: three frames plus the review
+                # prompt overflow it, and Ollama's context handling for vision models does not
+                # truncate — it crashes the runner (GGML_ASSERT ne[2]*4 == ne[0], HTTP 500).
+                # Reproduced deterministically: same frames + short prompt fine, + the 936-char
+                # review prompt crash, num_ctx 16384 fine. Two whole runs degraded every review
+                # on this before the error body was captured.
+                "num_ctx": 16384,
             },
         }
         try:
-            data = _http_json(f"{self.host}/api/chat", payload, timeout=600.0)
-            content = data.get("message", {}).get("content", "")
-            return str(content).strip()
+            return self._chat(payload)
+        except urllib.error.HTTPError as exc:
+            # A local 5xx usually means the runner just crashed (the num_ctx overflow above
+            # kills it with a GGML assert) — so the NEXT request can hit a half-restarted
+            # server. One forced fresh load (unload + retry) rides that out. 4xx stays final:
+            # a request the server rejects does not get better on a reload.
+            if exc.code < 500:
+                logger.warning("ollama describe failed: %s", exc)
+                return ""
+            logger.warning("ollama describe got %s — unloading the model and retrying", exc)
+            # Even a failing unload does not cancel the retry — it can only help.
+            with contextlib.suppress(urllib.error.URLError, OSError, ValueError):
+                _http_json(
+                    f"{self.host}/api/chat",
+                    {"model": self.model, "messages": [], "keep_alive": 0},
+                    timeout=60.0,
+                )
+            try:
+                return self._chat(payload)
+            except (urllib.error.URLError, OSError, ValueError, KeyError) as retry_exc:
+                logger.warning("ollama describe failed after reload: %s", retry_exc)
+                return ""
         except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
             logger.warning("ollama describe failed: %s", exc)
             return ""  # never block the pipeline on a model hiccup
+
+    def _chat(self, payload: dict[str, Any]) -> str:
+        data = _http_json(f"{self.host}/api/chat", payload, timeout=600.0)
+        content = data.get("message", {}).get("content", "")
+        return str(content).strip()
 
 
 class OpenRouterDescribeBackend:

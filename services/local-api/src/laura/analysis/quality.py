@@ -201,14 +201,41 @@ def decide_keep(
     return True, None
 
 
-def mark_duplicates(rows: list[dict[str, Any]], *, dup_hamming: int = 6) -> None:
-    """Set drop_reason='duplicate' on later shots whose phash is near an earlier kept shot."""
-    kept: list[str] = []
+def mark_duplicates(
+    rows: list[dict[str, Any]],
+    *,
+    dup_hamming: int = 6,
+    dup_hamming_frozen: int = 2,
+    static: float = _DEFAULT_THRESHOLDS.static,
+) -> None:
+    """Set drop_reason='duplicate' on later shots whose phash is near an earlier kept shot.
+
+    The tolerance depends on motion, because the same hash distance means different things.
+    On moving footage a repeat never matches exactly — sensor noise alone costs a few bits —
+    so ``dup_hamming`` bits of slack are needed to catch it. On near-frozen footage the
+    opposite holds: a real repeat is pixel-identical (distance 0), while two DIFFERENT screens
+    of the same app land only 6-8 bits apart, sharing nothing but dark chrome and a header
+    band — at 9x8 the text that tells them apart is long gone. The slack that rescues camera
+    duplicates therefore deletes distinct screens.
+
+    Live finding (a 10-min screen recording): a five-minute prompt screen was dropped as a
+    duplicate of an unrelated server picker at distance 6, exactly the threshold. Hashing at
+    higher resolution does not separate them (measured: 256- and 1024-bit variants put the
+    same pair at 9.8-12.5%, no better than 64-bit), so the tolerance is what has to give.
+    When BOTH shots are near-frozen, demand a near-exact match instead. An unknown motion
+    level keeps the tolerant threshold — metrics can fail, and that must not silently change
+    the rule.
+    """
+    kept: list[tuple[str, bool]] = []
     for row in rows:
         if not row.get("keep") or not row.get("phash"):
             continue
-        if any(hamming(row["phash"], h) <= dup_hamming for h in kept):
+        frozen = float(row.get("static_score") or 0.0) >= static
+        if any(
+            hamming(row["phash"], h) <= (dup_hamming_frozen if frozen and h_frozen else dup_hamming)
+            for h, h_frozen in kept
+        ):
             row["keep"] = False
             row["drop_reason"] = "duplicate"
         else:
-            kept.append(row["phash"])
+            kept.append((row["phash"], frozen))

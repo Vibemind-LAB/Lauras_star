@@ -13,6 +13,7 @@ team via ``asyncio.run``) is manual-to-verify, same as v1's ``orchestrator._defa
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +28,8 @@ from laura.short_creator.board_models import (
     Chapter,
     RenderReport,
     SceneReview,
+    Script,
+    ScriptLine,
     Storyline,
 )
 
@@ -254,7 +257,10 @@ def test_run_production_creates_board_and_reports(tmp_path: Path) -> None:
     missing = production_orchestrator.run_production(
         db, config, asset_id="does-not-exist", session_id="sess1", task="t"
     )
-    assert missing == {"ok": False, "error": "asset not found", "session_id": "sess1"}
+    assert missing["ok"] is False
+    assert missing["error"] == "asset not found"
+    assert missing["session_id"] == "sess1"
+    assert missing["restored"] == []  # RED: preflight-failure returns ALWAYS carry restored
 
     execute, calls = _make_execute({"A": ("ok", False)})
     result = production_orchestrator.run_production(
@@ -298,12 +304,11 @@ def test_run_production_message_on_fresh_board_is_error(tmp_path: Path) -> None:
         execute=execute,
     )
 
-    assert result == {
-        "ok": False,
-        "error": "unknown session (no board)",
-        "asset_id": asset_id,
-        "session_id": "sess1",
-    }
+    assert result["ok"] is False
+    assert result["error"] == "unknown session (no board)"
+    assert result["asset_id"] == asset_id
+    assert result["session_id"] == "sess1"
+    assert result["restored"] == []  # RED: preflight-failure returns ALWAYS carry restored
     assert calls == []  # never reached team execution
     root = production_orchestrator.board_root_for(db, asset_id, "sess1")
     assert not root.exists()
@@ -376,12 +381,11 @@ def test_run_production_orphaned_asset_never_raises(tmp_path: Path) -> None:
         db, config, asset_id=asset_id, session_id="sess1", task="t", execute=execute
     )
 
-    assert result == {
-        "ok": False,
-        "error": "project not found",
-        "asset_id": asset_id,
-        "session_id": "sess1",
-    }
+    assert result["ok"] is False
+    assert result["error"] == "project not found"
+    assert result["asset_id"] == asset_id
+    assert result["session_id"] == "sess1"
+    assert result["restored"] == []  # RED: preflight-failure returns ALWAYS carry restored
     assert calls == []  # never reached team execution
 
 
@@ -469,3 +473,531 @@ def test_run_production_never_raises(tmp_path: Path) -> None:
     assert result["status"] == "hard_fail"
     assert result["escalated"] is True
     assert calls == [("A", "magentic"), ("B", "magentic")]
+
+
+# --- ok is the loop's status; complete is the production's ---------------------------------
+# Live finding: a run returned ok=true, weak=true, export_id=null, resume_point="script".
+# Every field was accurate and the whole was misleading — ok says the agent loop did not
+# hard-fail, nothing about whether a video exists. A caller reads ok=true as "there is a
+# video". There was none. resume_point already knew ("done" only when the chain is complete);
+# the result just never asked.
+
+
+def _fill_chain(board: Board) -> None:
+    """Save one valid artifact for every step of the chain, so resume_point == 'done'."""
+    from laura.short_creator.board_models import (
+        ContactSheet,
+        ContactSheetTile,
+        Cutlist,
+        CutSegment,
+        QaReport,
+        RenderCheck,
+        Script,
+        ScriptLine,
+        VoiceArtifact,
+    )
+
+    board.save("storyline", Storyline(red_thread="t", arc=[Chapter(
+        chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0)]))
+    board.save("script", Script(
+        language="German", lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo")]))
+    board.save("voice", VoiceArtifact(script_hash="h", mp3_path="/tmp/v.mp3", voice_s=3.0))
+    board.save("cutlist", Cutlist(segments=[CutSegment(
+        order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)]))
+    board.save("contact_sheet", ContactSheet(png_path="/tmp/s.png", cols=1, rows=1, tiles=[
+        ContactSheetTile(order=0, scene_number=1, frame=45, label="0 S1")]))
+    board.save("render_report", RenderReport(
+        export_id="exp1", video_s=3.0, voice_s=3.0, width=1920, height=1080,
+        checks=[RenderCheck(name="export_ready", ok=True)]))
+    board.save("qa_report", QaReport(verdict="ship"))
+
+
+def test_a_run_that_stopped_early_reports_ok_but_not_complete(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    execute, _calls = _make_execute({"A": ("ok", True)})  # loop survives, writes no board
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess_early", task="demo", execute=execute)
+
+    assert result["ok"] is True, "the loop really did survive — that meaning is unchanged"
+    assert result["complete"] is False, "but nothing was produced, and the result must say so"
+    assert result["export_id"] is None
+
+
+def test_a_finished_board_reports_complete(tmp_path: Path) -> None:
+    """resume_point already knew; the result just never asked."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess_done")
+    meta = BoardMeta(
+        session_id="sess_done",
+        asset_id=asset_id,
+        created_utc="2026-01-01T00:00:00+00:00",
+        task="demo",
+        target_seconds=20.0,
+    )
+    board = Board.create(root, meta)
+    board.save_scene_review(_review(1))
+    _fill_chain(board)
+    config = providers.resolve_from_env({})
+    execute, _calls = _make_execute({"A": ("ok", False)})
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess_done", task="demo", execute=execute)
+
+    assert result["complete"] is True
+    assert result["resume_point"] == "done"
+
+
+def test_the_charter_names_the_way_out_of_scarce_footage(tmp_path: Path) -> None:
+    """Pins the escape hatch the run-M deadlock was missing.
+
+    The charter forbade shortening the voice; capacity said the scenes could not stretch
+    further. Cornered between the two, the orchestrator invented a third option — acquiring
+    longer scene files from an "asset owner" — and spent twenty minutes instructing agents to
+    contact a person who does not exist, ending the run with no render. The contract now
+    closes that door (the footage is fixed, nobody to ask) and opens the honest one: a
+    shorter script, pre-authorized, no permission loop.
+    """
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-charter")
+    meta = BoardMeta(
+        session_id="sess-charter",
+        asset_id=asset_id,
+        created_utc="2026-07-19T00:00:00+00:00",
+        task="demo",
+        target_seconds=174.0,
+    )
+    board = Board.create(root, meta)
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=174
+    )
+
+    assert "THE FOOTAGE IS FIXED" in task
+    assert "never plan around acquiring material" in task
+    assert "SHORTER SCRIPT" in task
+    assert "capacity_warning" in task
+
+
+def test_the_task_names_every_agents_tools(tmp_path: Path) -> None:
+    """Pins the tool-ownership roster, measured across three runs of delegation confusion.
+
+    The magentic orchestrator repeatedly routed writes to agents that do not hold the tool:
+    run J's coding_agent was told to save the storyline ("no exposed save endpoint for me"),
+    run N ended with the orchestrator and story_architect asking EACH OTHER to call
+    save_script_chapter — thirteen save_storyline attempts, sixteen refusals, no script, and
+    a hallucinated "finished film" in the closing statement. Agents cannot discover each
+    other's toolsets; the contract now prints the roster, derived from the same AgentSpec
+    definitions the team is built from, so it cannot drift.
+    """
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-roster")
+    meta = BoardMeta(
+        session_id="sess-roster",
+        asset_id=asset_id,
+        created_utc="2026-07-19T00:00:00+00:00",
+        task="demo",
+        target_seconds=174.0,
+    )
+    board = Board.create(root, meta)
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=174
+    )
+
+    assert "TOOL OWNERSHIP" in task
+    # The two misroutings that actually happened, pinned by name.
+    assert re.search(r"story_architect:[^\n]*save_storyline", task)
+    assert re.search(r"scene_author:[^\n]*save_script_chapter", task)
+    assert re.search(r"coding_agent:[^\n]*render_production", task)
+    assert "ONLY the named agent can call its tools" in task
+
+
+# --- the automatic render restore was tried, review-killed, and stays out ------------------
+# It brought back the newest archived render when its script_hash matched the current script.
+# Review refuted it with a live repro on this branch: a render is a projection of the CUTLIST
+# and the VOICE as much as of the script text, and script_hash covers neither. Reverting the
+# cutlist (a documented follow-up flow) while the script stayed identical resurrected a film
+# cut from the ABANDONED cutlist — reported stale=False, checks_ok=True. And in the scenario
+# that motivated the restore (script revise back to the rendered text), the revise had also
+# wiped voice+cutlist+sheet, so the mandated rebuild re-invalidated the restored render before
+# anything used it, while the entry task text claimed it was DONE. The honest repair is a
+# provenance CHAIN (render -> cutlist -> voice) plus a full-suffix restore — its own design.
+
+
+def _script_artifact(text: str) -> Script:
+    return Script(language="English", lines=[ScriptLine(chapter=1, scene_number=1, text=text)])
+
+
+def _render_for(script: Script) -> RenderReport:
+    from laura.short_creator.board_models import RenderCheck, script_hash
+
+    return RenderReport(
+        export_id="e-orphaned",
+        video_s=135.0,
+        width=1920,
+        height=1080,
+        script_hash=script_hash(script.lines),
+        checks=[RenderCheck(name="export_ready", ok=True)],
+    )
+
+
+def test_an_orphaned_render_stays_orphaned_and_that_is_deliberate(tmp_path: Path) -> None:
+    """Pins the rejection: no resume-time resurrection keyed on script text alone."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-norestore")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-norestore",
+            asset_id=asset_id,
+            created_utc="2026-07-19T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    final = _script_artifact("the line that was rendered")
+    board.save("script", final)
+    board.save("render_report", _render_for(final))
+    board.save("script", _script_artifact("a different draft"))
+    board.save("script", final.model_copy(deep=True))
+    assert board.load("render_report") is None, "the revise really orphaned the render"
+
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-norestore",
+        task="demo",
+        target_seconds=174,
+        execute=execute,
+    )
+
+    assert result["export_id"] is None
+    assert board.load("render_report") is None, "no resurrection on script text alone"
+
+
+def test_run_production_restores_the_matching_suffix_and_reports_it(tmp_path: Path) -> None:
+    """Entry restore: the resume contract reads DONE, the result names what came back."""
+    from laura.short_creator.board_models import VoiceArtifact, content_hash
+
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-suffix")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-suffix",
+            asset_id=asset_id,
+            created_utc="2026-07-20T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=10.0
+                )
+            ],
+        ),
+    )
+    final = _script_artifact("the rendered line")
+    board.save("script", final)
+    script_now = board.load("script")
+    assert script_now is not None
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="k",
+            mp3_path="voiceovers/a.mp3",
+            parents={"script": content_hash(script_now)},
+        ),
+    )
+    board.save("script", _script_artifact("a different draft"))
+    board.save("script", final.model_copy(deep=True))
+    assert board.load("voice") is None
+
+    events: list[dict[str, object]] = []
+    captured_tasks: list[str] = []
+
+    def execute(
+        db: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        captured_tasks.append(task)
+        return orchestrator.StageOutcome(
+            status="ok",
+            weak=False,
+            summary="done",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-suffix",
+        task="demo",
+        target_seconds=174,
+        execute=execute,
+        event_sink=events.append,
+    )
+
+    assert result["restored"] == ["voice"]
+    board_after = Board.open(root)
+    assert board_after.load("voice") is not None
+    assert {"type": "restored", "artifacts": ["voice"]} in events
+    # Pins the restore-before-task-text ordering (the predecessor feature's task-text lie was
+    # exactly this: claiming DONE for something that then got wiped again). This is a PARTIAL
+    # restore (cutlist stays missing, so the team still runs) — the exact marker
+    # ``build_production_task``'s ``_artifact_line`` emits for a present artifact.
+    assert len(captured_tasks) == 1
+    assert "  - voice: DONE (v1)" in captured_tasks[0]
+
+
+def test_run_production_reports_empty_restored_when_nothing_came_back(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    events: list[dict[str, object]] = []
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-plain",
+        task="demo",
+        execute=execute,
+        event_sink=events.append,
+    )
+
+    assert result["restored"] == []
+    # RED: no restored event should be emitted when nothing was restored
+    assert not any(event.get("type") == "restored" for event in events)
+
+
+# --- Finding 1: a fully-restored board must not spend an agent-team run --------------------
+# Spec §Entscheidungen (User) 2: "ein komplett kohärentes Board erreicht complete: True ohne
+# Agent-Turn". The entry restore above already brings back the WHOLE suffix through qa_report
+# (test_restore_suffix.py's motivating case, replayed here through run_production itself) — a
+# board in that state needs nothing further from the team.
+
+
+def _seed_full_chain(board: Board, text: str) -> None:
+    """storyline -> script -> voice -> cutlist -> sheet -> render -> qa, each parents-stamped.
+
+    Mirrors ``test_restore_suffix.py``'s ``_seed_full_chain`` (this file needs its own fixture
+    to exercise the full walk through the ``run_production`` entry point, not just the board
+    method directly).
+    """
+    from laura.short_creator.board_models import (
+        ContactSheet,
+        ContactSheetTile,
+        Cutlist,
+        CutSegment,
+        QaReport,
+        VoiceArtifact,
+        content_hash,
+    )
+
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=10.0)
+            ],
+        ),
+    )
+    board.save("script", _script_artifact(text))
+    script = board.load("script")
+    assert script is not None
+    voice = VoiceArtifact(
+        script_hash="cache-key",
+        mp3_path=f"voiceovers/{text[:8]}.mp3",
+        parents={"script": content_hash(script)},
+    )
+    board.save("voice", voice)
+    cur_voice = board.load("voice")
+    assert cur_voice is not None
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)]
+        ).model_copy(
+            update={"parents": {"script": content_hash(script), "voice": content_hash(cur_voice)}}
+        ),
+    )
+    cur_cut = board.load("cutlist")
+    assert cur_cut is not None
+    board.save(
+        "contact_sheet",
+        ContactSheet(
+            png_path="s.png",
+            cols=1,
+            rows=1,
+            tiles=[ContactSheetTile(order=0, scene_number=1, frame=45, label="0 S1")],
+        ).model_copy(update={"parents": {"cutlist": content_hash(cur_cut)}}),
+    )
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id=f"e-{text[:8]}",
+            video_s=100.0,
+            width=1920,
+            height=1080,
+            parents={"voice": content_hash(cur_voice), "cutlist": content_hash(cur_cut)},
+        ),
+    )
+    cur_render = board.load("render_report")
+    assert cur_render is not None
+    board.save(
+        "qa_report",
+        QaReport(verdict="ship", findings=[], parents={"render_report": content_hash(cur_render)}),
+    )
+
+
+def _revise_and_revert_back(board: Board, text: str) -> None:
+    """Wipe voice..qa_report by revising the script, then bring the SAME text back — the
+    archived suffix's parent hashes still match (content_hash ignores ``version``)."""
+    board.save("script", _script_artifact("a different draft"))
+    board.save("script", _script_artifact(text))
+
+
+def test_full_restore_to_done_skips_team_execution(tmp_path: Path) -> None:
+    """A board whose full suffix (through qa_report) restores must report complete WITHOUT
+    ever invoking ``execute`` — the user-approved decision this feature exists to satisfy."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-full-restore")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-full-restore",
+            asset_id=asset_id,
+            created_utc="2026-07-20T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    board.save_scene_review(_review(1))
+    _seed_full_chain(board, "the rendered line")
+    _revise_and_revert_back(board, "the rendered line")
+    assert board.load("voice") is None and board.load("qa_report") is None
+
+    calls: list[tuple[str, str]] = []
+
+    def execute(
+        db: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        calls.append((stage, kind))
+        return orchestrator.StageOutcome(
+            status="ok",
+            weak=False,
+            summary="done",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-full-restore",
+        task="demo",
+        target_seconds=174,
+        execute=execute,
+    )
+
+    assert calls == [], "a fully coherent board must not spend a team turn"
+    assert result["restored"] == [
+        "voice",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ]
+    assert result["ok"] is True
+    assert result["complete"] is True
+    assert result["resume_point"] == "done"
+    assert result["session_id"] == "sess-full-restore"
+    assert result["board"]["meta"]["session_id"] == "sess-full-restore"
+
+
+def test_full_restore_with_a_message_still_runs_the_team(tmp_path: Path) -> None:
+    """The short-circuit is for a plain resume only — a follow-up ``message`` IS a request for
+    a team turn, so it must still run even against a fully-restored, coherent board."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-full-restore-msg")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-full-restore-msg",
+            asset_id=asset_id,
+            created_utc="2026-07-20T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    board.save_scene_review(_review(1))
+    _seed_full_chain(board, "the rendered line")
+    _revise_and_revert_back(board, "the rendered line")
+    assert board.load("voice") is None
+
+    calls: list[tuple[str, str]] = []
+
+    def execute(
+        db: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        calls.append((stage, kind))
+        return orchestrator.StageOutcome(
+            status="ok",
+            weak=False,
+            summary="done",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-full-restore-msg",
+        task="demo",
+        target_seconds=174,
+        message="make the hook punchier",
+        execute=execute,
+    )
+
+    assert calls == [("A", "magentic")], "a follow-up message must still run the team"
+    assert result["restored"] == [
+        "voice",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ]

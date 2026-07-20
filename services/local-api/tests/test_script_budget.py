@@ -17,8 +17,13 @@ import pytest
 from laura.short_creator.board_models import BestWindow
 from laura.short_creator.production_tools import (
     _VOICE_RATE_TOLERANCE,
+    allocate_chapter_seconds,
+    budget_words_for,
+    chapter_word_budgets,
     estimate_voice_seconds,
+    segment_capacity_seconds,
     storyline_material_seconds,
+    usable_budget_seconds,
     word_budget_for,
 )
 
@@ -69,3 +74,174 @@ def test_material_never_exceeds_the_scene_itself() -> None:
 
 def test_empty_storyline_has_no_material() -> None:
     assert storyline_material_seconds([]) == 0.0
+
+
+# --- the usable length: never more than the target, never more than the material ----------
+# Live finding: script_budget budgeted against material, get_script's shortfall against
+# target. When the footage (142s) fell short of the target (180s), the shortfall drove the
+# author PAST the material — the voice ran longer than any cut of the scenes could cover,
+# voice_fits failed unsatisfiably, and the loop thrashed the whole render chain trying to
+# fix an impossible task. The two tools must agree, and they must agree on this number.
+
+
+def test_short_material_caps_the_budget_at_the_footage() -> None:
+    """142s of footage for a 180s target: the script may only fill the footage."""
+    assert usable_budget_seconds(material_seconds=142.0, target_seconds=180.0) == 142.0
+
+
+def test_plenty_of_material_caps_the_budget_at_the_target() -> None:
+    """250s of footage for a 180s target: the script must not overshoot the target."""
+    assert usable_budget_seconds(material_seconds=250.0, target_seconds=180.0) == 180.0
+
+
+def test_no_material_falls_back_to_the_target() -> None:
+    """Without a storyline there is no material yet — the target is the only bound."""
+    assert usable_budget_seconds(material_seconds=0.0, target_seconds=180.0) == 180.0
+
+
+def test_the_usable_budget_is_symmetric_in_the_bound_that_binds() -> None:
+    """It is exactly the smaller of the two whenever both are positive."""
+    assert usable_budget_seconds(material_seconds=90.0, target_seconds=120.0) == 90.0
+    assert usable_budget_seconds(material_seconds=120.0, target_seconds=90.0) == 90.0
+
+
+# --- headroom: the two directions are not equally bad -------------------------------------
+# Live finding: with usable=170s the budget asked for ~415 words. The synthesis came back at
+# 171.6s (0.431 s/word against the table's 0.41 — inside the +-20% tolerance, but 5% over),
+# so the voice ran 2s past the video and voice_fits failed. The same overshoot pressure also
+# pushed the author to pad: it wrote a grounded first line per chapter, then a second line of
+# invented capabilities to reach the count.
+#
+# Overshooting truncates the ending. Undershooting holds the last frames a moment longer.
+# Those are not equally bad, so the budget must not aim at the middle of the estimate.
+
+
+def test_the_budget_leaves_room_for_the_rate_to_run_slow() -> None:
+    """Asking for exactly usable-seconds-worth of words overshoots half the time."""
+    assert budget_words_for(170.0, "English") < word_budget_for(170.0, "English")
+
+
+def test_the_headroom_covers_the_overshoot_that_shipped() -> None:
+    """The run that failed: 170s usable, synthesis at the measured 0.431 s/word."""
+    words = budget_words_for(170.0, "English")
+    assert words * 0.431 <= 170.0, "the budget must fit even when the rate runs slow"
+
+
+def test_the_headroom_does_not_waste_the_material() -> None:
+    """Headroom is insurance, not a haircut — most of the footage still gets used."""
+    words = budget_words_for(170.0, "English")
+    assert words * 0.41 >= 170.0 * 0.85, "at the table rate it should still fill ~90%"
+
+
+def test_headroom_applies_to_every_language() -> None:
+    for language in ("German", "English"):
+        assert budget_words_for(120.0, language) < word_budget_for(120.0, language)
+
+
+# --- per chapter: a global budget can be right while every chapter is wrong ----------------
+# Live finding: 161s of voice against 170s of material looked healthy, and the film still
+# failed voice_fits by 13s. Per chapter it was badly skewed — chapter 3 carried 26.8s of
+# narration against a 1.0s reviewed window, chapter 4 18.6s against 5.0s, while chapters 5
+# and 6 left 48s of reviewed material unused. The cutlist cannot cover voice that its scenes
+# do not hold, so the video came out short no matter how the total added up.
+
+
+def test_each_chapter_gets_the_budget_its_own_material_holds() -> None:
+    """The 1-second window that broke the run: its chapter may carry almost no words."""
+    budgets = chapter_word_budgets({1: 45.0, 3: 1.0}, "English")
+
+    assert budgets[3] < 5, "a 1s window cannot carry a 27s beat — say so"
+    assert budgets[1] > 80
+
+
+def test_the_chapter_budgets_add_up_to_the_whole() -> None:
+    """Splitting must not invent or lose budget: the parts are the whole."""
+    materials = {1: 15.0, 2: 15.0, 3: 40.0}
+    parts = sum(chapter_word_budgets(materials, "English").values())
+    whole = budget_words_for(sum(materials.values()), "English")
+
+    assert abs(parts - whole) <= len(materials), "only integer rounding may differ"
+
+
+def test_every_chapter_carries_the_same_headroom() -> None:
+    """A chapter is budgeted like the film: below its material, not at it."""
+    budgets = chapter_word_budgets({1: 100.0}, "English")
+    assert budgets[1] == budget_words_for(100.0, "English")
+
+
+def test_an_empty_storyline_budgets_nothing() -> None:
+    assert chapter_word_budgets({}, "English") == {}
+
+
+# --- capacity: budget what the CUT can deliver, not what the reviewer marked ---------------
+# Live finding: chapter 3's reviewed window was 1.0s, so the budget offered it two words —
+# and the author, correctly, refused to write a story beat in two words. But the cutlist does
+# not stop at the window: it stretches a segment toward the scene's own length, and scene 2
+# is 45s long. The cut could have covered 45s there. Budget and cutlist were measuring
+# different quantities, so the voice and the picture could not agree by construction.
+#
+# Reviewed windows stay the QUALITY signal. Capacity is the LENGTH signal, and length is
+# what voice_fits is about.
+
+
+def test_capacity_follows_the_scene_not_the_tiny_window() -> None:
+    """The 1s window in a 45s scene: the cut can still cover the scene."""
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=0.0, duration_s=1.0), scene_duration_s=45.0
+    ) == pytest.approx(45.0)
+
+
+def test_capacity_never_exceeds_the_scene() -> None:
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=0.0, duration_s=99.0), scene_duration_s=12.0
+    ) == pytest.approx(12.0)
+
+
+def test_a_late_offset_costs_the_footage_before_it() -> None:
+    """A window starting 34s into a 45s scene leaves 11s to stretch into."""
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=34.0, duration_s=5.0), scene_duration_s=45.0
+    ) == pytest.approx(11.0)
+
+
+def test_capacity_keeps_the_segment_floor() -> None:
+    """Even a window pinned at the very end earns the 2s floor the cutlist gives it."""
+    assert segment_capacity_seconds(
+        BestWindow(offset_s=44.5, duration_s=0.5), scene_duration_s=45.0
+    ) == pytest.approx(2.0)
+
+
+# --- allocation: capacity is what CAN be filled, the target is what SHOULD be --------------
+# Budgeting each chapter at its own capacity was safe only while the capacities happened to
+# add up to about the target. Measured on the live board they add up to 266s against a 174s
+# target — so the per-chapter budgets would have asked for a 266-second film. The usable
+# length has to be SHARED OUT across the chapters, in proportion to what each can hold.
+
+
+def test_plenty_of_capacity_is_shared_out_to_the_usable_length() -> None:
+    """The live numbers: 266s of capacity for a 174s film."""
+    shares = allocate_chapter_seconds({1: 45.0, 2: 30.0, 3: 45.0, 4: 146.0}, usable_seconds=174.0)
+    assert sum(shares.values()) == pytest.approx(174.0)
+
+
+def test_the_share_is_proportional_to_what_each_chapter_can_hold() -> None:
+    shares = allocate_chapter_seconds({1: 30.0, 2: 90.0}, usable_seconds=60.0)
+    assert shares[1] == pytest.approx(15.0)
+    assert shares[2] == pytest.approx(45.0)
+
+
+def test_no_chapter_is_ever_asked_for_more_than_it_can_hold() -> None:
+    """Scaling down preserves the invariant that made capacity worth measuring."""
+    capacity = {1: 45.0, 2: 30.0, 3: 45.0}
+    shares = allocate_chapter_seconds(capacity, usable_seconds=60.0)
+    assert all(shares[ch] <= capacity[ch] for ch in capacity)
+
+
+def test_scarce_capacity_is_left_alone_rather_than_stretched_to_the_target() -> None:
+    """When the footage is short, the film is short — inventing length is the old bug."""
+    shares = allocate_chapter_seconds({1: 20.0, 2: 20.0}, usable_seconds=174.0)
+    assert shares == {1: 20.0, 2: 20.0}
+
+
+def test_allocating_across_nothing_is_empty() -> None:
+    assert allocate_chapter_seconds({}, usable_seconds=174.0) == {}

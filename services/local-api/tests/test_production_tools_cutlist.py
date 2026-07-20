@@ -36,6 +36,7 @@ from laura.short_creator.board_models import (
 from laura.short_creator.production_tools import (
     ProductionDeps,
     _scale_chapter_durations,
+    _segment_duration_s,
     build_production_tool_specs,
     chapter_audio_windows,
     line_starts,
@@ -162,6 +163,19 @@ def _script() -> Script:
     )
 
 
+def _words() -> list[dict[str, Any]]:
+    """Word timings for ``_script()``'s six whitespace tokens (same numbers as
+    ``test_synthesize_uses_cache_on_same_hash``) — reused by the provenance stamp tests."""
+    return [
+        {"text": "Stopp", "start_s": 0.0, "end_s": 0.3},
+        {"text": "dein", "start_s": 0.3, "end_s": 0.6},
+        {"text": "Team", "start_s": 0.6, "end_s": 1.0},
+        {"text": "Ein", "start_s": 1.2, "end_s": 1.4},
+        {"text": "Klick", "start_s": 1.4, "end_s": 1.7},
+        {"text": "genügt", "start_s": 1.7, "end_s": 2.1},
+    ]
+
+
 class _FakeVoiceBackend:
     """Fake VoiceBackend: writes a dummy mp3 + a timings sidecar with caller-supplied word
     times (so the cutlist zoom test can hand-compute expected values), and counts calls."""
@@ -189,13 +203,28 @@ class _FakeVoiceBackend:
 
 def _save_voice(board: Board, tmp_path: Path, words: list[dict[str, Any]]) -> None:
     """Seed the board's voice artifact directly with a real sidecar file on disk (as
-    build_cutlist reads it from ``timings_path``, not from the fake backend)."""
+    build_cutlist reads it from ``timings_path``, not from the fake backend).
+
+    The hash is computed from the script actually on the board — build_cutlist now refuses a
+    voice whose script_hash disagrees with the current script (a reverted voice would poison
+    the downstream provenance to stale=False), so the seed must satisfy the real contract.
+    """
+    from laura.short_creator.board_models import Storyline, lines_in_storyline_order
+
     timings_path = tmp_path / "voice.mp3.timings.json"
     timings_path.write_text(json.dumps({"words": words}), encoding="utf-8")
+    script = board.load("script")
+    storyline = board.load("storyline")
+    assert isinstance(script, Script), "seed the script before the voice"
+    lines = (
+        lines_in_storyline_order(script, storyline)
+        if isinstance(storyline, Storyline)
+        else script.lines
+    )
     board.save(
         "voice",
         VoiceArtifact(
-            script_hash="irrelevant-for-cutlist",
+            script_hash=script_hash(lines),
             mp3_path=str(tmp_path / "voice.mp3"),
             timings_path=str(timings_path),
         ),
@@ -982,3 +1011,157 @@ def test_build_cutlist_rejects_out_of_range_window_ref(tmp_path: Path) -> None:
     assert out["ok"] is False
     assert "window 2" in out["reason"] and "scene 1" in out["reason"]
     assert board.load("cutlist") is None
+
+
+def test_build_cutlist_stamps_storyline_script_and_voice_parents(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    _save_voice(board, tmp_path, _words())
+    storyline = board.load("storyline")
+    script = board.load("script")
+    voice = board.load("voice")
+    assert storyline is not None and script is not None and voice is not None
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+    assert out["ok"] is True, out
+
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    assert cutlist.parents == {
+        "storyline": content_hash(storyline),
+        "script": content_hash(script),
+        "voice": content_hash(voice),
+    }
+
+
+def test_synthesize_stamps_storyline_and_script_parents(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    storyline = board.load("storyline")
+    script = board.load("script")
+    assert storyline is not None and script is not None
+    deps = ProductionDeps(voice_backend=_FakeVoiceBackend(words=_words()))
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["synthesize_script_voice"].func()
+    assert out["ok"] is True, out
+
+    voice = board.load("voice")
+    assert isinstance(voice, VoiceArtifact)
+    assert voice.parents == {
+        "storyline": content_hash(storyline),
+        "script": content_hash(script),
+    }
+
+
+def test_build_cutlist_refuses_a_voice_from_a_different_script(tmp_path: Path) -> None:
+    """Review finding: build_cutlist presence-checked the voice and never asked WHOSE voice.
+
+    The cut's audio windows and zoom timings come from that voice's timings sidecar, and the
+    render muxes its mp3 as the film's audio. revert_artifact("voice", vOld) is a documented
+    follow-up flow — after it, the current script and the voice disagree, and a cutlist built
+    from the pair would carry the current script's hash while cutting to a different take:
+    stale=False on a film whose narration is not the script. The mismatch must refuse loudly
+    with the correcting tool named, exactly like every other order guard.
+    """
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    timings_path = tmp_path / "old-take.mp3.timings.json"
+    timings_path.write_text(json.dumps({"words": []}), encoding="utf-8")
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="a-different-scripts-hash",
+            mp3_path=str(tmp_path / "old-take.mp3"),
+            timings_path=str(timings_path),
+        ),
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is False
+    assert "synthesize_script_voice" in out["reason"]
+    assert board.load("cutlist") is None
+
+
+def test_segment_duration_ignores_window_length() -> None:
+    """The decoupling (spec 2026-07-20-window-bias-design.md §2): a reel-trained reviewer's
+    0.5s window must not shrink a held screen's weight below the chapter budget. Before the
+    fix the window's duration capped the base (0.5s window -> 2.0s weight vs 8.0s for a long
+    window in the same chapter)."""
+    assert (
+        _segment_duration_s(target_seconds=16.0, n_scenes=2, scene_duration_s=10.0) == 8.0
+    )
+
+
+def test_segment_duration_keeps_floor_and_scene_clamp() -> None:
+    assert _segment_duration_s(target_seconds=1.0, n_scenes=2, scene_duration_s=10.0) == 2.0
+    assert _segment_duration_s(target_seconds=60.0, n_scenes=2, scene_duration_s=4.5) == 4.5
+
+
+def test_build_cutlist_gives_short_and_long_windows_equal_time(tmp_path: Path) -> None:
+    """One chapter, two scenes: a 0.5s window (held screen, reel-scored) and an 8.0s window
+    (motion). The chapter's 6.0s audio window must split EQUALLY (3.0s each) — before the
+    decoupling the bases were [2.0, 8.0] and the split came out [2.0, 4.0]."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, best_window=BestWindow(offset_s=0.0, duration_s=0.5))
+    _review(board, 2, best_window=BestWindow(offset_s=0.0, duration_s=8.0))
+    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=16.0))
+    board.save("script", _script())
+    # All six words belong to chapter 1; the voice ends at 5.4s -> one chapter audio window
+    # [0.0, 6.0) incl. the 0.6s tail. Bases [8.0, 8.0] scale by one factor to [3.0, 3.0].
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.0, "end_s": 0.3},
+            {"text": "dein", "start_s": 0.3, "end_s": 0.6},
+            {"text": "Team", "start_s": 0.6, "end_s": 1.0},
+            {"text": "Ein", "start_s": 1.2, "end_s": 1.4},
+            {"text": "Klick", "start_s": 1.4, "end_s": 1.7},
+            {"text": "genügt", "start_s": 1.7, "end_s": 5.4},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out == {"ok": True, "segments": 2, "total_seconds": 6.0, "with_zoom": 0}
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+    # 3.0s each (90 frames @ 30fps), starting at each window's offset.
+    assert (seg0.start_frame, seg0.end_frame_exclusive) == (0, 90)
+    assert (seg1.start_frame, seg1.end_frame_exclusive) == (300, 390)
+
+
+def test_build_cutlist_tool_description_teaches_offset_only_window_contract(
+    tmp_path: Path,
+) -> None:
+    """The agent team reads ``ToolSpec.description`` (harvested from ``build_cutlist``'s
+    docstring), not the source. It must not teach the removed semantics — a review window
+    capping a segment's length — or the agent will keep believing the window IS the weight
+    (spec 2026-07-20-window-bias-design.md §2)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    description = specs["build_cutlist"].description
+
+    assert "base-duration cap" not in description
+    assert "never from the window's duration" in description
