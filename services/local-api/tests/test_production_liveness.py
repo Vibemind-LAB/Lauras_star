@@ -52,6 +52,12 @@ def _start(client: TestClient, asset_id: str) -> str:
     return str(r.json()["session_id"])
 
 
+def _latest_job_id(db: Any, session_id: str) -> str:
+    session = repos.get_production_session(db, session_id)
+    assert session is not None
+    return str(session["latest_job_id"])
+
+
 def test_the_session_records_the_job_that_runs_it(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     client, db = _app(tmp_path)
@@ -83,7 +89,7 @@ def test_a_failed_job_is_visible_at_the_status_endpoint(tmp_path: Path, monkeypa
     client, db = _app(tmp_path)
     asset_id = _seed_asset(db)
     session_id = _start(client, asset_id)
-    job_id = str(repos.get_production_session(db, session_id)["latest_job_id"])
+    job_id = _latest_job_id(db, session_id)
 
     # The job hard-fails, the way the live one did.
     with db.transaction() as conn:
@@ -109,7 +115,7 @@ def test_the_status_endpoint_surfaces_what_a_resume_restored(
     client, db = _app(tmp_path)
     asset_id = _seed_asset(db)
     session_id = _start(client, asset_id)
-    job_id = str(repos.get_production_session(db, session_id)["latest_job_id"])
+    job_id = _latest_job_id(db, session_id)
 
     with db.transaction() as conn:
         conn.execute(
@@ -150,11 +156,11 @@ def test_a_follow_up_message_becomes_the_session_s_current_job(
     client, db = _app(tmp_path)
     asset_id = _seed_asset(db)
     session_id = _start(client, asset_id)
-    first_job = str(repos.get_production_session(db, session_id)["latest_job_id"])
+    first_job = _latest_job_id(db, session_id)
 
     # A follow-up needs a board; the first run never built one here, so this 404s and must NOT
     # move the job link. (The board-present path is covered by the message endpoint's own tests.)
     client.post(f"/production/{session_id}/message", json={"text": "make it punchier"}, headers=_H)
 
-    still = str(repos.get_production_session(db, session_id)["latest_job_id"])
+    still = _latest_job_id(db, session_id)
     assert still == first_job, "a rejected follow-up must not repoint liveness"

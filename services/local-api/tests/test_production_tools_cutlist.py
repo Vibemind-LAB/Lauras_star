@@ -1031,7 +1031,7 @@ def test_build_cutlist_stamps_storyline_script_and_voice_parents(tmp_path: Path)
     assert out["ok"] is True, out
 
     cutlist = board.load("cutlist")
-    assert cutlist is not None
+    assert isinstance(cutlist, Cutlist)
     assert cutlist.parents == {
         "storyline": content_hash(storyline),
         "script": content_hash(script),
@@ -1058,7 +1058,7 @@ def test_synthesize_stamps_storyline_and_script_parents(tmp_path: Path) -> None:
     assert out["ok"] is True, out
 
     voice = board.load("voice")
-    assert voice is not None
+    assert isinstance(voice, VoiceArtifact)
     assert voice.parents == {
         "storyline": content_hash(storyline),
         "script": content_hash(script),

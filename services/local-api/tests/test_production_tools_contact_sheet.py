@@ -174,7 +174,7 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
 
     cutlist_now = board.load("cutlist")
     sheet = board.load("contact_sheet")
-    assert cutlist_now is not None and sheet is not None
+    assert cutlist_now is not None and isinstance(sheet, ContactSheet)
     assert sheet.parents == {"cutlist": content_hash(cutlist_now)}
 
 

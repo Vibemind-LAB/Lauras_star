@@ -797,12 +797,12 @@ def test_save_script_chapter_stamps_the_storyline_parent(tmp_path: Path) -> None
     specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
 
     script = board.load("script")
-    assert script is not None
+    assert isinstance(script, Script)
     assert script.parents == {"storyline": content_hash(storyline)}
 
 
 def test_save_qa_report_stamps_the_render_parent(tmp_path: Path) -> None:
-    from laura.short_creator.board_models import RenderReport, content_hash
+    from laura.short_creator.board_models import QaReport, RenderReport, content_hash
 
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
@@ -817,5 +817,5 @@ def test_save_qa_report_stamps_the_render_parent(tmp_path: Path) -> None:
     specs["save_qa_report"].func(verdict="ship", findings=[])
 
     qa = board.load("qa_report")
-    assert qa is not None
+    assert isinstance(qa, QaReport)
     assert qa.parents == {"render_report": content_hash(render)}

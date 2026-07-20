@@ -514,7 +514,7 @@ def test_render_and_voice_and_sheet_stamp_their_parents(tmp_path: Path) -> None:
     assert out["ok"] is True, out
 
     render = board.load("render_report")
-    assert render is not None
+    assert isinstance(render, RenderReport)
     assert render.parents == {
         "storyline": content_hash(storyline),
         "script": content_hash(script),

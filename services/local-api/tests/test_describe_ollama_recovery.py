@@ -19,6 +19,7 @@ errors and 4xx stay final — retrying a request the server rejects only doubles
 
 from __future__ import annotations
 
+import email.message
 import io
 import urllib.error
 from typing import Any
@@ -30,7 +31,9 @@ from laura.short_creator.describe import OllamaDescribeBackend
 
 
 def _http_error(code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError("http://x", code, "boom", hdrs=None, fp=io.BytesIO(b""))
+    return urllib.error.HTTPError(
+        "http://x", code, "boom", email.message.Message(), fp=io.BytesIO(b"")
+    )
 
 
 class _Recorder:
