@@ -36,6 +36,7 @@ from laura.short_creator.board_models import (
 from laura.short_creator.production_tools import (
     ProductionDeps,
     _scale_chapter_durations,
+    _segment_duration_s,
     build_production_tool_specs,
     chapter_audio_windows,
     line_starts,
@@ -1095,3 +1096,55 @@ def test_build_cutlist_refuses_a_voice_from_a_different_script(tmp_path: Path) -
     assert out["ok"] is False
     assert "synthesize_script_voice" in out["reason"]
     assert board.load("cutlist") is None
+
+
+def test_segment_duration_ignores_window_length() -> None:
+    """The decoupling (spec 2026-07-20-window-bias-design.md §2): a reel-trained reviewer's
+    0.5s window must not shrink a held screen's weight below the chapter budget. Before the
+    fix the window's duration capped the base (0.5s window -> 2.0s weight vs 8.0s for a long
+    window in the same chapter)."""
+    assert (
+        _segment_duration_s(target_seconds=16.0, n_scenes=2, scene_duration_s=10.0) == 8.0
+    )
+
+
+def test_segment_duration_keeps_floor_and_scene_clamp() -> None:
+    assert _segment_duration_s(target_seconds=1.0, n_scenes=2, scene_duration_s=10.0) == 2.0
+    assert _segment_duration_s(target_seconds=60.0, n_scenes=2, scene_duration_s=4.5) == 4.5
+
+
+def test_build_cutlist_gives_short_and_long_windows_equal_time(tmp_path: Path) -> None:
+    """One chapter, two scenes: a 0.5s window (held screen, reel-scored) and an 8.0s window
+    (motion). The chapter's 6.0s audio window must split EQUALLY (3.0s each) — before the
+    decoupling the bases were [2.0, 8.0] and the split came out [2.0, 4.0]."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, best_window=BestWindow(offset_s=0.0, duration_s=0.5))
+    _review(board, 2, best_window=BestWindow(offset_s=0.0, duration_s=8.0))
+    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=16.0))
+    board.save("script", _script())
+    # All six words belong to chapter 1; the voice ends at 5.4s -> one chapter audio window
+    # [0.0, 6.0) incl. the 0.6s tail. Bases [8.0, 8.0] scale by one factor to [3.0, 3.0].
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.0, "end_s": 0.3},
+            {"text": "dein", "start_s": 0.3, "end_s": 0.6},
+            {"text": "Team", "start_s": 0.6, "end_s": 1.0},
+            {"text": "Ein", "start_s": 1.2, "end_s": 1.4},
+            {"text": "Klick", "start_s": 1.4, "end_s": 1.7},
+            {"text": "genügt", "start_s": 1.7, "end_s": 5.4},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out == {"ok": True, "segments": 2, "total_seconds": 6.0, "with_zoom": 0}
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+    # 3.0s each (90 frames @ 30fps), starting at each window's offset.
+    assert (seg0.start_frame, seg0.end_frame_exclusive) == (0, 90)
+    assert (seg1.start_frame, seg1.end_frame_exclusive) == (300, 390)

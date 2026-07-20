@@ -934,19 +934,22 @@ def storyline_material_seconds(windows: Iterable[tuple[BestWindow, float]]) -> f
 
 
 def _segment_duration_s(
-    *, target_seconds: float, n_scenes: int, window: BestWindow, scene_duration_s: float
+    *, target_seconds: float, n_scenes: int, scene_duration_s: float
 ) -> float:
     """One segment's BASE cutlist length: the chapter's per-segment time budget, floored at
-    2s and capped at the chosen review window's own length (itself floored at 2s, so a short
-    highlight doesn't shrink the cap below the floor) — then clamped inside the scene's own
-    duration.
+    2s and clamped inside the scene's own duration.
+
+    The review window is deliberately NOT a length input — it marks WHERE the segment starts
+    and WHICH beat is cut. Using its duration as a weight let a reel-trained reviewer's 0.5s
+    windows starve held screens of screen time (spec 2026-07-20-window-bias-design.md §2;
+    baseline: the shipped films cut a 45s org chart from three 0.5s windows).
 
     With a usable voice sidecar these are only the WEIGHTS that ``_scale_chapter_durations``
     rescales to fill the chapter's audio window (:func:`chapter_audio_windows`); without one
-    they are the segment durations themselves (the pre-coupling behavior)."""
+    they are the segment durations themselves — decoupled there too, a cap only in one path
+    would re-import the bias."""
     budget = target_seconds / n_scenes
-    upper = max(window.duration_s, _SEGMENT_FLOOR_S)
-    return min(max(_SEGMENT_FLOOR_S, min(budget, upper)), scene_duration_s)
+    return min(max(_SEGMENT_FLOOR_S, budget), scene_duration_s)
 
 
 def chapter_audio_windows(
@@ -1824,7 +1827,6 @@ def build_production_tool_specs(
                         _segment_duration_s(
                             target_seconds=chapter.target_seconds,
                             n_scenes=n_scenes,
-                            window=window,
                             scene_duration_s=scene_duration_s,
                         )
                     )
