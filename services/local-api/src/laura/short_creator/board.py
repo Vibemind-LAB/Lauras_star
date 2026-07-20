@@ -258,6 +258,48 @@ class Board:
         dest = self.root / "versions" / f"{stem}.v{version}.json"
         _write_atomic(dest, path.read_text(encoding="utf-8"))
 
+    def restore_coherent_suffix(self) -> list[str]:
+        """Bring back the longest archived suffix whose parents match the board — in order.
+
+        Walks the chain; present links are skipped, a missing link is restored from its
+        newest archived version whose EVERY recorded parent is present on the board with a
+        matching content hash. Empty ``parents`` (pre-provenance archive, or a root) never
+        restores — unknown is not coherent. The first missing link with no matching archive
+        ends the walk. Checking happens on the peeked archive file BEFORE any revert, so a
+        non-match is never even momentarily current; upstream-first order means each revert's
+        downstream invalidation only touches links that are already missing, and every child
+        checked afterwards points at the exact instance just restored.
+
+        Successor to the review-killed single-link restore (41ecc51): script text alone could
+        not identify a render; the parent-instance hashes can.
+        """
+        restored: list[str] = []
+        for name in _CHAIN:
+            if self.load(name) is not None:
+                continue
+            candidate_version = self._newest_matching_version(name)
+            if candidate_version is None:
+                break
+            self.revert(name, candidate_version)
+            restored.append(name)
+        return restored
+
+    def _newest_matching_version(self, name: str) -> int | None:
+        """The newest archived version of ``name`` whose parents all match the board."""
+        model_type = _SINGLETONS[name]
+        for version in sorted(self.versions(name), reverse=True):
+            path = self.root / "versions" / f"{name}.v{version}.json"
+            try:
+                candidate = model_type.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue  # unreadable archive: skip, never fatal
+            parents = getattr(candidate, "parents", None)
+            if not isinstance(parents, dict) or not parents:
+                continue  # pre-provenance or root: unknown is not coherent
+            if _parents_stale(self.load, candidate) is False:
+                return version
+        return None
+
     # -- progress -----------------------------------------------------------
 
     def set_status(self, value: BoardStatus) -> None:
