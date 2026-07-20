@@ -208,6 +208,25 @@ def _tool_ownership_section(language: str) -> str:
     )
 
 
+def _qa_weak(board: Board) -> bool:
+    """Whether the board's QA verdict marks this production as weak.
+
+    Reads the board's structured ``QaReport`` (``verdict="ship"|"revise"``), not message
+    scanning: a missing report or a "revise" verdict is weak, and only an explicit "ship"
+    verdict is not. Shared by :func:`_parse_outcome` (a team just ran) and the full-restore
+    short-circuit in :func:`run_production` (no team ran, but the board already carries a
+    verdict) — both need the exact same read of the same board state.
+    """
+    qa = board.load("qa_report")
+    return not (isinstance(qa, QaReport) and qa.verdict == "ship")
+
+
+def _export_id_of(board: Board) -> str | None:
+    """The render's export id, if the board carries a ``RenderReport``."""
+    render_report = board.load("render_report")
+    return render_report.export_id if isinstance(render_report, RenderReport) else None
+
+
 def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
     """Read a finished production-team run into an outcome.
 
@@ -220,10 +239,8 @@ def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
     for msg in getattr(result, "messages", None) or []:
         to_text = getattr(msg, "to_model_text", None)
         text += (to_text() if callable(to_text) else str(getattr(msg, "content", ""))) + "\n"
-    qa = board.load("qa_report")
-    weak = not (isinstance(qa, QaReport) and qa.verdict == "ship")
     return StageOutcome(
-        status="ok", weak=weak, summary=text.strip()[:2000], team="magentic", stage=stage
+        status="ok", weak=_qa_weak(board), summary=text.strip()[:2000], team="magentic", stage=stage
     )
 
 
@@ -368,6 +385,28 @@ def run_production(
         except Exception:  # noqa: BLE001 — observability must never fail the run
             logger.warning("restored-event sink failed; continuing")
 
+    # Spec decision 2 (2026-07-20-provenance-chain-design.md, §Entscheidungen (User)): a fully
+    # coherent board reaches complete WITHOUT an agent-team turn. A follow-up ``message`` is
+    # itself a request for a team turn (e.g. "make the hook punchier" against an already-done
+    # board), so the short-circuit applies only to a plain resume/restart with no message.
+    if message is None and board.resume_point(_expected_scene_numbers(db, asset_id)) == "done":
+        board.set_status("complete")
+        return {
+            "ok": True,
+            "complete": True,
+            "status": "ok",
+            "stage": "A",
+            "team": "magentic",
+            "weak": _qa_weak(board),
+            "escalated": False,
+            "summary": "board already coherent through qa_report; no team turn needed",
+            "session_id": session_id,
+            "board": board.status(),
+            "export_id": _export_id_of(board),
+            "resume_point": "done",
+            "restored": restored,
+        }
+
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
     )
@@ -382,8 +421,7 @@ def run_production(
         escalated = True
 
     expected_scenes = _expected_scene_numbers(db, asset_id)
-    render_report = board.load("render_report")
-    export_id = render_report.export_id if isinstance(render_report, RenderReport) else None
+    export_id = _export_id_of(board)
     resume_point = board.resume_point(expected_scenes)
 
     # Tell the BOARD how this ended, not just the caller. The result dict goes into the job row;
