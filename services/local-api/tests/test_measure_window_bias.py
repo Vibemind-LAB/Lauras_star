@@ -77,7 +77,7 @@ def test_scan_and_summary_over_fixture_boards(tmp_path: Path) -> None:
             "description": "transcript only",
             "whats_happening": "",
             "hook_score": 5,
-            "best_window": {"offset_s": 0.0, "duration_s": 4.0},
+            "best_window": {"offset_s": 0.0, "duration_s": 0.5},
             "windows": [],
             "degraded": True,
         },

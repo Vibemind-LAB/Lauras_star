@@ -32,7 +32,7 @@ from ..db.database import Database
 from . import context
 from .board import Board
 from .board_models import BoardMeta, Format, QaReport, RenderReport, canvas_for
-from .orchestrator import ExecuteFn, StageOutcome, _safe_execute
+from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
 from .production_agents import build_production_team
 from .production_tools import ProductionDeps
 from .providers import AgentConfig, Stage
@@ -301,6 +301,49 @@ def _make_default_execute(
     return execute
 
 
+def _completed_result(
+    board: Board,
+    *,
+    session_id: str,
+    restored: list[str],
+    status: Status,
+    stage: Stage,
+    team: TeamKind,
+    weak: bool,
+    escalated: bool,
+    summary: str,
+    export_id: str | None,
+    resume_point: str,
+) -> dict[str, Any]:
+    """The result dict :func:`run_production` returns, built once for both completion paths:
+    the full-restore short-circuit (no team turn) and the normal completion tail (a team ran).
+
+    A future key added to only one of the two call sites would silently miss the other — the
+    exact way a past bug happened, since both built the same 13-key dict literal independently.
+
+    ``ok`` is the agent LOOP's status: it ran without a hard failure. It does not mean a video
+    exists — a live run reported ``ok=True`` with ``export_id=None`` and half a board. ``complete``
+    is the production's status; the board always knows via ``resume_point``, so both are derived
+    here from ``status``/``resume_point`` rather than passed in separately, since both call sites
+    compute them the same way.
+    """
+    return {
+        "ok": status == "ok",
+        "complete": resume_point == "done",
+        "status": status,
+        "stage": stage,
+        "team": team,
+        "weak": weak,
+        "escalated": escalated,
+        "summary": summary,
+        "session_id": session_id,
+        "board": board.status(),
+        "export_id": export_id,
+        "resume_point": resume_point,
+        "restored": restored,
+    }
+
+
 def run_production(
     db: Database,
     config: AgentConfig,
@@ -385,27 +428,29 @@ def run_production(
         except Exception:  # noqa: BLE001 — observability must never fail the run
             logger.warning("restored-event sink failed; continuing")
 
+    # Computed once and reused below (the short-circuit condition and the completion tail both
+    # need it); build_production_task computes its own copy internally for its other callers.
+    expected_scenes = _expected_scene_numbers(db, asset_id)
+
     # Spec decision 2 (2026-07-20-provenance-chain-design.md, §Entscheidungen (User)): a fully
     # coherent board reaches complete WITHOUT an agent-team turn. A follow-up ``message`` is
     # itself a request for a team turn (e.g. "make the hook punchier" against an already-done
     # board), so the short-circuit applies only to a plain resume/restart with no message.
-    if message is None and board.resume_point(_expected_scene_numbers(db, asset_id)) == "done":
+    if message is None and board.resume_point(expected_scenes) == "done":
         board.set_status("complete")
-        return {
-            "ok": True,
-            "complete": True,
-            "status": "ok",
-            "stage": "A",
-            "team": "magentic",
-            "weak": _qa_weak(board),
-            "escalated": False,
-            "summary": "board already coherent through qa_report; no team turn needed",
-            "session_id": session_id,
-            "board": board.status(),
-            "export_id": _export_id_of(board),
-            "resume_point": "done",
-            "restored": restored,
-        }
+        return _completed_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            status="ok",
+            stage="A",
+            team="magentic",
+            weak=_qa_weak(board),
+            escalated=False,
+            summary="board already coherent through qa_report; no team turn needed",
+            export_id=_export_id_of(board),
+            resume_point="done",
+        )
 
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
@@ -420,7 +465,6 @@ def run_production(
         outcome = _safe_execute(run, db, config, "B", "magentic", task_text)
         escalated = True
 
-    expected_scenes = _expected_scene_numbers(db, asset_id)
     export_id = _export_id_of(board)
     resume_point = board.resume_point(expected_scenes)
 
@@ -432,21 +476,16 @@ def run_production(
     elif resume_point == "done":
         board.set_status("complete")
 
-    return {
-        # ok is the agent LOOP's status: it ran without a hard failure. It does not mean a
-        # video exists — a live run reported ok=True with export_id=None and half a board.
-        # complete is the production's status; the board always knew, the result never said.
-        "ok": outcome.status == "ok",
-        "complete": resume_point == "done",
-        "status": outcome.status,
-        "stage": outcome.stage,
-        "team": outcome.team,
-        "weak": outcome.weak,
-        "escalated": escalated,
-        "summary": outcome.summary,
-        "session_id": session_id,
-        "board": board.status(),
-        "export_id": export_id,
-        "resume_point": resume_point,
-        "restored": restored,
-    }
+    return _completed_result(
+        board,
+        session_id=session_id,
+        restored=restored,
+        status=outcome.status,
+        stage=outcome.stage,
+        team=outcome.team,
+        weak=outcome.weak,
+        escalated=escalated,
+        summary=outcome.summary,
+        export_id=export_id,
+        resume_point=resume_point,
+    )
