@@ -456,3 +456,17 @@ def test_the_review_rubric_does_not_punish_held_screens() -> None:
 
     assert "held" in _REVIEW_PROMPT or "static" in _REVIEW_PROMPT
     assert "not a penalty" in _REVIEW_PROMPT or "not lower the score" in _REVIEW_PROMPT
+
+
+def test_review_prompt_window_rubric_counters_reel_logic() -> None:
+    """Pins the WINDOW rubric against reel logic — the score rubric's sibling.
+
+    Baseline (spec 2026-07-20-window-bias-design.md): 8 of 36 static-scene reviews carried
+    sub-second windows; the shipped films cut a 45s org chart from three 0.5s windows while
+    other runs gave the SAME scene 15s or 45s. The prompt must say a held readable screen is
+    ONE long window, or the VLM defaults to its social-video prior.
+    """
+    from laura.short_creator.production_tools import _REVIEW_PROMPT
+
+    assert "ONE window spanning the whole readable stretch" in _REVIEW_PROMPT
+    assert "sub-second" in _REVIEW_PROMPT

@@ -171,7 +171,9 @@ _REVIEW_PROMPT = (
     "  \"windows\": [{{\"offset_s\": float, \"duration_s\": float, \"roi\": {{\"x\": float, "
     "\"y\": float, \"w\": float, \"h\": float}} | null}}] (1-4 strong moments, STRONGEST "
     "FIRST, non-overlapping, offsets relative to scene start; a long scene with several "
-    "distinct beats should list each beat as its own window; {roi_rule}),\n"
+    "distinct beats should list each beat as its own window; a held/static screen whose "
+    "content stays readable is ONE window spanning the whole readable stretch — never chop "
+    "stillness into sub-second beats; {roi_rule}),\n"
     "  \"legibility_notes\": str}}"
 )
 
