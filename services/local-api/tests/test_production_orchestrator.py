@@ -678,3 +678,79 @@ def test_an_orphaned_render_stays_orphaned_and_that_is_deliberate(tmp_path: Path
 
     assert result["export_id"] is None
     assert board.load("render_report") is None, "no resurrection on script text alone"
+
+
+def test_run_production_restores_the_matching_suffix_and_reports_it(tmp_path: Path) -> None:
+    """Entry restore: the resume contract reads DONE, the result names what came back."""
+    from laura.short_creator.board_models import VoiceArtifact, content_hash
+
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-suffix")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-suffix",
+            asset_id=asset_id,
+            created_utc="2026-07-20T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=10.0
+                )
+            ],
+        ),
+    )
+    final = _script_artifact("the rendered line")
+    board.save("script", final)
+    script_now = board.load("script")
+    assert script_now is not None
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="k",
+            mp3_path="voiceovers/a.mp3",
+            parents={"script": content_hash(script_now)},
+        ),
+    )
+    board.save("script", _script_artifact("a different draft"))
+    board.save("script", final.model_copy(deep=True))
+    assert board.load("voice") is None
+
+    events: list[dict[str, object]] = []
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-suffix",
+        task="demo",
+        target_seconds=174,
+        execute=execute,
+        event_sink=events.append,
+    )
+
+    assert result["restored"] == ["voice"]
+    board_after = Board.open(root)
+    assert board_after.load("voice") is not None
+    assert {"type": "restored", "artifacts": ["voice"]} in events
+
+
+def test_run_production_reports_empty_restored_when_nothing_came_back(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    execute, _calls = _make_execute({"A": ("ok", False)})
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess-plain", task="demo", execute=execute
+    )
+
+    assert result["restored"] == []

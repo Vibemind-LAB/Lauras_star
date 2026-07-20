@@ -350,16 +350,16 @@ def run_production(
         )
         board = Board.create(root, meta)
 
-    # Deliberately NO automatic restore of an orphaned render here. It was tried (a resume
-    # brought back the newest archived render when its script_hash matched the current
-    # script) and review killed it with a live repro: a render is a projection of the CUTLIST
-    # and the VOICE as much as of the script text, and neither is covered by script_hash — a
-    # reverted cutlist plus unchanged script resurrected the wrong film as stale=False. Worse,
-    # in the very scenario that motivated it (script revise back to the rendered text) the
-    # revise also wiped voice+cutlist+sheet, so the mandated rebuild re-invalidated the
-    # restored render before anything used it, while the entry task text claimed it was DONE.
-    # The honest repair is a provenance CHAIN (render -> cutlist -> voice) plus a full-suffix
-    # restore — a design of its own, not an entry-time guard.
+    # Full-suffix restore (spec 2026-07-20-provenance-chain-design.md): bring back the
+    # longest archived suffix whose parent-instance hashes match the board. Runs BEFORE
+    # build_production_task so the resume contract reads DONE for what came back — the
+    # task-text lie that killed the single-link restore is structurally impossible here.
+    restored = board.restore_coherent_suffix()
+    if restored and event_sink is not None:
+        try:
+            event_sink({"type": "restored", "artifacts": list(restored)})
+        except Exception:  # noqa: BLE001 — observability must never fail the run
+            logger.warning("restored-event sink failed; continuing")
 
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
@@ -403,4 +403,5 @@ def run_production(
         "board": board.status(),
         "export_id": export_id,
         "resume_point": resume_point,
+        "restored": restored,
     }
