@@ -365,6 +365,25 @@ def test_a_missing_parent_reports_unknown(tmp_path: Path) -> None:
     assert board.status()["artifacts"]["render_report"]["stale"] is None
 
 
+def test_an_unknown_parent_key_reports_unknown_not_crash(tmp_path: Path) -> None:
+    """``status()`` must survive a ``parents`` key that names no real chain artifact (a
+    hand-edited/corrupt board) -- ``Board.load`` raises ``KeyError`` for unknown names, and
+    that must never escape through ``_parents_stale``."""
+    board = _board(tmp_path)
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id="e1",
+            video_s=100.0,
+            width=1920,
+            height=1080,
+            parents={"bogus": "x"},
+        ),
+    )
+
+    assert board.status()["artifacts"]["render_report"]["stale"] is None
+
+
 def test_empty_parents_falls_back_to_script_hash_logic(tmp_path: Path) -> None:
     """Old boards keep the behaviour they shipped with — no parents, script_hash decides."""
     board = _board(tmp_path)

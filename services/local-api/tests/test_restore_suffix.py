@@ -363,3 +363,34 @@ def test_a_present_link_is_never_touched(tmp_path: Path) -> None:
     _seed_full_chain(board, "hands off")
 
     assert board.restore_coherent_suffix() == []
+
+
+def test_an_unknown_parents_key_is_skipped_not_fatal(tmp_path: Path) -> None:
+    """A hand-edited/corrupt archive whose ``parents`` names an artifact that does not exist
+    (outside ``_SINGLETONS``) must degrade the walk, not crash it. ``Board.load`` raises
+    ``KeyError`` for unknown names; the walk must never let that escape — the dead-resume
+    failure mode this whole feature exists to prevent."""
+    board = _board(tmp_path)
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="r",
+            arc=[
+                Chapter(chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=10.0)
+            ],
+        ),
+    )
+    board.save("script", _script("steady"))
+    # A voice archive hand-edited (or corrupted) to reference a parent name that is not a real
+    # chain artifact at all -- distinct from a MISSING-but-valid parent (already covered).
+    bogus = VoiceArtifact(
+        script_hash="cache-key", mp3_path="voiceovers/steady.mp3", parents={"bogus": "x"}
+    )
+    (board.root / "versions" / "voice.v1.json").write_text(
+        bogus.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    restored = board.restore_coherent_suffix()
+
+    assert restored == [], "an unknown parents key can never match -- and must not raise"
+    assert board.load("voice") is None

@@ -81,6 +81,12 @@ def _parents_stale(
         return None
     saw_missing = False
     for name, recorded in parents.items():
+        if name not in _SINGLETONS:
+            # A hand-edited/corrupt archive naming an artifact that does not exist at all --
+            # ``Board.load`` raises KeyError for it. Degrade like any other missing parent
+            # (unknown, never a match) instead of letting that escape and kill the resume.
+            saw_missing = True
+            continue
         current = load(name)
         if current is None:
             saw_missing = True
