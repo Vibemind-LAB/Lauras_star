@@ -40,25 +40,35 @@ schneiden). Spiegel von `_maybe_auto_analyze`:
   `rough_cut:{asset_id}:{run_id}`, `caused_by_job_id=ctx.job_id`. Rückgabe Job-Id oder
   `None` (geskippt); die Job-Id landet im Analyse-Job-Result (`rough_cut_job`).
 
-### 2. Kern-Extraktion (`editing/rough_cut_build.py`, neu)
+### 2. Wiederverwendung statt Extraktion (Amendment nach Exploration)
 
-Der Build-Kern des Endpoints `timeline_from_shots` (`api/timelines.py`) wandert in eine
-freie Funktion: Shots des Analysis-Runs laden → Quality-Filter (Default an, wie der
-Endpoint) → Clip-Rows (ein Clip pro behaltenem Shot, back-to-back, end-exclusive, speed
-1/1) → Timeline anlegen bzw. befüllen → OTIO schreiben. Signatur liefert Timeline-Row +
-kept/dropped-Shots zurück. Der Endpoint behält seine Response-Extras (Split-Cut-Empfehlungen,
-`dropped`-Liste, Quality-Verdict) und ruft dieselbe Funktion — Verhalten byte-gleich, die
-bestehenden Endpoint-Tests bleiben unverändert grün. Kein API-Import im `editing/`-Modul
-(Schichtung: editing kennt db/analysis, nie api).
+Die ursprünglich geplante Extraktion aus dem `from-shots`-Endpoint entfällt: Es existieren
+bereits API-freie Kerne, die exakt den manuellen „Szenen erzeugen"-Flow tragen —
+
+1. `repos.get_or_create_asset_rough_cut(db, project_id, asset_id)` → neuester
+   `rough_cut`-Timeline mit `created_from=asset_id`, wird bei Bedarf angelegt.
+2. `populate_rough_cut_from_shots(db, timeline_id, asset_id, run_id)`
+   (`laura/scenes/build.py`) → Clips aus den behaltenen Shots, **No-Op bei gefüllter
+   Timeline**, inklusive editorialer Schnittplatzierung (deren Docstring nennt den
+   Zero-Click-Import bereits als Zweck).
+3. `group_timeline_scenes(db, project_id=…, timeline_id=…, asset=…, run_id=…, clips=…)`
+   (`laura/scenes/build.py`) → Szenen-Gruppierung mit Default-Gap.
+
+Der `from-shots`-Endpoint bleibt **komplett unberührt** (sein Quality-Toggle-Filter ist
+API-Komfort; die `keep`-Flags der Analyse wirken in `populate` genauso). Der Auto-Cut ist
+damit byte-gleich zu dem, was der manuelle Flow heute baut.
 
 ### 3. Job-Handler (`edit.rough_cut`)
 
-Neuer Job-Kind auf der CPU-Queue (`queue_for`-Default). Handler:
+Neuer Job-Kind auf der CPU-Queue (`queue_for`-Default). Handler komponiert die drei Kerne
+aus §2 in genau der Reihenfolge des manuellen Flows:
 
-1. Kern aus §2 mit `created_from=asset_id`, Name **„Rough Cut (Auto)"**.
-2. Danach Szenen auf dem frischen Timeline: das pure `group_into_scenes` + Scene-Repos —
-   dasselbe, was `scenes:generate` tut (auch hier: Kern nutzen, nicht den API-Endpoint).
-3. Ergebnis: `{"ok": True, "timeline_id": ..., "clips": n, "scenes": m}`.
+1. `get_or_create_asset_rough_cut` (liefert die `created_from`-Timeline; angelegt mit dem
+   Repo-Default-Namen).
+2. `populate_rough_cut_from_shots` — leer → Clips; schon gefüllt → No-Op (Race mit einem
+   manuellen Klick löst sich von selbst).
+3. `group_timeline_scenes` mit den frischen Clips.
+4. Ergebnis: `{"ok": True, "timeline_id": ..., "clips": n, "scenes": m}`.
 
 ### 4. Fehler-Semantik
 
@@ -79,8 +89,8 @@ Neuer Job-Kind auf der CPU-Queue (`queue_for`-Default). Handler:
 - Kette: `handle_analysis_run`-Erfolg enqueued genau einen `edit.rough_cut` (Idempotency-Key
   verhindert Doppel bei Analyse-Retry); Scene-Stage aus → kein Enqueue; Opt-out → kein
   Enqueue.
-- Extraktions-Äquivalenz: die bestehenden `from-shots`-Endpoint-Tests laufen unverändert
-  grün (das IST der Regressions-Beweis der Extraktion; keine neuen Endpoint-Tests nötig).
+- Kein Endpoint wird angefasst — die bestehenden `from-shots`- und `scenes:generate`-Tests
+  bleiben unberührt grün (Voll-Suite-Gate).
 
 ## Nicht in diesem Scope
 
