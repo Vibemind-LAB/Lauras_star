@@ -429,7 +429,9 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
 ### 20.A — Provenienz & Kohärenz  `[x]` (6f702dc + 3eb195d)
 - [x] `RenderReport.script_hash` (voice hatte es schon); `script_hash`/`lines_in_storyline_order`
       leben in board_models — EINE Definition der Identität, Budget/Schnitt/Board teilen sie
-- [~] `cutlist`/`contact_sheet` tragen noch KEINE Provenienz (nur voice+render) — bewusst offen
+- [x] `cutlist`/`contact_sheet`/`render_report`/`qa_report` tragen `parents` (Content-Hash-
+      Kette); `Board.restore_coherent_suffix()` restauriert beim Resume den längsten
+      kohärenten Suffix bis inkl. QA — Spec 2026-07-20-provenance-chain-design.md
 - [x] `Board.status()` meldet pro Kettenglied `stale: true|false|null` (unbekannt ≠ aktuell)
 - [x] Der Render-Cap-Guard meldet `stale` + Warnung statt ok/final für einen v14-Render auf v39
 - **Exit:** ✓ per Test (test_chain_coherence) — inkl. Storyline-Reihenfolge-Fix aus dem Review
