@@ -262,50 +262,73 @@ const SESSION_ARTIFACT_LABELS: Record<(typeof SESSION_ARTIFACT_ORDER)[number], s
   qa_report: "QA",
 };
 
-/** Board chips: a review-count chip when any exist, then one version chip per present artifact
- * (chain order) — e.g. "🎬 5", "storyline v2", "script v1". */
+/** *name* under {@link SESSION_ARTIFACT_LABELS}'s friendly label, or itself when unrecognized —
+ * defensive because artifact names travelling through `restored` are wire data, not a closed
+ * union at this point. */
+function sessionArtifactLabel(name: string): string {
+  return name in SESSION_ARTIFACT_LABELS
+    ? SESSION_ARTIFACT_LABELS[name as keyof typeof SESSION_ARTIFACT_LABELS]
+    : name;
+}
+
+/** Board chips: a restored-artifacts chip when a resume brought any back, a review-count chip
+ * when any exist, then one version chip per present artifact (chain order) — e.g. "♻️ 2",
+ * "🎬 5", "storyline v2", "script v1". */
 function SessionChips({ status }: { status: ProductionStatus }): ReactElement | null {
-  // Before the board exists there is nothing to chip — and dereferencing the board fields on
-  // that shape was a live crash: every new session passes through a queued/running window in
-  // which the endpoint reports only { job, board_ready: false }.
-  if (!status.board_ready) return null;
   const chips: { key: string; text: string; title?: string }[] = [];
-  if (status.scene_reviews.count > 0) {
-    // A degraded review is one the VLM never actually produced — a board with zero visual
-    // analysis used to look identical to a fully reviewed one in this very chip.
-    const degraded = status.scene_reviews.degraded_count;
+
+  // Available before the board exists too — `job` (and its `restored` list) sits outside the
+  // board_ready discriminant, so a resume's restore is visible even in the queued/running window.
+  const restored = status.job?.restored;
+  if (restored !== undefined && restored.length > 0) {
     chips.push({
-      key: "reviews",
-      text:
-        degraded > 0
-          ? `🎬 ${status.scene_reviews.count} (${degraded}⚠)`
-          : `🎬 ${status.scene_reviews.count}`,
-      title:
-        degraded > 0
-          ? `${degraded} Review(s) ohne echte Bildanalyse (Szenen ${status.scene_reviews.degraded_scenes.join(", ")})`
-          : undefined,
+      key: "restored",
+      text: `♻️ ${restored.length}`,
+      title: `Wiederhergestellt: ${restored.map(sessionArtifactLabel).join(", ")}`,
     });
   }
-  for (const name of SESSION_ARTIFACT_ORDER) {
-    // Defensive: a pre-Kontaktbogen backend does not send the contact_sheet key at all —
-    // the type says required, the wire decides. A missing key must skip, never crash.
-    const info = status.artifacts[name] as ProductionArtifactState | undefined;
-    if (info === undefined || info.version === null) continue;
-    const warnings: string[] = [];
-    if (info.stale === true) {
-      warnings.push("gehört zu einem älteren Skript (stale)");
+
+  // Before the board exists there is nothing else to chip — and dereferencing the board fields
+  // on that shape was a live crash: every new session passes through a queued/running window in
+  // which the endpoint reports only { job, board_ready: false }.
+  if (status.board_ready) {
+    if (status.scene_reviews.count > 0) {
+      // A degraded review is one the VLM never actually produced — a board with zero visual
+      // analysis used to look identical to a fully reviewed one in this very chip.
+      const degraded = status.scene_reviews.degraded_count;
+      chips.push({
+        key: "reviews",
+        text:
+          degraded > 0
+            ? `🎬 ${status.scene_reviews.count} (${degraded}⚠)`
+            : `🎬 ${status.scene_reviews.count}`,
+        title:
+          degraded > 0
+            ? `${degraded} Review(s) ohne echte Bildanalyse (Szenen ${status.scene_reviews.degraded_scenes.join(", ")})`
+            : undefined,
+      });
     }
-    if (info.checks_ok === false) {
-      warnings.push(`Checks fehlgeschlagen: ${(info.failed_checks ?? []).join(", ")}`);
+    for (const name of SESSION_ARTIFACT_ORDER) {
+      // Defensive: a pre-Kontaktbogen backend does not send the contact_sheet key at all —
+      // the type says required, the wire decides. A missing key must skip, never crash.
+      const info = status.artifacts[name] as ProductionArtifactState | undefined;
+      if (info === undefined || info.version === null) continue;
+      const warnings: string[] = [];
+      if (info.stale === true) {
+        warnings.push("gehört zu einem älteren Skript (stale)");
+      }
+      if (info.checks_ok === false) {
+        warnings.push(`Checks fehlgeschlagen: ${(info.failed_checks ?? []).join(", ")}`);
+      }
+      // Unknown is not current: null means the artifact predates provenance and cannot be
+      // judged either way — saying nothing here would present it as proven-fresh.
+      const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
+      chips.push({
+        key: name,
+        text: `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`,
+        title: warnings.length > 0 ? warnings.join(" · ") : unknown,
+      });
     }
-    // Unknown is not current: null means the artifact predates provenance and cannot be
-    // judged either way — saying nothing here would present it as proven-fresh.
-    const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
-    chips.push({
-      key: name,
-      text: `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`,
-      title: warnings.length > 0 ? warnings.join(" · ") : unknown,
-    });
   }
   if (chips.length === 0) return null;
   return (

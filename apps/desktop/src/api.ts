@@ -729,6 +729,9 @@ export interface ProductionJobState {
   updated_at: string;
   lease_expires_at: string | null;
   finished_at: string | null;
+  /** Artifact names a resume restored from the provenance chain (empty when nothing was
+   * restored, or on an older backend that predates this field). */
+  restored?: string[];
 }
 
 /** GET /production/{sessionId} when the board exists: full board status + liveness. */

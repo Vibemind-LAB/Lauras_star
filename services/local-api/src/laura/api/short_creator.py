@@ -124,6 +124,29 @@ def _open_board_or_404(db: Database, asset_id: str, session_id: str) -> Board:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "board missing") from exc
 
 
+def _restored_from_job(job: dict[str, Any]) -> list[str]:
+    """The artifact names a resume restored from the provenance chain, read off *job*'s result.
+
+    ``run_production`` always writes a ``restored`` key into its result dict (empty when nothing
+    was restored), but this is a pure status read: a job with no result yet (still queued), an
+    unparseable ``result_json``, or a result missing/mistyping the key must degrade to ``[]``
+    rather than raise or 500 the whole status endpoint.
+    """
+    raw = job.get("result_json")
+    if not raw:
+        return []
+    try:
+        result = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(result, dict):
+        return []
+    restored = result.get("restored")
+    if not isinstance(restored, list):
+        return []
+    return [item for item in restored if isinstance(item, str)]
+
+
 def _expected_scenes_for(db: Database, asset_id: str) -> list[int]:
     """Rough-cut scene numbers for *asset_id* (the reviews the board should cover).
 
@@ -372,6 +395,7 @@ def get_production_status(
             "updated_at": job["updated_at"],
             "lease_expires_at": job["lease_expires_at"],
             "finished_at": job["finished_at"],
+            "restored": _restored_from_job(job),
         }
         if job is not None
         else None

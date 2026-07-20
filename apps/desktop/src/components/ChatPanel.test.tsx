@@ -365,6 +365,91 @@ describe("ChatPanel session mode (v2)", () => {
     expect(screen.getByText("Export v1")).toBeTruthy();
   });
 
+  it("shows a restored chip with the count and a label tooltip when a resume restored artifacts", async () => {
+    const status = boardStatus({
+      job: {
+        id: "j1",
+        status: "succeeded",
+        attempt: 1,
+        updated_at: "2026-01-01T00:00:00Z",
+        lease_expires_at: null,
+        finished_at: "2026-01-01T00:00:05Z",
+        restored: ["voice", "contact_sheet"],
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    const chip = screen.getByText("♻️ 2");
+    // "contact_sheet" reuses the SAME label ("Bogen") the other chips already use — a second
+    // mapping here would drift the moment one of them changes.
+    expect(chip.getAttribute("title")).toBe("Wiederhergestellt: voice, Bogen");
+  });
+
+  it("renders no restored chip when restored is empty or absent (old backends included)", async () => {
+    const emptyRestored = boardStatus({
+      job: {
+        id: "j1",
+        status: "succeeded",
+        attempt: 1,
+        updated_at: "2026-01-01T00:00:00Z",
+        lease_expires_at: null,
+        finished_at: "2026-01-01T00:00:05Z",
+        restored: [],
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(emptyRestored),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.queryByText(/♻️/)).toBeNull();
+  });
+
+  it("renders no restored chip when the job carries no restored key at all (pre-restore backend)", async () => {
+    // boardStatus()'s default job is `null`, and none of the earlier chip tests set `restored` —
+    // an older backend simply omits the key. Reuses the plain "healthy" board from above.
+    const status = boardStatus({
+      scene_reviews: { count: 6, scenes: [1, 2, 3, 4, 5, 6], degraded_count: 0, degraded_scenes: [] },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("🎬 6")).toBeTruthy();
+    expect(screen.queryByText(/♻️/)).toBeNull();
+  });
+
   it("running survives the pre-board window: pending status renders the job state, no crash", async () => {
     // Review finding: GET /production/{sid} now answers 200 {job, board_ready:false} before a
     // board exists (it used to 404). Every new session passes through this window, and the

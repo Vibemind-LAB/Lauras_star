@@ -12,6 +12,7 @@ answerable from the one endpoint an operator polls.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,50 @@ def test_a_failed_job_is_visible_at_the_status_endpoint(tmp_path: Path, monkeypa
     body = client.get(f"/production/{session_id}", headers=_H).json()
 
     assert body["job"]["status"] == "failed"
+
+
+def test_the_status_endpoint_surfaces_what_a_resume_restored(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """``run_production`` always writes ``restored`` into its result (the provenance-chain
+    restore); the status endpoint must surface it so the UI can show a "restored" chip instead
+    of leaving a resume that brought back archived artifacts indistinguishable from a fresh run.
+    """
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+    session_id = _start(client, asset_id)
+    job_id = str(repos.get_production_session(db, session_id)["latest_job_id"])
+
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE jobs SET status='succeeded', result_json=?, updated_at=?, finished_at=? "
+            "WHERE id=?",
+            (
+                json.dumps({"ok": True, "restored": ["voice", "cutlist"]}),
+                "2026-07-20T09:00:00+00:00",
+                "2026-07-20T09:00:00+00:00",
+                job_id,
+            ),
+        )
+
+    body = client.get(f"/production/{session_id}", headers=_H).json()
+
+    assert body["job"]["restored"] == ["voice", "cutlist"]
+
+
+def test_a_job_with_no_result_reports_no_restored_artifacts(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A queued job has no ``result_json`` yet; the field must default to empty, never raise."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+    session_id = _start(client, asset_id)
+
+    body = client.get(f"/production/{session_id}", headers=_H).json()
+
+    assert body["job"]["restored"] == []
 
 
 def test_a_follow_up_message_becomes_the_session_s_current_job(
