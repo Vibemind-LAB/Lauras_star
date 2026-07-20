@@ -463,9 +463,11 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
       lautes Scheitern wäre eine Verhaltensänderung, die einen eigenen Lauf braucht
 - **Exit:** ✓ ein hängender/toter Lauf ist am Endpunkt erkennbar, auch ohne Board
 
-### 20.E — Bekannt, belegt, noch offen  `[ ]`
-- [ ] `hook_score` belohnt Bewegung → gehaltene Screens bekommen kurze Fenster (Reel-Logik;
-      mildert sich durch Kapazitäts-Budget, Fenster sind nur noch Gewichte)
+### 20.E — Bekannt, belegt, noch offen  `[x]`
+- [x] `hook_score` belohnt Bewegung → Fenster-Rubrik im Review-Prompt + Cutlist-Gewichte von
+      Fensterlängen entkoppelt (Fenster = Startmarke, nicht Gewicht); Baseline 88 Reviews
+      (static: Hook 5,0, 8× Sub-Sekunden-Fenster vs. moving: 6,5, 5×) via
+      scripts/measure_window_bias.py — Spec 2026-07-20-window-bias-design.md
 - [x] ~~Skript-Thrashing~~ — die drei Treiber sind einzeln gefallen: Wipe durch Reihenfolge/
       Struktur (`160e784`), Schrumpfen-als-Wachsen (`1d94859`), Review-Gewitter (`c6101cc`)
 - [x] Orchestrator-Delegations-Ping-Pong → `323e0a4`: TOOL-OWNERSHIP-Sektion im Task-Text,
