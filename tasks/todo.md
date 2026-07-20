@@ -426,13 +426,13 @@ Das `voice_fits: OK` darauf war wahr — für eine Paarung, die es nicht mehr gi
 Storyline-Kapiteln hatten null Worte, und niemand hat es bemerkt. `voice` hält mit `script_hash`
 bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie geprüft.
 
-### 20.A — Provenienz & Kohärenz  `[ ]`
-- [ ] Jedes abgeleitete Artefakt hält fest, woraus es gebaut wurde (`voice.script_hash` als Vorbild:
-      `cutlist` → voice+script, `render_report` → cutlist+voice)
-- [ ] `Board.status()` meldet pro Kettenglied `stale: true|false` statt nur Präsenz
-- [ ] Der Render-Cap-Guard (`b511639`) darf einen Render, der zum aktuellen Skript nicht mehr passt,
-      **nicht** als `final` ausgeben — er muss „letzter Render ist veraltet" melden
-- **Exit:** ein Board mit Skript v39 + Render aus v14 meldet das, statt Erfolg zu behaupten
+### 20.A — Provenienz & Kohärenz  `[x]` (6f702dc + 3eb195d)
+- [x] `RenderReport.script_hash` (voice hatte es schon); `script_hash`/`lines_in_storyline_order`
+      leben in board_models — EINE Definition der Identität, Budget/Schnitt/Board teilen sie
+- [~] `cutlist`/`contact_sheet` tragen noch KEINE Provenienz (nur voice+render) — bewusst offen
+- [x] `Board.status()` meldet pro Kettenglied `stale: true|false|null` (unbekannt ≠ aktuell)
+- [x] Der Render-Cap-Guard meldet `stale` + Warnung statt ok/final für einen v14-Render auf v39
+- **Exit:** ✓ per Test (test_chain_coherence) — inkl. Storyline-Reihenfolge-Fix aus dem Review
 
 ### 20.B — Vollständigkeit des Skripts  `[ ]`
 - [x] `get_script` meldet Storyline-Kapitel ohne Zeilen (live: Kapitel 3–6 stumm) + `chapters_written`
@@ -466,8 +466,8 @@ bereits das richtige Muster; es ist nur nirgends verallgemeinert und wird nie ge
       mildert sich durch Kapazitäts-Budget, Fenster sind nur noch Gewichte)
 - [x] ~~Skript-Thrashing~~ — die drei Treiber sind einzeln gefallen: Wipe durch Reihenfolge/
       Struktur (`160e784`), Schrumpfen-als-Wachsen (`1d94859`), Review-Gewitter (`c6101cc`)
-- [ ] Orchestrator-Delegations-Ping-Pong (Agenten rätseln, wer welche Tools hat — Lauf J/L
-      verlor Turns an „request the board operator"; Tool-Besitz gehört in den Task-Text)
+- [x] Orchestrator-Delegations-Ping-Pong → `323e0a4`: TOOL-OWNERSHIP-Sektion im Task-Text,
+      aus den AgentSpec-Definitionen generiert; Lauf O baute die Kette danach in 15 Min
 
 ### 20.G — Verifikation: `voice_fits` OK + QA `ship`  `[x]` (2026-07-19, Lauf `1f0438b8`)
 Export `3bba59b3` (workspace-livetest/exports/): **135,0s Video / 134,4s Stimme — Δ 0,6s,
