@@ -1,7 +1,18 @@
 # Auto-Rough-Cut: Nach der Analyse steht der erste Schnitt von selbst
 
-**Datum:** 2026-07-20 · **Status:** vom User freigegeben · **Ansatz:** A (eigener Job,
-gekettet an den Analyse-Erfolg), vom User gewählt.
+**Datum:** 2026-07-20 · **Status:** OBSOLET — bereits implementiert (Befund unten) ·
+**Ansatz:** A (eigener Job, gekettet an den Analyse-Erfolg), vom User gewählt.
+
+> **Befund bei der Plan-Recherche (2026-07-20):** Das Feature existiert vollständig und ist
+> standardmäßig aktiv. `handle_analysis_run` ruft am Erfolgs-Ende
+> `autobuild_asset_edit_ready` (scenes/build.py:279) — get_or_create Rough-Cut, Clips aus
+> behaltenen Shots, Szenen-Gruppierung, Auto-Tighten — gated über die Asset-Policy
+> (`policy.mode`, Default **auto**, P4-T2), mit `diagnostics["auto_rough_cut"]` im
+> Analyse-Ergebnis. Empirisch bestätigt im Livetest-Workspace: alle fünf analysierten Assets
+> tragen Policy-Zeilen (`auto`, Quelle env) und auto-gebaute Rough-Cuts mit Szenen (z. B.
+> Asset 3a098e6b: 6 Clips / 6 Szenen, 2026-07-16). Die „Lücke" stammte aus einer veralteten
+> Memory-Notiz von vor der Autopilot-Portion (PR #9). Es wird kein Implementierungsplan
+> geschrieben; dieses Dokument bleibt als Entscheidungs- und Befund-Protokoll.
 
 ## Problem
 
