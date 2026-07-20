@@ -243,3 +243,56 @@ def test_lines_for_a_chapter_the_storyline_does_not_have_are_not_silence() -> No
 
 def test_without_a_storyline_nothing_can_be_called_missing() -> None:
     assert silent_chapters(_script_for_chapters([1]), None) == []
+
+
+# --- provenance spreads to every derived link ----------------------------------------------
+# The render learned to record its script in 6f702dc; the cutlist and the contact sheet were
+# left without it — a stale cutlist on a revised board was exactly as invisible as the stale
+# render used to be. Same contract everywhere: empty means pre-provenance (unknown), and the
+# sheet INHERITS the cutlist's hash (it is a projection of the cutlist; recomputing could
+# disagree with the very artifact it renders).
+
+
+def test_cutlist_and_sheet_carry_provenance_and_status_reports_stale(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import ContactSheet, ContactSheetTile, Cutlist, CutSegment
+
+    board = _board(tmp_path)
+    rendered = _script("the rendered text")
+    board.save("script", rendered)
+    h = script_hash(rendered.lines)
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)],
+            script_hash=h,
+        ),
+    )
+    board.save(
+        "contact_sheet",
+        ContactSheet(
+            png_path="s.png",
+            cols=1,
+            rows=1,
+            tiles=[ContactSheetTile(order=0, scene_number=1, frame=45, label="1")],
+            script_hash=h,
+        ),
+    )
+
+    arts = board.status()["artifacts"]
+    assert arts["cutlist"]["stale"] is False
+    assert arts["contact_sheet"]["stale"] is False
+
+
+def test_old_boards_without_cutlist_provenance_still_load_as_unknown(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import Cutlist, CutSegment
+
+    board = _board(tmp_path)
+    board.save("script", _script("some line"))
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)]
+        ),
+    )
+
+    assert board.status()["artifacts"]["cutlist"]["stale"] is None

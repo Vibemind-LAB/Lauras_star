@@ -28,6 +28,8 @@ from laura.short_creator.board_models import (
     Chapter,
     RenderReport,
     SceneReview,
+    Script,
+    ScriptLine,
     Storyline,
 )
 
@@ -609,3 +611,105 @@ def test_the_task_names_every_agents_tools(tmp_path: Path) -> None:
     assert re.search(r"scene_author:[^\n]*save_script_chapter", task)
     assert re.search(r"coding_agent:[^\n]*render_production", task)
     assert "ONLY the named agent can call its tools" in task
+
+
+# --- a revise must not orphan a finished render the current script still matches -----------
+# Live finding (run 1f0438b8): after QA, a revise invalidated the final render_report; the run
+# ended and its result said export None — while the archived render v2 and its READY export
+# sat on disk. The next run would have re-rendered (burning a render cycle) a film that
+# already existed. Provenance makes the repair safe: restore the archived render ONLY when
+# its script_hash matches the script now on the board — a stale render stays archived.
+
+
+def _script_artifact(text: str) -> Script:
+    return Script(language="English", lines=[ScriptLine(chapter=1, scene_number=1, text=text)])
+
+
+def _render_for(script: Script) -> RenderReport:
+    from laura.short_creator.board_models import RenderCheck, script_hash
+
+    return RenderReport(
+        export_id="e-restored",
+        video_s=135.0,
+        width=1920,
+        height=1080,
+        script_hash=script_hash(script.lines),
+        checks=[RenderCheck(name="export_ready", ok=True)],
+    )
+
+
+def test_a_matching_archived_render_is_restored_on_resume(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-restore")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-restore",
+            asset_id=asset_id,
+            created_utc="2026-07-19T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    final = _script_artifact("the line that was rendered")
+    board.save("script", final)
+    board.save("render_report", _render_for(final))
+    # The revise: a different script wipes the render, then the author reverts to the
+    # rendered text (same content, new version) — the film on disk matches again.
+    board.save("script", _script_artifact("a different draft"))
+    board.save("script", final.model_copy(deep=True))
+    assert board.load("render_report") is None, "the revise really orphaned the render"
+
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-restore",
+        task="demo",
+        target_seconds=174,
+        execute=execute,
+    )
+
+    assert result["export_id"] == "e-restored"
+    restored = board.load("render_report")
+    assert restored is not None, "the archived render is back on the board"
+
+
+def test_a_stale_archived_render_stays_archived(tmp_path: Path) -> None:
+    """A render whose script moved on must NOT come back — that lie was fixed in 6f702dc."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-stale")
+    board = Board.create(
+        root,
+        BoardMeta(
+            session_id="sess-stale",
+            asset_id=asset_id,
+            created_utc="2026-07-19T00:00:00+00:00",
+            task="demo",
+            language="English",
+            target_seconds=174.0,
+        ),
+    )
+    old = _script_artifact("the old rendered line")
+    board.save("script", old)
+    board.save("render_report", _render_for(old))
+    board.save("script", _script_artifact("the new script that was never rendered"))
+    assert board.load("render_report") is None
+
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-stale",
+        task="demo",
+        target_seconds=174,
+        execute=execute,
+    )
+
+    assert result["export_id"] is None
+    assert board.load("render_report") is None, "a stale render must stay archived"

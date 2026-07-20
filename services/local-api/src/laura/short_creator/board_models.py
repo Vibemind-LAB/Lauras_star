@@ -321,6 +321,9 @@ class Cutlist(BaseModel):
 
     version: int = Field(default=1, ge=1)
     segments: list[CutSegment] = Field(min_length=1)
+    # Provenance, same contract as RenderReport: which script this cut was built to carry.
+    # Empty means a board written before provenance existed — unknown, not current.
+    script_hash: str = ""
 
     @model_validator(mode="after")
     def _orders_contiguous(self) -> Cutlist:
@@ -352,6 +355,8 @@ class ContactSheet(BaseModel):
     cols: int = Field(gt=0)
     rows: int = Field(gt=0)
     labeled: bool = True  # False when no usable font was found (tiles unlabeled, sheet still valid)
+    # Provenance, same contract as RenderReport (empty = pre-provenance board, unknown).
+    script_hash: str = ""
     tiles: list[ContactSheetTile] = Field(min_length=1)
 
 

@@ -659,3 +659,44 @@ def test_a_chapter_inside_its_capacity_gets_no_capacity_warning(tmp_path: Path) 
 
     assert out["ok"] is True
     assert "capacity_warning" not in out
+
+
+# --- QA judges a render, so QA needs a render — the order-guard pattern, last link ---------
+# Live finding (run 1f0438b8): after QA had shipped, a revise re-saved an upstream artifact,
+# which invalidated the render — and the QA agent then saved a FRESH qa_report onto a board
+# with no render_report at all. The run ended with a ship verdict sitting on top of a missing
+# film: exactly the incoherence the chain exists to prevent, one link further down.
+
+
+def test_save_qa_report_requires_a_render_on_the_board(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_qa_report"].func(verdict="ship", findings=[])
+
+    assert out["ok"] is False
+    assert "render_production" in out["reason"]
+    assert board.load("qa_report") is None
+
+
+def test_save_qa_report_works_once_a_render_exists(tmp_path: Path) -> None:
+    from laura.short_creator.board_models import RenderCheck, RenderReport
+
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save(
+        "render_report",
+        RenderReport(
+            export_id="e1",
+            video_s=100.0,
+            width=1920,
+            height=1080,
+            checks=[RenderCheck(name="export_ready", ok=True)],
+        ),
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_qa_report"].func(verdict="ship", findings=[])
+
+    assert out == {"ok": True, "version": 1}

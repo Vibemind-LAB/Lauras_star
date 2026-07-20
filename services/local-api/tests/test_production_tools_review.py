@@ -442,3 +442,17 @@ def test_degraded_reviews_stay_retryable(tmp_path: Path) -> None:
         assert out["ok"] is True and out["degraded"] is True
 
     assert board.scene_reviews()[0].version == 4
+
+
+def test_the_review_rubric_does_not_punish_held_screens() -> None:
+    """Pins the hook rubric against reel logic.
+
+    Live finding (commit 592e771's era, still measurable later): the reviewer handed held
+    screens one-second windows and low hook scores — motion scored, stillness did not. That
+    is reel logic; this product's footage is screen recordings, where a held, readable frame
+    IS the content. The prompt must say so, or the VLM defaults to its social-video prior.
+    """
+    from laura.short_creator.production_tools import _REVIEW_PROMPT
+
+    assert "held" in _REVIEW_PROMPT or "static" in _REVIEW_PROMPT
+    assert "not a penalty" in _REVIEW_PROMPT or "not lower the score" in _REVIEW_PROMPT

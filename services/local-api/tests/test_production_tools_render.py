@@ -637,6 +637,11 @@ def test_review_export_skips_failed_frame_grabs(
 def test_save_qa_report_validates(tmp_path: Path) -> None:
     db, asset_id = _seed_asset(tmp_path)
     board = _board(tmp_path, asset_id)
+    # QA judges a render, so one must exist (order guard) before any verdict is accepted.
+    board.save(
+        "render_report",
+        RenderReport(export_id="e1", video_s=10.0, width=1920, height=1080),
+    )
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     bad = specs["save_qa_report"].func(verdict="maybe", findings=[])

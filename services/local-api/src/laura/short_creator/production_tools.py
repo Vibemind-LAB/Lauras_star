@@ -163,7 +163,10 @@ _REVIEW_PROMPT = (
     "Reply ONLY with a JSON object, no prose, no code fences:\n"
     "{{\"description\": str (what is on screen),\n"
     "  \"whats_happening\": str (what changes across the frames),\n"
-    "  \"hook_score\": int 0-10 (how visually gripping for a cold viewer),\n"
+    "  \"hook_score\": int 0-10 (how visually gripping for a cold viewer; this is a SCREEN "
+    "recording, so a held/static frame whose content is clearly readable is a strong hook — "
+    "stillness is not a penalty and must not lower the score; judge what the frame SAYS, "
+    "not how much it moves),\n"
     "  \"windows\": [{{\"offset_s\": float, \"duration_s\": float, \"roi\": {{\"x\": float, "
     "\"y\": float, \"w\": float, \"h\": float}} | null}}] (1-4 strong moments, STRONGEST "
     "FIRST, non-overlapping, offsets relative to scene start; a long scene with several "
@@ -1799,7 +1802,10 @@ def build_production_tool_specs(
             if not segments:
                 return {"ok": False, "reason": "no scenes resolved from the storyline"}
 
-            board.save("cutlist", Cutlist(segments=segments))
+            board.save(
+                "cutlist",
+                Cutlist(segments=segments, script_hash=script_hash(ordered_lines)),
+            )
             total_seconds = sum((s.end_frame_exclusive - s.start_frame) / fps for s in segments)
             with_zoom = sum(1 for s in segments if s.zoom_start_s is not None)
             return {
@@ -1894,7 +1900,15 @@ def build_production_tool_specs(
                     return {"ok": False, "reason": "tile grid composition failed"}
 
             artifact = ContactSheet(
-                png_path=str(out_png), cols=cols, rows=rows, labeled=labeled, tiles=tiles
+                png_path=str(out_png),
+                cols=cols,
+                rows=rows,
+                labeled=labeled,
+                tiles=tiles,
+                # The sheet is a projection of the cutlist, so it INHERITS the cutlist's
+                # provenance rather than recomputing it — the two can never disagree, and an
+                # unknown (pre-provenance) cutlist propagates its unknown honestly.
+                script_hash=cutlist.script_hash,
             )
             version = board.save("contact_sheet", artifact)
             return {
@@ -2134,6 +2148,17 @@ def build_production_tool_specs(
         rejected with field-level validation errors instead of raising, so the agent can
         self-correct."""
         try:
+            # QA judges a render. A live run saved a fresh ship-verdict onto a board whose
+            # render had just been invalidated by a revise — a verdict sitting on top of a
+            # missing film. Same order-guard pattern as script-before-storyline, last link.
+            if not isinstance(board.load("render_report"), RenderReport):
+                return {
+                    "ok": False,
+                    "reason": (
+                        "no render_report on the board — run render_production first. A QA "
+                        "verdict without a render judges a film that does not exist."
+                    ),
+                }
             try:
                 # verdict is plain str at the tool boundary; the Literal check happens here.
                 qa_report = QaReport(

@@ -350,6 +350,11 @@ def run_production(
         )
         board = Board.create(root, meta)
 
+    # A post-QA revise can orphan a finished render whose text the author then reverted to;
+    # the board brings it back exactly when the provenance matches, so the resume contract
+    # reads DONE instead of ordering a re-render of a film that already exists.
+    board.restore_render_matching_script()
+
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
     )
