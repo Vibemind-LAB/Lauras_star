@@ -10,6 +10,7 @@ frames, end-exclusive.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Literal
 
@@ -279,12 +280,32 @@ def script_hash(lines: list[ScriptLine]) -> str:
     return hashlib.sha256(script_text(lines).encode("utf-8")).hexdigest()
 
 
+def content_hash(artifact: BaseModel) -> str:
+    """sha256 over the canonical JSON of ``model_dump(exclude={"version"})``.
+
+    One identity for every artifact: content is what it says, version is bookkeeping. A
+    script revised A -> B -> back to A hashes like A again (the restore's motivating case),
+    while a re-synthesized mp3 of the same text hashes differently (unique path) — the
+    cutlist cut against THAT voice, which is exactly the distinction the review-killed
+    restore lacked.
+    """
+    canonical = json.dumps(
+        artifact.model_dump(mode="json", exclude={"version"}),
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class Script(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(default=1, ge=1)
     language: str
     lines: list[ScriptLine] = Field(min_length=1)
+    # Which parent artifact instances this was built from: chain name -> content_hash of the
+    # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
+    parents: dict[str, str] = Field(default_factory=dict)
 
 
 class VoiceArtifact(BaseModel):
@@ -297,6 +318,9 @@ class VoiceArtifact(BaseModel):
     mp3_path: str
     timings_path: str | None = None
     voice_s: float | None = None
+    # Which parent artifact instances this was built from: chain name -> content_hash of the
+    # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
+    parents: dict[str, str] = Field(default_factory=dict)
 
 
 class CutSegment(BaseModel):
@@ -324,6 +348,9 @@ class Cutlist(BaseModel):
     # Provenance, same contract as RenderReport: which script this cut was built to carry.
     # Empty means a board written before provenance existed — unknown, not current.
     script_hash: str = ""
+    # Which parent artifact instances this was built from: chain name -> content_hash of the
+    # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
+    parents: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _orders_contiguous(self) -> Cutlist:
@@ -358,6 +385,9 @@ class ContactSheet(BaseModel):
     # Provenance, same contract as RenderReport (empty = pre-provenance board, unknown).
     script_hash: str = ""
     tiles: list[ContactSheetTile] = Field(min_length=1)
+    # Which parent artifact instances this was built from: chain name -> content_hash of the
+    # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
+    parents: dict[str, str] = Field(default_factory=dict)
 
 
 class RenderCheck(BaseModel):
@@ -383,6 +413,9 @@ class RenderReport(BaseModel):
     # existed. VoiceArtifact already carried script_hash; the render needs it for the same
     # reason. Empty means a board written before provenance existed: unknown, not current.
     script_hash: str = ""
+    # Which parent artifact instances this was built from: chain name -> content_hash of the
+    # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
+    parents: dict[str, str] = Field(default_factory=dict)
 
 
 class QaFinding(BaseModel):
@@ -399,6 +432,9 @@ class QaReport(BaseModel):
     version: int = Field(default=1, ge=1)
     verdict: Literal["ship", "revise"]
     findings: list[QaFinding] = Field(default_factory=list)
+    # Which parent artifact instances this was built from: chain name -> content_hash of the
+    # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
+    parents: dict[str, str] = Field(default_factory=dict)
 
 
 BoardStatus = Literal["active", "failed", "complete"]
