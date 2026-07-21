@@ -62,8 +62,10 @@ steht in `messages[0]` und erscheint damit nie wieder als „Zusammenfassung".
 - **Bewusste Konsequenz:** Ein VOR dem Deploy archivierter `qa_report` stempelte
   `parents[render_report]` gegen den Hash ohne das neue Feld; derselbe Render heute geladen
   hasht mit `target_ratio: None` anders → solche QA-Archive restaurieren nicht mehr
-  automatisch (Walk endet vor QA). Über-Vorsicht per Provenienz-Spec §6 akzeptiert — Kosten:
-  ein QA-Rebuild auf Alt-Boards, nie eine falsche Wiederherstellung.
+  automatisch (Walk endet vor QA). Dasselbe gilt für PRÄSENTE `qa_report`s auf Alt-Boards:
+  `status()` meldet sie nach dem Deploy `stale=True` (Chip ⚠), bis die QA einmal neu läuft.
+  Über-Vorsicht per Provenienz-Spec §6 akzeptiert — Kosten: ein QA-Rebuild auf Alt-Boards,
+  nie eine falsche Wiederherstellung und nie ein fälschlich „aktuell".
 
 ## Tests
 
