@@ -528,6 +528,11 @@ describe("ChatPanel session mode (v2)", () => {
 // -------------------------------------------------------------------------------------------
 // Revert dropdown on artifact chips (RU Task 3). Only artifact-slot chips with a non-empty
 // `archived_versions` become interactive — everything else stays the plain pill covered above.
+//
+// The endpoint 409s on a queued/running job (see 2026-07-21-revert-ui-design.md), so the button
+// is reachable ONLY once the run has landed (done/error) — never while "running". The tests below
+// therefore drive the job to "succeeded" (via `startFinishedSession`) for every flow that clicks
+// the revert button, and cover "running" separately to pin the suppression.
 // -------------------------------------------------------------------------------------------
 
 describe("ChatPanel session mode (v2) — revert dropdown", () => {
@@ -539,7 +544,7 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     vi.useRealTimers();
   });
 
-  async function startRunningSession(client: LauraClient): Promise<void> {
+  async function startSession(client: LauraClient): Promise<void> {
     render(<ChatPanel client={client} assetId="a1" />);
     fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
     fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
@@ -550,7 +555,50 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     });
   }
 
-  it("a chip with archived versions renders a button; picking v1 + confirming reverts to it", async () => {
+  /** Starts the session with a job that resolves as "succeeded" on the very first poll, landing
+   * in the "done" phase — the finished state the revert button is actually reachable in. */
+  async function startFinishedSession(client: LauraClient): Promise<void> {
+    await startSession(client);
+    expect(screen.getByText(/Session fertig/)).toBeTruthy();
+  }
+
+  /** A session client whose job is already "succeeded" on the first poll, so the session lands
+   * in "done" carrying `status` as its final board snapshot. */
+  function finishedClient(
+    status: ProductionBoardStatus,
+    overrides: Partial<LauraClient> = {},
+  ): LauraClient {
+    return mockSessionClient({
+      getJob: vi
+        .fn()
+        .mockResolvedValue(job({ status: "succeeded", result_json: '{"ok":true,"weak":false}' })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      ...overrides,
+    });
+  }
+
+  it("running renders chips but suppresses the revert button, even with archived versions", async () => {
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 3, archived_versions: [1, 2] },
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      revertProduction: vi.fn(),
+    });
+    await startSession(client);
+
+    // The chip is visible (chips stay up throughout the run) …
+    const chip = screen.getByText("cutlist v3");
+    // … but as a plain read-only pill, not the revert-capable button variant.
+    expect(chip.tagName).toBe("SPAN");
+    expect(screen.queryByRole("button", { name: /cutlist v3/ })).toBeNull();
+  });
+
+  it("finished phase: a chip with archived versions renders a button; picking v1 + confirming reverts to it", async () => {
     const status = boardStatus({
       artifacts: {
         ...boardStatus().artifacts,
@@ -565,12 +613,8 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
       restored: [],
       status,
     });
-    const client = mockSessionClient({
-      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
-      getProductionStatus: vi.fn().mockResolvedValue(status),
-      revertProduction,
-    });
-    await startRunningSession(client);
+    const client = finishedClient(status, { revertProduction });
+    await startFinishedSession(client);
 
     fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
     expect(screen.getByRole("button", { name: "v1" })).toBeTruthy();
@@ -583,7 +627,7 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     expect(revertProduction).toHaveBeenCalledWith("s1", "cutlist", 1);
   });
 
-  it("re-renders chips from the revert response and shows the restored hint", async () => {
+  it("finished phase: re-renders chips from the revert response and shows the restored hint", async () => {
     const initialStatus = boardStatus({
       artifacts: {
         ...boardStatus().artifacts,
@@ -606,12 +650,8 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
       restored: ["contact_sheet"],
       status: revertedStatus,
     });
-    const client = mockSessionClient({
-      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
-      getProductionStatus: vi.fn().mockResolvedValue(initialStatus),
-      revertProduction,
-    });
-    await startRunningSession(client);
+    const client = finishedClient(initialStatus, { revertProduction });
+    await startFinishedSession(client);
 
     fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
     fireEvent.click(screen.getByRole("button", { name: "v1" }));
@@ -623,26 +663,22 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     expect(screen.getByText(/♻️ Wiederhergestellt: Bogen/)).toBeTruthy();
   });
 
-  it("a chip with no archived versions stays a plain chip (no button)", async () => {
+  it("finished phase: a chip with no archived versions stays a plain chip (no button)", async () => {
     const status = boardStatus({
       artifacts: {
         ...boardStatus().artifacts,
         script: { version: 1, archived_versions: [] },
       },
     });
-    const client = mockSessionClient({
-      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
-      getProductionStatus: vi.fn().mockResolvedValue(status),
-      revertProduction: vi.fn(),
-    });
-    await startRunningSession(client);
+    const client = finishedClient(status, { revertProduction: vi.fn() });
+    await startFinishedSession(client);
 
     const chip = screen.getByText("script v1");
     expect(chip.tagName).toBe("SPAN");
     expect(screen.queryByRole("button", { name: /script v1/ })).toBeNull();
   });
 
-  it("a 409 (run in progress) revert response shows the 'Lauf aktiv' hint", async () => {
+  it("finished phase: a 409 (run in progress) revert response shows the 'Lauf aktiv' hint", async () => {
     const status = boardStatus({
       artifacts: {
         ...boardStatus().artifacts,
@@ -654,12 +690,8 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
       .mockRejectedValue(
         new Error('409: {"detail":"run in progress — revert would race the team"}'),
       );
-    const client = mockSessionClient({
-      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
-      getProductionStatus: vi.fn().mockResolvedValue(status),
-      revertProduction,
-    });
-    await startRunningSession(client);
+    const client = finishedClient(status, { revertProduction });
+    await startFinishedSession(client);
 
     fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
     fireEvent.click(screen.getByRole("button", { name: "v1" }));

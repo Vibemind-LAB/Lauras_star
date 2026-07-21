@@ -555,6 +555,11 @@ function SessionPanel({
   const [revertStatus, setRevertStatus] = useState<ProductionStatus | null>(null);
   const [revertHint, setRevertHint] = useState<string | null>(null);
   const effectiveStatus = revertStatus ?? state.status;
+  // Chips (and the transient revert hint) are relevant from the moment a board exists through
+  // both terminal outcomes — a failed run can still carry a board with archived versions worth
+  // reverting from. Only "idle" (no session yet) has nothing to show.
+  const chipsPhase =
+    state.phase === "running" || state.phase === "done" || state.phase === "error";
 
   useEffect(() => {
     setRevertStatus(null);
@@ -605,23 +610,29 @@ function SessionPanel({
           </p>
         )}
         {state.phase === "running" && (
-          <>
-            <div className="mb-1 animate-pulse text-content-faint">
-              {effectiveStatus !== null && effectiveStatus.board_ready
-                ? `⚙ ${effectiveStatus.resume_point} …`
-                : effectiveStatus !== null && effectiveStatus.job !== null
-                  ? `⚙ ${effectiveStatus.job.status} …`
-                  : "läuft …"}
-            </div>
-            {effectiveStatus !== null && (
-              <SessionChips status={effectiveStatus} onRevert={handleRevert} />
-            )}
-            {revertHint !== null && (
-              <div className="mb-1 text-content-faint" role="status">
-                {revertHint}
-              </div>
-            )}
-          </>
+          <div className="mb-1 animate-pulse text-content-faint">
+            {effectiveStatus !== null && effectiveStatus.board_ready
+              ? `⚙ ${effectiveStatus.resume_point} …`
+              : effectiveStatus !== null && effectiveStatus.job !== null
+                ? `⚙ ${effectiveStatus.job.status} …`
+                : "läuft …"}
+          </div>
+        )}
+        {/* Chips render across running + finished (done/error) phases so the chain stays visible
+            throughout — but the revert endpoint 409s on a queued/running job (see
+            2026-07-21-revert-ui-design.md), so `onRevert` is wired only once the run has actually
+            landed. Passing `undefined` during "running" makes SessionChips/RevertChip fall back
+            to a plain, non-interactive pill — the UI never offers an action the API would refuse. */}
+        {chipsPhase && effectiveStatus !== null && (
+          <SessionChips
+            status={effectiveStatus}
+            onRevert={state.phase === "running" ? undefined : handleRevert}
+          />
+        )}
+        {chipsPhase && revertHint !== null && (
+          <div className="mb-1 text-content-faint" role="status">
+            {revertHint}
+          </div>
         )}
         {state.phase === "done" && <SessionCard jobResult={state.jobResult} />}
         {state.phase === "error" && (
