@@ -432,7 +432,7 @@ function SessionChips({
       const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
       const text = `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`;
       const title = warnings.length > 0 ? warnings.join(" · ") : unknown;
-      if (onRevert !== undefined && info.archived_versions.length > 0) {
+      if (onRevert !== undefined && info.archived_versions.some((v) => v !== info.version)) {
         const revert = onRevert;
         const artifact = name;
         chips.push({
@@ -677,7 +677,11 @@ function SessionPanel({
             </button>
           </>
         )}
-        {(state.phase === "done" || state.phase === "error") && (
+        {/* "error" also covers a session that never got created at all (start()'s createProduction
+            rejected before any sessionId existed) — sendMessage() is a silent no-op without a
+            sessionId, so that case must not offer an input that swallows the typed text. */}
+        {(state.phase === "done" ||
+          (state.phase === "error" && state.sessionId !== null)) && (
           <>
             <input
               aria-label="Folgeanfrage"

@@ -523,6 +523,25 @@ describe("ChatPanel session mode (v2)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Zurücksetzen" }));
     expect(screen.getByLabelText("Sitzungsauftrag")).toBeTruthy();
   });
+
+  it("creation-failure error shows only reset — no follow-up input (would silently swallow text)", async () => {
+    // Review finding: the shared "done"/"error" follow-up row also rendered when start()'s
+    // createProduction rejected outright (sessionId still null, session never existed) —
+    // handleSend clears the draft and sendMessage() is a silent no-op without a sessionId, so
+    // the typed text vanished with no request and no feedback.
+    const client = mockSessionClient({
+      createProduction: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    expect(screen.getByText(/boom/)).toBeTruthy();
+    expect(screen.queryByLabelText("Folgeanfrage")).toBeNull();
+    expect(screen.getByRole("button", { name: "Zurücksetzen" })).toBeTruthy();
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -835,6 +854,25 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     await flushSession();
 
     expect(client.sendProductionMessage).toHaveBeenCalledWith("s1", "Nochmal versuchen");
+  });
+
+  it("finished phase: an artifact restored to its only archive stays a plain chip (no clickable-but-empty dropdown)", async () => {
+    // Review finding: a suffix-healing revert can land an artifact at
+    // {version: N, archived_versions: [N]} — the old `length > 0` gate still rendered a button,
+    // but its dropdown offered nothing (the only archived entry is filtered out as the no-op
+    // current version), i.e. clickable but empty.
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 2, archived_versions: [2] },
+      },
+    });
+    const client = finishedClient(status, { revertProduction: vi.fn() });
+    await startFinishedSession(client);
+
+    const chip = screen.getByText("cutlist v2");
+    expect(chip.tagName).toBe("SPAN");
+    expect(screen.queryByRole("button", { name: /cutlist v2/ })).toBeNull();
   });
 
   it("revert dropdown excludes the current version from the offered list (no-op guard)", async () => {
