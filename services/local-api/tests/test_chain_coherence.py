@@ -392,3 +392,28 @@ def test_empty_parents_falls_back_to_script_hash_logic(tmp_path: Path) -> None:
     board.save("render_report", _render(script_hash_=script_hash(script.lines)))
 
     assert board.status()["artifacts"]["render_report"]["stale"] is False
+
+
+# --- status() surfaces target_ratio for the QA reviewer to read --------------------------------
+
+
+def test_status_carries_target_ratio_when_the_report_has_one(tmp_path: Path) -> None:
+    """QA has no other read path for the length target: status() is where it looks."""
+    board = _board(tmp_path)
+    board.save(
+        "render_report",
+        RenderReport(export_id="e1", video_s=87.0, width=1920, height=1080, target_ratio=0.5),
+    )
+
+    assert board.status()["artifacts"]["render_report"]["target_ratio"] == 0.5
+
+
+def test_status_omits_target_ratio_when_the_report_has_none(tmp_path: Path) -> None:
+    """An old report (or an unmeasurable target) must not misreport a ratio it never had."""
+    board = _board(tmp_path)
+    board.save(
+        "render_report",
+        RenderReport(export_id="e1", video_s=87.0, width=1920, height=1080),
+    )
+
+    assert "target_ratio" not in board.status()["artifacts"]["render_report"]

@@ -378,6 +378,12 @@ class Board:
             if failed is not None:
                 entry["checks_ok"] = not failed
                 entry["failed_checks"] = failed
+            # target_ratio is reporting, not a check (see RenderReport) — it never affects
+            # checks_ok. It is still the only read path the QA reviewer has for whether the
+            # render hit its length target, so status() surfaces it when the report carries one.
+            target_ratio = getattr(cur, "target_ratio", None)
+            if target_ratio is not None:
+                entry["target_ratio"] = target_ratio
             # Presence says an artifact exists; provenance says whether it still belongs to the
             # board it sits on. A render built from a script 25 versions old looked finished.
             if hasattr(cur, "script_hash") or bool(getattr(cur, "parents", None)):

@@ -156,7 +156,14 @@ def test_handle_production_run_asset_missing_returns_ok_false_no_raise(tmp_path:
 # --- coarse NDJSON run log -----------------------------------------------------------------
 
 
-def test_handle_production_run_writes_run_log_meta_and_done_lines(tmp_path: Path) -> None:
+def test_handle_production_run_writes_run_log_meta_and_done_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This test asserts the config_warning line that only fires when text agents resolve to
+    # the local ollama provider (the default). A dev shell with LAURA_AGENT_PROVIDER set to
+    # the documented live-run recipe (openai-compat) resolves to a hosted model instead and
+    # makes this assertion fail spuriously — isolate from whatever the ambient shell exports.
+    monkeypatch.delenv("LAURA_AGENT_PROVIDER", raising=False)
     db, asset_id = _seed_scene(tmp_path)
     payload = {"asset_id": asset_id, "session_id": "sess2", "task": "overview short"}
 
