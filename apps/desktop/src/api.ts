@@ -913,9 +913,9 @@ export class LauraClient {
   }
 
   /**
-   * Revert a production artifact to a previous version, invalidating newer versions and
-   * restoring the board to run from that point.
-   * POST /production/{sessionId}/revert {artifact, version} -> 202 ProductionReverted
+   * Revert a production artifact to an archived version; the provenance walk then heals the
+   * coherent suffix synchronously — no job, no agent turn.
+   * POST /production/{sessionId}/revert {artifact, version} -> 200 ProductionReverted
    */
   revertProduction(
     sessionId: string,
