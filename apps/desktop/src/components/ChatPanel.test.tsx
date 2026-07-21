@@ -577,6 +577,32 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     });
   }
 
+  /** Starts the session with a job that resolves as "failed" on the very first poll, landing in
+   * the "error" phase — the other finished state the revert button is reachable in (a failed run
+   * can still carry a board with archived versions worth reverting from). */
+  async function startFailedSession(client: LauraClient): Promise<void> {
+    await startSession(client);
+    expect(screen.getByText(/Produktion fehlgeschlagen/)).toBeTruthy();
+  }
+
+  /** A session client whose job is already "failed" on the first poll, so the session lands in
+   * "error". `status` is the board snapshot `getProductionStatus` resolves with — `null` models a
+   * run that died before any board ever existed (the endpoint 404s, and checkOnce swallows that,
+   * leaving `state.status` null). */
+  function failedClient(
+    status: ProductionBoardStatus | null,
+    overrides: Partial<LauraClient> = {},
+  ): LauraClient {
+    return mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "failed" })),
+      getProductionStatus:
+        status === null
+          ? vi.fn().mockRejectedValue(new Error("404: not found"))
+          : vi.fn().mockResolvedValue(status),
+      ...overrides,
+    });
+  }
+
   it("running renders chips but suppresses the revert button, even with archived versions", async () => {
     const status = boardStatus({
       artifacts: {
@@ -699,5 +725,103 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     await flushSession();
 
     expect(screen.getByText(/Lauf aktiv/)).toBeTruthy();
+  });
+
+  it("clears the stale revert hint once a new message/run starts", async () => {
+    // Review finding: revertHint was only ever overwritten by the next revert call — nothing
+    // cleared it when a fresh run began. Since sendMessage() flips phase back to "running" and
+    // chips (+ this hint) render there too, an old "♻️ Wiederhergestellt: …" hint could resurface
+    // and persist through a run it no longer describes.
+    const initialStatus = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 3, archived_versions: [1, 2] },
+      },
+    });
+    const revertedStatus = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 1, archived_versions: [] },
+        contact_sheet: { version: 1, archived_versions: [] },
+      },
+      resume_point: "contact_sheet",
+    });
+    const revertProduction = vi.fn().mockResolvedValue({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: ["contact_sheet"],
+      restored: ["contact_sheet"],
+      status: revertedStatus,
+    });
+    const client = finishedClient(initialStatus, {
+      revertProduction,
+      sendProductionMessage: vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j2" }),
+    });
+    await startFinishedSession(client);
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await flushSession();
+
+    expect(screen.getByText(/♻️ Wiederhergestellt: Bogen/)).toBeTruthy();
+
+    // A new follow-up message starts a new run (sendMessage) — the stale hint from the previous
+    // revert must not survive into it.
+    fireEvent.change(screen.getByLabelText("Folgeanfrage"), {
+      target: { value: "Kapitel 2 andere Szene" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    await flushSession();
+
+    expect(screen.queryByText(/♻️ Wiederhergestellt/)).toBeNull();
+  });
+
+  it("error phase: a chip with archived versions renders a button; confirming reverts to it", async () => {
+    // The reachability fix renders the revert affordance in phase "error" too (a failed run can
+    // still carry a board with archived versions worth reverting from) — this drives that path
+    // end to end, not just "running"/"done".
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 3, archived_versions: [1, 2] },
+      },
+    });
+    const revertProduction = vi.fn().mockResolvedValue({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: [],
+      restored: [],
+      status,
+    });
+    const client = failedClient(status, { revertProduction });
+    await startFailedSession(client);
+
+    expect(screen.getByRole("button", { name: /cutlist v3/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await flushSession();
+
+    expect(revertProduction).toHaveBeenCalledWith("s1", "cutlist", 1);
+  });
+
+  it("error phase: a failed job with no board renders no chips (no crash)", async () => {
+    // Subtle case the reviewer named: a job can fail before any board ever existed
+    // (getProductionStatus 404s, checkOnce swallows it, `state.status` stays null). Chips must
+    // render nothing rather than crash on a null status.
+    const client = failedClient(null);
+    await startFailedSession(client);
+
+    expect(screen.queryByText(/♻️/)).toBeNull();
+    // Nothing chip-wise renders at all — the only buttons left are the mode toggle and the
+    // phase's own "Zurücksetzen", never a version/revert chip.
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Stream (v1)",
+      "Session (v2)",
+      "Zurücksetzen",
+    ]);
   });
 });

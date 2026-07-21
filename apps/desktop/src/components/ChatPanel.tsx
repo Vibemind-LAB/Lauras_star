@@ -561,9 +561,16 @@ function SessionPanel({
   const chipsPhase =
     state.phase === "running" || state.phase === "done" || state.phase === "error";
 
+  // Both the optimistic revertStatus snapshot and the transient revert hint stop being
+  // trustworthy the moment either a fresh poll result lands (`state.status` changes) or a new
+  // message/run starts (`state.jobId` changes immediately in start()/sendMessage(), before that
+  // run's first poll has even landed) — otherwise a stale "♻️ Wiederhergestellt: …" hint from an
+  // earlier revert can resurface and persist through a run it no longer describes, now that chips
+  // (and this hint) render across "running" too.
   useEffect(() => {
     setRevertStatus(null);
-  }, [state.status]);
+    setRevertHint(null);
+  }, [state.status, state.jobId]);
 
   const handleRevert = (artifact: string, version: number): void => {
     const sessionId = state.sessionId;
