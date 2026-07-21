@@ -416,6 +416,10 @@ class RenderReport(BaseModel):
     # Which parent artifact instances this was built from: chain name -> content_hash of the
     # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
     parents: dict[str, str] = Field(default_factory=dict)
+    # video_s / the board's target_seconds, rounded to 3 places; None when no usable target.
+    # Reporting only — never a member of checks (a failing length gate would provoke render
+    # thrashing); QA reads it and weighs the shortfall in its verdict.
+    target_ratio: float | None = None
 
 
 class QaFinding(BaseModel):
