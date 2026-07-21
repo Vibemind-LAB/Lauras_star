@@ -296,6 +296,11 @@ function RevertChip({
 }): ReactElement {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
+  // `board.revert` leaves the restored version's own archive entry in versions/ — so reverting
+  // an artifact to v1 can leave v1 sitting in `archivedVersions` alongside the *new* current
+  // version's number being v1 too. Without this filter the dropdown would offer a no-op revert
+  // to the version already showing as current.
+  const offeredVersions = archivedVersions.filter((v) => v !== currentVersion);
 
   return (
     <div className="relative">
@@ -314,7 +319,7 @@ function RevertChip({
         <div className="absolute z-10 mt-1 flex flex-col gap-1 rounded border border-bezel bg-surface-1 p-1.5 text-[10px] shadow-lg">
           <div className="text-content-faint">aktuell: v{currentVersion}</div>
           <div className="flex gap-1">
-            {archivedVersions.map((v) => (
+            {offeredVersions.map((v) => (
               <button
                 key={v}
                 type="button"
@@ -672,7 +677,7 @@ function SessionPanel({
             </button>
           </>
         )}
-        {state.phase === "done" && (
+        {(state.phase === "done" || state.phase === "error") && (
           <>
             <input
               aria-label="Folgeanfrage"
@@ -694,6 +699,10 @@ function SessionPanel({
             </button>
           </>
         )}
+        {/* Even a failed run is not a dead end: the backend accepts a follow-up message from a
+            terminal "error" phase (a fresh sendMessage healed by an error-phase revert must be
+            reachable too), so error phase gets the same follow-up row as done — plus its own
+            "Zurücksetzen" to abandon the session outright instead of continuing it. */}
         {state.phase === "error" && (
           <button
             type="button"

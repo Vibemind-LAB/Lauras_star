@@ -816,12 +816,43 @@ describe("ChatPanel session mode (v2) — revert dropdown", () => {
     await startFailedSession(client);
 
     expect(screen.queryByText(/♻️/)).toBeNull();
-    // Nothing chip-wise renders at all — the only buttons left are the mode toggle and the
-    // phase's own "Zurücksetzen", never a version/revert chip.
-    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
-      "Stream (v1)",
-      "Session (v2)",
-      "Zurücksetzen",
-    ]);
+    // Nothing chip-wise renders at all: the mode toggle, the follow-up row (input row now shared
+    // with "done" — see the reachability fix) and "Zurücksetzen" are still there, but never a
+    // version/revert chip button (those are always named "v<number>").
+    expect(screen.queryByRole("button", { name: /^v\d/ })).toBeNull();
+  });
+
+  it("error phase: a follow-up input can send a new message — not just reset (reachability fix)", async () => {
+    // Review finding: the error phase used to render only "Zurücksetzen" — a board healed by an
+    // error-phase revert could never be advanced from the UI, even though the backend accepts a
+    // follow-up message from a terminal failed job. Drives that path end to end.
+    const client = failedClient(boardStatus());
+    await startFailedSession(client);
+
+    const followUp = screen.getByLabelText("Folgeanfrage");
+    fireEvent.change(followUp, { target: { value: "Nochmal versuchen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    await flushSession();
+
+    expect(client.sendProductionMessage).toHaveBeenCalledWith("s1", "Nochmal versuchen");
+  });
+
+  it("revert dropdown excludes the current version from the offered list (no-op guard)", async () => {
+    // Review finding: board.revert leaves the restored version's own archive entry in
+    // versions/, so after reverting cutlist to v1 the dropdown would otherwise still offer
+    // "v1" — a no-op revert to the version already current.
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 1, archived_versions: [1, 2, 3] },
+      },
+    });
+    const client = finishedClient(status, { revertProduction: vi.fn() });
+    await startFinishedSession(client);
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v1/ }));
+    expect(screen.queryByRole("button", { name: "v1" })).toBeNull();
+    expect(screen.getByRole("button", { name: "v2" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "v3" })).toBeTruthy();
   });
 });

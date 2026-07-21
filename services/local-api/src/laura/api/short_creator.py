@@ -498,6 +498,10 @@ def revert_production_artifact(
     ``board.revert`` + ``restore_coherent_suffix``. 409 while a job is queued/running (a
     revert under a live team run would race it). Returns the same enriched status payload
     as ``GET /production/{sid}`` so the UI updates without a second fetch.
+
+    Accepted TOCTOU: the job-status check above races an in-flight enqueue by design — the
+    worst case is a benign reorder (every run reads the board fresh at its own start), which
+    is fine for a local single-user tool.
     """
     from ..short_creator.board import Board, downstream_of
     from ..short_creator.production_orchestrator import board_root_for
