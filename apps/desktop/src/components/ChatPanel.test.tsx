@@ -524,3 +524,148 @@ describe("ChatPanel session mode (v2)", () => {
     expect(screen.getByLabelText("Sitzungsauftrag")).toBeTruthy();
   });
 });
+
+// -------------------------------------------------------------------------------------------
+// Revert dropdown on artifact chips (RU Task 3). Only artifact-slot chips with a non-empty
+// `archived_versions` become interactive — everything else stays the plain pill covered above.
+// -------------------------------------------------------------------------------------------
+
+describe("ChatPanel session mode (v2) — revert dropdown", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function startRunningSession(client: LauraClient): Promise<void> {
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+  }
+
+  it("a chip with archived versions renders a button; picking v1 + confirming reverts to it", async () => {
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 3, archived_versions: [1, 2] },
+      },
+    });
+    const revertProduction = vi.fn().mockResolvedValue({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: [],
+      restored: [],
+      status,
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      revertProduction,
+    });
+    await startRunningSession(client);
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    expect(screen.getByRole("button", { name: "v1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "v2" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await flushSession();
+
+    expect(revertProduction).toHaveBeenCalledWith("s1", "cutlist", 1);
+  });
+
+  it("re-renders chips from the revert response and shows the restored hint", async () => {
+    const initialStatus = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 3, archived_versions: [1, 2] },
+      },
+    });
+    const revertedStatus = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 1, archived_versions: [] },
+        contact_sheet: { version: 1, archived_versions: [] },
+      },
+      resume_point: "contact_sheet",
+    });
+    const revertProduction = vi.fn().mockResolvedValue({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: ["contact_sheet"],
+      restored: ["contact_sheet"],
+      status: revertedStatus,
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(initialStatus),
+      revertProduction,
+    });
+    await startRunningSession(client);
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await flushSession();
+
+    expect(screen.getByText("cutlist v1")).toBeTruthy();
+    expect(screen.getByText("Bogen v1")).toBeTruthy();
+    expect(screen.getByText(/♻️ Wiederhergestellt: Bogen/)).toBeTruthy();
+  });
+
+  it("a chip with no archived versions stays a plain chip (no button)", async () => {
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        script: { version: 1, archived_versions: [] },
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      revertProduction: vi.fn(),
+    });
+    await startRunningSession(client);
+
+    const chip = screen.getByText("script v1");
+    expect(chip.tagName).toBe("SPAN");
+    expect(screen.queryByRole("button", { name: /script v1/ })).toBeNull();
+  });
+
+  it("a 409 (run in progress) revert response shows the 'Lauf aktiv' hint", async () => {
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 3, archived_versions: [1, 2] },
+      },
+    });
+    const revertProduction = vi
+      .fn()
+      .mockRejectedValue(
+        new Error('409: {"detail":"run in progress — revert would race the team"}'),
+      );
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      revertProduction,
+    });
+    await startRunningSession(client);
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await flushSession();
+
+    expect(screen.getByText(/Lauf aktiv/)).toBeTruthy();
+  });
+});
