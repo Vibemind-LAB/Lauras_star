@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 from laura.config import Settings
@@ -1001,3 +1002,69 @@ def test_full_restore_with_a_message_still_runs_the_team(tmp_path: Path) -> None
         "render_report",
         "qa_report",
     ]
+
+
+# --- _parse_outcome -----------------------------------------------------------------------
+
+
+class _SummaryMsg:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+def _make_board(tmp_path: Path) -> Board:
+    """Create a minimal board for testing _parse_outcome."""
+    root = tmp_path / "board"
+    meta = BoardMeta(
+        session_id="s1",
+        asset_id="a1",
+        created_utc="2026-07-21T00:00:00+00:00",
+        task="t",
+        language="English",
+        target_seconds=60.0,
+    )
+    return Board.create(root, meta)
+
+
+def test_parse_outcome_summary_is_the_last_answer_not_the_task(tmp_path: Path) -> None:
+    """Live finding 2026-07-20: every run's result.summary was the TASK text — _parse_outcome
+    concatenated ALL messages and truncated to 2000 chars, so messages[0] (the task) always
+    won. The summary must be the team's final answer."""
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    task_echo = "1) GOAL: build the film... " * 100  # long, like the real task text
+    result = SimpleNamespace(
+        messages=[
+            _SummaryMsg(task_echo),
+            _SummaryMsg("intermediate tool chatter"),
+            _SummaryMsg("The film is built: 6 chapters, QA verdict ship."),
+        ]
+    )
+
+    outcome = _parse_outcome(board, result, stage="A")
+
+    assert outcome.summary == "The film is built: 6 chapters, QA verdict ship."
+
+
+def test_parse_outcome_skips_trailing_empty_messages(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("the real answer"), _SummaryMsg("   "), _SummaryMsg("")]
+    )
+
+    outcome = _parse_outcome(board, result, stage="A")
+
+    assert outcome.summary == "the real answer"
+
+
+def test_parse_outcome_empty_result_gives_empty_summary(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+
+    outcome = _parse_outcome(board, SimpleNamespace(messages=[]), stage="A")
+
+    assert outcome.summary == ""

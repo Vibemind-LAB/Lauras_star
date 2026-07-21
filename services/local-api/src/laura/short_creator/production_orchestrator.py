@@ -234,13 +234,20 @@ def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
     structured ``QaReport`` (``verdict="ship"|"revise"``) to the board via ``save_qa_report``
     rather than saying the word "weak" in chat (v1's convention), so a missing report or a
     "revise" verdict is weak and only an explicit "ship" verdict is not.
+
+    ``summary`` is the LAST non-empty message — the team's final answer. Concatenating all
+    messages and truncating put ``messages[0]`` (the task text) into every summary
+    (live finding 2026-07-20: three runs in a row "summarized" themselves with their own task).
     """
-    text = ""
-    for msg in getattr(result, "messages", None) or []:
+    summary = ""
+    for msg in reversed(getattr(result, "messages", None) or []):
         to_text = getattr(msg, "to_model_text", None)
-        text += (to_text() if callable(to_text) else str(getattr(msg, "content", ""))) + "\n"
+        text = (to_text() if callable(to_text) else str(getattr(msg, "content", ""))).strip()
+        if text:
+            summary = text[:2000]
+            break
     return StageOutcome(
-        status="ok", weak=_qa_weak(board), summary=text.strip()[:2000], team="magentic", stage=stage
+        status="ok", weak=_qa_weak(board), summary=summary, team="magentic", stage=stage
     )
 
 
