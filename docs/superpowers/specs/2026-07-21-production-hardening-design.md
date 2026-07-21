@@ -59,6 +59,11 @@ steht in `messages[0]` und erscheint damit nie wieder als „Zusammenfassung".
 - Alt-Reports laden unverändert (Default `None`; `parents`/`content_hash`-Semantik: das neue
   Feld zählt zum Inhalt — ein Alt-Archiv ohne Feld hasht anders als ein Neu-Render, was
   korrekt ist, denn es IST ein anderer Buildstand).
+- **Bewusste Konsequenz:** Ein VOR dem Deploy archivierter `qa_report` stempelte
+  `parents[render_report]` gegen den Hash ohne das neue Feld; derselbe Render heute geladen
+  hasht mit `target_ratio: None` anders → solche QA-Archive restaurieren nicht mehr
+  automatisch (Walk endet vor QA). Über-Vorsicht per Provenienz-Spec §6 akzeptiert — Kosten:
+  ein QA-Rebuild auf Alt-Boards, nie eine falsche Wiederherstellung.
 
 ## Tests
 
