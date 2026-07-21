@@ -167,14 +167,19 @@ def test_handle_production_run_writes_run_log_meta_and_done_lines(tmp_path: Path
     assert len(logs) == 1, "run log file missing"
     raw_lines = logs[0].read_text(encoding="utf-8").splitlines()
     lines = [json.loads(line) for line in raw_lines if line.strip()]
-    assert len(lines) == 2
-    meta, done = lines
+    # The run log now carries config_warning when text agents resolve to the local provider
+    # (commit d2d26a7: run_production emits {"type": "config_warning", "warnings": [...]})
+    assert len(lines) == 3
+    meta, config_warning, done = lines
     assert meta == {
         "type": "meta",
         "asset_id": asset_id,
         "session_id": "sess2",
         "task": "overview short",
     }
+    assert config_warning["type"] == "config_warning"
+    assert isinstance(config_warning.get("warnings"), list)
+    assert len(config_warning["warnings"]) > 0
     assert done["type"] == "done"
     assert done["ok"] is True
     assert done["stage"] == "A"
