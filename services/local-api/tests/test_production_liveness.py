@@ -164,3 +164,46 @@ def test_a_follow_up_message_becomes_the_session_s_current_job(
 
     still = _latest_job_id(db, session_id)
     assert still == first_job, "a rejected follow-up must not repoint liveness"
+
+
+# --- enqueue response carries config_warnings ------------------------------------------------
+
+
+def test_production_enqueue_response_carries_config_warnings(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The 202 must say out loud when the text agents will run on a local ollama model."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.delenv("LAURA_AGENT_PROVIDER", raising=False)  # -> ollama default
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "a recap", "target_seconds": 30},
+        headers=_H,
+    )
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert isinstance(body["warnings"], list) and len(body["warnings"]) == 1
+    assert "ollama" in body["warnings"][0]
+
+
+def test_production_enqueue_response_warnings_empty_for_hosted(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setenv("LAURA_AGENT_PROVIDER", "openai-compat")
+    monkeypatch.setenv("LAURA_AGENT_API_KEY", "k")
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+
+    r = client.post(
+        f"/assets/{asset_id}/production",
+        json={"task": "a recap", "target_seconds": 30},
+        headers=_H,
+    )
+
+    assert r.status_code == 202, r.text
+    assert r.json()["warnings"] == []

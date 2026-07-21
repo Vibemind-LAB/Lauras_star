@@ -305,7 +305,13 @@ def create_production(
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
-    return {"session_id": session_id, "job_id": job_id}
+    from ..short_creator.providers import config_warnings, resolve_from_env
+
+    return {
+        "session_id": session_id,
+        "job_id": job_id,
+        "warnings": config_warnings(resolve_from_env()),
+    }
 
 
 # --- v2 production follow-up + status endpoints (Slice 4) -------------------------------------
@@ -350,7 +356,13 @@ def send_production_message(
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
-    return {"session_id": session_id, "job_id": job_id}
+    from ..short_creator.providers import config_warnings, resolve_from_env
+
+    return {
+        "session_id": session_id,
+        "job_id": job_id,
+        "warnings": config_warnings(resolve_from_env()),
+    }
 
 
 @router.get("/production/{session_id}")

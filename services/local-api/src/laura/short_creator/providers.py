@@ -196,6 +196,26 @@ def config_problems(config: AgentConfig) -> list[str]:
     return problems
 
 
+def config_warnings(config: AgentConfig) -> list[str]:
+    """Advisory (non-fatal) findings about the resolved agent config.
+
+    Parallel to :func:`config_problems`: problems block an enqueue (503), warnings are only
+    surfaced — in the enqueue response and as one run-log line. Live incident 2026-07-20:
+    three production runs silently ran their text agents on local qwen2.5:7b (the provider
+    DEFAULT is ollama), which emits tool calls as prose and invents schemas; nothing said so
+    anywhere. Local-first stays intact: warning, never a gate.
+    """
+    warnings: list[str] = []
+    if config.provider == "ollama":
+        warnings.append(
+            f"text agents run on local ollama model {config.agent_model!r}: small local "
+            "models are known to fail Magentic tool-calling (tool calls as prose, invented "
+            "schemas); for production runs set LAURA_AGENT_PROVIDER=openai-compat and a "
+            "hosted LAURA_AGENT_MODEL"
+        )
+    return warnings
+
+
 def _key_for(config: AgentConfig, provider: Provider) -> str | None:
     if provider == "9router":
         return config.nine_router_api_key

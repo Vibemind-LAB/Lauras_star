@@ -35,7 +35,7 @@ from .board_models import BoardMeta, Format, QaReport, RenderReport, canvas_for
 from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
 from .production_agents import build_production_team
 from .production_tools import ProductionDeps
-from .providers import AgentConfig, Stage
+from .providers import AgentConfig, Stage, config_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +423,16 @@ def run_production(
             target_seconds=float(target_seconds),
         )
         board = Board.create(root, meta)
+
+    # Advisory (never a gate): say out loud when the text agents will run on a local ollama
+    # model. Live incident 2026-07-20: three production runs silently ran qwen2.5:7b — tool
+    # calls as prose, invented schemas — and nothing anywhere said so.
+    warnings = config_warnings(config)
+    if warnings and event_sink is not None:
+        try:
+            event_sink({"type": "config_warning", "warnings": warnings})
+        except Exception:  # noqa: BLE001 - observability must never break the run
+            logger.warning("config_warning event sink failed", exc_info=True)
 
     # Full-suffix restore (spec 2026-07-20-provenance-chain-design.md): bring back the
     # longest archived suffix whose parent-instance hashes match the board. Runs BEFORE

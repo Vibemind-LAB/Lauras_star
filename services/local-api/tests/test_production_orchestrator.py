@@ -790,6 +790,55 @@ def test_run_production_reports_empty_restored_when_nothing_came_back(tmp_path: 
     assert not any(event.get("type") == "restored" for event in events)
 
 
+# --- config_warning: the local-7B trap gets a voice in the run log -------------------------
+
+
+def test_run_production_logs_a_config_warning_line_for_local_ollama(tmp_path: Path) -> None:
+    """One {"type": "config_warning"} line in the run log when the text agents are local —
+    the run log is where the 55-minute-invisibility class of incidents gets diagnosed."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})  # zero env -> ollama default
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    events: list[dict[str, object]] = []
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="s-warn",
+        task="demo",
+        execute=execute,
+        event_sink=events.append,
+    )
+
+    assert result["ok"] is True
+    warn_lines = [e for e in events if e.get("type") == "config_warning"]
+    assert len(warn_lines) == 1
+    assert "ollama" in warn_lines[0]["warnings"][0]  # type: ignore[index]
+
+
+def test_run_production_logs_no_config_warning_for_hosted_provider(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env(
+        {"LAURA_AGENT_PROVIDER": "openai-compat", "LAURA_AGENT_API_KEY": "k"}
+    )
+    execute, _calls = _make_execute({"A": ("ok", False)})
+    events: list[dict[str, object]] = []
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="s-hosted",
+        task="demo",
+        execute=execute,
+        event_sink=events.append,
+    )
+
+    assert result["ok"] is True
+    assert not any(event.get("type") == "config_warning" for event in events)
+
+
 # --- Finding 1: a fully-restored board must not spend an agent-team run --------------------
 # Spec §Entscheidungen (User) 2: "ein komplett kohärentes Board erreicht complete: True ohne
 # Agent-Turn". The entry restore above already brings back the WHOLE suffix through qa_report

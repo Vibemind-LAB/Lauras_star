@@ -17,7 +17,7 @@ backend than the operator configured, and nothing anywhere says so.
 
 from __future__ import annotations
 
-from laura.short_creator.providers import config_problems, resolve_from_env
+from laura.short_creator.providers import config_problems, config_warnings, resolve_from_env
 
 _OPENAI = {
     "LAURA_AGENT_PROVIDER": "openai-compat",
@@ -107,3 +107,33 @@ def test_escalation_is_not_checked_when_it_cannot_fire() -> None:
     )
 
     assert problems == []
+
+
+# --- config_warnings: advisory, never a gate ------------------------------------------------
+
+
+def test_config_warnings_flags_local_ollama_text_agents() -> None:
+    """Live incident 2026-07-20: three production runs silently ran their text agents on
+    qwen2.5:7b (provider default ollama) — tool calls came out as JSON prose, save_storyline
+    got an invented schema, the orchestrator hallucinated "saved". One advisory line at
+    enqueue time would have saved the hour."""
+    config = resolve_from_env({})  # zero env -> ollama default
+
+    warnings = config_warnings(config)
+
+    assert len(warnings) == 1
+    assert "ollama" in warnings[0]
+    assert config.agent_model in warnings[0]
+    assert "LAURA_AGENT_PROVIDER=openai-compat" in warnings[0]
+
+
+def test_config_warnings_empty_for_hosted_providers() -> None:
+    hosted = resolve_from_env(
+        {"LAURA_AGENT_PROVIDER": "openai-compat", "LAURA_AGENT_API_KEY": "k"}
+    )
+    routed = resolve_from_env(
+        {"LAURA_AGENT_PROVIDER": "9router", "LAURA_9ROUTER_API_KEY": "k"}
+    )
+
+    assert config_warnings(hosted) == []
+    assert config_warnings(routed) == []
