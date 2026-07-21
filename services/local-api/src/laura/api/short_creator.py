@@ -55,6 +55,11 @@ class ProductionMessageRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class ProductionRevertRequest(BaseModel):
+    artifact: str
+    version: int
+
+
 def _db(request: Request) -> Database:
     db: Database = request.app.state.db
     return db
@@ -145,6 +150,22 @@ def _restored_from_job(job: dict[str, Any]) -> list[str]:
     if not isinstance(restored, list):
         return []
     return [item for item in restored if isinstance(item, str)]
+
+
+def _job_view(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The liveness projection of *job* shared by ``GET /production/{sid}`` and the revert
+    endpoint — ``None`` when there is no job on the session yet."""
+    if job is None:
+        return None
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "attempt": job["attempt"],
+        "updated_at": job["updated_at"],
+        "lease_expires_at": job["lease_expires_at"],
+        "finished_at": job["finished_at"],
+        "restored": _restored_from_job(job),
+    }
 
 
 def _expected_scenes_for(db: Database, asset_id: str) -> list[int]:
@@ -365,6 +386,31 @@ def send_production_message(
     }
 
 
+def _production_status_payload(
+    db: Database,
+    *,
+    asset_id: str,
+    board: Board,
+    job_view: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The enriched board-status payload shared by GET /production/{sid} and the revert
+    endpoint — extracted so the two responses can never drift apart."""
+    from ..short_creator.board_models import ContactSheet
+
+    result = board.status()
+    result["resume_point"] = board.resume_point(_expected_scenes_for(db, asset_id))
+    result["job"] = job_view
+    result["board_ready"] = True
+    sheet = board.load("contact_sheet")
+    if isinstance(sheet, ContactSheet):
+        result["artifacts"]["contact_sheet"].update(
+            png_path=sheet.png_path,
+            labeled=sheet.labeled,
+            tiles=[t.model_dump() for t in sheet.tiles],
+        )
+    return result
+
+
 @router.get("/production/{session_id}")
 def get_production_status(
     session_id: str,
@@ -383,7 +429,6 @@ def get_production_status(
     ``GET /production/{session_id}/contact-sheet``.
     """
     from ..short_creator.board import Board
-    from ..short_creator.board_models import ContactSheet
     from ..short_creator.production_orchestrator import board_root_for
 
     db = _db(request)
@@ -399,19 +444,7 @@ def get_production_status(
     # reading "active" for 55 minutes; requiring it to answer would hide exactly the dead run.
     job_id = session.get("latest_job_id")
     job = repos.get_job(db, str(job_id)) if job_id else None
-    job_view = (
-        {
-            "id": job["id"],
-            "status": job["status"],
-            "attempt": job["attempt"],
-            "updated_at": job["updated_at"],
-            "lease_expires_at": job["lease_expires_at"],
-            "finished_at": job["finished_at"],
-            "restored": _restored_from_job(job),
-        }
-        if job is not None
-        else None
-    )
+    job_view = _job_view(job)
 
     try:
         board = Board.open(board_root_for(db, asset_id, session_id))
@@ -420,19 +453,7 @@ def get_production_status(
         # report, not a 404: the job view carries the answer.
         return {"session_id": session_id, "job": job_view, "board_ready": False}
 
-    expected_scenes = _expected_scenes_for(db, asset_id)
-    result = board.status()
-    result["resume_point"] = board.resume_point(expected_scenes)
-    result["job"] = job_view
-    result["board_ready"] = True
-    sheet = board.load("contact_sheet")
-    if isinstance(sheet, ContactSheet):
-        result["artifacts"]["contact_sheet"].update(
-            png_path=sheet.png_path,
-            labeled=sheet.labeled,
-            tiles=[t.model_dump() for t in sheet.tiles],
-        )
-    return result
+    return _production_status_payload(db, asset_id=asset_id, board=board, job_view=job_view)
 
 
 @router.get("/production/{session_id}/contact-sheet")
@@ -463,3 +484,64 @@ def get_production_contact_sheet(
     if not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "contact sheet missing on disk")
     return FileResponse(path, media_type="image/png")
+
+
+@router.post("/production/{session_id}/revert")
+def revert_production_artifact(
+    session_id: str,
+    body: ProductionRevertRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Revert one board artifact to an archived version and heal the suffix — synchronously,
+    no job and no agent turn. Mirrors the revert_artifact tool's validation; then
+    ``board.revert`` + ``restore_coherent_suffix``. 409 while a job is queued/running (a
+    revert under a live team run would race it). Returns the same enriched status payload
+    as ``GET /production/{sid}`` so the UI updates without a second fetch.
+    """
+    from ..short_creator.board import Board, downstream_of
+    from ..short_creator.production_orchestrator import board_root_for
+
+    db = _db(request)
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    if job is not None and str(job["status"]) in ("queued", "running"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "run in progress — revert would race the team"
+        )
+    asset_id = str(session["asset_id"])
+    try:
+        board = Board.open(board_root_for(db, asset_id, session_id))
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session has no board") from None
+
+    valid_names = downstream_of("scene_reviews")
+    if body.artifact not in valid_names:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"unknown artifact '{body.artifact}'; valid: {', '.join(valid_names)}",
+        )
+    invalidated = [d for d in downstream_of(body.artifact) if board.load(d) is not None]
+    try:
+        board.revert(body.artifact, body.version)
+    except FileNotFoundError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"no archived {body.artifact} v{body.version}",
+        ) from None
+    restored = board.restore_coherent_suffix()
+
+    job_view = _job_view(job)
+    return {
+        "ok": True,
+        "artifact": body.artifact,
+        "version": body.version,
+        "invalidated": invalidated,
+        "restored": restored,
+        "status": _production_status_payload(
+            db, asset_id=asset_id, board=board, job_view=job_view
+        ),
+    }
