@@ -94,6 +94,14 @@ Ab da ist es eine normale Session: Status, Chips, Revert, Provenienz, QA — all
   Szenen + Rationale, Response-Shape), Fallback-Pfad, 422 ohne Material, 404 Projekt,
   503-Preflight, `warnings` im Response.
 
+## Abgrenzung zum bestehenden v1-Endpoint
+
+Es existiert bereits `POST /assets/{asset_id}/auto-short` (+ `/stream`): der **v1-Pfad**, der
+für ein VOM USER GEWÄHLTES Asset den v1-NL-Agenten (`short_creator.run`) enqueued. Er bleibt
+unangetastet. Das hier ist etwas anderes: `POST /projects/{project_id}/auto-short` wählt das
+Asset SELBST (Topic über alle Videos, Scout) und startet die v2-Produktion — das
+Routen-Prefix (`projects/` vs. `assets/`) trägt den Unterschied.
+
 ## Nicht in diesem Scope
 
 - UI-Einstieg (Entscheidung 3) und Phase 2 Auto-Overview (Entscheidung 2).

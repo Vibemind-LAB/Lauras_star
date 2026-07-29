@@ -16,6 +16,7 @@
 - 422 (no material) BEFORE any session/scout work — no corpse sessions.
 - Session creation is byte-identical to `create_production` (shared extracted helper); `_require_autoshort` + `_require_usable_agent_config` + `warnings: config_warnings(...)` exactly like the existing enqueue endpoints.
 - Existing search/semantic/production code stays untouched except the named extraction in `api/short_creator.py`.
+- **Do not confuse the routes:** `POST /assets/{asset_id}/auto-short` (+`/stream`) already exists — it is the v1 per-asset NL-agent path (`short_creator.run`) and stays UNTOUCHED. The new endpoint is `POST /projects/{project_id}/auto-short` (project-scoped, scout picks the asset, enqueues `production.run`).
 - mypy strict; no `print`; ruff line length 100.
 - Commits: conventional commits, English, explicit `git add <paths>` (never `-A`), trailer `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
