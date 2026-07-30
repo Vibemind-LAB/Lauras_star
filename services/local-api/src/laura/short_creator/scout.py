@@ -219,18 +219,21 @@ def _build_scout_agent(db: Database, config: AgentConfig, project_id: str) -> As
     def get_scene_context(asset_id: str, scene_number: int) -> dict[str, Any]:
         """A rough-cut scene's transcript text and source frame range for an asset (no VLM
         call)."""
-        resolved = _resolve_scene(db, asset_id, scene_number)
-        if resolved is None:
-            return {"ok": False, "reason": "unknown scene"}
-        src_start, src_end_exclusive, text = resolved
-        return {
-            "ok": True,
-            "asset_id": asset_id,
-            "scene_number": scene_number,
-            "src_start_frame": src_start,
-            "src_end_frame_exclusive": src_end_exclusive,
-            "text": text,
-        }
+        try:
+            resolved = _resolve_scene(db, asset_id, scene_number)
+            if resolved is None:
+                return {"ok": False, "reason": "unknown scene"}
+            src_start, src_end_exclusive, text = resolved
+            return {
+                "ok": True,
+                "asset_id": asset_id,
+                "scene_number": scene_number,
+                "src_start_frame": src_start,
+                "src_end_frame_exclusive": src_end_exclusive,
+                "text": text,
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
 
     # list[Any]: AssistantAgent wants list[BaseTool | Callable] (invariant); FunctionTool is a
     # concrete subtype, so a plain list[FunctionTool] bound to a variable first (rather than
@@ -310,6 +313,20 @@ def _safe_call(run: Callable[[str], str], task: str) -> str | None:
         return None
 
 
+def _safe_validate(
+    db: Database, project_id: str, ranking: list[dict[str, Any]], reply: str
+) -> tuple[ScoutDecision | None, str | None]:
+    """``_validate_reply``, but any infra failure underneath it (a torn-down rough cut, a bad
+    timeline row under ``discovery._scene_ranges``) degrades to a validation failure instead of
+    escaping run_scout — the "never dies" guarantee covers reads done DURING validation too, not
+    only the runner call itself."""
+    try:
+        return _validate_reply(db, project_id, ranking, reply)
+    except Exception as exc:  # noqa: BLE001 — an infra failure here must not escape run_scout
+        logger.warning("scout validation hit an infra error; treating as invalid", exc_info=True)
+        return None, f"validation failed: {exc}"
+
+
 def run_scout(
     db: Database,
     config: AgentConfig,
@@ -337,13 +354,13 @@ def run_scout(
 
     reply = _safe_call(run, task)
     if reply is not None:
-        decision, error = _validate_reply(db, project_id, ranking, reply)
+        decision, error = _safe_validate(db, project_id, ranking, reply)
         if decision is not None:
             return decision
-        assert error is not None  # decision is None => _validate_reply always sets error
+        assert error is not None  # decision is None => _safe_validate always sets error
         retry_reply = _safe_call(run, _retry_task_text(task, error))
         if retry_reply is not None:
-            decision, _error = _validate_reply(db, project_id, ranking, retry_reply)
+            decision, _error = _safe_validate(db, project_id, ranking, retry_reply)
             if decision is not None:
                 return decision
 

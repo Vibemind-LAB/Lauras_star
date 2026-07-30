@@ -234,6 +234,50 @@ def test_invalid_twice_falls_back(tmp_path: Path, monkeypatch: Any) -> None:
     assert len(calls) == 2  # exactly one retry, never more
 
 
+def test_scene_ranges_raising_during_validation_falls_back(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An infra failure UNDER validation (here: discovery._scene_ranges, e.g. a malformed
+    timeline row or a rough cut torn down mid-request) must not escape run_scout as an
+    exception — it degrades like any other invalid reply: first occurrence feeds the retry,
+    still-broken on the retry falls back."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(
+        db, project["id"], "strong.mp4",
+        segments=[(10, 60, "the agent farm plans the mission")],
+    )
+    material = discovery.search_material(db, project["id"], "mission")
+    top = material["ranking"][0]
+
+    def _raise(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("timeline row is malformed")
+
+    monkeypatch.setattr(discovery, "_scene_ranges", _raise)
+
+    # Otherwise-perfectly-valid replies both times — the raise is the only reason this falls
+    # back, proving the infra error (not a bad reply) drives the outcome.
+    valid_reply = json.dumps(
+        {"asset_id": asset_id, "scene_numbers": [1], "rationale": "on point"}
+    )
+    run, calls = _scripted_runner(valid_reply, valid_reply)
+
+    decision = scout.run_scout(
+        db, _config(), project_id=project["id"], topic="mission", material=material, runner=run
+    )
+
+    assert decision == {
+        "asset_id": top["asset_id"],
+        "scene_numbers": [h["scene_number"] for h in top["scene_hits"]],
+        "rationale": "automatic fallback: top search score",
+        "fallback": True,
+    }
+    assert len(calls) == 2  # first reply's validation raised -> counted as invalid -> ONE retry
+
+
 def test_runner_raising_falls_back_without_retry(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     db = _db(tmp_path)
