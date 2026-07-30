@@ -27,6 +27,13 @@ from ..jobs.runner import enqueue
 # Pure-pydantic leaf: safe at runtime even without the optional 'autoshort' extra, unlike
 # short_creator.board below.
 from ..short_creator.board_models import Format
+
+# discovery/scout import nothing from autogen at module load either (Tasks 1-2 of the
+# auto-short arc) — safe here too. run_scout is imported at module level (rather than inside
+# the endpoint, like the other autogen-touching calls below) specifically so tests can
+# monkeypatch laura.api.short_creator.run_scout.
+from ..short_creator.discovery import search_material
+from ..short_creator.scout import ScoutDecision, run_scout
 from ..util import new_id
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -48,6 +55,20 @@ class ProductionCreateRequest(BaseModel):
     # Delivery format picks the canvas: "insta" 9:16 reel, "x" native 16:9, "linkedin" 1:1.
     format: Format = "insta"
     # The script's language, named as it should be written ("German", "English").
+    language: str = Field(default="German", min_length=2, max_length=40)
+
+
+class ProjectAutoShortRequest(BaseModel):
+    """Body for ``POST /projects/{project_id}/auto-short`` — topic in, scouted session out.
+
+    ``target_seconds``/``format``/``language`` mirror :class:`ProductionCreateRequest`'s exact
+    defaults; ``topic`` replaces ``task`` — the scout composes the actual production task text
+    from it (see :func:`create_project_auto_short`).
+    """
+
+    topic: str = Field(min_length=1, max_length=2000)
+    target_seconds: int = Field(default=60, gt=0, le=600)
+    format: Format = "insta"
     language: str = Field(default="German", min_length=2, max_length=40)
 
 
@@ -288,23 +309,23 @@ def auto_short_stream(
 # --- v2 production session endpoint (Slice 4) -------------------------------------------------
 
 
-@router.post("/assets/{asset_id}/production", status_code=status.HTTP_202_ACCEPTED)
-def create_production(
+def _create_production_session(
+    db: Database,
     asset_id: str,
-    body: ProductionCreateRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
-) -> dict[str, Any]:
-    """Create a v2 production session for *asset_id* and enqueue its ``production.run`` job.
+    *,
+    task: str,
+    target_seconds: float,
+    format: str,
+    language: str,
+) -> tuple[str, str]:
+    """Create a v2 production session row for *asset_id* and enqueue its ``production.run`` job.
 
-    The session row is created before the job is enqueued: a session without a job is
-    harmless (visible, just never progresses), while a job without a session row would
-    reference an entity that doesn't exist. 503 if the 'autoshort' extra is missing.
+    Extracted verbatim from ``create_production`` (Task 3 of the auto-short arc) so a second
+    caller — the project-scoped auto-short endpoint — creates sessions identically. The session
+    row is created before the job is enqueued: a session without a job is harmless (visible,
+    just never progresses), while a job without a session row would reference an entity that
+    doesn't exist. Returns ``(session_id, job_id)``.
     """
-    db = _db(request)
-    _get_asset_or_404(db, asset_id)
-    _require_autoshort()
-    _require_usable_agent_config()
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
@@ -318,20 +339,126 @@ def create_production(
         payload={
             "asset_id": asset_id,
             "session_id": session_id,
-            "task": body.task,
-            "target_seconds": body.target_seconds,
-            "format": body.format,
-            "language": body.language,
+            "task": task,
+            "target_seconds": target_seconds,
+            "format": format,
+            "language": language,
         },
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
+    return session_id, job_id
+
+
+@router.post("/assets/{asset_id}/production", status_code=status.HTTP_202_ACCEPTED)
+def create_production(
+    asset_id: str,
+    body: ProductionCreateRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Create a v2 production session for *asset_id* and enqueue its ``production.run`` job.
+
+    503 if the 'autoshort' extra is missing. See :func:`_create_production_session` for the
+    session-row + enqueue mechanics (shared with the project-scoped auto-short endpoint).
+    """
+    db = _db(request)
+    _get_asset_or_404(db, asset_id)
+    _require_autoshort()
+    _require_usable_agent_config()
+    session_id, job_id = _create_production_session(
+        db,
+        asset_id,
+        task=body.task,
+        target_seconds=body.target_seconds,
+        format=body.format,
+        language=body.language,
+    )
     from ..short_creator.providers import config_warnings, resolve_from_env
 
     return {
         "session_id": session_id,
         "job_id": job_id,
         "warnings": config_warnings(resolve_from_env()),
+    }
+
+
+# --- v2 project-scoped auto-short endpoint (Task 3) ---------------------------------------------
+
+
+@router.post("/projects/{project_id}/auto-short", status_code=status.HTTP_202_ACCEPTED)
+def create_project_auto_short(
+    project_id: str,
+    body: ProjectAutoShortRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Topic in, scouted v2 production session out.
+
+    Distinct from ``POST /assets/{asset_id}/auto-short`` (the v1 per-asset NL-agent path, left
+    untouched): this route picks the asset ITSELF by scanning the whole project's transcripts
+    (:func:`search_material`), lets the scout (:func:`run_scout`) choose the best asset and
+    scenes for *topic*, then starts a normal v2 production session on that asset — the exact
+    same session-creation path as ``POST /assets/{asset_id}/production``.
+
+    404 unknown project; 503 preflight (missing extra / unusable agent config) BEFORE any
+    material search or scout call; 422 (no matching material) BEFORE any session is created —
+    no corpse sessions on a topic nothing was found for.
+    """
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    _require_autoshort()
+    _require_usable_agent_config()
+
+    material = search_material(db, project_id, body.topic)
+    if not material["ranking"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no material found for topic",
+                "skipped": material["skipped"],
+                "source": material["source"],
+            },
+        )
+
+    from ..short_creator.providers import config_warnings, resolve_from_env
+
+    config = resolve_from_env()
+    decision: ScoutDecision = run_scout(
+        db, config, project_id=project_id, topic=body.topic, material=material
+    )
+
+    # decision["asset_id"] is always one of material["ranking"]'s asset ids: run_scout only ever
+    # adopts a reply after validating asset_id against the ranking, and its fallback picks the
+    # ranking's own top entry — so this lookup can never miss.
+    chosen = next(e for e in material["ranking"] if e["asset_id"] == decision["asset_id"])
+    snippets = [hit["snippet"] for hit in chosen["scene_hits"]]
+    task = (
+        f"{body.topic}\n\n"
+        f"Material scout: use asset '{chosen['display_name']}'. Focus on scenes "
+        f"{', '.join(map(str, decision['scene_numbers']))} — transcript hits: "
+        f"{'; '.join(snippets)}. Scout rationale: {decision['rationale']}"
+    )
+
+    session_id, job_id = _create_production_session(
+        db,
+        decision["asset_id"],
+        task=task,
+        target_seconds=body.target_seconds,
+        format=body.format,
+        language=body.language,
+    )
+
+    return {
+        "session_id": session_id,
+        "job_id": job_id,
+        "asset_id": decision["asset_id"],
+        "scene_numbers": decision["scene_numbers"],
+        "rationale": decision["rationale"],
+        "fallback": decision["fallback"],
+        "ranking": material["ranking"],
+        "warnings": config_warnings(config),
     }
 
 
