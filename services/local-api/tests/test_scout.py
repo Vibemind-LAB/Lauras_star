@@ -306,6 +306,71 @@ def test_runner_raising_falls_back_without_retry(tmp_path: Path, monkeypatch: An
     assert len(calls) == 1  # a runner exception is NOT retried — no retry storm
 
 
+def test_scene_context_readonly_no_rough_cut_does_not_create_one(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The scout's get_scene_context tool must stay READ-ONLY: probing an asset that has no
+    rough cut yet must never CREATE one as a side effect (the scout runs before any production
+    board exists; ``get_or_create_asset_rough_cut`` belongs to the production team, not the
+    ranking/scouting path)."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="raw.mp4",
+        source_path="/tmp/raw.mp4",
+    )
+
+    result = scout._scene_context_readonly(db, project["id"], str(asset["id"]), 1)
+
+    assert result == {"ok": False, "reason": "no rough cut"}
+    # the assertion that matters: still no rough cut after the probe
+    assert repos.get_asset_rough_cut(db, project["id"], str(asset["id"])) is None
+
+
+def test_scene_context_readonly_returns_scene_text_and_range(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(
+        db, project["id"], "strong.mp4",
+        segments=[(10, 60, "the agent farm plans the mission")],
+    )
+
+    result = scout._scene_context_readonly(db, project["id"], asset_id, 1)
+
+    assert result == {
+        "ok": True,
+        "asset_id": asset_id,
+        "scene_number": 1,
+        "src_start_frame": 0,
+        "src_end_frame_exclusive": 300,
+        "text": "the agent farm plans the mission",
+    }
+
+
+def test_scene_context_readonly_unknown_scene_number(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(
+        db, project["id"], "strong.mp4",
+        segments=[(10, 60, "the agent farm plans the mission")],
+    )
+
+    result = scout._scene_context_readonly(db, project["id"], asset_id, 99)
+
+    assert result == {"ok": False, "reason": "unknown scene"}
+
+
 def test_empty_ranking_raises_value_error(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     db = _db(tmp_path)

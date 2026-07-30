@@ -1451,6 +1451,13 @@ def search_transcript(
 ) -> list[dict[str, Any]]:
     """Lexical, case-insensitive transcript search scoped to a project.
 
+    Restricted to each asset's LATEST SUCCEEDED analysis run — a re-analysis leaves the prior
+    run's segments in the table, and without this filter they double-count matches instead of
+    being replaced (the semantic index is immune: it deletes-before-reindexing, see
+    :mod:`laura.short_creator.discovery`). The correlated subquery mirrors
+    :func:`get_latest_analysis_run`'s own ordering (``COALESCE(started_at, '') DESC, id DESC``)
+    with a ``status='succeeded'`` filter added.
+
     Portable across SQLite/Postgres (LOWER + LIKE). FTS5/semantic search is a
     later optimisation (docs/15)."""
     pattern = f"%{query.lower()}%"
@@ -1463,6 +1470,11 @@ def search_transcript(
             "JOIN media_assets a ON a.id = s.asset_id "
             "LEFT JOIN speakers sp ON sp.id = s.speaker_id "
             "WHERE a.project_id = ? AND LOWER(s.text) LIKE ? "
+            "AND s.analysis_run_id = ("
+            "  SELECT ar.id FROM analysis_runs ar "
+            "  WHERE ar.asset_id = s.asset_id AND ar.status = 'succeeded' "
+            "  ORDER BY COALESCE(ar.started_at, '') DESC, ar.id DESC LIMIT 1"
+            ") "
             "ORDER BY s.start_sample LIMIT ?",
             (project_id, pattern, limit),
         ).fetchall()

@@ -24,8 +24,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from ..db import repos
 from ..db.database import Database
-from . import discovery
-from .production_tools import _resolve_scene
+from . import context, discovery
 from .providers import AgentConfig, build_model_client
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -189,6 +188,40 @@ def _fallback(ranking: list[dict[str, Any]]) -> ScoutDecision:
     }
 
 
+# --- read-only scene context (the scout must never write) ---------------------------------------
+
+
+def _scene_context_readonly(
+    db: Database, project_id: str, asset_id: str, scene_number: int
+) -> dict[str, Any]:
+    """The scout's ``get_scene_context`` tool, built strictly READ-ONLY: an asset without a
+    rough cut yet returns ``{"ok": False, "reason": "no rough cut"}`` instead of creating one —
+    the scout runs BEFORE any production session/board exists, and probing it must never leave
+    a timeline behind (mirrors :func:`production_tools._resolve_scene`'s composition, but built
+    on :func:`discovery._scene_ranges`, which is the same read-only lookup discovery's ranking
+    already uses).
+    """
+    ranges = discovery._scene_ranges(db, project_id, asset_id)
+    if ranges is None:
+        return {"ok": False, "reason": "no rough cut"}
+    match = next((r for r in ranges if r[0] == scene_number), None)
+    if match is None:
+        return {"ok": False, "reason": "unknown scene"}
+    _scene_number, src_start, src_end_exclusive = match
+    run = repos.get_latest_analysis_run(db, asset_id)
+    segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
+    in_scene = context._segments_in_ranges(segments, [(src_start, src_end_exclusive)])
+    text = " ".join(str(seg.get("text") or "").strip() for seg in in_scene).strip()
+    return {
+        "ok": True,
+        "asset_id": asset_id,
+        "scene_number": scene_number,
+        "src_start_frame": src_start,
+        "src_end_frame_exclusive": src_end_exclusive,
+        "text": text,
+    }
+
+
 # --- the real single-agent runner (autogen-touching) --------------------------------------------
 
 
@@ -218,20 +251,9 @@ def _build_scout_agent(db: Database, config: AgentConfig, project_id: str) -> As
 
     def get_scene_context(asset_id: str, scene_number: int) -> dict[str, Any]:
         """A rough-cut scene's transcript text and source frame range for an asset (no VLM
-        call)."""
+        call, READ-ONLY — an asset without a rough cut yet is reported, never created)."""
         try:
-            resolved = _resolve_scene(db, asset_id, scene_number)
-            if resolved is None:
-                return {"ok": False, "reason": "unknown scene"}
-            src_start, src_end_exclusive, text = resolved
-            return {
-                "ok": True,
-                "asset_id": asset_id,
-                "scene_number": scene_number,
-                "src_start_frame": src_start,
-                "src_end_frame_exclusive": src_end_exclusive,
-                "text": text,
-            }
+            return _scene_context_readonly(db, project_id, asset_id, scene_number)
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 

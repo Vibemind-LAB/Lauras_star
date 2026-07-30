@@ -141,6 +141,64 @@ def test_no_hits_is_an_empty_ranking_not_an_error(tmp_path: Path, monkeypatch: A
     assert out == {"source": "lexical", "ranking": [], "skipped": []}
 
 
+def test_stale_run_segments_are_excluded_and_ranked_once(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A re-analysis leaves the OLD run's segments in transcript_segments — repos.search_transcript
+    (the lexical path's backing query) must use only the asset's LATEST SUCCEEDED run, or the
+    stale segment double-counts the score and shows up as a duplicate scene hit (the semantic
+    path is immune: it deletes-before-reindexing)."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a.mp4",
+        source_path="/tmp/a.mp4",
+    )
+
+    old_run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="1", config={})
+    repos.start_analysis_run(db, old_run["id"])
+    repos.insert_segment_with_words(
+        db, asset_id=asset["id"], run_id=old_run["id"], speaker_id=None,
+        segment={"start_sample": 16000, "end_sample": 32000, "start_frame": 10,
+                 "end_frame": 60, "text": "mission old", "confidence": 1.0},
+        words=[],
+    )
+    repos.finish_analysis_run(db, old_run["id"], status="succeeded", diagnostics={})
+
+    new_run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="2", config={})
+    repos.start_analysis_run(db, new_run["id"])
+    repos.insert_segment_with_words(
+        db, asset_id=asset["id"], run_id=new_run["id"], speaker_id=None,
+        segment={"start_sample": 16000, "end_sample": 32000, "start_frame": 10,
+                 "end_frame": 60, "text": "mission new", "confidence": 1.0},
+        words=[],
+    )
+    repos.finish_analysis_run(db, new_run["id"], status="succeeded", diagnostics={})
+
+    timeline = repos.create_timeline(
+        db, project_id=project["id"], name="Rough Cut", kind="rough_cut",
+        created_from=asset["id"],
+    )
+    repos.add_timeline_clip(
+        db, timeline_id=timeline["id"], asset_id=asset["id"],
+        src_in_frame=0, src_out_frame_exclusive=600,
+        seq_in_frame=0, seq_out_frame_exclusive=600,
+    )
+    repos.replace_scenes(db, project["id"], timeline["id"], [(0, 300), (300, 600)])
+
+    found = repos.search_transcript(db, project_id=project["id"], query="mission")
+    assert [r["text"] for r in found] == ["mission new"]
+
+    out = discovery.search_material(db, project["id"], "mission")
+    assert len(out["ranking"]) == 1
+    top = out["ranking"][0]
+    assert len(top["scene_hits"]) == 1
+    assert "mission new" in top["scene_hits"][0]["snippet"]
+
+
 def test_semantic_ranking_used_when_index_answers(tmp_path: Path, monkeypatch: Any) -> None:
     """Semantic path: gated exactly like tests/test_semantic.py (optional [semantic] extra)."""
     import pytest
