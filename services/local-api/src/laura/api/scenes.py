@@ -53,15 +53,9 @@ def generate_scenes(
     asset = repos.get_asset(db, body.asset_id)
     if asset is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
-    # The shots this endpoint is about to build from live on the run that produced them --
-    # asking for the latest run and testing status=='succeeded' would let a newer failed or
-    # stranded run shadow a perfectly good one and 422 an asset that has real shots to build
-    # a rough cut from.
-    run = repos.get_latest_succeeded_analysis_run(db, body.asset_id)
+    run = repos.get_latest_analysis_run(db, body.asset_id)
     if run is None:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no succeeded analysis run"
-        )
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run")
     # Auto-build a minimal rough cut from the asset's kept shots so generation is never a
     # dead-end. The dedicated /timelines/from-shots endpoint offers the richer build (quality
     # filtering, split-cut recommendations); this is the fallback. No-op if clips exist.
