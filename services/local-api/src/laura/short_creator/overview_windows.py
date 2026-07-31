@@ -51,7 +51,23 @@ def _frames(seconds: float, fps_num: int, fps_den: int) -> int:
 
 
 def _fps(fps_by_asset: dict[str, tuple[int, int]], asset_id: str) -> tuple[int, int]:
-    return fps_by_asset.get(asset_id, (25, 1))
+    """Look up *asset_id*'s frame rate, or raise.
+
+    A missing entry here is a CALLER bug, not a race: the auto-overview endpoint builds
+    ``fps_by_asset`` from the same ranking it passes to :func:`build_candidates`, with a
+    project-rate fallback per asset, so every asset id in *ranking* is always present.
+    Silently defaulting (e.g. to 25fps) would apply the wrong rate to the padding,
+    merge-gap and length math for that asset without anyone noticing -- the exact class of
+    bug that cuts a clip mid-word. Loud beats silent here.
+
+    Contrast this with the missing ``scene_bounds`` entry in :func:`build_candidates`,
+    which IS a race (the ranking and the bounds are read separately, so a scene can vanish
+    between the two reads) and is therefore a deliberate drop, not a raise.
+    """
+    try:
+        return fps_by_asset[asset_id]
+    except KeyError:
+        raise ValueError(f"no frame rate for asset {asset_id!r}") from None
 
 
 def build_candidates(
