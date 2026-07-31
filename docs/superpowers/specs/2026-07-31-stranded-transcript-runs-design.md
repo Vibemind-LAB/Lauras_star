@@ -117,7 +117,7 @@ widersprechen: beide Seiten benennen dieselbe Regel.
 `get_latest_analysis_run` → `get_latest_transcript_run` überall dort, wo der aufgelöste Lauf
 in einen **Transkript-Leser** fließt (`get_transcript`, `list_words_for_run`,
 `candidate_caption_words`). Je eine Zeile; die `run is None`-Wächter bleiben unverändert
-gültig. Die vollständige Liste — 17 Stellen:
+gültig. Die vollständige Liste — 19 Stellen:
 
 | Datei | Stelle(n) | liest |
 |---|---|---|
@@ -134,6 +134,16 @@ gültig. Die vollständige Liste — 17 Stellen:
 | `short_creator/context.py` | 291, 322 | `list_words_for_run` |
 | `short_creator/production_tools.py` | 600 | `get_transcript` |
 | `short_creator/scout.py` | 211 | `get_transcript` |
+| `analysis/shorts_handlers.py` | 124 (nur der Wort-Lookup; das Gate an 114-119 bleibt beim Aktualitäts-Lauf) | `list_words_for_run` |
+| `api/timelines.py` | 523 (nur der Wort-Lookup; die Shot-Auswahl über `run_id`/`body.run_id` an 463-470 bleibt unverändert) | `list_words_for_run` |
+
+Diese beiden Stellen sind **gespalten**, nicht komplett umgezogen: „hat dieses Asset
+überhaupt einen Analyselauf" (das Gate in `shorts_handlers.py`) bzw. „welcher Lauf liefert
+die Shots" (`run_id` in `timelines.py`) sind legitime Aktualitäts-Fragen und bleiben auf
+`get_latest_analysis_run`. Nur der anschließende Wort-Lookup wandert auf
+`get_latest_transcript_run` — Shots und Worte teilen sich denselben Source-Frame-Raum, das
+Mischen zweier Läufe in derselben Funktion ist also kohärent, solange Gate/Shot-Auswahl und
+Wort-Lookup nicht verwechselt werden.
 
 Zwei Stellen brauchen mehr als den Namenstausch:
 
@@ -154,10 +164,12 @@ Zwei Stellen brauchen mehr als den Namenstausch:
 - Shot-Leser und reine Zustands-Gates bleiben auf `get_latest_analysis_run` — dort ist
   „neuester Lauf" die richtige Frage: `api/analysis.py:87` (Lauf-Metadaten), `:96` (Shots),
   `api/scenes.py:56`, `api/shorts.py:66` (Status-Anzeige), `api/shorts_candidates.py:57`,
-  `api/timelines.py:465`, `analysis/shorts_handlers.py:114`, `demo/drafts.py:41`,
-  `ingest/handlers.py:190` (Existenzprüfung), `mcp/tools.py:195`, `:283`.
+  `demo/drafts.py:41`, `ingest/handlers.py:190` (Existenzprüfung), `mcp/tools.py:195`, `:283`.
+  (Das Gate in `analysis/shorts_handlers.py:114-119` und die Shot-Auswahl in
+  `api/timelines.py:463-470` gehören ebenfalls hierher — siehe die Aufspaltung oben, sie
+  stehen deshalb nicht mehr in dieser Liste, sondern in der Tabelle.)
 
-Warum alle siebzehn und nicht nur die Suche: sonst rankt Discovery AgentFarm als Material,
+Warum alle neunzehn und nicht nur die Suche: sonst rankt Discovery AgentFarm als Material,
 während `scout.get_scene_context` / `context.transcript_window` den *neuesten* Lauf lesen,
 0 Segmente finden und „kein Transkript" melden — die Auto-Short-Kette würde sich selbst
 widersprechen.
@@ -175,9 +187,21 @@ Zwei kleine Eingriffe am Auslöser:
   `jobs`-Tabelle behält ihren Trace und ihre Retry-Semantik unverändert; `analysis_runs`
   bekommt zum ersten Mal einen ehrlichen Endzustand.
 
-Nach diesem Fix gilt: ein `running`-Lauf, dessen Prozess weg ist, kann nicht mehr entstehen.
-Ein Finalizer/Reaper für `analysis_runs` wird dadurch überflüssig — deshalb ist keiner Teil
-dieser Spec.
+Nach diesem Fix gilt nur: der **Exception-Pfad** kann einen `running`-Lauf nicht mehr für
+immer einfrieren — eine werfende Stufe erreicht jetzt garantiert
+`finish_analysis_run(..., status="failed", ...)`. Zwei Pfade bleiben davon unberührt und
+können `analysis_runs.status='running'` weiterhin auf Dauer stehen lassen:
+
+- SIGKILL / Stromausfall / OOM-Kill des Worker-Prozesses — da läuft kein `except` mehr, das
+  den Lauf noch abschließen könnte;
+- der Runtime-Cap-Pfad in `jobs/runner.py:283-290`: der Heartbeat hört dort absichtlich nach
+  `max_runtime_seconds` auf, damit der Reaper eines *anderen* Workers den Job requeuen kann —
+  während der Handler-Thread noch läuft und nichts geworfen hat.
+
+Für die Leichen, die schon in der DB liegen, repariert dieser Fix nichts. Ein
+Finalizer/Reaper für `analysis_runs` (oder eine Erweiterung von `reap_expired`, die die
+passende `analysis_runs`-Zeile mit abschließt) ist damit kein überflüssiges Feature, sondern
+ein offener Folgeschritt — bewusst nicht Teil dieser Spec.
 
 ### 5. Tests
 
@@ -232,3 +256,12 @@ Die Reparatur braucht keinen Code: **Analyse für diese Assets einmal neu laufen
 solange Qdrant erreichbar ist** — was der Schreib-Seiten-Fix (§ 4) erstmals verlässlich
 macht. Ein Backfill-Endpoint (SQLite-Segmente ohne ASR-Neulauf nach Qdrant spiegeln) wäre
 ein eigener Zyklus und wird hier bewusst nicht mitgeplant.
+
+Ebenfalls nicht abgedeckt: Ein Asset, dessen Medium ersetzt oder neu getrimmt wurde
+(`repos.set_asset_source`, `repos.py:328`, aktualisiert `source_path` in place, ohne die
+alten Analyseläufe zu löschen), lässt jetzt das Transkript eines älteren Laufs wieder
+auftauchen — mit Frame-Indizes, die sich auf das *vorherige* Medium beziehen. Der Leser
+liefert also nicht mehr `[]` ("kein Transkript"), sondern möglicherweise ein falsch
+ausgerichtetes Transkript. Das Verhaltensgleichheits-Argument aus § 1 — „byte-identisch zu
+heute, solange irgendein `succeeded`-Lauf ein Transkript hat" — deckt diesen Fall nicht ab —
+er ist selten (Medienaustausch ohne neue Analyse), aber real.

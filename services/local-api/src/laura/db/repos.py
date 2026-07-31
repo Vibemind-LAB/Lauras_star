@@ -424,7 +424,9 @@ def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | N
 
     1. only runs that HAVE segments,
     2. ``succeeded`` outranks anything unfinished (an in-flight re-analysis never shadows a
-       complete transcript),
+       complete transcript). The same ordering also ranks ``'failed'`` below ``'succeeded'``:
+       a newer, complete transcript on a run that crashed after ASR (e.g. during embedding)
+       stays shadowed by an older succeeded transcript, not just by one still ``'running'``.
     3. newest first, mirroring :func:`get_latest_analysis_run`'s ordering.
 
     ``LIMIT 1`` is the exclusion property: exactly one run per asset, so callers filtering on

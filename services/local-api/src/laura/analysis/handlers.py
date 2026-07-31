@@ -335,6 +335,7 @@ def _run_transcript(
         })
 
     embedded = 0
+    embed_status: str | None = None
     if index_items:
         try:
             # get_index() itself raises when Qdrant is unreachable (the client/collection
@@ -345,9 +346,15 @@ def _run_transcript(
                 index.delete_asset(asset["id"])
                 embedded = index.index(index_items)
         except Exception as exc:  # noqa: BLE001 - semantic indexing is best-effort
-            diar_status = f"{diar_status}; embed failed: {type(exc).__name__}"
-    return {"status": "ok", "segments": len(segments), "diarization": diar_status,
-            "alignment": align_status, "embedded": embedded}
+            _log.warning("asset %s: semantic embed failed (best-effort): %s", asset["id"], exc)
+            embed_status = f"failed: {type(exc).__name__}: {exc}"
+    result: dict[str, Any] = {
+        "status": "ok", "segments": len(segments), "diarization": diar_status,
+        "alignment": align_status, "embedded": embedded,
+    }
+    if embed_status is not None:
+        result["embed"] = embed_status
+    return result
 
 
 def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:

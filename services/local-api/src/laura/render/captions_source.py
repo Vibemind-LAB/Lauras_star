@@ -73,7 +73,8 @@ def timeline_caption_words(db: Database, timeline_id: str) -> list[Word]:
         src_out: int = clip["src_out_frame_exclusive"]
         seq_in: int = clip["seq_in_frame"]
 
-        # Mirror api/analysis.py:110 — use the latest run for the asset.
+        # Resolve the run that HOLDS the transcript, not necessarily the latest run overall —
+        # a scene-only re-analysis is the latest run while carrying no segments.
         run = repos.get_latest_transcript_run(db, asset_id)
         if run is None:
             continue

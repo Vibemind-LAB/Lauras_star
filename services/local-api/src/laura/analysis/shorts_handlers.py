@@ -121,7 +121,14 @@ def handle_shorts_extract(ctx: JobContext) -> dict[str, Any]:
     source_timeline_id = _pick_source_timeline_id(db, project["id"], asset_id)
 
     # --- Load transcript words → editorial Word view -----------------------
-    word_rows = repos.list_words_for_run(db, asset_id, run["id"])
+    # Words come from the run that HOLDS the transcript, which need not be the run above: a
+    # scene-only re-analysis (stages.asr false) is the latest run and carries no segments.
+    transcript_run = repos.get_latest_transcript_run(db, asset_id)
+    word_rows = (
+        repos.list_words_for_run(db, asset_id, str(transcript_run["id"]))
+        if transcript_run is not None
+        else []
+    )
     words = [
         Word(
             start_frame=r["start_frame"],

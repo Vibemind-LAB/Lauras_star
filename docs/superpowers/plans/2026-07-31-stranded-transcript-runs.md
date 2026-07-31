@@ -976,11 +976,17 @@ git status --short ../../workspace-livetest/ && ls -la ../../workspace-livetest/
 
 Erwartet: keine Änderung an `laura.db` (das Verzeichnis ist ohnehin untracked).
 
-- [ ] **Step 4: Lint + types on the new script**
+- [ ] **Step 4: Lint the new script; bare mypy does not reach it**
 
 ```bash
 cd services/local-api && uv run ruff check . && uv run mypy
 ```
+
+`ruff check .` hat kein Include/Exclude, das `scripts/` ausschließt — es lintet das neue
+Skript mit. Das nackte `uv run mypy` tut das **nicht**: `pyproject.toml:90` setzt
+`files = ["src", "tests"]`, also typprüft dieser Lauf nur, dass der Rest des Branches sauber
+bleibt, nicht `verify_stranded_transcripts.py` selbst. Für ein Wegwerf-Verifikationsskript ist
+das eine akzeptable Lücke — aber keine, die man als „mypy deckt es ab" behaupten darf.
 
 - [ ] **Step 5: Commit**
 

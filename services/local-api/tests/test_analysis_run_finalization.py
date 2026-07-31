@@ -91,7 +91,9 @@ def test_unreachable_index_does_not_fail_the_transcript_stage(
     assert result["status"] == "ok"
     assert result["segments"] == 1
     assert result["embedded"] == 0
-    assert "embed failed: RuntimeError" in result["diarization"]
+    assert "embed failed: RuntimeError" not in result["diarization"]
+    assert result["diarization"] == "skipped"
+    assert "RuntimeError" in result["embed"]
     # The segments are what matter: they must be committed even though the embed blew up.
     assert [s["text"] for s in repos.get_transcript(db, str(asset["id"]), run_id)] == [
         "mission talk"

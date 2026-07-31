@@ -399,6 +399,60 @@ def test_asset_without_any_segments_resolves_to_none(tmp_path: Path) -> None:
     assert repos.get_latest_transcript_run(db, str(asset["id"])) is None
 
 
+def test_words_resolve_to_the_transcript_run_not_the_latest_run(
+    tmp_path: Path,
+) -> None:
+    """The two former word readers (shorts_handlers.py, timelines.py) resolved the run by
+    recency and then read words off it — for an asset whose transcript is stranded on an
+    unfinished run while a later re-analysis is scene-only, that lookup finds zero words even
+    though a transcript exists. repos.get_latest_transcript_run must resolve the word-bearing
+    run instead; the old recency lookup is asserted here too, so the difference is explicit."""
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a.mp4",
+        source_path="/tmp/a.mp4",
+    )
+
+    stranded_run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="1", config={}
+    )
+    repos.start_analysis_run(db, stranded_run["id"])
+    repos.insert_segment_with_words(
+        db, asset_id=asset["id"], run_id=stranded_run["id"], speaker_id=None,
+        segment={"start_sample": 16000, "end_sample": 32000, "start_frame": 10,
+                 "end_frame": 60, "text": "mission stranded", "confidence": 1.0},
+        words=[
+            {"idx": 0, "start_sample": 16000, "end_sample": 20000,
+             "start_frame": 10, "end_frame": 20, "text": "mission"},
+            {"idx": 1, "start_sample": 20000, "end_sample": 32000,
+             "start_frame": 20, "end_frame": 60, "text": "stranded"},
+        ],
+    )
+    # Never finished (the handler crashed) -- left 'running' forever, the exact stranded shape.
+
+    scene_only_run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="2", config={}
+    )
+    repos.start_analysis_run(db, scene_only_run["id"])
+    repos.finish_analysis_run(db, scene_only_run["id"], status="succeeded", diagnostics={})
+
+    # The old recency lookup: latest run is the scene-only one, and it carries no words.
+    latest = repos.get_latest_analysis_run(db, asset["id"])
+    assert latest is not None
+    assert latest["id"] == scene_only_run["id"]
+    assert repos.list_words_for_run(db, asset["id"], latest["id"]) == []
+
+    # The new transcript-run lookup: resolves the stranded run, which has the words.
+    transcript_run = repos.get_latest_transcript_run(db, asset["id"])
+    assert transcript_run is not None
+    assert transcript_run["id"] == stranded_run["id"]
+    words = repos.list_words_for_run(db, asset["id"], str(transcript_run["id"]))
+    assert [w["text"] for w in words] == ["mission", "stranded"]
+
+
 def test_reader_and_search_resolve_the_same_run(tmp_path: Path, monkeypatch: Any) -> None:
     """Coherence: discovery ranks the asset off the stranded run, so the scout's context
     reader must find that same transcript. Otherwise the chain contradicts itself — search

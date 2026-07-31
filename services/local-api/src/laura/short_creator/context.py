@@ -49,7 +49,7 @@ def transcript_window(
     """What is said around ``center_frame`` (± ``window_frames``) in the asset's transcript."""
     run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "segments": [], "text": ""}
+        return {"ok": False, "reason": "no transcript", "segments": [], "text": ""}
     segs = repos.get_transcript(db, asset_id, str(run["id"]))
     window = _segments_in_window(segs, center_frame, window_frames)
     text = " ".join(str(seg.get("text") or "").strip() for seg in window).strip()
@@ -100,7 +100,7 @@ def transcript_overview(db: Database, asset_id: str, blocks: int = 8) -> dict[st
     """The whole transcript grouped into ≤ *blocks* time blocks — the video at a glance."""
     run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "blocks": []}
+        return {"ok": False, "reason": "no transcript", "blocks": []}
     segs = repos.get_transcript(db, asset_id, str(run["id"]))
     grouped = _group_segments_into_blocks(segs, blocks=blocks)
     return {"ok": True, "asset_id": asset_id, "blocks": grouped}
@@ -290,7 +290,7 @@ def _export_voice_alignment(db: Database, export: dict[str, Any]) -> dict[str, A
         return {"ok": False, "reason": "export has no checkable segments", "aligned": False}
     run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "aligned": False}
+        return {"ok": False, "reason": "no transcript", "aligned": False}
     words = repos.list_words_for_run(db, asset_id, str(run["id"]))
     clipped: list[str] = []
     for start, end in ranges:
@@ -321,7 +321,7 @@ def check_voice_alignment(db: Database, candidate_id: str) -> dict[str, Any]:
     asset_id = str(candidate["asset_id"])
     run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "aligned": False}
+        return {"ok": False, "reason": "no transcript", "aligned": False}
     words = repos.list_words_for_run(db, asset_id, str(run["id"]))
     result = _voice_alignment(
         words,
