@@ -453,6 +453,24 @@ def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | N
         return dict(row) if row is not None else None
 
 
+def get_latest_succeeded_analysis_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The newest run that SUCCEEDED, or None.
+
+    Sibling of :func:`get_latest_transcript_run` for the artifact-free gates. Asking
+    :func:`get_latest_analysis_run` and then testing ``status == 'succeeded'`` is a different
+    question: it lets a newer failed or stranded run shadow a perfectly good one, which locked
+    assets out of shorts extraction and visual embedding until someone re-analysed by hand.
+    Ordering mirrors get_latest_analysis_run.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM analysis_runs WHERE asset_id=? AND status='succeeded' "
+            "ORDER BY COALESCE(started_at, '') DESC, id DESC LIMIT 1",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def start_analysis_run(db: Database, run_id: str) -> None:
     """Mark the run in flight, clearing whatever a previous attempt left behind.
 

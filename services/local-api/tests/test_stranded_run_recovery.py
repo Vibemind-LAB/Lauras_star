@@ -20,6 +20,7 @@ from laura.db.database import Database
 from laura.jobs.queues import queue_for
 from laura.jobs.runner import JobRunner, enqueue
 from laura.main import create_app
+from laura.mcp.tools import tool_extract_shorts
 from laura.util import utcnow_iso
 
 PAST = "2000-01-01T00:00:00.000000Z"
@@ -298,3 +299,59 @@ def test_restart_clears_the_previous_attempts_diagnostics(
     assert run["started_at"] is not None
     assert run["finished_at"] is None
     assert json.loads(run["diagnostics_json"] or "{}") == {}
+
+
+def _asset_with_a_corpse_on_top(db: Database, tmp_path: Path) -> tuple[str, str]:
+    """(asset_id, succeeded_run_id) — a good run shadowed by a newer failed one."""
+    asset_id, good = _seed_run(db, tmp_path, status="succeeded")
+    corpse = repos.create_analysis_run(
+        db, asset_id=asset_id, pipeline_version="t", config={}
+    )
+    repos.start_analysis_run(db, str(corpse["id"]))
+    repos.fail_stranded_analysis_run(
+        db, str(corpse["id"]), error="worker died", recovered_by="test"
+    )
+    return asset_id, good
+
+
+def test_latest_succeeded_run_ignores_a_newer_failed_run(
+    db: Database, tmp_path: Path
+) -> None:
+    asset_id, good = _asset_with_a_corpse_on_top(db, tmp_path)
+
+    resolved = repos.get_latest_succeeded_analysis_run(db, asset_id)
+
+    assert resolved is not None and resolved["id"] == good
+
+
+def test_latest_succeeded_run_is_none_without_one(db: Database, tmp_path: Path) -> None:
+    asset_id, _run_id = _seed_run(db, tmp_path, status="running")
+
+    assert repos.get_latest_succeeded_analysis_run(db, asset_id) is None
+
+
+def test_extract_shorts_tool_uses_the_latest_succeeded_run(
+    db: Database, tmp_path: Path
+) -> None:
+    """A newer corpse used to lock the asset out of shorts extraction for good."""
+    asset_id, good = _asset_with_a_corpse_on_top(db, tmp_path)
+
+    result = tool_extract_shorts(db, asset_id)
+
+    assert result["ok"] is True
+    assert result["analysis_run_id"] == good
+
+
+def test_shorts_candidates_accepts_an_asset_whose_newest_run_failed(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(workspace_root=tmp_path / "ws", token=None, start_runner=False)
+    app = create_app(settings)
+    db: Database = app.state.db
+    asset_id, good = _asset_with_a_corpse_on_top(db, tmp_path)
+
+    with TestClient(app) as client:
+        res = client.post(f"/assets/{asset_id}/shorts-candidates:extract", json={})
+
+    assert res.status_code == 202
+    assert res.json()["analysis_run_id"] == good
