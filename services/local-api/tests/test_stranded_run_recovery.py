@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from laura.analysis.recovery import recover_stranded_analysis_runs
@@ -201,6 +202,28 @@ def test_sweep_finalizes_a_run_whose_job_already_failed(
     assert job_id in diagnostics["error"]
 
 
+@pytest.mark.parametrize("job_status", ["succeeded", "failed", "canceled", "cancelled"])
+def test_sweep_finalizes_a_run_for_every_terminal_job_status(
+    db: Database, tmp_path: Path, job_status: str
+) -> None:
+    """_TERMINAL_JOB_STATUS must accept every spelling that actually lands in jobs.status.
+
+    repos.cancel_job writes 'cancelled' (two Ls); the schema comment on the column says
+    'canceled' (one L). A frozenset with only one of those spellings leaves the run of a job
+    that ended in the other stranded on 'queued'/'running' forever -- the sweep's else branch
+    treats an unrecognised status as "a live job still owns it" and skips it for good."""
+    _asset_id, run_id = _seed_run(db, tmp_path)
+    job_id = _job_for_run(db, run_id, status=job_status)
+
+    assert recover_stranded_analysis_runs(db) == [run_id]
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None and run["status"] == "failed"
+    diagnostics = json.loads(run["diagnostics_json"] or "{}")
+    assert diagnostics["recovered_by"] == "startup sweep"
+    assert job_id in diagnostics["error"]
+
+
 def test_sweep_finalizes_a_run_without_any_job(db: Database, tmp_path: Path) -> None:
     """enqueue() deletes a failed job row when its idempotency key is reused, and a throw
     between create_analysis_run and enqueue leaves a run with no job at all."""
@@ -308,9 +331,10 @@ def _asset_with_a_corpse_on_top(db: Database, tmp_path: Path) -> tuple[str, str]
         db, asset_id=asset_id, pipeline_version="t", config={}
     )
     repos.start_analysis_run(db, str(corpse["id"]))
-    repos.fail_stranded_analysis_run(
+    wrote = repos.fail_stranded_analysis_run(
         db, str(corpse["id"]), error="worker died", recovered_by="test"
     )
+    assert wrote is True  # pin the fixture: a silently-failing write must fail this helper too
     return asset_id, good
 
 
