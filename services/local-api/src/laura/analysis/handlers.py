@@ -351,6 +351,27 @@ def _run_transcript(
 
 
 def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:
+    """Run the analysis stages, and leave the run in a TERMINAL state either way.
+
+    The jobs table gets a reaper (jobs/runner.py); analysis_runs never had one, and
+    finish_analysis_run was reachable only on the happy path. A handler that raised therefore
+    left the row in 'running' forever -- with its segments already committed and
+    diagnostics_json still '{}'. workspace-livetest holds three such rows. The exception is
+    re-raised untouched so the job's own failure handling and retry budget are unchanged.
+    """
+    run_id = str(ctx.payload["analysis_run_id"])
+    diagnostics: dict[str, Any] = {}
+    try:
+        return _analysis_run_stages(ctx, diagnostics)
+    except Exception as exc:  # noqa: BLE001 - finalize the run, then re-raise untouched
+        diagnostics["error"] = f"{type(exc).__name__}: {exc}"
+        repos.finish_analysis_run(
+            ctx.db, run_id, status="failed", diagnostics=diagnostics
+        )
+        raise
+
+
+def _analysis_run_stages(ctx: JobContext, diagnostics: dict[str, Any]) -> dict[str, Any]:
     asset_id = ctx.payload["asset_id"]
     run_id = ctx.payload["analysis_run_id"]
     config: dict[str, Any] = ctx.payload.get("config", {})
@@ -367,7 +388,6 @@ def handle_analysis_run(ctx: JobContext) -> dict[str, Any]:
     repos.start_analysis_run(ctx.db, run_id)
     repos.clear_analysis_results(ctx.db, asset_id=asset_id, run_id=run_id)
 
-    diagnostics: dict[str, Any] = {}
     if stages_cfg.get("scene", True):
         diagnostics["scene"] = _run_scene(ctx.db, asset, run_id, files, config)
     if stages_cfg.get("asr", True):

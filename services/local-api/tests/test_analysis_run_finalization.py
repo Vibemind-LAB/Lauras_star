@@ -8,6 +8,7 @@ the row stayed 'running' forever with its 165 segments attached and diagnostics_
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -95,3 +96,93 @@ def test_unreachable_index_does_not_fail_the_transcript_stage(
     assert [s["text"] for s in repos.get_transcript(db, str(asset["id"]), run_id)] == [
         "mission talk"
     ]
+
+
+def test_crashing_stage_finalizes_the_run_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The jobs table has a reaper; analysis_runs had nothing. A handler that dies must still
+    leave a terminal row behind -- otherwise the run says 'running' forever and every reader
+    that filters on status silently loses its artifacts."""
+    db = _db(tmp_path)
+    _project, asset, run_id = _seed(db, tmp_path)
+
+    def _boom(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("scene detector exploded")
+
+    monkeypatch.setattr(handlers, "_run_scene", _boom)
+
+    with pytest.raises(RuntimeError, match="scene detector exploded"):
+        handlers.handle_analysis_run(
+            _ctx(db, {
+                "asset_id": str(asset["id"]),
+                "analysis_run_id": run_id,
+                "config": {"stages": {"scene": True, "asr": False}},
+            })
+        )
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None
+    assert run["status"] == "failed"
+    assert run["finished_at"] is not None
+    diagnostics = json.loads(run["diagnostics_json"] or "{}")
+    assert "RuntimeError: scene detector exploded" in diagnostics["error"]
+
+
+def test_failed_run_keeps_the_stages_that_did_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever finished before the crash stays in the diagnostics -- that is what makes the
+    failure diagnosable instead of an empty '{}'."""
+    db = _db(tmp_path)
+    _project, asset, run_id = _seed(db, tmp_path)
+
+    monkeypatch.setattr(
+        handlers, "_run_scene", lambda *a, **k: {"status": "ok", "count": 3}
+    )
+
+    def _boom(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("asr exploded")
+
+    monkeypatch.setattr(handlers, "_run_transcript", _boom)
+
+    with pytest.raises(RuntimeError, match="asr exploded"):
+        handlers.handle_analysis_run(
+            _ctx(db, {
+                "asset_id": str(asset["id"]),
+                "analysis_run_id": run_id,
+                "config": {"stages": {"scene": True, "asr": True}},
+            })
+        )
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None
+    diagnostics = json.loads(run["diagnostics_json"] or "{}")
+    assert diagnostics["scene"] == {"status": "ok", "count": 3}
+    assert "RuntimeError: asr exploded" in diagnostics["error"]
+
+
+def test_clean_run_still_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard on the happy path: the wrap must not change a healthy run."""
+    db = _db(tmp_path)
+    _project, asset, run_id = _seed(db, tmp_path)
+
+    monkeypatch.setattr(
+        handlers, "_run_scene", lambda *a, **k: {"status": "ok", "count": 2}
+    )
+
+    diagnostics = handlers.handle_analysis_run(
+        _ctx(db, {
+            "asset_id": str(asset["id"]),
+            "analysis_run_id": run_id,
+            "config": {"stages": {"scene": True, "asr": False}},
+        })
+    )
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None
+    assert run["status"] == "succeeded"
+    assert diagnostics["scene"] == {"status": "ok", "count": 2}
+    assert "error" not in diagnostics
