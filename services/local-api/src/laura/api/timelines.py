@@ -520,7 +520,15 @@ def timeline_from_shots(
     split_cuts: list[SplitCutOut] = []
     quality: RoughCutQualityOut | None = None
     if body.align_editorial:
-        word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
+        # Words come from the run that HOLDS the transcript, not from the shots' run — a
+        # scene-only re-analysis produces shots and no segments. Deliberately independent of
+        # body.run_id, which selects shots.
+        transcript_run = repos.get_latest_transcript_run(db, body.asset_id)
+        word_rows = (
+            repos.list_words_for_run(db, body.asset_id, str(transcript_run["id"]))
+            if transcript_run is not None
+            else []
+        )
         # Thread the stored per-word text (with any ASR punctuation) and the segment's diarization
         # speaker label through the in-memory Word so semantic placement can find sentence ends and
         # speaker turns — no new schema column. Both are graceful: NULL text/speaker -> no signal.

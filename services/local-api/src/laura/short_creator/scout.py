@@ -208,7 +208,7 @@ def _scene_context_readonly(
     if match is None:
         return {"ok": False, "reason": "unknown scene"}
     _scene_number, src_start, src_end_exclusive = match
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
     in_scene = context._segments_in_ranges(segments, [(src_start, src_end_exclusive)])
     text = " ".join(str(seg.get("text") or "").strip() for seg in in_scene).strip()

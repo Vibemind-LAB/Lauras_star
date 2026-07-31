@@ -28,7 +28,7 @@ def sequence_transcript_blocks(db: Database, sequence_id: str) -> list[dict[str,
         seq_in = int(clip["seq_in_frame"])
 
         if asset_id not in transcript_cache:
-            run = repos.get_latest_analysis_run(db, asset_id)
+            run = repos.get_latest_transcript_run(db, asset_id)
             transcript_cache[asset_id] = (
                 repos.get_transcript(db, asset_id, run["id"]) if run is not None else []
             )

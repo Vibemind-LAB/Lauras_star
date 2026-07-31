@@ -398,6 +398,50 @@ def get_latest_analysis_run(db: Database, asset_id: str) -> dict[str, Any] | Non
         return dict(row) if row is not None else None
 
 
+# The run-resolution ordering shared by get_latest_transcript_run and search_transcript's
+# correlated subquery: has-a-transcript, then succeeded, then newest. Kept in one place so
+# the readers and the lexical search can never drift apart.
+_TRANSCRIPT_RUN_ORDER = (
+    "ORDER BY CASE WHEN ar.status = 'succeeded' THEN 0 ELSE 1 END, "
+    "COALESCE(ar.started_at, '') DESC, ar.id DESC LIMIT 1"
+)
+_TRANSCRIPT_RUN_HAS_SEGMENTS = (
+    "EXISTS (SELECT 1 FROM transcript_segments ts "
+    "WHERE ts.asset_id = ar.asset_id AND ts.analysis_run_id = ar.id)"
+)
+
+
+def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The run that carries this asset's transcript, or None if no run has segments.
+
+    NOT the same question as :func:`get_latest_analysis_run`. Analysis is stage-configurable
+    (``stages.asr: false``), so a scene-only re-analysis is the *latest* run while carrying no
+    transcript at all — and a run that crashed after writing its segments (an unreachable
+    Qdrant used to kill the whole handler) stays ``'running'`` forever with a complete
+    transcript attached. Both shapes exist in workspace-livetest.
+
+    Resolution order, see docs/superpowers/specs/2026-07-31-stranded-transcript-runs-design.md:
+
+    1. only runs that HAVE segments,
+    2. ``succeeded`` outranks anything unfinished (an in-flight re-analysis never shadows a
+       complete transcript). The same ordering also ranks ``'failed'`` below ``'succeeded'``:
+       a newer, complete transcript on a run that crashed after ASR (e.g. during embedding)
+       stays shadowed by an older succeeded transcript, not just by one still ``'running'``.
+    3. newest first, mirroring :func:`get_latest_analysis_run`'s ordering.
+
+    ``LIMIT 1`` is the exclusion property: exactly one run per asset, so callers filtering on
+    ``analysis_run_id`` can never mix two runs' segments.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT ar.* FROM analysis_runs ar "
+            f"WHERE ar.asset_id = ? AND {_TRANSCRIPT_RUN_HAS_SEGMENTS} "
+            f"{_TRANSCRIPT_RUN_ORDER}",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def start_analysis_run(db: Database, run_id: str) -> None:
     with db.transaction() as conn:
         conn.execute(
@@ -1451,12 +1495,12 @@ def search_transcript(
 ) -> list[dict[str, Any]]:
     """Lexical, case-insensitive transcript search scoped to a project.
 
-    Restricted to each asset's LATEST SUCCEEDED analysis run — a re-analysis leaves the prior
-    run's segments in the table, and without this filter they double-count matches instead of
-    being replaced (the semantic index is immune: it deletes-before-reindexing, see
-    :mod:`laura.short_creator.discovery`). The correlated subquery mirrors
-    :func:`get_latest_analysis_run`'s own ordering (``COALESCE(started_at, '') DESC, id DESC``)
-    with a ``status='succeeded'`` filter added.
+    Restricted to each asset's transcript run — the same resolution
+    :func:`get_latest_transcript_run` applies, inlined as a correlated subquery so search and
+    the readers can't disagree: only runs that HAVE segments, ``succeeded`` before unfinished,
+    newest first, ``LIMIT 1``. Without that single-run restriction a re-analysis' old segments
+    would double-count matches instead of replacing them (the semantic index is immune: it
+    deletes-before-reindexing, see :mod:`laura.short_creator.discovery`).
 
     Portable across SQLite/Postgres (LOWER + LIKE). FTS5/semantic search is a
     later optimisation (docs/15)."""
@@ -1472,8 +1516,8 @@ def search_transcript(
             "WHERE a.project_id = ? AND LOWER(s.text) LIKE ? "
             "AND s.analysis_run_id = ("
             "  SELECT ar.id FROM analysis_runs ar "
-            "  WHERE ar.asset_id = s.asset_id AND ar.status = 'succeeded' "
-            "  ORDER BY COALESCE(ar.started_at, '') DESC, ar.id DESC LIMIT 1"
+            f"  WHERE ar.asset_id = s.asset_id AND {_TRANSCRIPT_RUN_HAS_SEGMENTS} "
+            f"  {_TRANSCRIPT_RUN_ORDER}"
             ") "
             "ORDER BY s.start_sample LIMIT ?",
             (project_id, pattern, limit),

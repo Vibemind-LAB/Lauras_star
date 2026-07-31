@@ -47,9 +47,9 @@ def transcript_window(
     db: Database, asset_id: str, center_frame: int, window_frames: int = DEFAULT_WINDOW_FRAMES
 ) -> dict[str, Any]:
     """What is said around ``center_frame`` (± ``window_frames``) in the asset's transcript."""
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "segments": [], "text": ""}
+        return {"ok": False, "reason": "no transcript", "segments": [], "text": ""}
     segs = repos.get_transcript(db, asset_id, str(run["id"]))
     window = _segments_in_window(segs, center_frame, window_frames)
     text = " ".join(str(seg.get("text") or "").strip() for seg in window).strip()
@@ -98,9 +98,9 @@ def _group_segments_into_blocks(
 
 def transcript_overview(db: Database, asset_id: str, blocks: int = 8) -> dict[str, Any]:
     """The whole transcript grouped into ≤ *blocks* time blocks — the video at a glance."""
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "blocks": []}
+        return {"ok": False, "reason": "no transcript", "blocks": []}
     segs = repos.get_transcript(db, asset_id, str(run["id"]))
     grouped = _group_segments_into_blocks(segs, blocks=blocks)
     return {"ok": True, "asset_id": asset_id, "blocks": grouped}
@@ -184,7 +184,7 @@ def scene_transcripts(db: Database, asset_id: str) -> dict[str, Any]:
     scenes = repos.list_scenes(db, str(timeline["id"]))
     if not scenes:
         return {"ok": False, "reason": "no scenes; build_roughcut first", "scenes": []}
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
     clips = repos.list_timeline_clips(db, str(timeline["id"]))
     out: list[dict[str, Any]] = []
@@ -288,9 +288,9 @@ def _export_voice_alignment(db: Database, export: dict[str, Any]) -> dict[str, A
         ranges.append((int(seg[0]), int(seg[1])))
     if not asset_id or not ranges:
         return {"ok": False, "reason": "export has no checkable segments", "aligned": False}
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "aligned": False}
+        return {"ok": False, "reason": "no transcript", "aligned": False}
     words = repos.list_words_for_run(db, asset_id, str(run["id"]))
     clipped: list[str] = []
     for start, end in ranges:
@@ -319,9 +319,9 @@ def check_voice_alignment(db: Database, candidate_id: str) -> dict[str, Any]:
             return _export_voice_alignment(db, export)
         return {"ok": False, "reason": "candidate not found", "aligned": False}
     asset_id = str(candidate["asset_id"])
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
-        return {"ok": False, "reason": "no analysis run", "aligned": False}
+        return {"ok": False, "reason": "no transcript", "aligned": False}
     words = repos.list_words_for_run(db, asset_id, str(run["id"]))
     result = _voice_alignment(
         words,
