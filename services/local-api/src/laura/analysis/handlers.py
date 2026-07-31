@@ -335,11 +335,15 @@ def _run_transcript(
         })
 
     embedded = 0
-    index = get_index()
-    if index is not None and index_items:
+    if index_items:
         try:
-            index.delete_asset(asset["id"])
-            embedded = index.index(index_items)
+            # get_index() itself raises when Qdrant is unreachable (the client/collection
+            # construction talks to the server). Semantic indexing is best-effort -- it must
+            # never take the analysis run with it. This is fd0914b's fix on the write side.
+            index = get_index()
+            if index is not None:
+                index.delete_asset(asset["id"])
+                embedded = index.index(index_items)
         except Exception as exc:  # noqa: BLE001 - semantic indexing is best-effort
             diar_status = f"{diar_status}; embed failed: {type(exc).__name__}"
     return {"status": "ok", "segments": len(segments), "diarization": diar_status,
