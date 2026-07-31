@@ -114,27 +114,50 @@ widersprechen: beide Seiten benennen dieselbe Regel.
 
 ### 3. Übernahme bei den Lesern
 
-`get_latest_analysis_run` → `get_latest_transcript_run` überall dort, wo das Muster
-`run = get_latest_analysis_run(...)` → `get_transcript(db, asset_id, run["id"])` steht.
-Je eine Zeile; die `run is None`-Wächter bleiben unverändert gültig:
+`get_latest_analysis_run` → `get_latest_transcript_run` überall dort, wo der aufgelöste Lauf
+in einen **Transkript-Leser** fließt (`get_transcript`, `list_words_for_run`,
+`candidate_caption_words`). Je eine Zeile; die `run is None`-Wächter bleiben unverändert
+gültig. Die vollständige Liste — 17 Stellen:
 
-- `api/analysis.py` (GET `/assets/{id}/transcript`, Segment-ID-Liste)
-- `api/assets.py` (SRT/VTT-Export)
-- `sequences/transcript.py` (Captions über Timeline-Clips)
-- `render/handlers.py`
-- `short_creator/context.py` (3 Stellen), `short_creator/scout.py`,
-  `short_creator/production_tools.py`
-- `demo/drafts.py`
-- `analysis/handlers.py` (`_realign_segments`)
+| Datei | Stelle(n) | liest |
+|---|---|---|
+| `analysis/handlers.py` | 465 | `get_transcript` (Realign) |
+| `api/analysis.py` | 116, 185 | `get_transcript` |
+| `api/analysis.py` | 159 | `config_json.language` des Laufs |
+| `api/assets.py` | 346 | `get_transcript` (SRT/VTT) |
+| `demo/drafts.py` | 75 | `get_transcript` |
+| `render/captions_source.py` | 77 | `list_words_for_run` |
+| `render/handlers.py` | 269 | `get_transcript` |
+| `render/shorts_render.py` | 248 | `candidate_caption_words` |
+| `sequences/transcript.py` | 31 | `get_transcript` |
+| `short_creator/context.py` | 50, 101, 187 | `get_transcript` |
+| `short_creator/context.py` | 291, 322 | `list_words_for_run` |
+| `short_creator/production_tools.py` | 600 | `get_transcript` |
+| `short_creator/scout.py` | 211 | `get_transcript` |
+
+Zwei Stellen brauchen mehr als den Namenstausch:
+
+- `api/analysis.py:159` (`_language_for_asset`) liest die ASR-Sprache aus `config_json`. Sie
+  muss vom Lauf kommen, der das Transkript erzeugt hat — sonst realignt Laura Segmente aus
+  Lauf A mit der Sprache aus Lauf B.
+- `render/shorts_render.py:248` gattert zusätzlich auf `run["status"] == "succeeded"`. Der
+  Resolver kodiert diese Präferenz bereits; `run is not None` heißt dort ab jetzt „hat ein
+  Transkript". Das Gate wird entsprechend auf `run is not None` reduziert, sonst blieben
+  gestrandete Assets ohne Captions.
 
 **Nicht** angefasst:
 
 - `scenes/build.py` — bekommt die `run_id` des gerade laufenden Analyselaufs übergeben; das
   ist per Design innerhalb-des-Laufs und korrekt.
-- `analysis/visual_embed.py`, `analysis/visual_query.py` — Frame-Artefakte, eigener Resolver.
-  Dieselbe Asymmetrie existiert dort; sie wird hier benannt, nicht behoben.
+- `analysis/visual_embed.py:353`, `analysis/visual_query.py:75` — Frame-Artefakte, eigener
+  Resolver. Dieselbe Asymmetrie existiert dort; sie wird hier benannt, nicht behoben.
+- Shot-Leser und reine Zustands-Gates bleiben auf `get_latest_analysis_run` — dort ist
+  „neuester Lauf" die richtige Frage: `api/analysis.py:87` (Lauf-Metadaten), `:96` (Shots),
+  `api/scenes.py:56`, `api/shorts.py:66` (Status-Anzeige), `api/shorts_candidates.py:57`,
+  `api/timelines.py:465`, `analysis/shorts_handlers.py:114`, `demo/drafts.py:41`,
+  `ingest/handlers.py:190` (Existenzprüfung), `mcp/tools.py:195`, `:283`.
 
-Warum alle zehn und nicht nur die Suche: sonst rankt Discovery AgentFarm als Material,
+Warum alle siebzehn und nicht nur die Suche: sonst rankt Discovery AgentFarm als Material,
 während `scout.get_scene_context` / `context.transcript_window` den *neuesten* Lauf lesen,
 0 Segmente finden und „kein Transkript" melden — die Auto-Short-Kette würde sich selbst
 widersprechen.
@@ -168,8 +191,10 @@ In `tests/test_discovery.py`:
   `search_transcript` findet A's Text; `discovery.search_material` rankt das Asset.
 - **`test_succeeded_run_wins_over_newer_unfinished_run`** — `succeeded` mit Segmenten plus
   neuerer `running` mit Teil-Segmenten: nur der `succeeded`-Text kommt zurück.
-- **`test_result_rows_never_mix_two_runs`** — drei Läufe mit Segmenten; jede zurückgegebene
+- **`test_search_rows_never_mix_two_runs`** — drei Läufe mit Segmenten; jede zurückgegebene
   Zeile trägt dieselbe `analysis_run_id`.
+- **`test_asset_without_any_segments_resolves_to_none`** — ein Asset, dessen Läufe alle
+  segmentlos sind, löst auf `None` auf statt auf einen leeren Lauf.
 - **`test_reader_and_search_resolve_the_same_run`** — `context.transcript_window` und
   `search_transcript` landen auf demselben Lauf.
 - **`test_stale_run_segments_are_excluded_and_ranked_once`** (bestehend) muss
@@ -180,9 +205,13 @@ Neu, `tests/test_analysis_run_finalization.py`:
 - **`test_crashing_stage_finalizes_the_run_as_failed`** — eine werfende Stufe hinterlässt
   `status='failed'` mit dem Fehler in den Diagnostics, und die Exception propagiert weiter
   (der Job scheitert wie bisher).
-- **`test_unreachable_index_does_not_fail_the_run`** — ein werfendes `get_index()` lässt den
-  Lauf `succeeded` werden, die Segmente sind persistiert, der Embed-Fehler steht in den
-  Diagnostics.
+- **`test_failed_run_keeps_the_stages_that_did_complete`** — was vor dem Absturz fertig
+  wurde, überlebt in den Diagnostics; genau das macht den Fehler diagnostizierbar statt `{}`.
+- **`test_clean_run_still_succeeds`** — Regressionswache: die Kapselung darf einen gesunden
+  Lauf nicht verändern.
+- **`test_unreachable_index_does_not_fail_the_transcript_stage`** — ein werfendes
+  `get_index()` lässt `_run_transcript` normal zurückkehren, die Segmente sind persistiert,
+  der Embed-Fehler steht in den Diagnostics.
 
 ### 6. Live-Verifikation
 
