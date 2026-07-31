@@ -3,10 +3,17 @@
 Usage (from services/local-api):
     uv run python scripts/verify_stranded_transcripts.py ../../workspace-livetest/laura.db
 
-Reads only: the source file is copied to a temp dir first. Two assets in the live DB have
-their only transcript on runs frozen in 'running' (AgentFarm Autogen: 165 segments,
-n8n Farm: 8), and their newer succeeded runs carry none -- see
-docs/superpowers/specs/2026-07-31-stranded-transcript-runs-design.md.
+Reads only: the source file (and any -wal/-shm sidecars) is copied to a temp dir first --
+mirroring laura.analysis.eval_cut_cli._open_db_copy, to dodge WAL/locks while the desktop app
+may hold the live DB open. Two assets in the live DB have their only transcript on runs frozen
+in 'running' (AgentFarm Autogen: 165 segments, n8n Farm: 8), and their newer succeeded runs
+carry none -- see docs/superpowers/specs/2026-07-31-stranded-transcript-runs-design.md.
+
+Exit code encodes the specific claim this script exists to check: every asset that has
+transcript segments *somewhere* in the table resolves, via get_latest_transcript_run, to a run
+that actually returns those segments. That catches a regression of the exact bug this SDD arc
+fixed (the resolver going back to returning None, or picking an empty run, for an asset whose
+transcript is real) without hardcoding which assets are expected to have one.
 """
 
 from __future__ import annotations
@@ -24,6 +31,21 @@ from laura.db.database import SqliteDatabase
 logger = logging.getLogger("verify_stranded_transcripts")
 
 
+def _copy_db(source: Path, dest: Path) -> None:
+    """Copy the DB and any -wal/-shm sidecars, mirroring eval_cut_cli._open_db_copy.
+
+    ``sqlite.py``'s ``connect()`` always sets ``PRAGMA journal_mode = WAL``, so a live
+    laura.db held open by the desktop app can have committed frames sitting in ``-wal`` that
+    haven't been checkpointed into the main file yet. Copying only the ``.db`` file risks a
+    stale/incomplete snapshot with no signal that anything was missed.
+    """
+    shutil.copy2(source, dest)
+    for suffix in ("-wal", "-shm"):
+        side = source.with_name(source.name + suffix)
+        if side.exists():
+            shutil.copy2(side, dest.with_name(dest.name + suffix))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("db_path", type=Path, help="path to the live laura.db (read-only)")
@@ -32,7 +54,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         copy = Path(tmp) / "laura.db"
-        shutil.copy2(args.db_path, copy)
+        _copy_db(args.db_path, copy)
         db = SqliteDatabase(copy)
 
         with db.connection() as conn:
@@ -43,8 +65,13 @@ def main() -> int:
                     "SELECT id, project_id, display_name FROM media_assets ORDER BY display_name"
                 )
             ]
+            assets_with_segments = {
+                str(r["asset_id"])
+                for r in conn.execute("SELECT DISTINCT asset_id FROM transcript_segments")
+            }
 
         ok = True
+        resolved_with_segments: set[str] = set()
         for asset in assets:
             run = repos.get_latest_transcript_run(db, str(asset["id"]))
             if run is None:
@@ -57,6 +84,17 @@ def main() -> int:
             )
             if not segments:
                 ok = False
+            else:
+                resolved_with_segments.add(str(asset["id"]))
+
+        stranded = assets_with_segments - resolved_with_segments
+        if stranded:
+            ok = False
+            logger.info(
+                "REGRESSION: %d asset(s) have transcript segments in the table but no run "
+                "resolves to them: %s",
+                len(stranded), sorted(stranded),
+            )
 
         for project in projects:
             hits = repos.search_transcript(
