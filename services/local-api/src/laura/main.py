@@ -6,6 +6,7 @@ job runner on startup; stops it cleanly on shutdown.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -57,6 +58,8 @@ from .render.shorts_render import register_shorts_render_handler
 from .short_creator.handlers import register_short_creator_handlers
 from .telemetry import configure_tracing
 
+logger = logging.getLogger(__name__)
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
@@ -89,8 +92,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # A worker that was SIGKILLed leaves its analysis run saying 'running' forever, and
         # the job reaper only ever sees leases that expire from now on. Heal what the last
-        # process left behind before this one starts working.
-        recover_stranded_analysis_runs(db)
+        # process left behind before this one starts working. This is an opportunistic repair,
+        # not load-bearing like the migration above: a locked DB (a second Laura process) or
+        # any unexpected row must never take down the whole API on startup.
+        try:
+            recover_stranded_analysis_runs(db)
+        except Exception:  # noqa: BLE001 - a repair pass must never block startup
+            logger.exception("startup sweep for stranded analysis runs failed")
         if settings.start_runner:
             runner.start()
         try:

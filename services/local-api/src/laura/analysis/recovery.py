@@ -22,7 +22,10 @@ from ..jobs.runner import ANALYSIS_RUN_KIND, analysis_run_id_from_payload
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_JOB_STATUS = frozenset({"succeeded", "failed", "canceled"})
+# Both spellings of "cancelled" are live in this table: the schema comment says "canceled",
+# but the only writer, repos.cancel_job, writes "cancelled" -- and the writer is what actually
+# ends up in the column. Accept both so a cancelled queued job's run isn't stranded forever.
+_TERMINAL_JOB_STATUS = frozenset({"succeeded", "failed", "canceled", "cancelled"})
 
 
 def recover_stranded_analysis_runs(db: Database) -> list[str]:

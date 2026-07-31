@@ -246,9 +246,12 @@ und `get_latest_transcript_run` liefert unverändert AgentFarms 165-Segment-Lauf
   nicht schlimmer und löst sie nicht.
 - **Die fehlende Semantik-Indizierung** der geretteten Segmente (§ 7 der Vorgänger-Spec):
   unverändert nur durch eine Neuanalyse bei erreichbarem Qdrant zu beheben.
-- **`analysis/visual_query.py:75`** und die Frame-Artefakte tragen dieselbe
-  Auflösungs-Asymmetrie wie die Transkript-Leser. `visual_embed.py:353` wird hier auf den
-  `succeeded`-Resolver gehoben (§ 3), ein eigener „latest run **mit** Frame-Embeddings"-
-  Resolver wird es nicht.
+- **Ein eigener „latest run mit Frame-Embeddings"-Resolver**: `visual_embed.py:353` wird hier
+  auf den `succeeded`-Resolver gehoben (§ 3) — dessen Leser `visual_query.py:75`
+  (`_asset_frame_embeddings`) zieht mit auf denselben Resolver, sonst sucht der Leser unter
+  einer neueren Leiche nach Embeddings, die der Schreiber unter dem `succeeded`-Lauf abgelegt
+  hat, und findet nichts. Ein Schreiber/Leser-Paar, das nur zur Hälfte umzieht, ist schlechter
+  als eines, das gar nicht umzieht — deshalb ist das kein separater Scope-Punkt mehr, sondern
+  Teil von § 3.
 - **Ein Reaper für andere Job-Arten mit eigener Statuszeile** (`production_sessions`,
   `short_runs`): dieselbe Frage, anderer Zyklus.
