@@ -177,3 +177,35 @@ curl -X POST -H "X-Laura-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"text": "render jetzt"}' \
   http://127.0.0.1:8765/production/<session_id>/message
 ```
+
+## Auto-Overview: ein Thema, mehrere Videos
+
+`POST /projects/{project_id}/auto-overview` mit `{"topic": "...", "target_seconds": 180}`
+baut aus den Transkript-Treffern **mehrerer** Videos eine Überblicks-Montage: kurze
+Ausschnitte rund um die Fundstellen, vom Scout ausgewählt und geordnet, als **eigene** Sequenz
+abgelegt (die Montage in „Zusammenfügen" bleibt unberührt) und sofort als MP4 gerendert.
+
+```bash
+curl -X POST -H "X-Laura-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"topic": "wie das Agenten-Team einen Auftrag übernimmt", "target_seconds": 180}' \
+  http://127.0.0.1:8765/projects/<project_id>/auto-overview
+```
+
+Antwort (202): `sequence_id`, `source_timeline_id`, `clips`, `rationale`, `fallback`,
+`ranking`, `warnings`, `export_id`, `job_id`. Den Render verfolgt man über `/jobs/{job_id}`,
+das Ergebnis liegt unter `/exports/{export_id}`.
+
+Was der Scout entscheidet, ist die Auswahl und die Reihenfolge — die Ausschnitte selbst baut
+deterministischer Code (Fenster um die Fundstelle, auf die Szene geklemmt, 4–20s). Der Agent
+antwortet mit Nummern, nie mit Frames: mit kleinen Modellen gehört jeder Vertrag in Code.
+
+Deckt die Suche mehrere Videos ab, müssen mindestens zwei vertreten sein — sonst wäre es kein
+Überblick, sondern ein längerer Short. Trägt nur eines etwas bei, ist das kein Fehler, sondern
+steht in `warnings`.
+
+Voraussetzungen wie beim Auto-Short: das Extra `autoshort` und eine brauchbare
+Agenten-Konfiguration (sonst 503). Kein Treffer, kein brauchbares Fenster oder eine Zielzeit
+kürzer als der kürzeste Ausschnitt → 422, und es wird **nichts** angelegt. Der Ton ist der
+Originalton der Ausschnitte; eine Erzählstimme ist bewusst ein eigener Zyklus.
+
+Spec: `docs/superpowers/specs/2026-07-31-auto-overview-design.md`.
