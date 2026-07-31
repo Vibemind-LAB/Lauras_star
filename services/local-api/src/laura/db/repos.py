@@ -1612,10 +1612,17 @@ def get_scene_by_timeline(db: Database, scene_timeline_id: str) -> dict[str, Any
 # --- sequence items (stage 5) -----------------------------------------------
 
 def get_or_create_project_sequence(db: Database, project_id: str) -> dict[str, Any]:
+    """The project's OWN sequence — the Zusammenfügen view's backing timeline.
+
+    Filters on ``created_from IS NULL`` so a sequence built by another feature (e.g.
+    auto-overview's montage, created with ``created_from=<its source timeline id>`` — see
+    :func:`..short_creator.overview_build.build_overview`) can never be mistaken for the
+    project's own sequence, which is always created here with no ``created_from``.
+    """
     with db.connection() as conn:
         row = conn.execute(
             "SELECT * FROM timelines WHERE project_id=? AND kind='sequence' "
-            "ORDER BY created_at LIMIT 1",
+            "AND created_from IS NULL ORDER BY created_at LIMIT 1",
             (project_id,),
         ).fetchone()
     if row is not None:
@@ -1749,9 +1756,15 @@ def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
         if aid is not None and t["id"] in tids_with_scenes:
             newest_for_asset.setdefault(aid, t["id"])
     keep = set(newest_for_asset.values())
-    # Never hide scenes whose source asset cannot be derived.
+    # Never hide scenes of a rough-cut timeline whose source asset cannot be derived. Must
+    # check membership, not just a None value: `timeline_asset` only has entries for
+    # kind='rough_cut' timelines, so a plain `.get(tid) is None` would also match timelines
+    # that are not rough cuts at all (e.g. an auto-overview's kind="overview" timeline) and
+    # let their scenes leak into this project-wide bin.
     keep |= {
-        tid for tid in tids_with_scenes if timeline_asset.get(tid) is None
+        tid
+        for tid in tids_with_scenes
+        if tid in timeline_asset and timeline_asset[tid] is None
     }
 
     out: list[dict[str, Any]] = []

@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from laura.api.short_creator import _overview_fps
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
@@ -291,3 +292,58 @@ def test_single_source_is_warned_but_still_succeeds(tmp_path: Path, monkeypatch:
     assert r.status_code == 202, r.text
     body = r.json()
     assert "overview covers a single source: only a.mp4 matched the topic" in body["warnings"]
+
+
+def test_trim_to_one_clip_warns_about_target_length_not_single_source(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Both assets have real material — the ranking and the endpoint's own `candidates`
+    span two videos — but a tight `target_seconds` trims the (validated, two-source)
+    selection down to one clip via `trim_to_target`. The warning must name the target
+    length as the cause, not claim only one video matched the topic: that claim would be a
+    lie the response's own `ranking` visibly contradicts (it still lists both videos)."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    client, db = _app(tmp_path)
+    project_id, a, b = _seed_two_assets(db)
+    monkeypatch.setattr(
+        "laura.api.short_creator.run_overview_scout",
+        lambda *_a, **_kw: _decision_for_target(a, b, 10),
+    )
+
+    r = client.post(
+        f"/projects/{project_id}/auto-overview",
+        json={"topic": "mission", "target_seconds": 10},
+        headers=_H,
+    )
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    # Sanity: the trim really did leave exactly one clip, from one asset, while both videos
+    # are still visible in the ranking — otherwise this test wouldn't exercise case (b).
+    assert len({c["asset_id"] for c in body["clips"]}) == 1
+    assert len({e["asset_id"] for e in body["ranking"]}) == 2
+
+    warning = next(w for w in body["warnings"] if "single source" in w)
+    assert "10" in warning, warning
+    assert "matched the topic" not in warning, warning
+
+
+def test_overview_fps_falls_back_to_the_project_rate(tmp_path: Path) -> None:
+    """An asset whose probe left rate_num/rate_den NULL must fall back to the PROJECT's own
+    rate, per _overview_fps's own docstring — not a hardcoded 25fps. The projects table
+    column is `sequence_rate_num`/`sequence_rate_den` (db/migrations/0001_init.sql), not
+    `rate_num`/`rate_den` (that name belongs to media_assets); reading the wrong column left
+    the fallback dead and every rate-less asset silently defaulted to 25fps."""
+    _client, db = _app(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a"
+    )
+    assert asset["rate_num"] is None, "sanity: a fresh asset has no probed rate yet"
+
+    fps_by_asset = _overview_fps(db, project["id"], [{"asset_id": asset["id"]}])
+
+    assert fps_by_asset[asset["id"]] == (30, 1)

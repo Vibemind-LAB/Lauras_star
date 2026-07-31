@@ -508,8 +508,8 @@ def _overview_fps(
     that has none (probe failures leave the columns empty)."""
     project = repos.get_project(db, project_id)
     fallback = (
-        int((project or {}).get("rate_num") or 25),
-        int((project or {}).get("rate_den") or 1),
+        int((project or {}).get("sequence_rate_num") or 25),
+        int((project or {}).get("sequence_rate_den") or 1),
     )
     out: dict[str, tuple[int, int]] = {}
     for entry in ranking:
@@ -629,11 +629,25 @@ def create_project_auto_overview(
 
     warnings = config_warnings(config)
     if len({c.asset_id for c in decision["clips"]}) < 2:
-        names = sorted({c.display_name for c in decision["clips"]})
-        warnings = [
-            *warnings,
-            f"overview covers a single source: only {', '.join(names)} matched the topic",
-        ]
+        # Two different causes look the same at this point (the final clip list covers one
+        # asset) but are not the same story: (a) the search itself only ever found material
+        # in one video, versus (b) several videos matched and the scout's selection covered
+        # them — run_overview_scout validates that BEFORE trimming — but target_seconds left
+        # room for only one clip once trim_to_target ran. Decide from `candidates` (what
+        # existed before the scout ran), not from `decision["clips"]` (the final, possibly
+        # trimmed answer), so a short target never gets blamed on the wrong video.
+        if len({c.asset_id for c in candidates}) < 2:
+            names = sorted({c.display_name for c in decision["clips"]})
+            warnings = [
+                *warnings,
+                f"overview covers a single source: only {', '.join(names)} matched the topic",
+            ]
+        else:
+            warnings = [
+                *warnings,
+                "overview covers a single source: target_seconds "
+                f"({body.target_seconds}) left room for only one clip after trimming",
+            ]
 
     return {
         "sequence_id": built["sequence_id"],

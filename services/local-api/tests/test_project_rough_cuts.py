@@ -26,6 +26,8 @@ from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
 from laura.main import create_app
+from laura.short_creator.overview_build import build_overview
+from laura.short_creator.overview_windows import Candidate
 
 _TOKEN = "test-token"
 _H = {"X-Laura-Token": _TOKEN}
@@ -212,3 +214,33 @@ def test_list_project_scenes_keeps_older_when_newest_has_no_scenes(tmp_path: Pat
 
     assert {s["source_timeline_id"] for s in scenes} == {old["id"]}
     assert len(scenes) == 1
+
+
+def test_list_project_scenes_excludes_the_overview_timeline(tmp_path: Path) -> None:
+    """An auto-overview run writes its own kind="overview" source timeline plus one scene
+    per clip (overview_build.build_overview). Those scenes must never reach the project
+    scene bin — only kind='rough_cut' timelines belong there. Before the fix, the escape
+    hatch in list_project_scenes (`timeline_asset.get(tid) is None`) treated "not a
+    rough-cut timeline at all" the same as "a rough-cut timeline whose asset could not be
+    derived", so the overview's scenes leaked through and piled up on every run."""
+    client, db = _client(tmp_path)
+    pid, aid, _ = _seed(db)
+
+    rc = repos.create_timeline(db, project_id=pid, name="RC", kind="rough_cut", created_from=aid)
+    repos.replace_scenes(db, pid, rc["id"], [(0, 30), (30, 60)])
+    expected_ids = {str(s["id"]) for s in repos.list_scenes(db, rc["id"])}
+
+    build_overview(
+        db,
+        project_id=pid,
+        topic="overview topic",
+        clips=[
+            Candidate(aid, "a", 1, 0, 30, "snippet one"),
+            Candidate(aid, "a", 2, 30, 60, "snippet two"),
+        ],
+    )
+
+    scenes = client.get(f"/projects/{pid}/scenes", headers=_H).json()
+
+    assert {str(s["id"]) for s in scenes} == expected_ids
+    assert len(scenes) == 2

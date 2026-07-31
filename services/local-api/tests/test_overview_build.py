@@ -92,6 +92,29 @@ def test_the_project_sequence_is_left_alone(tmp_path: Path) -> None:
     assert repos.get_or_create_project_sequence(db, project_id)["id"] == existing["id"]
 
 
+def test_fresh_project_sequence_lookup_never_returns_the_overview_sequence(
+    tmp_path: Path,
+) -> None:
+    """On a FRESH project — no sequence created yet, driven purely through the API — the
+    overview's sequence must never become what `get_or_create_project_sequence` (the
+    Zusammenfügen view's backing lookup) returns. Before the fix, that lookup was just
+    "the OLDEST kind='sequence' row"; on a project whose very first sequence-kind timeline
+    is the overview's own, that made the overview montage BE the project sequence
+    (contradicts Entscheidung 2: "die Projekt-Sequenz bleibt unberührt")."""
+    db = _db(tmp_path)
+    project_id, a, _b = _project_with_two_assets(db)
+
+    out = build_overview(
+        db, project_id=project_id, topic="mission",
+        clips=[Candidate(a, "A", 1, 0, 300, "alpha")],
+    )
+
+    project_sequence = repos.get_or_create_project_sequence(db, project_id)
+
+    assert project_sequence["id"] != out["sequence_id"]
+    assert repos.list_sequence_items(db, project_sequence["id"]) == []
+
+
 def test_a_materialized_scene_holds_exactly_its_own_clip(tmp_path: Path) -> None:
     """materialize_scene re-offsets to 0 — the scene timeline is what flatten_sequence reads."""
     db = _db(tmp_path)
