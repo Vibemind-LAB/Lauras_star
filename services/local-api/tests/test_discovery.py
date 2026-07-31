@@ -199,6 +199,31 @@ def test_stale_run_segments_are_excluded_and_ranked_once(
     assert "mission new" in top["scene_hits"][0]["snippet"]
 
 
+def test_raising_index_degrades_to_lexical_not_an_exception(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """get_index() itself can raise (e.g. a down Qdrant server refuses the connection during
+    client/collection construction) — that must degrade to lexical exactly like a None index,
+    never propagate out of search_material."""
+
+    def _raise() -> None:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(discovery, "get_index", _raise)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    _seed_asset_with_scenes(
+        db, project["id"], "a.mp4", segments=[(10, 60, "the agent farm plans the mission")]
+    )
+
+    out = discovery.search_material(db, project["id"], "mission")
+
+    assert out["source"] == "lexical"
+    assert out["ranking"]
+
+
 def test_semantic_ranking_used_when_index_answers(tmp_path: Path, monkeypatch: Any) -> None:
     """Semantic path: gated exactly like tests/test_semantic.py (optional [semantic] extra)."""
     import pytest

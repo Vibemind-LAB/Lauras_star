@@ -15,6 +15,7 @@ pytest.importorskip("qdrant_client")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from laura.api import search as search_api  # noqa: E402
 from laura.config import Settings  # noqa: E402
 from laura.db.database import SqliteDatabase  # noqa: E402
 from laura.main import create_app  # noqa: E402
@@ -83,5 +84,36 @@ def test_search_endpoint_semantic_mode(tmp_path: Path) -> None:
         hits = resp.json()
         assert hits and hits[0]["segment_id"] == s2  # noise segment ranks first
         assert hits[0]["score"] is not None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_search_endpoint_semantic_mode_falls_back_when_index_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """get_index() itself can raise (e.g. a down Qdrant server refuses the connection during
+    client/collection construction) — mode=semantic must degrade to lexical results, not 500."""
+
+    def _raise() -> None:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(search_api, "get_index", _raise)
+
+    settings = Settings(workspace_root=tmp_path, start_runner=False)
+    db = SqliteDatabase(settings.db_path)
+    db.migrate()
+    client = TestClient(create_app(settings))
+    client.__enter__()
+    try:
+        pid = client.post(
+            "/projects", json={"name": "P", "sequence_rate_num": 30, "sequence_rate_den": 1}
+        ).json()["id"]
+
+        resp = client.post(
+            "/search",
+            json={"project_id": pid, "query": "hallo", "mode": "semantic"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == []  # lexical fallback: nothing indexed, but no 500
     finally:
         client.__exit__(None, None, None)

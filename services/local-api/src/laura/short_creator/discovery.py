@@ -26,7 +26,13 @@ def _segment_hits(
 ) -> tuple[list[dict[str, Any]], str]:
     """(hits, source): semantic when the index exists AND answers, else lexical.
     Mirrors api/search.py's fallback stance — a broken index degrades, never raises."""
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception:  # noqa: BLE001 - semantic search is best-effort: a down/unreachable
+        # Qdrant server raises during client/collection construction; degrade to lexical
+        # instead of bubbling a 500 out of this read endpoint.
+        logger.warning("semantic index unavailable; falling back to lexical", exc_info=True)
+        index = None
     if index is not None:
         try:
             hits = index.query(topic, project_id=project_id, limit=limit)
