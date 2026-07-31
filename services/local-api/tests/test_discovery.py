@@ -265,3 +265,135 @@ def test_semantic_ranking_used_when_index_answers(tmp_path: Path, monkeypatch: A
     assert out["source"] == "semantic"
     assert out["ranking"]
     assert out["ranking"][0]["asset_id"] == asset_id
+
+
+def _seed_run_with_segments(
+    db: Database,
+    asset_id: str,
+    *,
+    pipeline_version: str,
+    status: str,
+    texts: list[str],
+) -> str:
+    """A run with one segment per text at [10,60). ``status`` 'running' leaves it unfinished
+    (the live shape: the handler crashed before finish_analysis_run)."""
+    run = repos.create_analysis_run(
+        db, asset_id=asset_id, pipeline_version=pipeline_version, config={}
+    )
+    repos.start_analysis_run(db, run["id"])
+    for text in texts:
+        repos.insert_segment_with_words(
+            db, asset_id=asset_id, run_id=run["id"], speaker_id=None,
+            segment={"start_sample": 16000, "end_sample": 32000, "start_frame": 10,
+                     "end_frame": 60, "text": text, "confidence": 1.0},
+            words=[],
+        )
+    if status != "running":
+        repos.finish_analysis_run(db, run["id"], status=status, diagnostics={})
+    return str(run["id"])
+
+
+def test_transcript_stranded_on_unfinished_run_is_still_found(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The live shape (workspace-livetest): the ONLY transcript hangs on a run frozen in
+    'running' (the handler crashed on an unreachable Qdrant before finish_analysis_run),
+    while a LATER succeeded run re-analysed scenes only and carries zero segments."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(db, project["id"], "a.mp4", segments=[])
+    stranded = _seed_run_with_segments(
+        db, asset_id, pipeline_version="1", status="running", texts=["mission stranded"]
+    )
+    _seed_run_with_segments(db, asset_id, pipeline_version="2", status="succeeded", texts=[])
+
+    run = repos.get_latest_transcript_run(db, asset_id)
+    assert run is not None
+    assert run["id"] == stranded
+
+    found = repos.search_transcript(db, project_id=project["id"], query="mission")
+    assert [r["text"] for r in found] == ["mission stranded"]
+
+    out = discovery.search_material(db, project["id"], "mission")
+    assert [r["asset_id"] for r in out["ranking"]] == [asset_id]
+
+
+def test_succeeded_run_wins_over_newer_unfinished_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A re-analysis in flight has already written part of its segments. It must NOT shadow
+    the previous complete transcript — succeeded outranks unfinished regardless of age."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(db, project["id"], "a.mp4", segments=[])
+    complete = _seed_run_with_segments(
+        db, asset_id, pipeline_version="1", status="succeeded", texts=["mission complete"]
+    )
+    _seed_run_with_segments(
+        db, asset_id, pipeline_version="2", status="running", texts=["mission partial"]
+    )
+
+    run = repos.get_latest_transcript_run(db, asset_id)
+    assert run is not None
+    assert run["id"] == complete
+
+    found = repos.search_transcript(db, project_id=project["id"], query="mission")
+    assert [r["text"] for r in found] == ["mission complete"]
+
+
+def test_search_rows_never_mix_two_runs(tmp_path: Path, monkeypatch: Any) -> None:
+    """The exclusion property: three runs carry matching segments, exactly one is chosen."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(db, project["id"], "a.mp4", segments=[])
+    _seed_run_with_segments(
+        db, asset_id, pipeline_version="1", status="succeeded", texts=["mission one"]
+    )
+    newest = _seed_run_with_segments(
+        db, asset_id, pipeline_version="2", status="succeeded",
+        texts=["mission two", "mission three"],
+    )
+    _seed_run_with_segments(
+        db, asset_id, pipeline_version="3", status="running", texts=["mission four"]
+    )
+
+    found = repos.search_transcript(db, project_id=project["id"], query="mission")
+
+    assert len(found) == 2
+    with db.connection() as conn:
+        run_ids = {
+            str(
+                conn.execute(
+                    "SELECT analysis_run_id FROM transcript_segments WHERE id=?",
+                    (row["segment_id"],),
+                ).fetchone()["analysis_run_id"]
+            )
+            for row in found
+        }
+    assert run_ids == {newest}
+
+
+def test_asset_without_any_segments_resolves_to_none(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a.mp4",
+        source_path="/tmp/a.mp4",
+    )
+    run = repos.create_analysis_run(
+        db, asset_id=asset["id"], pipeline_version="1", config={}
+    )
+    repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
+
+    assert repos.get_latest_transcript_run(db, str(asset["id"])) is None
