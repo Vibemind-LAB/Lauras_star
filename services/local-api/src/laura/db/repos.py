@@ -460,6 +460,27 @@ def finish_analysis_run(
         )
 
 
+def fail_stranded_analysis_run(
+    db: Database, run_id: str, *, error: str, recovered_by: str
+) -> bool:
+    """Finalize a run whose worker never came back. True when this call wrote the row.
+
+    handle_analysis_run's try/except cannot reach a process that was SIGKILLed, and the
+    runtime cap in jobs/runner.py stops the heartbeat while the handler thread is still alive
+    and has raised nothing. Both leave analysis_runs on 'running' forever. The status guard
+    makes this a no-op once the run reached a terminal state on its own -- the handler always
+    wins over the recovery paths.
+    """
+    diagnostics = json.dumps({"error": error, "recovered_by": recovered_by})
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE analysis_runs SET status='failed', finished_at=?, diagnostics_json=? "
+            "WHERE id=? AND status IN ('queued','running')",
+            (utcnow_iso(), diagnostics, run_id),
+        )
+        return int(cur.rowcount) == 1
+
+
 def clear_analysis_results(db: Database, *, asset_id: str, run_id: str) -> None:
     """Remove any prior shots/speakers/transcript for this run (idempotent re-run)."""
     with db.transaction() as conn:
