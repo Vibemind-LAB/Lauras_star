@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import PIPELINE_VERSION, __version__
 from .ai.handlers import register_ai_handlers
 from .analysis.handlers import register_analysis_handlers
+from .analysis.recovery import recover_stranded_analysis_runs
 from .analysis.shorts_handlers import register_shorts_handlers
 from .analysis.visual_embed import register_visual_handlers
 from .api import (
@@ -86,6 +87,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # A worker that was SIGKILLed leaves its analysis run saying 'running' forever, and
+        # the job reaper only ever sees leases that expire from now on. Heal what the last
+        # process left behind before this one starts working.
+        recover_stranded_analysis_runs(db)
         if settings.start_runner:
             runner.start()
         try:

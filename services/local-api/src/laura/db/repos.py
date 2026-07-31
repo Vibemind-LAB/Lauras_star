@@ -116,6 +116,17 @@ def list_jobs(db: Database, *, limit: int = 50) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def list_jobs_of_kind(db: Database, kind: str) -> list[dict[str, Any]]:
+    """All jobs of one kind, newest first. Used to walk back from a run to its job."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, status, payload_json FROM jobs WHERE kind=? "
+            "ORDER BY created_order DESC",
+            (kind,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def cancel_job(db: Database, job_id: str) -> bool:
     now = utcnow_iso()
     with db.transaction() as conn:
@@ -479,6 +490,16 @@ def fail_stranded_analysis_run(
             (utcnow_iso(), diagnostics, run_id),
         )
         return int(cur.rowcount) == 1
+
+
+def list_unfinished_analysis_runs(db: Database) -> list[dict[str, Any]]:
+    """Every run that never reached a terminal status. Empty in a healthy DB."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analysis_runs WHERE status IN ('queued','running') "
+            "ORDER BY COALESCE(started_at, '') DESC, id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def clear_analysis_results(db: Database, *, asset_id: str, run_id: str) -> None:

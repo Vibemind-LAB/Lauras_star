@@ -11,10 +11,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from laura.analysis.recovery import recover_stranded_analysis_runs
+from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database
 from laura.jobs.queues import queue_for
 from laura.jobs.runner import JobRunner, enqueue
+from laura.main import create_app
 from laura.util import utcnow_iso
 
 PAST = "2000-01-01T00:00:00.000000Z"
@@ -163,3 +168,113 @@ def test_reaper_does_not_overwrite_an_already_finished_run(
 
     run = repos.get_analysis_run(db, run_id)
     assert run is not None and run["status"] == "succeeded"
+
+
+def _job_for_run(db: Database, run_id: str, *, status: str) -> str:
+    """An analysis.run job owning *run_id*, forced to *status*."""
+    job_id = enqueue(
+        db,
+        queue=queue_for("analysis.run"),
+        kind="analysis.run",
+        payload={"asset_id": "asset-x", "analysis_run_id": run_id},
+    )
+    with db.connection() as conn:
+        conn.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+    return job_id
+
+
+def test_sweep_finalizes_a_run_whose_job_already_failed(
+    db: Database, tmp_path: Path
+) -> None:
+    """The live shape in workspace-livetest: the job carries a real error, the run says
+    'running' and always will -- the reaper never revisits a job it already failed."""
+    _asset_id, run_id = _seed_run(db, tmp_path)
+    job_id = _job_for_run(db, run_id, status="failed")
+
+    assert recover_stranded_analysis_runs(db) == [run_id]
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None and run["status"] == "failed"
+    diagnostics = json.loads(run["diagnostics_json"] or "{}")
+    assert diagnostics["recovered_by"] == "startup sweep"
+    assert job_id in diagnostics["error"]
+
+
+def test_sweep_finalizes_a_run_without_any_job(db: Database, tmp_path: Path) -> None:
+    """enqueue() deletes a failed job row when its idempotency key is reused, and a throw
+    between create_analysis_run and enqueue leaves a run with no job at all."""
+    _asset_id, run_id = _seed_run(db, tmp_path, status="queued")
+
+    assert recover_stranded_analysis_runs(db) == [run_id]
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None and run["status"] == "failed"
+
+
+def test_sweep_leaves_a_run_with_a_live_job_alone(db: Database, tmp_path: Path) -> None:
+    """After a SIGKILL restart the job is still 'running' with a stale lease. That belongs to
+    the reaper (which requeues it seconds later), not to the sweep."""
+    _asset_id, queued_run = _seed_run(db, tmp_path, status="queued")
+    _job_for_run(db, queued_run, status="queued")
+    _asset_id2, running_run = _seed_run(db, tmp_path, status="running")
+    _job_for_run(db, running_run, status="running")
+
+    assert recover_stranded_analysis_runs(db) == []
+
+    for run_id, expected in ((queued_run, "queued"), (running_run, "running")):
+        run = repos.get_analysis_run(db, run_id)
+        assert run is not None and run["status"] == expected
+
+
+def test_sweep_is_idempotent(db: Database, tmp_path: Path) -> None:
+    _asset_id, run_id = _seed_run(db, tmp_path)
+    _job_for_run(db, run_id, status="failed")
+
+    assert recover_stranded_analysis_runs(db) == [run_id]
+    assert recover_stranded_analysis_runs(db) == []
+
+
+def test_startup_runs_the_sweep(tmp_path: Path) -> None:
+    settings = Settings(workspace_root=tmp_path / "ws", token=None, start_runner=False)
+    app = create_app(settings)
+    db: Database = app.state.db
+    _asset_id, run_id = _seed_run(db, tmp_path)
+    _job_for_run(db, run_id, status="failed")
+
+    with TestClient(app):  # entering the context runs the lifespan
+        pass
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None and run["status"] == "failed"
+
+
+def test_finalized_run_keeps_its_transcript_reachable(
+    db: Database, tmp_path: Path
+) -> None:
+    """The livetest shape: the corpse carries the ONLY transcript, and a newer scene-only run
+    succeeded with zero segments. get_latest_transcript_run ranks succeeded first, but the
+    EXISTS clause drops segment-less runs before that -- so making the corpse honest must not
+    move the resolver."""
+    asset_id, corpse = _seed_run(db, tmp_path)
+    repos.insert_segment_with_words(
+        db,
+        asset_id=asset_id,
+        run_id=corpse,
+        speaker_id=None,
+        segment={
+            "start_sample": 0, "end_sample": 16000,
+            "start_frame": 0, "end_frame": 25,
+            "text": "the only transcript this asset has",
+        },
+        words=[],
+    )
+    newer = repos.create_analysis_run(
+        db, asset_id=asset_id, pipeline_version="t", config={}
+    )
+    repos.finish_analysis_run(db, str(newer["id"]), status="succeeded", diagnostics={})
+    _job_for_run(db, corpse, status="failed")
+
+    assert recover_stranded_analysis_runs(db) == [corpse]
+
+    resolved = repos.get_latest_transcript_run(db, asset_id)
+    assert resolved is not None and resolved["id"] == corpse
