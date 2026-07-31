@@ -462,7 +462,7 @@ def _realign_segments(
             segments.append(seg)
         return segments
 
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
         raise RuntimeError("no analysis run for asset")
     return repos.get_transcript(db, asset_id, run["id"])

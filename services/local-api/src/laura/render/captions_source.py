@@ -74,7 +74,7 @@ def timeline_caption_words(db: Database, timeline_id: str) -> list[Word]:
         seq_in: int = clip["seq_in_frame"]
 
         # Mirror api/analysis.py:110 — use the latest run for the asset.
-        run = repos.get_latest_analysis_run(db, asset_id)
+        run = repos.get_latest_transcript_run(db, asset_id)
         if run is None:
             continue
 

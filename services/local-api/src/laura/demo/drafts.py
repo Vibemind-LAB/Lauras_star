@@ -72,7 +72,7 @@ def _asset_rate(asset: dict[str, Any]) -> tuple[int, int]:
 
 
 def _segments(db: Database, asset_id: str) -> list[dict[str, Any]]:
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
         return []
     return repos.get_transcript(db, asset_id, run["id"])

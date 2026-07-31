@@ -397,3 +397,26 @@ def test_asset_without_any_segments_resolves_to_none(tmp_path: Path) -> None:
     repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
 
     assert repos.get_latest_transcript_run(db, str(asset["id"])) is None
+
+
+def test_reader_and_search_resolve_the_same_run(tmp_path: Path, monkeypatch: Any) -> None:
+    """Coherence: discovery ranks the asset off the stranded run, so the scout's context
+    reader must find that same transcript. Otherwise the chain contradicts itself — search
+    says 'here is your material', get_scene_context says 'no transcript'."""
+    from laura.short_creator import context
+
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    asset_id = _seed_asset_with_scenes(db, project["id"], "a.mp4", segments=[])
+    _seed_run_with_segments(
+        db, asset_id, pipeline_version="1", status="running", texts=["mission stranded"]
+    )
+    _seed_run_with_segments(db, asset_id, pipeline_version="2", status="succeeded", texts=[])
+
+    window = context.transcript_window(db, asset_id, center_frame=30)
+
+    assert window["ok"] is True
+    assert "mission stranded" in window["text"]

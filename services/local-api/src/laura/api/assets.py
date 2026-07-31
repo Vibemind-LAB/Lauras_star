@@ -343,7 +343,7 @@ def _captions(request: Request, asset_id: str, fmt: str) -> str:
     assert project is not None
     rate_num = asset["rate_num"] or project["sequence_rate_num"]
     rate_den = asset["rate_den"] or project["sequence_rate_den"]
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     segments = repos.get_transcript(db, asset_id, run["id"]) if run is not None else []
     return (
         segments_to_srt(segments, rate_num, rate_den)
