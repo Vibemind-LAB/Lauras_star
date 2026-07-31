@@ -292,6 +292,37 @@ describe("ChatPanel session mode (v2)", () => {
     expect(screen.getByText("script v1")).toBeTruthy();
   });
 
+  it("surfaces the enqueue's config warning — the silent-wrong-model trap must be visible", async () => {
+    // Live incident 2026-07-20: three runs silently used local qwen2.5:7b because the provider
+    // default is ollama. The backend has reported it in the 202 since the hardening arc; until
+    // now the panel dropped it, so the user still saw nothing.
+    const client = mockSessionClient({
+      createProduction: vi.fn().mockResolvedValue({
+        session_id: "s1",
+        job_id: "j1",
+        warnings: ["text agents run on local ollama model 'qwen2.5:7b'"],
+      }),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    expect(screen.getByText(/qwen2\.5:7b/)).toBeTruthy();
+  });
+
+  it("shows no warning row when the backend reported none", async () => {
+    const client = mockSessionClient();
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+
+    expect(screen.queryByTestId("config-warnings")).toBeNull();
+  });
+
   it("chips surface degradation, staleness and the contact sheet — not just presence", async () => {
     // The API has reported degraded_count, stale and checks_ok since Portion 20; the panel
     // showed none of them, so a board with zero visual analysis looked identical to a fully

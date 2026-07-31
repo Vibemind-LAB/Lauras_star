@@ -614,6 +614,28 @@ function SessionPanel({
   return (
     <>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5 text-[11px]">
+        {/* Advisory config findings from the enqueue — never blocking, but the run they describe
+            is already in flight, so they lead the panel rather than sit below the progress line.
+            The backend text is English (it names env vars); only the label is localised. */}
+        {state.warnings.length > 0 && (
+          <div
+            /* Solid token classes only: the theme colours are bare `var(--x)` without an
+               <alpha-value> slot, so Tailwind emits NOTHING for `/40`-style modifiers on them
+               (verified against a built stylesheet) — such a class would render invisible. */
+            className="mb-1.5 rounded-md border border-status-warn bg-surface-2 px-1.5 py-1"
+            role="status"
+            data-testid="config-warnings"
+          >
+            {state.warnings.map((warning) => (
+              // Amber carries the signal (border + label); the body runs in the body-text token.
+              // Amber #B45309 on surface-2 measures 4.10:1 — over this theme's ≥3:1 bar but under
+              // AA's 4.5:1 for text this small, and these strings are long enough to be read.
+              <div key={warning} className="text-content-strong">
+                <span className="font-medium text-status-warn">⚠ Konfiguration:</span> {warning}
+              </div>
+            ))}
+          </div>
+        )}
         {state.phase === "idle" && (
           <p className="text-content-faint">
             {assetId === null
