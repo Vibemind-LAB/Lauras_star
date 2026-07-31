@@ -33,6 +33,9 @@ from ..short_creator.board_models import Format
 # the endpoint, like the other autogen-touching calls below) specifically so tests can
 # monkeypatch laura.api.short_creator.run_scout.
 from ..short_creator.discovery import search_material
+from ..short_creator.overview_build import build_overview
+from ..short_creator.overview_scout import OverviewDecision, run_overview_scout
+from ..short_creator.overview_windows import build_candidates
 from ..short_creator.scout import ScoutDecision, run_scout
 from ..util import new_id
 
@@ -69,6 +72,20 @@ class ProjectAutoShortRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=2000)
     target_seconds: int = Field(default=60, gt=0, le=600)
     format: Format = "insta"
+    language: str = Field(default="German", min_length=2, max_length=40)
+
+
+class ProjectAutoOverviewRequest(BaseModel):
+    """Body for ``POST /projects/{project_id}/auto-overview`` — topic in, montage out.
+
+    ``target_seconds`` defaults to a 3-minute overview (Phase 1's short defaults to 60s; an
+    overview covering several videos needs room). ``language`` is accepted and echoed for
+    symmetry with the short endpoints but changes nothing in v1: the cut runs on the clips'
+    ORIGINAL audio, so there is no script to write in any language.
+    """
+
+    topic: str = Field(min_length=1, max_length=2000)
+    target_seconds: int = Field(default=180, gt=0, le=1800)
     language: str = Field(default="German", min_length=2, max_length=40)
 
 
@@ -459,6 +476,163 @@ def create_project_auto_short(
         "fallback": decision["fallback"],
         "ranking": material["ranking"],
         "warnings": config_warnings(config),
+    }
+
+
+# --- v2 project-scoped auto-overview endpoint (spec 2026-07-31) ---------------------------------
+
+
+def _overview_scene_bounds(
+    db: Database, project_id: str, ranking: list[dict[str, Any]]
+) -> dict[tuple[str, int], tuple[int, int]]:
+    """``(asset_id, scene_number) -> (src_start, src_end_exclusive)`` for every ranked asset.
+
+    Built on :func:`discovery._scene_ranges`, the same READ-ONLY lookup the ranking itself
+    used — probing must never create a rough cut.
+    """
+    from ..short_creator import discovery
+
+    bounds: dict[tuple[str, int], tuple[int, int]] = {}
+    for entry in ranking:
+        asset_id = str(entry["asset_id"])
+        ranges = discovery._scene_ranges(db, project_id, asset_id)
+        for scene_number, start, end_exclusive in ranges or []:
+            bounds[(asset_id, scene_number)] = (start, end_exclusive)
+    return bounds
+
+
+def _overview_fps(
+    db: Database, project_id: str, ranking: list[dict[str, Any]]
+) -> dict[str, tuple[int, int]]:
+    """``asset_id -> (rate_num, rate_den)``, falling back to the project's rate for an asset
+    that has none (probe failures leave the columns empty)."""
+    project = repos.get_project(db, project_id)
+    fallback = (
+        int((project or {}).get("rate_num") or 25),
+        int((project or {}).get("rate_den") or 1),
+    )
+    out: dict[str, tuple[int, int]] = {}
+    for entry in ranking:
+        asset_id = str(entry["asset_id"])
+        asset = repos.get_asset(db, asset_id)
+        if asset is None:
+            out[asset_id] = fallback
+            continue
+        out[asset_id] = (
+            int(asset.get("rate_num") or fallback[0]),
+            int(asset.get("rate_den") or fallback[1]),
+        )
+    return out
+
+
+@router.post("/projects/{project_id}/auto-overview", status_code=status.HTTP_202_ACCEPTED)
+def create_project_auto_overview(
+    project_id: str,
+    body: ProjectAutoOverviewRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Topic in, a watchable overview cut across several videos out.
+
+    Phase 2 of the auto-short arc: where ``POST /projects/{id}/auto-short`` scouts ONE asset
+    and runs the board production on it, this route mixes SEVERAL videos through the sequence
+    machinery — a new sequence (never the project's own) plus an enqueued render.
+
+    404 unknown project; 503 preflight (missing extra / unusable agent config); 422 when the
+    topic finds no material or no window survives — both BEFORE anything is written.
+    """
+    db = _db(request)
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    _require_autoshort()
+    _require_usable_agent_config()
+
+    material = search_material(db, project_id, body.topic)
+    if not material["ranking"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no material found for topic",
+                "skipped": material["skipped"],
+                "source": material["source"],
+            },
+        )
+
+    fps_by_asset = _overview_fps(db, project_id, material["ranking"])
+    candidates = build_candidates(
+        material["ranking"],
+        scene_bounds=_overview_scene_bounds(db, project_id, material["ranking"]),
+        fps_by_asset=fps_by_asset,
+    )
+    if not candidates:
+        # Material matched, but every hit was too short (or its scene had vanished) to become
+        # a watchable clip. Still nothing written — same corpse rule as above.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no usable windows for topic",
+                "source": material["source"],
+            },
+        )
+
+    from ..short_creator.providers import config_warnings, resolve_from_env
+
+    config = resolve_from_env()
+    decision: OverviewDecision = run_overview_scout(
+        config,
+        topic=body.topic,
+        candidates=candidates,
+        target_seconds=body.target_seconds,
+        fps_by_asset=fps_by_asset,
+    )
+
+    built = build_overview(
+        db, project_id=project_id, topic=body.topic, clips=decision["clips"]
+    )
+
+    export = repos.create_export(
+        db,
+        project_id=project_id,
+        timeline_id=built["sequence_id"],
+        format="mp4",
+        options={"burn_captions": False, "source": "auto-overview"},
+    )
+    job_id = enqueue(
+        db,
+        queue=queue_for("export.render"),
+        kind="export.render",
+        payload={"export_id": export["id"]},
+        idempotency_key=f"render:{export['id']}",
+    )
+
+    warnings = config_warnings(config)
+    if len({c.asset_id for c in decision["clips"]}) < 2:
+        names = sorted({c.display_name for c in decision["clips"]})
+        warnings = [
+            *warnings,
+            f"overview covers a single source: only {', '.join(names)} matched the topic",
+        ]
+
+    return {
+        "sequence_id": built["sequence_id"],
+        "source_timeline_id": built["source_timeline_id"],
+        "clips": [
+            {
+                "asset_id": c.asset_id,
+                "display_name": c.display_name,
+                "scene_number": c.scene_number,
+                "start_frame": c.start_frame,
+                "end_frame_exclusive": c.end_frame_exclusive,
+                "snippet": c.snippet,
+            }
+            for c in decision["clips"]
+        ],
+        "rationale": decision["rationale"],
+        "fallback": decision["fallback"],
+        "ranking": material["ranking"],
+        "warnings": warnings,
+        "export_id": export["id"],
+        "job_id": job_id,
     }
 
 
