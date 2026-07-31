@@ -203,6 +203,11 @@ Finalizer/Reaper für `analysis_runs` (oder eine Erweiterung von `reap_expired`,
 passende `analysis_runs`-Zeile mit abschließt) ist damit kein überflüssiges Feature, sondern
 ein offener Folgeschritt — bewusst nicht Teil dieser Spec.
 
+> **Nachtrag 2026-07-31:** dieser Folgeschritt ist inzwischen eigenständig spezifiziert —
+> [`2026-07-31-analysis-run-reaper-design.md`](2026-07-31-analysis-run-reaper-design.md)
+> (Reaper-Erweiterung, Startup-Sweep, `get_latest_succeeded_analysis_run` für die
+> Status-Gates, sauberer Neustart in `start_analysis_run`).
+
 ### 5. Tests
 
 Durchgehend im Stil von `tests/test_discovery.py`: echte `SqliteDatabase` unter `tmp_path`,
