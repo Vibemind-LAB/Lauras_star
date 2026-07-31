@@ -192,8 +192,8 @@ def tool_build_roughcut(db: Database, asset_id: str) -> dict[str, Any]:
     if asset is None:
         logger.debug("tool_build_roughcut: asset_id=%r not found", asset_id)
         return {"ok": False, "error": "asset not found", "asset_id": asset_id}
-    run = repos.get_latest_analysis_run(db, asset_id)
-    if run is None or run["status"] != "succeeded":
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
+    if run is None:
         return {"ok": False, "error": "no succeeded analysis run", "asset_id": asset_id}
     project_id = str(asset["project_id"])
     scene_count = autobuild_asset_edit_ready(
@@ -280,8 +280,8 @@ def tool_extract_shorts(
         logger.debug("tool_extract_shorts: asset_id=%r not found", asset_id)
         return {"ok": False, "error": "asset not found", "asset_id": asset_id}
 
-    run = repos.get_latest_analysis_run(db, asset_id)
-    if run is None or run["status"] != "succeeded":
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
+    if run is None:
         logger.debug("tool_extract_shorts: asset_id=%r has no succeeded analysis run", asset_id)
         return {
             "ok": False,

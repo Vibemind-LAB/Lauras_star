@@ -111,9 +111,10 @@ def handle_shorts_extract(ctx: JobContext) -> dict[str, Any]:
     rate_den: int = int(asset["rate_den"] or 1)
     total_frames: int | None = asset["duration_frames"]
 
-    run = repos.get_latest_analysis_run(db, asset_id)
-    if run is None or run["status"] != "succeeded":
-        status = "none" if run is None else run["status"]
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
+    if run is None:
+        latest = repos.get_latest_analysis_run(db, asset_id)
+        status = "none" if latest is None else str(latest["status"])
         raise ValueError(
             f"no succeeded analysis run for asset {asset_id} (latest status: {status})"
         )

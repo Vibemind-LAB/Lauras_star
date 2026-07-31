@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ..db import repos
 from ..db.database import Database
 from ..metrics import JOBS
 from ..telemetry import span
@@ -28,6 +29,34 @@ logger = logging.getLogger(__name__)
 
 # A handler receives a JobContext and returns an optional JSON-serialisable result.
 JobHandler = Callable[["JobContext"], "dict[str, Any] | None"]
+
+# The one job kind that owns a row in another table (analysis_runs). jobs/queues.py already
+# names every kind for routing; a finalizer registry would be more architecture than a single
+# kind earns.
+ANALYSIS_RUN_KIND = "analysis.run"
+
+# One predicate for the expired-lease rows, shared by the SELECT that classifies them and the
+# two UPDATEs that act on them -- so the classification can never drift from the action.
+_EXPIRED_LEASE = (
+    "status IN ('leased','running') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?"
+)
+
+
+def analysis_run_id_from_payload(payload_json: str | None) -> str | None:
+    """The analysis_runs row an ``analysis.run`` job owns, or None.
+
+    analysis_runs has no job_id column; the link lives in the payload, which all three enqueue
+    sites carry (api/analysis.py, ingest/handlers.py, mcp/tools.py). Parsed in Python rather
+    than with json_extract so it works on SQLite and Postgres alike.
+    """
+    try:
+        payload = json.loads(payload_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    run_id = payload.get("analysis_run_id")
+    return str(run_id) if run_id else None
 
 
 def _now() -> datetime:
@@ -178,23 +207,55 @@ class JobRunner:
 
     # --- reaper -----------------------------------------------------------
     def reap_expired(self) -> int:
-        """Requeue or fail jobs whose lease expired. Returns count touched."""
+        """Requeue or fail jobs whose lease expired. Returns count of jobs touched.
+
+        An ``analysis.run`` job that runs out of attempts here also finalizes its
+        analysis_runs row. The jobs table has always had this reaper; analysis_runs never did,
+        so a SIGKILLed worker -- or the runtime cap below, which stops the heartbeat while the
+        handler thread lives on and raises nothing -- left the run saying 'running' forever.
+        A *requeued* job is deliberately left alone: the retry re-stamps the row through
+        repos.start_analysis_run.
+        """
         now = utcnow_iso()
         err = json.dumps({"error": "lease expired, max attempts reached"})
+        stranded: list[tuple[str, str]] = []  # (job_id, analysis_run_id)
         with self.db.transaction(immediate=True) as conn:
+            for row in conn.execute(
+                f"SELECT id, kind, payload_json, attempt, max_attempts FROM jobs "
+                f"WHERE {_EXPIRED_LEASE}",
+                (now,),
+            ).fetchall():
+                if str(row["kind"]) != ANALYSIS_RUN_KIND:
+                    continue
+                if int(row["attempt"]) < int(row["max_attempts"]):
+                    continue  # requeued below -- the retry re-stamps the run
+                run_id = analysis_run_id_from_payload(row["payload_json"])
+                if run_id is not None:
+                    stranded.append((str(row["id"]), run_id))
             failed = conn.execute(
-                "UPDATE jobs SET status='failed', finished_at=?, updated_at=?, error_json=? "
-                "WHERE status IN ('leased','running') AND lease_expires_at IS NOT NULL "
-                "AND lease_expires_at < ? AND attempt >= max_attempts",
+                f"UPDATE jobs SET status='failed', finished_at=?, updated_at=?, error_json=? "
+                f"WHERE {_EXPIRED_LEASE} AND attempt >= max_attempts",
                 (now, now, err, now),
             ).rowcount
             requeued = conn.execute(
-                "UPDATE jobs SET status='queued', worker_id=NULL, lease_expires_at=NULL, "
-                "updated_at=? WHERE status IN ('leased','running') "
-                "AND lease_expires_at IS NOT NULL AND lease_expires_at < ? "
-                "AND attempt < max_attempts",
+                f"UPDATE jobs SET status='queued', worker_id=NULL, lease_expires_at=NULL, "
+                f"updated_at=? WHERE {_EXPIRED_LEASE} AND attempt < max_attempts",
                 (now, now),
             ).rowcount
+        # Outside the transaction: a second write connection inside a held SQLite write lock
+        # deadlocks. A crash in the gap leaves the run stranded -- which the startup sweep
+        # (analysis/recovery.py) heals.
+        for job_id, run_id in stranded:
+            if repos.fail_stranded_analysis_run(
+                self.db,
+                run_id,
+                error=f"job {job_id}: lease expired, max attempts reached",
+                recovered_by="job reaper",
+            ):
+                logger.warning(
+                    "analysis run %s finalized as failed: job %s ran out of attempts",
+                    run_id, job_id,
+                )
         return int(failed) + int(requeued)
 
     # --- execute ----------------------------------------------------------

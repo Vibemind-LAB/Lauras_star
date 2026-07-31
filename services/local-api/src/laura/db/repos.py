@@ -116,6 +116,17 @@ def list_jobs(db: Database, *, limit: int = 50) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def list_jobs_of_kind(db: Database, kind: str) -> list[dict[str, Any]]:
+    """All jobs of one kind, newest first. Used to walk back from a run to its job."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, status, payload_json FROM jobs WHERE kind=? "
+            "ORDER BY created_order DESC",
+            (kind,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def cancel_job(db: Database, job_id: str) -> bool:
     now = utcnow_iso()
     with db.transaction() as conn:
@@ -442,10 +453,36 @@ def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | N
         return dict(row) if row is not None else None
 
 
+def get_latest_succeeded_analysis_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The newest run that SUCCEEDED, or None.
+
+    Sibling of :func:`get_latest_transcript_run` for the artifact-free gates. Asking
+    :func:`get_latest_analysis_run` and then testing ``status == 'succeeded'`` is a different
+    question: it lets a newer failed or stranded run shadow a perfectly good one, which locked
+    assets out of shorts extraction and visual embedding until someone re-analysed by hand.
+    Ordering mirrors get_latest_analysis_run.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM analysis_runs WHERE asset_id=? AND status='succeeded' "
+            "ORDER BY COALESCE(started_at, '') DESC, id DESC LIMIT 1",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def start_analysis_run(db: Database, run_id: str) -> None:
+    """Mark the run in flight, clearing whatever a previous attempt left behind.
+
+    analysis.run is enqueued with max_attempts=2, so a retry re-enters here. Without the
+    reset, the retry runs with the first attempt's finished_at and its {"error": ...} still in
+    place -- and api/analysis.py hands both straight to the UI. started_at is re-stamped,
+    never nulled: every run resolver orders on COALESCE(started_at, '') DESC.
+    """
     with db.transaction() as conn:
         conn.execute(
-            "UPDATE analysis_runs SET status='running', started_at=? WHERE id=?",
+            "UPDATE analysis_runs SET status='running', started_at=?, finished_at=NULL, "
+            "diagnostics_json='{}' WHERE id=?",
             (utcnow_iso(), run_id),
         )
 
@@ -458,6 +495,37 @@ def finish_analysis_run(
             "UPDATE analysis_runs SET status=?, finished_at=?, diagnostics_json=? WHERE id=?",
             (status, utcnow_iso(), json.dumps(diagnostics), run_id),
         )
+
+
+def fail_stranded_analysis_run(
+    db: Database, run_id: str, *, error: str, recovered_by: str
+) -> bool:
+    """Finalize a run whose worker never came back. True when this call wrote the row.
+
+    handle_analysis_run's try/except cannot reach a process that was SIGKILLed, and the
+    runtime cap in jobs/runner.py stops the heartbeat while the handler thread is still alive
+    and has raised nothing. Both leave analysis_runs on 'running' forever. The status guard
+    makes this a no-op once the run reached a terminal state on its own -- the handler always
+    wins over the recovery paths.
+    """
+    diagnostics = json.dumps({"error": error, "recovered_by": recovered_by})
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE analysis_runs SET status='failed', finished_at=?, diagnostics_json=? "
+            "WHERE id=? AND status IN ('queued','running')",
+            (utcnow_iso(), diagnostics, run_id),
+        )
+        return int(cur.rowcount) == 1
+
+
+def list_unfinished_analysis_runs(db: Database) -> list[dict[str, Any]]:
+    """Every run that never reached a terminal status. Empty in a healthy DB."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analysis_runs WHERE status IN ('queued','running') "
+            "ORDER BY COALESCE(started_at, '') DESC, id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def clear_analysis_results(db: Database, *, asset_id: str, run_id: str) -> None:

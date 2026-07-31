@@ -54,8 +54,8 @@ def extract_shorts(
     if repos.get_asset(db, asset_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
 
-    run = repos.get_latest_analysis_run(db, asset_id)
-    if run is None or run["status"] != "succeeded":
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
+    if run is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "analyze the asset first")
 
     config: dict[str, Any] = body.model_dump(exclude_none=True)
