@@ -36,12 +36,27 @@ def _app(tmp_path: Path) -> tuple[TestClient, SqliteDatabase]:
 
 
 def _seed_asset_with_scenes(
-    db: Database, project_id: str, name: str, *, segments: list[tuple[int, int, str]]
+    db: Database,
+    project_id: str,
+    name: str,
+    *,
+    segments: list[tuple[int, int, str]],
+    media_dir: Path | None = None,
 ) -> str:
     """Asset + succeeded analysis run with *segments* + a rough cut over [0,600) with two
-    scenes [0,300)/[300,600). Mirrors test_auto_short_endpoint.py's helper of the same name."""
+    scenes [0,300)/[300,600). Mirrors test_auto_short_endpoint.py's helper of the same name.
+
+    ``media_dir`` (when given) is where the asset's source file is actually CREATED. The
+    endpoint drops assets whose source has vanished before it builds anything, so a seed with
+    a path that never existed is no longer a neutral stand-in — it seeds an unusable asset.
+    Leave it None to seed exactly that: a dead source.
+    """
+    source = str(media_dir / name) if media_dir is not None else f"/tmp/{name}"
+    if media_dir is not None:
+        media_dir.mkdir(parents=True, exist_ok=True)
+        (media_dir / name).write_bytes(b"")
     asset = repos.create_asset(
-        db, project_id=project_id, type="video", display_name=name, source_path=f"/tmp/{name}"
+        db, project_id=project_id, type="video", display_name=name, source_path=source
     )
     run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="t", config={})
     repos.start_analysis_run(db, run["id"])
@@ -74,15 +89,18 @@ def _seed_asset_with_scenes(
     return str(asset["id"])
 
 
-def _seed_two_assets(db: Database) -> tuple[str, str, str]:
+def _seed_two_assets(db: Database, media_dir: Path) -> tuple[str, str, str]:
+    """Two assets whose source files really exist under *media_dir* — the normal case."""
     project = repos.create_project(
         db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
     )
     a = _seed_asset_with_scenes(
-        db, project["id"], "a.mp4", segments=[(10, 200, "the agent farm plans the mission")]
+        db, project["id"], "a.mp4", segments=[(10, 200, "the agent farm plans the mission")],
+        media_dir=media_dir,
     )
     b = _seed_asset_with_scenes(
-        db, project["id"], "b.mp4", segments=[(20, 220, "the mission handoff is executed")]
+        db, project["id"], "b.mp4", segments=[(20, 220, "the mission handoff is executed")],
+        media_dir=media_dir,
     )
     return str(project["id"]), a, b
 
@@ -111,7 +129,7 @@ def test_happy_path_builds_a_sequence_and_enqueues_a_render(
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)  # force lexical, deterministic
     client, db = _app(tmp_path)
-    project_id, a, b = _seed_two_assets(db)
+    project_id, a, b = _seed_two_assets(db, tmp_path / "media")
     monkeypatch.setattr(
         "laura.api.short_creator.run_overview_scout", lambda *_a, **_kw: _decision(a, b)
     )
@@ -166,7 +184,7 @@ def test_unknown_project_is_404(tmp_path: Path, monkeypatch: Any) -> None:
 def test_missing_extra_is_503(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: False)
     client, db = _app(tmp_path)
-    project_id, _a, _b = _seed_two_assets(db)
+    project_id, _a, _b = _seed_two_assets(db, tmp_path / "media")
     r = client.post(
         f"/projects/{project_id}/auto-overview", json={"topic": "mission"}, headers=_H
     )
@@ -179,7 +197,7 @@ def test_no_material_is_422_and_writes_nothing(tmp_path: Path, monkeypatch: Any)
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     client, db = _app(tmp_path)
-    project_id, _a, _b = _seed_two_assets(db)
+    project_id, _a, _b = _seed_two_assets(db, tmp_path / "media")
     before = _counts(db)
 
     r = client.post(
@@ -205,7 +223,8 @@ def test_hits_too_short_for_a_window_are_422_not_an_empty_sequence(
     )
     # A 2-frame segment padded by 1s each side is 62 frames ~ 2.1s — under the floor.
     _seed_asset_with_scenes(
-        db, project["id"], "tiny.mp4", segments=[(10, 12, "the mission")]
+        db, project["id"], "tiny.mp4", segments=[(10, 12, "the mission")],
+        media_dir=tmp_path / "media",
     )
     before = _counts(db)
 
@@ -244,7 +263,7 @@ def test_target_shorter_than_every_clip_is_422_not_500(tmp_path: Path, monkeypat
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     client, db = _app(tmp_path)
-    project_id, a, b = _seed_two_assets(db)
+    project_id, a, b = _seed_two_assets(db, tmp_path / "media")
     monkeypatch.setattr(
         "laura.api.short_creator.run_overview_scout",
         lambda *_a, **_kw: _decision_for_target(a, b, 2),
@@ -274,7 +293,8 @@ def test_single_source_is_warned_but_still_succeeds(tmp_path: Path, monkeypatch:
         db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
     )
     a = _seed_asset_with_scenes(
-        db, project["id"], "a.mp4", segments=[(10, 200, "the agent farm plans the mission")]
+        db, project["id"], "a.mp4", segments=[(10, 200, "the agent farm plans the mission")],
+        media_dir=tmp_path / "media",
     )
     monkeypatch.setattr(
         "laura.api.short_creator.run_overview_scout",
@@ -305,7 +325,7 @@ def test_trim_to_one_clip_warns_about_target_length_not_single_source(
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     client, db = _app(tmp_path)
-    project_id, a, b = _seed_two_assets(db)
+    project_id, a, b = _seed_two_assets(db, tmp_path / "media")
     monkeypatch.setattr(
         "laura.api.short_creator.run_overview_scout",
         lambda *_a, **_kw: _decision_for_target(a, b, 10),
@@ -347,3 +367,79 @@ def test_overview_fps_falls_back_to_the_project_rate(tmp_path: Path) -> None:
     fps_by_asset = _overview_fps(db, project["id"], [{"asset_id": asset["id"]}])
 
     assert fps_by_asset[asset["id"]] == (30, 1)
+
+
+# --- assets whose source file is gone (live finding 2026-07-31) --------------------------------
+
+
+def test_asset_with_a_vanished_source_is_dropped_before_anything_is_built(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Live 2026-07-31: two videos were picked with full confidence, the sequence was built, the
+    render job started — and only ffmpeg found out their source files were gone (they lived in a
+    cleaned temp dir). `online` stays True forever in that case, so nothing upstream noticed.
+    The overview must drop such an asset BEFORE it builds, and say which one and why."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    client, db = _app(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    alive = _seed_asset_with_scenes(
+        db, project["id"], "alive.mp4", segments=[(10, 200, "the agent farm plans the mission")],
+        media_dir=tmp_path / "media",
+    )
+    # No media_dir -> the source path was never created: exactly the live shape.
+    dead = _seed_asset_with_scenes(
+        db, project["id"], "dead.mp4", segments=[(20, 220, "the mission handoff is executed")],
+    )
+    seen: dict[str, Any] = {}
+
+    def _capture(_config: Any, **kwargs: Any) -> OverviewDecision:
+        seen["candidates"] = kwargs["candidates"]
+        return {
+            "clips": [Candidate(alive, "alive.mp4", 1, 0, 300, "the agent farm plans")],
+            "rationale": "the one video that is actually there",
+            "fallback": False,
+        }
+
+    monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _capture)
+
+    r = client.post(
+        f"/projects/{project['id']}/auto-overview", json={"topic": "mission"}, headers=_H
+    )
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    # The scout never even saw the dead asset — it cannot pick what it cannot render.
+    assert {c.asset_id for c in seen["candidates"]} == {alive}
+    assert all(c["asset_id"] == alive for c in body["clips"])
+    assert any("dead.mp4" in w and "source" in w for w in body["warnings"]), body["warnings"]
+    assert dead not in [c["asset_id"] for c in body["clips"]]
+
+
+def test_all_sources_vanished_is_422_and_writes_nothing(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Every matching video's media is gone: nothing can be built, so nothing is — and the
+    reason names the missing sources instead of claiming the topic found no material."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    client, db = _app(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    _seed_asset_with_scenes(
+        db, project["id"], "gone.mp4", segments=[(10, 200, "the agent farm plans the mission")],
+    )
+    before = _counts(db)
+
+    r = client.post(
+        f"/projects/{project['id']}/auto-overview", json={"topic": "mission"}, headers=_H
+    )
+
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["reason"] == "no usable material: every matching video's source file is missing"
+    assert detail["missing_sources"] == ["gone.mp4"]
+    assert _counts(db) == before

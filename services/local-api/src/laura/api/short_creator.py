@@ -482,6 +482,40 @@ def create_project_auto_short(
 # --- v2 project-scoped auto-overview endpoint (spec 2026-07-31) ---------------------------------
 
 
+def _split_by_source_presence(
+    db: Database, ranking: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split *ranking* into (usable, display names of assets whose source file is gone).
+
+    Live 2026-07-31: two videos were ranked, scouted and built into a sequence with full
+    confidence — and only ffmpeg discovered their source files no longer existed (they had been
+    imported from a temp directory that was later cleaned). Nothing upstream noticed, because
+    ``media_assets.online`` is set at import and by ``set_asset_source`` but NEVER flipped back
+    when a file disappears; the transcript rows outlive the media.
+
+    So the check is the filesystem itself, done ONCE per ranked asset, here rather than in
+    :func:`discovery.search_material`: discovery answers "what matches the topic" and is
+    consumed by other callers, while this route is where the pipeline commits to BUILDING —
+    and it must not build a montage out of clips it cannot render. Dropping (rather than
+    aborting) keeps the overview useful: the remaining videos still make one.
+
+    The asset's proxy may well still exist, but the renderer resolves the SOURCE, so a present
+    proxy does not make the asset usable here.
+    """
+    usable: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for entry in ranking:
+        asset = repos.get_asset(db, str(entry["asset_id"]))
+        source = str((asset or {}).get("source_path") or "")
+        if source and Path(source).exists():
+            usable.append(entry)
+            continue
+        name = str(entry.get("display_name") or "") or str(entry["asset_id"])
+        missing.append(name)
+        logger.info("auto-overview: dropping %s — source file missing (%s)", name, source)
+    return usable, missing
+
+
 def _overview_scene_bounds(
     db: Database, project_id: str, ranking: list[dict[str, Any]]
 ) -> dict[tuple[str, int], tuple[int, int]]:
@@ -559,10 +593,24 @@ def create_project_auto_overview(
             },
         )
 
-    fps_by_asset = _overview_fps(db, project_id, material["ranking"])
+    # An asset whose source file is gone can be ranked, scouted and assembled — and only fails
+    # at render time, after everything is built. Drop those here, before the scout ever sees
+    # them, and tell the caller which ones (see _split_by_source_presence).
+    ranking, missing_sources = _split_by_source_presence(db, material["ranking"])
+    if not ranking:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no usable material: every matching video's source file is missing",
+                "missing_sources": missing_sources,
+                "source": material["source"],
+            },
+        )
+
+    fps_by_asset = _overview_fps(db, project_id, ranking)
     candidates = build_candidates(
-        material["ranking"],
-        scene_bounds=_overview_scene_bounds(db, project_id, material["ranking"]),
+        ranking,
+        scene_bounds=_overview_scene_bounds(db, project_id, ranking),
         fps_by_asset=fps_by_asset,
     )
     if not candidates:
@@ -648,6 +696,11 @@ def create_project_auto_overview(
                 "overview covers a single source: target_seconds "
                 f"({body.target_seconds}) left room for only one clip after trimming",
             ]
+    if missing_sources:
+        warnings = [
+            *warnings,
+            "left out of the overview, source file missing: " + ", ".join(missing_sources),
+        ]
 
     return {
         "sequence_id": built["sequence_id"],
@@ -665,7 +718,9 @@ def create_project_auto_overview(
         ],
         "rationale": decision["rationale"],
         "fallback": decision["fallback"],
-        "ranking": material["ranking"],
+        # The ranking the SCOUT actually chose from — assets whose source vanished are not in
+        # it, so the response never lists material the run could not have used.
+        "ranking": ranking,
         "warnings": warnings,
         "export_id": export["id"],
         "job_id": job_id,
