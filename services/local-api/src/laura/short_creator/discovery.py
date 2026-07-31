@@ -113,6 +113,11 @@ def search_material(
                 "scene_number": scene_number,
                 "snippet": str(hit.get("text", ""))[:_SNIPPET_CHARS],
                 "score": score,
+                # Auto-overview (spec 2026-07-31 §2) builds its candidate windows from these;
+                # Phase 1 never reads them. `end_frame` is ALREADY end-exclusive
+                # (mapping.map_segment -> snap_out_to_frame, CEIL) — carried verbatim.
+                "start_frame": start,
+                "end_frame_exclusive": int(hit.get("end_frame", start)),
             }
         )
     ranking = sorted(per_asset.values(), key=lambda e: e["score"], reverse=True)

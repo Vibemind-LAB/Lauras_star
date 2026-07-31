@@ -224,6 +224,34 @@ def test_raising_index_degrades_to_lexical_not_an_exception(
     assert out["ranking"]
 
 
+def test_scene_hits_carry_segment_frames_for_the_overview(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Auto-overview builds its windows from these frames (spec 2026-07-31 §2).
+
+    ``end_frame_exclusive`` is the segment's ``end_frame`` verbatim: that column is ALREADY
+    an exclusive out-point (mapping.map_segment snaps it with snap_out_to_frame/CEIL), so any
+    +/-1 here would be an off-by-one.
+    """
+    monkeypatch.setattr(discovery, "get_index", lambda: None)  # force lexical
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    _seed_asset_with_scenes(
+        db, project["id"], "a.mp4", segments=[(10, 60, "the agent farm plans the mission")]
+    )
+
+    out = discovery.search_material(db, project["id"], "mission")
+
+    hit = out["ranking"][0]["scene_hits"][0]
+    assert hit["start_frame"] == 10
+    assert hit["end_frame_exclusive"] == 60
+    # The Phase-1 keys stay exactly as they were.
+    assert hit["scene_number"] == 1
+    assert "mission" in hit["snippet"]
+
+
 def test_semantic_ranking_used_when_index_answers(tmp_path: Path, monkeypatch: Any) -> None:
     """Semantic path: gated exactly like tests/test_semantic.py (optional [semantic] extra)."""
     import pytest
