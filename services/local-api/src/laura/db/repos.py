@@ -454,9 +454,17 @@ def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | N
 
 
 def start_analysis_run(db: Database, run_id: str) -> None:
+    """Mark the run in flight, clearing whatever a previous attempt left behind.
+
+    analysis.run is enqueued with max_attempts=2, so a retry re-enters here. Without the
+    reset, the retry runs with the first attempt's finished_at and its {"error": ...} still in
+    place -- and api/analysis.py hands both straight to the UI. started_at is re-stamped,
+    never nulled: every run resolver orders on COALESCE(started_at, '') DESC.
+    """
     with db.transaction() as conn:
         conn.execute(
-            "UPDATE analysis_runs SET status='running', started_at=? WHERE id=?",
+            "UPDATE analysis_runs SET status='running', started_at=?, finished_at=NULL, "
+            "diagnostics_json='{}' WHERE id=?",
             (utcnow_iso(), run_id),
         )
 

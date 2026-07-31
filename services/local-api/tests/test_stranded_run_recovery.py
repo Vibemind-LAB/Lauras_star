@@ -278,3 +278,23 @@ def test_finalized_run_keeps_its_transcript_reachable(
 
     resolved = repos.get_latest_transcript_run(db, asset_id)
     assert resolved is not None and resolved["id"] == corpse
+
+
+def test_restart_clears_the_previous_attempts_diagnostics(
+    db: Database, tmp_path: Path
+) -> None:
+    """analysis.run retries once (max_attempts=2). The second attempt must not present the
+    first one's finished_at and error to the UI while it is still running."""
+    _asset_id, run_id = _seed_run(db, tmp_path)
+    repos.finish_analysis_run(
+        db, run_id, status="failed", diagnostics={"error": "attempt 1 died"}
+    )
+
+    repos.start_analysis_run(db, run_id)
+
+    run = repos.get_analysis_run(db, run_id)
+    assert run is not None
+    assert run["status"] == "running"
+    assert run["started_at"] is not None
+    assert run["finished_at"] is None
+    assert json.loads(run["diagnostics_json"] or "{}") == {}
