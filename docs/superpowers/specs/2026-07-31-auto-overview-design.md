@@ -109,40 +109,55 @@ Alles in **Ganzzahl-Frames, end-exklusiv**; Sekunden existieren nur als Konstant
 `fps_num/fps_den` des jeweiligen Assets umgerechnet werden. Die Zeitkern-Invarianten des
 Projekts (`CLAUDE.md` Punkte 1 und 2) gelten unverändert.
 
-`target_seconds` deckelt die Summe: der Scout bekommt die Zielzeit im Auftrag, und die
-Auswahl wird nach der Fensterbildung hart auf die Zielzeit plus 20% Toleranz gekürzt
-(Ausschnitte am Ende fallen zuerst).
+Die so gebauten Fenster sind die **Kandidaten**, die der Scout in §4 nur noch auswählt und
+ordnet. Ihre Reihenfolge in der Liste ist die deterministische: Assets nach Discovery-Score,
+innerhalb eines Assets chronologisch.
 
-### 4. Scout
+`target_seconds` deckelt die Summe: der Scout bekommt die Zielzeit im Auftrag, und die
+Auswahl wird nach der Auswahl hart auf die Zielzeit plus 20% Toleranz gekürzt
+(Ausschnitte am Ende fallen zuerst) — `trim_to_target`, ebenfalls eine reine Funktion.
+
+### 4. Scout — er wählt aus fertigen Fenstern, er erfindet keine Frames
 
 `short_creator/overview_scout.py`, gebaut wie `scout.py`, weil sich dessen Härtung live
 bewährt hat:
 
 ```python
-def run_overview_scout(db, config, *, project_id, topic, material, target_seconds,
+def run_overview_scout(db, config, *, topic, candidates, target_seconds,
                        runner=None) -> OverviewDecision
-# OverviewDecision: {clips: [{asset_id, scene_number, start_frame,
-#                             end_frame_exclusive, why}],
-#                    rationale: str, fallback: bool}
+# candidates: list[Candidate]  — von build_windows erzeugt, durchnummeriert
+# OverviewDecision: {clips: list[Candidate], rationale: str, fallback: bool}
 ```
 
-Ein `AssistantAgent` mit den Discovery-Treffern im Auftragstext, Antwort als letzter
-JSON-Block, 60s-Deckel. Der Ablauf ist **validieren → genau ein Retry mit den konkreten
-Fehlern → deterministischer Fallback**. Nichts entkommt: auch die Lesevorgänge der
-Validierung sind gekapselt (der Fehler, den Phase 1 im Review gefunden hat).
+**Der Agent gibt Indizes zurück, keine Frames:** `{"clips": [3, 1, 7], "rationale": "..."}`.
+Die Kandidaten sind vorher deterministisch gebaut (§3) und im Auftragstext nummeriert
+aufgelistet — mit Video, Szene, Länge und Transkript-Ausschnitt. Der Agent trifft damit
+genau die Entscheidung, die ihm zusteht (welche Ausschnitte, in welcher Reihenfolge), und
+kann keine kaputten Frames produzieren.
+
+Das ist die Lehre aus dem NL-Short-Creator, wörtlich: *mit kleinen Modellen gehört jeder
+Vertrag in deterministischen Code, nie in bedingte Prompt-Regeln.* Frei erfundene Frame-Zahlen
+wären genau so eine Regel — samt Off-by-one-Risiko an der Szenengrenze.
+
+Ein `AssistantAgent`, Antwort als letzter JSON-Block, 60s-Deckel. Der Ablauf ist
+**validieren → genau ein Retry mit den konkreten Fehlern → deterministischer Fallback**.
+Nichts entkommt: auch die Lesevorgänge der Validierung sind gekapselt (der Fehler, den
+Phase 1 im Review gefunden hat).
 
 Validierung:
 
-- `asset_id` kommt in `material.ranking` vor,
-- `scene_number` existiert für dieses Asset,
-- `[start_frame, end_frame_exclusive)` liegt innerhalb der Quell-Grenzen dieser Szene,
-- mindestens ein Ausschnitt,
-- **mindestens zwei verschiedene Assets**, sofern `material.ranking` mehr als eines enthält.
+- `clips` ist eine nicht-leere Liste von Ganzzahlen,
+- jeder Index liegt im Bereich der Kandidatenliste,
+- keine Dublette,
+- **mindestens zwei verschiedene Assets**, sofern die Kandidaten mehr als eines abdecken.
 
-Der deterministische Fallback: stärkste Treffer, höchstens 3 je Asset, Assets nach Score
-sortiert, innerhalb eines Assets chronologisch; zwei Quellen, wenn das Material sie hergibt.
-`fallback: true` und die Begründung `"automatic fallback: top search scores"` — dieselbe
-Ehrlichkeit wie in Phase 1.
+Der deterministische Fallback: die Kandidaten in ihrer eigenen Reihenfolge (Assets nach
+Score, innerhalb eines Assets chronologisch, höchstens 3 je Asset — das ist bereits die
+Deckelung aus `discovery._MAX_SCENE_SNIPPETS`). `fallback: true` und die Begründung
+`"automatic fallback: top search scores"` — dieselbe Ehrlichkeit wie in Phase 1.
+
+Nach der Auswahl kappt `trim_to_target` die Liste hart auf `target_seconds` plus 20%
+Toleranz; Ausschnitte am Ende fallen zuerst.
 
 Trägt nur ein Asset Material bei, ist das **kein** Fehler: die Zwei-Quellen-Regel greift
 nicht, und `warnings` enthält `"overview covers a single source: only <name> matched the
@@ -189,8 +204,9 @@ bearbeitbar, was der eigentliche Ertrag des Laufs ist.
 - **Fensterbildung:** Polster, Klemmung an der Szenengrenze, Verschmelzen überlappender und
   benachbarter Fenster, Mindest- und Höchstlänge, Bildraten-Umrechnung bei
   Nicht-Ganzzahl-Raten (z.B. 30000/1001).
-- **Scout:** gültige Antwort; ungültige → Retry; kaputter Runner → Fallback ohne Ausnahme;
-  Zwei-Quellen-Regel greift bzw. greift begründet nicht; fremdes Projekt bleibt unsichtbar.
+- **Scout:** gültige Antwort; Index außerhalb des Bereichs → Retry; kaputter Runner →
+  Fallback ohne Ausnahme; Zwei-Quellen-Regel greift bzw. greift begründet nicht; Dubletten
+  werden abgelehnt; `trim_to_target` kürzt am Ende, nicht am Anfang.
 - **Endpunkt:** 404 / 503 (Extra, Config) / 422 / 202; **keine Schreibvorgänge vor dem 422**
   (Timeline- und Szenenzahl vor und nach dem Aufruf identisch); Sequenz, Szenen und
   Quell-Timeline korrekt verdrahtet; `kind="overview"` gesetzt; Render-Job angestoßen;
