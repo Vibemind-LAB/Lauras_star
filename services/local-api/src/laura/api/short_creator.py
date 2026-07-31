@@ -35,7 +35,7 @@ from ..short_creator.board_models import Format
 from ..short_creator.discovery import search_material
 from ..short_creator.overview_build import build_overview
 from ..short_creator.overview_scout import OverviewDecision, run_overview_scout
-from ..short_creator.overview_windows import build_candidates
+from ..short_creator.overview_windows import build_candidates, duration_seconds
 from ..short_creator.scout import ScoutDecision, run_scout
 from ..util import new_id
 
@@ -539,7 +539,8 @@ def create_project_auto_overview(
     machinery — a new sequence (never the project's own) plus an enqueued render.
 
     404 unknown project; 503 preflight (missing extra / unusable agent config); 422 when the
-    topic finds no material or no window survives — both BEFORE anything is written.
+    topic finds no material, no window survives, or the target is shorter than every
+    candidate — all BEFORE anything is written.
     """
     db = _db(request)
     if repos.get_project(db, project_id) is None:
@@ -585,6 +586,27 @@ def create_project_auto_overview(
         target_seconds=body.target_seconds,
         fps_by_asset=fps_by_asset,
     )
+
+    if not decision["clips"]:
+        # Every candidate window is at least _MIN_S seconds by construction; trim_to_target
+        # keeps candidates only while the running total stays under target_seconds * 1.2, so a
+        # small enough target empties the selection no matter how much material matched. That
+        # is a legitimate request (target_seconds is in-range) hitting a real constraint, not a
+        # programming error — build_overview's empty-clips ValueError must never see it. Still
+        # nothing written — same corpse rule as the two 422s above.
+        shortest_s = min(duration_seconds([c], fps_by_asset=fps_by_asset) for c in candidates)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": (
+                    f"target_seconds ({body.target_seconds}) is shorter than the shortest "
+                    f"available clip (~{shortest_s:.1f}s) — raise target_seconds to at least "
+                    "that length"
+                ),
+                "target_seconds": body.target_seconds,
+                "shortest_candidate_seconds": round(shortest_s, 1),
+            },
+        )
 
     built = build_overview(
         db, project_id=project_id, topic=body.topic, clips=decision["clips"]

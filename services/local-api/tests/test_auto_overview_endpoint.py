@@ -20,7 +20,7 @@ from laura.db.database import Database, SqliteDatabase
 from laura.main import create_app
 from laura.short_creator import discovery
 from laura.short_creator.overview_scout import OverviewDecision
-from laura.short_creator.overview_windows import Candidate
+from laura.short_creator.overview_windows import Candidate, trim_to_target
 
 FPS = 30
 _TOKEN = "test-token"
@@ -215,3 +215,79 @@ def test_hits_too_short_for_a_window_are_422_not_an_empty_sequence(
     assert r.status_code == 422
     assert r.json()["detail"]["reason"] == "no usable windows for topic"
     assert _counts(db) == before
+
+
+def _decision_for_target(a: str, b: str, target_seconds: int) -> OverviewDecision:
+    """A scout answer whose ``clips`` went through the REAL ``trim_to_target`` — reproduces
+    what ``run_overview_scout`` itself does at the end of a real run, so a test that
+    monkeypatches the scout still exercises the exact emptying behavior the route must guard
+    against (10s + 8s candidates against a tight target_seconds*1.2 budget)."""
+    candidates = [
+        Candidate(a, "a.mp4", 1, 0, 300, "the agent farm plans the mission"),
+        Candidate(b, "b.mp4", 1, 0, 240, "the mission handoff is executed"),
+    ]
+    fps_by_asset = {a: (FPS, 1), b: (FPS, 1)}
+    return {
+        "clips": trim_to_target(
+            candidates, target_seconds=target_seconds, fps_by_asset=fps_by_asset
+        ),
+        "rationale": "one video sets it up, the other shows it running",
+        "fallback": False,
+    }
+
+
+def test_target_shorter_than_every_clip_is_422_not_500(tmp_path: Path, monkeypatch: Any) -> None:
+    """A legitimate request (target_seconds is in the model's 1..1800 range) whose target is
+    below every candidate's length must 422, not crash into build_overview's empty-clips
+    ValueError. Real material matches; the scout's post-trim selection is what empties."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    client, db = _app(tmp_path)
+    project_id, a, b = _seed_two_assets(db)
+    monkeypatch.setattr(
+        "laura.api.short_creator.run_overview_scout",
+        lambda *_a, **_kw: _decision_for_target(a, b, 2),
+    )
+    before = _counts(db)
+
+    r = client.post(
+        f"/projects/{project_id}/auto-overview",
+        json={"topic": "mission", "target_seconds": 2},
+        headers=_H,
+    )
+
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "reason" in detail
+    assert _counts(db) == before
+
+
+def test_single_source_is_warned_but_still_succeeds(tmp_path: Path, monkeypatch: Any) -> None:
+    """Only one asset matches the topic — the scout can only ever hand back clips from that
+    one source. That is honest, not an error: the request still succeeds (202), and the
+    single-source warning the route appends must show up in the response."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    client, db = _app(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    a = _seed_asset_with_scenes(
+        db, project["id"], "a.mp4", segments=[(10, 200, "the agent farm plans the mission")]
+    )
+    monkeypatch.setattr(
+        "laura.api.short_creator.run_overview_scout",
+        lambda *_a, **_kw: {
+            "clips": [Candidate(a, "a.mp4", 1, 0, 300, "the agent farm plans the mission")],
+            "rationale": "only one video matched the topic",
+            "fallback": True,
+        },
+    )
+
+    r = client.post(
+        f"/projects/{project['id']}/auto-overview", json={"topic": "mission"}, headers=_H
+    )
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert "overview covers a single source: only a.mp4 matched the topic" in body["warnings"]
