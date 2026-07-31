@@ -462,10 +462,15 @@ def timeline_from_shots(
 
     run_id = body.run_id
     if run_id is None:
-        run = repos.get_latest_analysis_run(db, body.asset_id)
+        # Same reasoning as scenes.generate_scenes: the shots below come from whichever run
+        # we pick here, and they live on the run that produced them -- the latest run by
+        # recency alone lets a newer failed/stranded run shadow a succeeded run with real
+        # shots. An explicitly supplied body.run_id bypasses this entirely and is honoured
+        # as-is (the caller named the run on purpose).
+        run = repos.get_latest_succeeded_analysis_run(db, body.asset_id)
         if run is None:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run"
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no succeeded analysis run"
             )
         run_id = run["id"]
 
