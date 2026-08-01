@@ -400,7 +400,42 @@ def create_production(
     }
 
 
-# --- v2 project-scoped auto-short endpoint (Task 3) ---------------------------------------------
+# --- v2 project-scoped auto-short + auto-overview endpoints (Task 3 / spec 2026-07-31) ----------
+
+
+def _split_by_source_presence(
+    db: Database, ranking: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split *ranking* into (usable, display names of assets whose source file is gone).
+
+    Live 2026-07-31: two videos were ranked, scouted and built into a sequence with full
+    confidence — and only ffmpeg discovered their source files no longer existed (they had been
+    imported from a temp directory that was later cleaned). Nothing upstream noticed, because
+    ``media_assets.online`` is set at import and by ``set_asset_source`` but NEVER flipped back
+    when a file disappears; the transcript rows outlive the media.
+
+    So the check is the filesystem itself, done ONCE per ranked asset, here rather than in
+    :func:`discovery.search_material`: discovery answers "what matches the topic" and is
+    consumed by other callers, while these routes are where the pipeline commits to BUILDING —
+    and they must not build out of clips they cannot render. Dropping (rather than aborting)
+    keeps the result useful: the remaining videos still make an overview, and the scout still
+    has candidates to choose from.
+
+    The asset's proxy may well still exist, but the renderer resolves the SOURCE, so a present
+    proxy does not make the asset usable here.
+    """
+    usable: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for entry in ranking:
+        asset = repos.get_asset(db, str(entry["asset_id"]))
+        source = str((asset or {}).get("source_path") or "")
+        if source and Path(source).exists():
+            usable.append(entry)
+            continue
+        name = str(entry.get("display_name") or "") or str(entry["asset_id"])
+        missing.append(name)
+        logger.info("auto-overview: dropping %s — source file missing (%s)", name, source)
+    return usable, missing
 
 
 @router.post("/projects/{project_id}/auto-short", status_code=status.HTTP_202_ACCEPTED)
@@ -439,6 +474,21 @@ def create_project_auto_short(
             },
         )
 
+    # An asset whose source file is gone can be ranked, scouted and produced -- and only fails
+    # at render, once a session and a job already exist. Drop those before the scout sees them
+    # (see _split_by_source_presence).
+    ranking, missing_sources = _split_by_source_presence(db, material["ranking"])
+    if not ranking:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no usable material: every matching video's source file is missing",
+                "missing_sources": missing_sources,
+                "source": material["source"],
+            },
+        )
+    material = {**material, "ranking": ranking}
+
     from ..short_creator.providers import config_warnings, resolve_from_env
 
     config = resolve_from_env()
@@ -467,6 +517,13 @@ def create_project_auto_short(
         language=body.language,
     )
 
+    warnings = config_warnings(config)
+    if missing_sources:
+        warnings = [
+            *warnings,
+            "left out of the material, source file missing: " + ", ".join(missing_sources),
+        ]
+
     return {
         "session_id": session_id,
         "job_id": job_id,
@@ -475,45 +532,11 @@ def create_project_auto_short(
         "rationale": decision["rationale"],
         "fallback": decision["fallback"],
         "ranking": material["ranking"],
-        "warnings": config_warnings(config),
+        "warnings": warnings,
     }
 
 
 # --- v2 project-scoped auto-overview endpoint (spec 2026-07-31) ---------------------------------
-
-
-def _split_by_source_presence(
-    db: Database, ranking: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Split *ranking* into (usable, display names of assets whose source file is gone).
-
-    Live 2026-07-31: two videos were ranked, scouted and built into a sequence with full
-    confidence — and only ffmpeg discovered their source files no longer existed (they had been
-    imported from a temp directory that was later cleaned). Nothing upstream noticed, because
-    ``media_assets.online`` is set at import and by ``set_asset_source`` but NEVER flipped back
-    when a file disappears; the transcript rows outlive the media.
-
-    So the check is the filesystem itself, done ONCE per ranked asset, here rather than in
-    :func:`discovery.search_material`: discovery answers "what matches the topic" and is
-    consumed by other callers, while this route is where the pipeline commits to BUILDING —
-    and it must not build a montage out of clips it cannot render. Dropping (rather than
-    aborting) keeps the overview useful: the remaining videos still make one.
-
-    The asset's proxy may well still exist, but the renderer resolves the SOURCE, so a present
-    proxy does not make the asset usable here.
-    """
-    usable: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for entry in ranking:
-        asset = repos.get_asset(db, str(entry["asset_id"]))
-        source = str((asset or {}).get("source_path") or "")
-        if source and Path(source).exists():
-            usable.append(entry)
-            continue
-        name = str(entry.get("display_name") or "") or str(entry["asset_id"])
-        missing.append(name)
-        logger.info("auto-overview: dropping %s — source file missing (%s)", name, source)
-    return usable, missing
 
 
 def _overview_scene_bounds(
