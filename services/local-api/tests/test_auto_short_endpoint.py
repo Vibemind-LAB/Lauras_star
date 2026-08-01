@@ -98,15 +98,25 @@ def _seed_asset_with_scenes(
     return str(asset["id"])
 
 
-def _seed_project_with_material(db: Database) -> tuple[str, str]:
+def _seed_project_with_material(
+    db: Database, *, media_dir: Path | None = None
+) -> tuple[str, str]:
     """Project + one asset whose transcript matches the topic "mission" used throughout below.
-    Returns ``(project_id, asset_id)``."""
+    Returns ``(project_id, asset_id)``.
+
+    ``media_dir`` (when given) is threaded straight through to :func:`_seed_asset_with_scenes`
+    so the asset's source file really exists — every asset this system produces is imported
+    from a real file, so a test exercising the "happy path" must seed one, now that
+    ``create_project_auto_short`` drops assets whose source has vanished. Left ``None`` (the
+    default) for callers that intentionally do not care (or want the dead-source shape).
+    """
     project = repos.create_project(
         db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
     )
     asset_id = _seed_asset_with_scenes(
         db, project["id"], "strong.mp4",
         segments=[(10, 60, "the agent farm plans the mission")],
+        media_dir=media_dir,
     )
     return str(project["id"]), asset_id
 
@@ -139,7 +149,7 @@ def test_happy_path_creates_session_on_the_scouted_asset(tmp_path: Path, monkeyp
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)  # force lexical, deterministic
     client, db = _app(tmp_path)
-    project_id, asset_id = _seed_project_with_material(db)
+    project_id, asset_id = _seed_project_with_material(db, media_dir=tmp_path)
     decision = _fixed_decision(asset_id)
     monkeypatch.setattr("laura.api.short_creator.run_scout", lambda *_a, **_kw: decision)
 
@@ -178,7 +188,7 @@ def test_fallback_decision_is_visible_in_the_response(tmp_path: Path, monkeypatc
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     client, db = _app(tmp_path)
-    project_id, asset_id = _seed_project_with_material(db)
+    project_id, asset_id = _seed_project_with_material(db, media_dir=tmp_path)
     decision = _fixed_decision(asset_id, fallback=True)
     monkeypatch.setattr("laura.api.short_creator.run_scout", lambda *_a, **_kw: decision)
 
