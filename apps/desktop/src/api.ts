@@ -718,6 +718,8 @@ export interface ProductionArtifactState {
   checks_ok?: boolean;
   failed_checks?: string[];
   stale?: boolean | null;
+  /** Video length / target; reporting only. */
+  target_ratio?: number;
 }
 
 /** The job currently running a production session — the authority on whether it is alive.
@@ -783,6 +785,18 @@ export type ProductionStatus = ProductionBoardStatus | ProductionPendingStatus;
 export interface ProductionCreated {
   session_id: string;
   job_id: string;
+  /** Advisory config findings (never blocking). */
+  warnings?: string[];
+}
+
+/** Response from reverting a production artifact to a previous version. */
+export interface ProductionReverted {
+  ok: boolean;
+  artifact: string;
+  version: number;
+  invalidated: string[];
+  restored: string[];
+  status: ProductionStatus;
 }
 
 export class LauraClient {
@@ -895,6 +909,22 @@ export class LauraClient {
     return this.request<ProductionCreated>(`/production/${sessionId}/message`, {
       method: "POST",
       body: JSON.stringify({ text }),
+    });
+  }
+
+  /**
+   * Revert a production artifact to an archived version; the provenance walk then heals the
+   * coherent suffix synchronously — no job, no agent turn.
+   * POST /production/{sessionId}/revert {artifact, version} -> 200 ProductionReverted
+   */
+  revertProduction(
+    sessionId: string,
+    artifact: string,
+    version: number,
+  ): Promise<ProductionReverted> {
+    return this.request<ProductionReverted>(`/production/${sessionId}/revert`, {
+      method: "POST",
+      body: JSON.stringify({ artifact, version }),
     });
   }
 

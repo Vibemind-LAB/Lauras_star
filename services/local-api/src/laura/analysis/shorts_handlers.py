@@ -111,9 +111,10 @@ def handle_shorts_extract(ctx: JobContext) -> dict[str, Any]:
     rate_den: int = int(asset["rate_den"] or 1)
     total_frames: int | None = asset["duration_frames"]
 
-    run = repos.get_latest_analysis_run(db, asset_id)
-    if run is None or run["status"] != "succeeded":
-        status = "none" if run is None else run["status"]
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
+    if run is None:
+        latest = repos.get_latest_analysis_run(db, asset_id)
+        status = "none" if latest is None else str(latest["status"])
         raise ValueError(
             f"no succeeded analysis run for asset {asset_id} (latest status: {status})"
         )
@@ -121,7 +122,14 @@ def handle_shorts_extract(ctx: JobContext) -> dict[str, Any]:
     source_timeline_id = _pick_source_timeline_id(db, project["id"], asset_id)
 
     # --- Load transcript words → editorial Word view -----------------------
-    word_rows = repos.list_words_for_run(db, asset_id, run["id"])
+    # Words come from the run that HOLDS the transcript, which need not be the run above: a
+    # scene-only re-analysis (stages.asr false) is the latest run and carries no segments.
+    transcript_run = repos.get_latest_transcript_run(db, asset_id)
+    word_rows = (
+        repos.list_words_for_run(db, asset_id, str(transcript_run["id"]))
+        if transcript_run is not None
+        else []
+    )
     words = [
         Word(
             start_frame=r["start_frame"],

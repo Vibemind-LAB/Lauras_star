@@ -113,7 +113,7 @@ def get_shot_thumbnail(shot_id: str, request: Request) -> FileResponse:
 @router.get("/assets/{asset_id}/transcript", response_model=list[SegmentOut])
 def get_transcript(asset_id: str, request: Request) -> list[SegmentOut]:
     db = _db(request)
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
         return []
     out: list[SegmentOut] = []
@@ -156,7 +156,9 @@ def _segment_out(seg: dict[str, Any], words: list[dict[str, Any]]) -> SegmentOut
 
 
 def _analysis_language(db: Database, asset_id: str) -> str:
-    run = repos.get_latest_analysis_run(db, asset_id)
+    # The language belongs to the run that produced the transcript we are about to realign —
+    # not to whatever ran last (a scene-only re-analysis carries no ASR config that matters).
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
         return "en"
     try:
@@ -182,7 +184,7 @@ def _realign_segment_ids(db: Database, asset_id: str, requested: list[str] | Non
             segment_ids.append(segment_id)
         return segment_ids
 
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     if run is None:
         return []
     return [str(seg["id"]) for seg in repos.get_transcript(db, asset_id, run["id"])]

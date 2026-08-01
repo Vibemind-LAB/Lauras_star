@@ -350,8 +350,8 @@ def handle_embed_frames(
     rate_den: int = int(asset["rate_den"] or 1)
     total_frames: int = int(asset["duration_frames"] or 0)
 
-    run = repos.get_latest_analysis_run(db, asset_id)
-    if run is None or run["status"] != "succeeded":
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
+    if run is None:
         return {"ok": False, "error": "no succeeded analysis run", "asset_id": asset_id}
     run_id: str = run["id"]
 

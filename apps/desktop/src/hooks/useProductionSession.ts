@@ -15,6 +15,13 @@ export interface ProductionSessionState {
   /** Parsed `result_json` of the terminal job (ok/weak/export_id …) — narrow at the call site. */
   jobResult: unknown | null;
   error: string | null;
+  /**
+   * Advisory config findings from the last enqueue (never blocking) — e.g. "text agents run on
+   * local ollama". The backend also logs them, but the log is not where the user looks; the
+   * 2026-07-20 incident was three runs silently on the wrong model. Empty when the backend
+   * reported none, and when it predates the field.
+   */
+  warnings: string[];
 }
 
 export interface ProductionSessionController {
@@ -38,6 +45,7 @@ const IDLE_STATE: ProductionSessionState = {
   status: null,
   jobResult: null,
   error: null,
+  warnings: [],
 };
 
 interface StoredProductionSession {
@@ -253,6 +261,9 @@ export function useProductionSession(
         status: null,
         jobResult: null,
         error: null,
+        // A resumed session has no enqueue response to read warnings off — they belong to the
+        // call that started the run, not to the session, and are not persisted.
+        warnings: [],
       });
 
       void checkOnce(gen, stored.sessionId, stored.jobId).then((terminal) => {
@@ -296,6 +307,7 @@ export function useProductionSession(
         status: null,
         jobResult: null,
         error: null,
+        warnings: created.warnings ?? [],
       });
       startPolling(gen, created.session_id, created.job_id);
     },
@@ -325,6 +337,9 @@ export function useProductionSession(
         jobId: created.job_id,
         jobResult: null,
         error: null,
+        // Replace, never append: the follow-up re-resolves the same config server-side, so
+        // appending would show the identical finding once per message.
+        warnings: created.warnings ?? [],
       }));
       startPolling(gen, sessionId, created.job_id);
     },

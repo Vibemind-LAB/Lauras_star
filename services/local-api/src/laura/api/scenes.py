@@ -53,26 +53,32 @@ def generate_scenes(
     asset = repos.get_asset(db, body.asset_id)
     if asset is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
-    run = repos.get_latest_analysis_run(db, body.asset_id)
-    if run is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run")
-    # Auto-build a minimal rough cut from the asset's kept shots so generation is never a
-    # dead-end. The dedicated /timelines/from-shots endpoint offers the richer build (quality
-    # filtering, split-cut recommendations); this is the fallback. No-op if clips exist.
-    clips = populate_rough_cut_from_shots(db, timeline_id, body.asset_id, run["id"])
+    clips = repos.list_timeline_clips(db, timeline_id)
     if not clips:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "asset has no kept shots to build a rough cut from",
-        )
+        # Auto-build a minimal rough cut so generation is never a dead-end. This is the only
+        # part that needs shots, and it needs the run that HAS them -- a corpse on top of a
+        # good run carries none. The richer build lives in /timelines/from-shots.
+        shots_run = repos.get_latest_shots_run(db, body.asset_id)
+        if shots_run is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run"
+            )
+        clips = populate_rough_cut_from_shots(db, timeline_id, body.asset_id, shots_run["id"])
+        if not clips:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "asset has no kept shots to build a rough cut from",
+            )
     gap = body.gap_frames if body.gap_frames is not None else default_gap_frames(asset)
+    # Grouping reads the transcript, which can live on a different run than the shots.
+    transcript_run = repos.get_latest_transcript_run(db, body.asset_id)
     with timeline_checkpoint(db, timeline_id, "Szenen erzeugt"):
         group_timeline_scenes(
             db,
             project_id=tl["project_id"],
             timeline_id=timeline_id,
             asset=asset,
-            run_id=run["id"],
+            run_id=str(transcript_run["id"]) if transcript_run is not None else None,
             clips=clips,
             gap_frames=gap,
         )

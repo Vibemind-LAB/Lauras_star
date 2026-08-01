@@ -229,6 +229,11 @@ def test_prompts_carry_contracts() -> None:
     # then hit the QA order guard with no way to render — the run-1f0438b8 mechanism.
     assert "save_contact_sheet" not in by_name["qa_reviewer"].system_message
     assert "never WRITE to the chain" in by_name["qa_reviewer"].system_message
+    # QA had no read path for the length target at all (production-hardening finding 1) —
+    # board_status's render_report entry is now where it looks, and the charter's
+    # pre-authorization of a shorter film must stay uncontradicted.
+    assert "target_ratio" in by_name["qa_reviewer"].system_message
+    assert "charter" in by_name["qa_reviewer"].system_message.lower()
 
 
 # --- build_production_team ---------------------------------------------------------------------

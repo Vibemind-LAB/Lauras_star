@@ -597,7 +597,7 @@ def _resolve_scene(db: Database, asset_id: str, scene_number: int) -> tuple[int,
     if not ranges:
         return None
     src_start, src_end_exclusive = ranges[0][0], ranges[-1][1]
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_transcript_run(db, asset_id)
     segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
     in_scene = context._segments_in_ranges(segments, ranges)
     text = " ".join(str(seg.get("text") or "").strip() for seg in in_scene).strip()
@@ -2167,6 +2167,8 @@ def build_production_tool_specs(
                     note="" if has_voice_timings else "no timings sidecar on the voice artifact",
                 ),
             ]
+            target_s = board.meta().target_seconds
+            target_ratio = round(video_s / target_s, 3) if target_s > 0 else None
             report = RenderReport(
                 export_id=export_id,
                 video_s=video_s,
@@ -2183,10 +2185,20 @@ def build_production_tool_specs(
                     "voice": _content_hash(voice),
                     "cutlist": _content_hash(cutlist),
                 },
+                target_ratio=target_ratio,
             )
             board.save("render_report", report)
             ok = all(c.ok for c in checks)
-            return {"ok": ok, "export_id": export_id, "checks": [c.model_dump() for c in checks]}
+            reply: dict[str, Any] = {
+                "ok": ok,
+                "export_id": export_id,
+                "checks": [c.model_dump() for c in checks],
+            }
+            if target_ratio is not None:
+                reply["target_note"] = (
+                    f"video {video_s:.1f}s vs target {target_s:.1f}s ({target_ratio:.0%})"
+                )
+            return reply
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 

@@ -116,6 +116,17 @@ def list_jobs(db: Database, *, limit: int = 50) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def list_jobs_of_kind(db: Database, kind: str) -> list[dict[str, Any]]:
+    """All jobs of one kind, newest first. Used to walk back from a run to its job."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, status, payload_json FROM jobs WHERE kind=? "
+            "ORDER BY created_order DESC",
+            (kind,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def cancel_job(db: Database, job_id: str) -> bool:
     now = utcnow_iso()
     with db.transaction() as conn:
@@ -398,10 +409,121 @@ def get_latest_analysis_run(db: Database, asset_id: str) -> dict[str, Any] | Non
         return dict(row) if row is not None else None
 
 
+# The run-resolution ordering shared by every artifact-scoped resolver (transcript, shots) and
+# search_transcript's correlated subquery: has-the-artifact, then succeeded, then newest. Kept
+# in one place so the readers and the lexical search can never drift apart.
+_ARTIFACT_RUN_ORDER = (
+    "ORDER BY CASE WHEN ar.status = 'succeeded' THEN 0 ELSE 1 END, "
+    "COALESCE(ar.started_at, '') DESC, ar.id DESC LIMIT 1"
+)
+_TRANSCRIPT_RUN_HAS_SEGMENTS = (
+    "EXISTS (SELECT 1 FROM transcript_segments ts "
+    "WHERE ts.asset_id = ar.asset_id AND ts.analysis_run_id = ar.id)"
+)
+_SHOTS_RUN_HAS_SHOTS = (
+    "EXISTS (SELECT 1 FROM shots sh "
+    "WHERE sh.asset_id = ar.asset_id AND sh.analysis_run_id = ar.id)"
+)
+
+
+def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The run that carries this asset's transcript, or None if no run has segments.
+
+    NOT the same question as :func:`get_latest_analysis_run`. Analysis is stage-configurable
+    (``stages.asr: false``), so a scene-only re-analysis is the *latest* run while carrying no
+    transcript at all — and a run that crashed after writing its segments (an unreachable
+    Qdrant used to kill the whole handler) stays ``'running'`` forever with a complete
+    transcript attached. Both shapes exist in workspace-livetest.
+
+    Resolution order, see docs/superpowers/specs/2026-07-31-stranded-transcript-runs-design.md:
+
+    1. only runs that HAVE segments,
+    2. ``succeeded`` outranks anything unfinished (an in-flight re-analysis never shadows a
+       complete transcript). The same ordering also ranks ``'failed'`` below ``'succeeded'``:
+       a newer, complete transcript on a run that crashed after ASR (e.g. during embedding)
+       stays shadowed by an older succeeded transcript, not just by one still ``'running'``.
+    3. newest first, mirroring :func:`get_latest_analysis_run`'s ordering.
+
+    ``LIMIT 1`` is the exclusion property: exactly one run per asset, so callers filtering on
+    ``analysis_run_id`` can never mix two runs' segments.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT ar.* FROM analysis_runs ar "
+            f"WHERE ar.asset_id = ? AND {_TRANSCRIPT_RUN_HAS_SEGMENTS} "
+            f"{_ARTIFACT_RUN_ORDER}",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def get_latest_shots_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The run that carries this asset's shots, or None if no run has any.
+
+    NOT the same question as :func:`get_latest_analysis_run`. A failed or stranded run is
+    still the newest row for the asset while carrying no shots at all -- resolving by plain
+    recency hands a shots-based build a corpse to read from and it comes back empty, even
+    though an older successful run's shots are sitting right there.
+
+    NOT the same question as :func:`get_latest_succeeded_analysis_run` either. That is the gate
+    question ("has this asset been analysed successfully"), and it is too strict for a reader:
+    a run still ``'running'`` that has already written its shots is a legitimate answer here --
+    that is exactly the shape analysis leaves mid-flight, and it is the shape the endpoints that
+    build from shots need to keep working with.
+
+    Resolution order mirrors :func:`get_latest_transcript_run`:
+
+    1. only runs that HAVE shots,
+    2. ``succeeded`` outranks anything unfinished,
+    3. newest first.
+
+    ``LIMIT 1`` is the exclusion property: exactly one run per asset, so callers filtering on
+    ``analysis_run_id`` can never mix two runs' shots.
+
+    Deliberately does not filter on ``shots.keep`` -- that is a per-shot editorial flag, not a
+    property of the run. A run whose shots were all dropped is still the run that analysed the
+    asset; callers do their own kept-filtering with their own error messages.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT ar.* FROM analysis_runs ar "
+            f"WHERE ar.asset_id = ? AND {_SHOTS_RUN_HAS_SHOTS} "
+            f"{_ARTIFACT_RUN_ORDER}",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def get_latest_succeeded_analysis_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The newest run that SUCCEEDED, or None.
+
+    Sibling of :func:`get_latest_transcript_run` for the artifact-free gates. Asking
+    :func:`get_latest_analysis_run` and then testing ``status == 'succeeded'`` is a different
+    question: it lets a newer failed or stranded run shadow a perfectly good one, which locked
+    assets out of shorts extraction and visual embedding until someone re-analysed by hand.
+    Ordering mirrors get_latest_analysis_run.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM analysis_runs WHERE asset_id=? AND status='succeeded' "
+            "ORDER BY COALESCE(started_at, '') DESC, id DESC LIMIT 1",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def start_analysis_run(db: Database, run_id: str) -> None:
+    """Mark the run in flight, clearing whatever a previous attempt left behind.
+
+    analysis.run is enqueued with max_attempts=2, so a retry re-enters here. Without the
+    reset, the retry runs with the first attempt's finished_at and its {"error": ...} still in
+    place -- and api/analysis.py hands both straight to the UI. started_at is re-stamped,
+    never nulled: every run resolver orders on COALESCE(started_at, '') DESC.
+    """
     with db.transaction() as conn:
         conn.execute(
-            "UPDATE analysis_runs SET status='running', started_at=? WHERE id=?",
+            "UPDATE analysis_runs SET status='running', started_at=?, finished_at=NULL, "
+            "diagnostics_json='{}' WHERE id=?",
             (utcnow_iso(), run_id),
         )
 
@@ -414,6 +536,37 @@ def finish_analysis_run(
             "UPDATE analysis_runs SET status=?, finished_at=?, diagnostics_json=? WHERE id=?",
             (status, utcnow_iso(), json.dumps(diagnostics), run_id),
         )
+
+
+def fail_stranded_analysis_run(
+    db: Database, run_id: str, *, error: str, recovered_by: str
+) -> bool:
+    """Finalize a run whose worker never came back. True when this call wrote the row.
+
+    handle_analysis_run's try/except cannot reach a process that was SIGKILLed, and the
+    runtime cap in jobs/runner.py stops the heartbeat while the handler thread is still alive
+    and has raised nothing. Both leave analysis_runs on 'running' forever. The status guard
+    makes this a no-op once the run reached a terminal state on its own -- the handler always
+    wins over the recovery paths.
+    """
+    diagnostics = json.dumps({"error": error, "recovered_by": recovered_by})
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE analysis_runs SET status='failed', finished_at=?, diagnostics_json=? "
+            "WHERE id=? AND status IN ('queued','running')",
+            (utcnow_iso(), diagnostics, run_id),
+        )
+        return int(cur.rowcount) == 1
+
+
+def list_unfinished_analysis_runs(db: Database) -> list[dict[str, Any]]:
+    """Every run that never reached a terminal status. Empty in a healthy DB."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analysis_runs WHERE status IN ('queued','running') "
+            "ORDER BY COALESCE(started_at, '') DESC, id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def clear_analysis_results(db: Database, *, asset_id: str, run_id: str) -> None:
@@ -1451,6 +1604,13 @@ def search_transcript(
 ) -> list[dict[str, Any]]:
     """Lexical, case-insensitive transcript search scoped to a project.
 
+    Restricted to each asset's transcript run — the same resolution
+    :func:`get_latest_transcript_run` applies, inlined as a correlated subquery so search and
+    the readers can't disagree: only runs that HAVE segments, ``succeeded`` before unfinished,
+    newest first, ``LIMIT 1``. Without that single-run restriction a re-analysis' old segments
+    would double-count matches instead of replacing them (the semantic index is immune: it
+    deletes-before-reindexing, see :mod:`laura.short_creator.discovery`).
+
     Portable across SQLite/Postgres (LOWER + LIKE). FTS5/semantic search is a
     later optimisation (docs/15)."""
     pattern = f"%{query.lower()}%"
@@ -1463,6 +1623,11 @@ def search_transcript(
             "JOIN media_assets a ON a.id = s.asset_id "
             "LEFT JOIN speakers sp ON sp.id = s.speaker_id "
             "WHERE a.project_id = ? AND LOWER(s.text) LIKE ? "
+            "AND s.analysis_run_id = ("
+            "  SELECT ar.id FROM analysis_runs ar "
+            f"  WHERE ar.asset_id = s.asset_id AND {_TRANSCRIPT_RUN_HAS_SEGMENTS} "
+            f"  {_ARTIFACT_RUN_ORDER}"
+            ") "
             "ORDER BY s.start_sample LIMIT ?",
             (project_id, pattern, limit),
         ).fetchall()
@@ -1556,10 +1721,17 @@ def get_scene_by_timeline(db: Database, scene_timeline_id: str) -> dict[str, Any
 # --- sequence items (stage 5) -----------------------------------------------
 
 def get_or_create_project_sequence(db: Database, project_id: str) -> dict[str, Any]:
+    """The project's OWN sequence — the Zusammenfügen view's backing timeline.
+
+    Filters on ``created_from IS NULL`` so a sequence built by another feature (e.g.
+    auto-overview's montage, created with ``created_from=<its source timeline id>`` — see
+    :func:`..short_creator.overview_build.build_overview`) can never be mistaken for the
+    project's own sequence, which is always created here with no ``created_from``.
+    """
     with db.connection() as conn:
         row = conn.execute(
             "SELECT * FROM timelines WHERE project_id=? AND kind='sequence' "
-            "ORDER BY created_at LIMIT 1",
+            "AND created_from IS NULL ORDER BY created_at LIMIT 1",
             (project_id,),
         ).fetchone()
     if row is not None:
@@ -1618,6 +1790,21 @@ def update_sequence_item_transition(
 
 # --- rough-cut per asset + project-wide scene list -------------------------
 
+def get_asset_rough_cut(
+    db: Database, project_id: str, asset_id: str
+) -> dict[str, Any] | None:
+    """The newest rough_cut timeline for this asset, or None — NEVER creates (the
+    discovery ranking must not leave timelines behind; get_or_create_asset_rough_cut is
+    the writing sibling)."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM timelines WHERE project_id=? AND kind='rough_cut' "
+            "AND created_from=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (project_id, asset_id),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def get_or_create_asset_rough_cut(
     db: Database, project_id: str, asset_id: str
 ) -> dict[str, Any]:
@@ -1626,14 +1813,9 @@ def get_or_create_asset_rough_cut(
     Looks up ``timelines`` where ``project_id=?`` AND ``kind='rough_cut'`` AND
     ``created_from=asset_id``, ordered newest first.  If none exists, creates a
     fresh timeline via :func:`create_timeline` with ``created_from=asset_id``."""
-    with db.connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM timelines WHERE project_id=? AND kind='rough_cut' "
-            "AND created_from=? ORDER BY created_at DESC, id DESC LIMIT 1",
-            (project_id, asset_id),
-        ).fetchone()
-    if row is not None:
-        return dict(row)
+    existing = get_asset_rough_cut(db, project_id, asset_id)
+    if existing is not None:
+        return existing
     return create_timeline(
         db, project_id=project_id, name="Rough Cut", kind="rough_cut", created_from=asset_id
     )
@@ -1683,9 +1865,15 @@ def list_project_scenes(db: Database, project_id: str) -> list[dict[str, Any]]:
         if aid is not None and t["id"] in tids_with_scenes:
             newest_for_asset.setdefault(aid, t["id"])
     keep = set(newest_for_asset.values())
-    # Never hide scenes whose source asset cannot be derived.
+    # Never hide scenes of a rough-cut timeline whose source asset cannot be derived. Must
+    # check membership, not just a None value: `timeline_asset` only has entries for
+    # kind='rough_cut' timelines, so a plain `.get(tid) is None` would also match timelines
+    # that are not rough cuts at all (e.g. an auto-overview's kind="overview" timeline) and
+    # let their scenes leak into this project-wide bin.
     keep |= {
-        tid for tid in tids_with_scenes if timeline_asset.get(tid) is None
+        tid
+        for tid in tids_with_scenes
+        if tid in timeline_asset and timeline_asset[tid] is None
     }
 
     out: list[dict[str, Any]] = []

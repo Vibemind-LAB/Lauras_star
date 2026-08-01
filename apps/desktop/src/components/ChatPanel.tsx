@@ -271,11 +271,116 @@ function sessionArtifactLabel(name: string): string {
     : name;
 }
 
+/** Shared chip-pill styling — the plain read-only chip and the button variant that opens a
+ * revert dropdown both use it, so the button never looks different from its neighbors at rest. */
+const SESSION_CHIP_CLS =
+  "inline-block rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] text-content-strong";
+
+/** One artifact chip whose slot has archived versions: click opens a small dropdown listing
+ * them ("v1", "v2", …) plus the current version for reference; picking one and confirming with
+ * "Zurückdrehen" calls `onConfirm(version)`. Owns its open/selected state independently per
+ * chip — simpler than a shared "which chip is open" slot on the parent, and multiple dropdowns
+ * open at once is harmless. */
+function RevertChip({
+  text,
+  title,
+  archivedVersions,
+  currentVersion,
+  onConfirm,
+}: {
+  text: string;
+  title?: string;
+  archivedVersions: number[];
+  currentVersion: number;
+  onConfirm: (version: number) => void;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<number | null>(null);
+  // `board.revert` leaves the restored version's own archive entry in versions/ — so reverting
+  // an artifact to v1 can leave v1 sitting in `archivedVersions` alongside the *new* current
+  // version's number being v1 too. Without this filter the dropdown would offer a no-op revert
+  // to the version already showing as current.
+  const offeredVersions = archivedVersions.filter((v) => v !== currentVersion);
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        title={title}
+        onClick={() => {
+          setOpen((prev) => !prev);
+          setSelected(null);
+        }}
+        className={`${SESSION_CHIP_CLS} cursor-pointer hover:bg-accent/25`}
+      >
+        {text}
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 flex flex-col gap-1 rounded border border-bezel bg-surface-1 p-1.5 text-[10px] shadow-lg">
+          <div className="text-content-faint">aktuell: v{currentVersion}</div>
+          <div className="flex gap-1">
+            {offeredVersions.map((v) => (
+              <button
+                key={v}
+                type="button"
+                aria-pressed={selected === v}
+                onClick={() => setSelected(v)}
+                className={`rounded border px-1.5 py-0.5 ${
+                  selected === v
+                    ? "border-accent bg-accent/30 text-content-strong"
+                    : "border-bezel text-content-muted hover:text-content-strong"
+                }`}
+              >
+                v{v}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            disabled={selected === null}
+            onClick={() => {
+              if (selected === null) return;
+              onConfirm(selected);
+              setOpen(false);
+              setSelected(null);
+            }}
+            className="rounded bg-accent px-1.5 py-0.5 font-medium text-accent-ink disabled:opacity-40"
+          >
+            Zurückdrehen
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One chip's render data: a plain read-only pill, or (when `onRevert` is wired and the slot has
+ * archived versions) a revert-capable button chip. */
+type SessionChipData =
+  | { key: string; kind: "plain"; text: string; title?: string }
+  | {
+      key: string;
+      kind: "revert";
+      text: string;
+      title?: string;
+      archivedVersions: number[];
+      currentVersion: number;
+      onConfirm: (version: number) => void;
+    };
+
 /** Board chips: a restored-artifacts chip when a resume brought any back, a review-count chip
  * when any exist, then one version chip per present artifact (chain order) — e.g. "♻️ 2",
- * "🎬 5", "storyline v2", "script v1". */
-function SessionChips({ status }: { status: ProductionStatus }): ReactElement | null {
-  const chips: { key: string; text: string; title?: string }[] = [];
+ * "🎬 5", "storyline v2", "script v1". When `onRevert` is given, an artifact chip with archived
+ * versions renders as a button that opens a small revert dropdown ({@link RevertChip}) instead
+ * of a plain pill — chips without archived versions are never affected. */
+function SessionChips({
+  status,
+  onRevert,
+}: {
+  status: ProductionStatus;
+  onRevert?: (artifact: string, version: number) => void;
+}): ReactElement | null {
+  const chips: SessionChipData[] = [];
 
   // Available before the board exists too — `job` (and its `restored` list) sits outside the
   // board_ready discriminant, so a resume's restore is visible even in the queued/running window.
@@ -283,6 +388,7 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
   if (restored !== undefined && restored.length > 0) {
     chips.push({
       key: "restored",
+      kind: "plain",
       text: `♻️ ${restored.length}`,
       title: `Wiederhergestellt: ${restored.map(sessionArtifactLabel).join(", ")}`,
     });
@@ -298,6 +404,7 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
       const degraded = status.scene_reviews.degraded_count;
       chips.push({
         key: "reviews",
+        kind: "plain",
         text:
           degraded > 0
             ? `🎬 ${status.scene_reviews.count} (${degraded}⚠)`
@@ -323,25 +430,44 @@ function SessionChips({ status }: { status: ProductionStatus }): ReactElement | 
       // Unknown is not current: null means the artifact predates provenance and cannot be
       // judged either way — saying nothing here would present it as proven-fresh.
       const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
-      chips.push({
-        key: name,
-        text: `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`,
-        title: warnings.length > 0 ? warnings.join(" · ") : unknown,
-      });
+      const text = `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`;
+      const title = warnings.length > 0 ? warnings.join(" · ") : unknown;
+      if (onRevert !== undefined && info.archived_versions.some((v) => v !== info.version)) {
+        const revert = onRevert;
+        const artifact = name;
+        chips.push({
+          key: name,
+          kind: "revert",
+          text,
+          title,
+          archivedVersions: info.archived_versions,
+          currentVersion: info.version,
+          onConfirm: (version) => revert(artifact, version),
+        });
+      } else {
+        chips.push({ key: name, kind: "plain", text, title });
+      }
     }
   }
   if (chips.length === 0) return null;
   return (
     <div className="mb-1 flex flex-wrap gap-1">
-      {chips.map((chip) => (
-        <span
-          key={chip.key}
-          title={chip.title}
-          className="inline-block rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] text-content-strong"
-        >
-          {chip.text}
-        </span>
-      ))}
+      {chips.map((chip) =>
+        chip.kind === "plain" ? (
+          <span key={chip.key} title={chip.title} className={SESSION_CHIP_CLS}>
+            {chip.text}
+          </span>
+        ) : (
+          <RevertChip
+            key={chip.key}
+            text={chip.text}
+            title={chip.title}
+            archivedVersions={chip.archivedVersions}
+            currentVersion={chip.currentVersion}
+            onConfirm={chip.onConfirm}
+          />
+        ),
+      )}
     </div>
   );
 }
@@ -390,21 +516,86 @@ const SESSION_INPUT_CLS =
 const SESSION_BUTTON_CLS =
   "rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40";
 
+/** Extracts an HTTP status code and a human-readable detail from a `LauraClient` request error
+ * (`Error("<status>: <body>")` — see api.ts's `request()`), decoding a FastAPI `{"detail": "..."}`
+ * body when present, since that's how the revert endpoint's 409/422 responses are shaped. */
+function parseRevertError(e: unknown): { code: number | null; detail: string } {
+  const message = e instanceof Error ? e.message : String(e);
+  const match = message.match(/^(\d{3}):\s*([\s\S]*)$/);
+  if (match === null) return { code: null, detail: message };
+  const code = Number(match[1]);
+  const body = match[2];
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (typeof parsed === "object" && parsed !== null && "detail" in parsed) {
+      const detail = (parsed as Record<string, unknown>).detail;
+      if (typeof detail === "string") return { code, detail };
+    }
+  } catch {
+    // Not JSON — fall through to the raw body text.
+  }
+  return { code, detail: body };
+}
+
 /**
  * Session (v2) body: idle task input + start; running spinner (resume_point) + board chips; done
  * result card + a follow-up input (sendMessage); error message + reset. Owns only the current
- * draft text — everything else comes from `session` (driven by useProductionSession, exercised in
- * tests via a mocked client, never by mocking the hook itself).
+ * draft text plus a revert-in-flight snapshot — everything else comes from `session` (driven by
+ * useProductionSession, exercised in tests via a mocked client, never by mocking the hook itself).
  */
 function SessionPanel({
   session,
   assetId,
+  client,
 }: {
   session: ProductionSessionController;
   assetId: string | null;
+  client: LauraClient;
 }): ReactElement {
   const { state } = session;
   const [draft, setDraft] = useState("");
+  // Optimistic board snapshot from the most recent revert response, shown immediately instead of
+  // waiting up to POLL_INTERVAL_MS for the next tick. Dropped as soon as the hook's own `status`
+  // changes (a fresh poll landed) so a real update can never be shadowed by a stale override.
+  const [revertStatus, setRevertStatus] = useState<ProductionStatus | null>(null);
+  const [revertHint, setRevertHint] = useState<string | null>(null);
+  const effectiveStatus = revertStatus ?? state.status;
+  // Chips (and the transient revert hint) are relevant from the moment a board exists through
+  // both terminal outcomes — a failed run can still carry a board with archived versions worth
+  // reverting from. Only "idle" (no session yet) has nothing to show.
+  const chipsPhase =
+    state.phase === "running" || state.phase === "done" || state.phase === "error";
+
+  // Both the optimistic revertStatus snapshot and the transient revert hint stop being
+  // trustworthy the moment either a fresh poll result lands (`state.status` changes) or a new
+  // message/run starts (`state.jobId` changes immediately in start()/sendMessage(), before that
+  // run's first poll has even landed) — otherwise a stale "♻️ Wiederhergestellt: …" hint from an
+  // earlier revert can resurface and persist through a run it no longer describes, now that chips
+  // (and this hint) render across "running" too.
+  useEffect(() => {
+    setRevertStatus(null);
+    setRevertHint(null);
+  }, [state.status, state.jobId]);
+
+  const handleRevert = (artifact: string, version: number): void => {
+    const sessionId = state.sessionId;
+    if (sessionId === null) return;
+    setRevertHint(null);
+    void client
+      .revertProduction(sessionId, artifact, version)
+      .then((response) => {
+        setRevertStatus(response.status);
+        if (response.restored.length > 0) {
+          setRevertHint(
+            `♻️ Wiederhergestellt: ${response.restored.map(sessionArtifactLabel).join(", ")}`,
+          );
+        }
+      })
+      .catch((e: unknown) => {
+        const { code, detail } = parseRevertError(e);
+        setRevertHint(code === 409 ? "Lauf aktiv — warte, bis der Job fertig ist" : detail);
+      });
+  };
 
   const handleStart = (): void => {
     const text = draft.trim();
@@ -423,6 +614,28 @@ function SessionPanel({
   return (
     <>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5 text-[11px]">
+        {/* Advisory config findings from the enqueue — never blocking, but the run they describe
+            is already in flight, so they lead the panel rather than sit below the progress line.
+            The backend text is English (it names env vars); only the label is localised. */}
+        {state.warnings.length > 0 && (
+          <div
+            /* Solid token classes only: the theme colours are bare `var(--x)` without an
+               <alpha-value> slot, so Tailwind emits NOTHING for `/40`-style modifiers on them
+               (verified against a built stylesheet) — such a class would render invisible. */
+            className="mb-1.5 rounded-md border border-status-warn bg-surface-2 px-1.5 py-1"
+            role="status"
+            data-testid="config-warnings"
+          >
+            {state.warnings.map((warning) => (
+              // Amber carries the signal (border + label); the body runs in the body-text token.
+              // Amber #B45309 on surface-2 measures 4.10:1 — over this theme's ≥3:1 bar but under
+              // AA's 4.5:1 for text this small, and these strings are long enough to be read.
+              <div key={warning} className="text-content-strong">
+                <span className="font-medium text-status-warn">⚠ Konfiguration:</span> {warning}
+              </div>
+            ))}
+          </div>
+        )}
         {state.phase === "idle" && (
           <p className="text-content-faint">
             {assetId === null
@@ -431,16 +644,29 @@ function SessionPanel({
           </p>
         )}
         {state.phase === "running" && (
-          <>
-            <div className="mb-1 animate-pulse text-content-faint">
-              {state.status !== null && state.status.board_ready
-                ? `⚙ ${state.status.resume_point} …`
-                : state.status !== null && state.status.job !== null
-                  ? `⚙ ${state.status.job.status} …`
-                  : "läuft …"}
-            </div>
-            {state.status !== null && <SessionChips status={state.status} />}
-          </>
+          <div className="mb-1 animate-pulse text-content-faint">
+            {effectiveStatus !== null && effectiveStatus.board_ready
+              ? `⚙ ${effectiveStatus.resume_point} …`
+              : effectiveStatus !== null && effectiveStatus.job !== null
+                ? `⚙ ${effectiveStatus.job.status} …`
+                : "läuft …"}
+          </div>
+        )}
+        {/* Chips render across running + finished (done/error) phases so the chain stays visible
+            throughout — but the revert endpoint 409s on a queued/running job (see
+            2026-07-21-revert-ui-design.md), so `onRevert` is wired only once the run has actually
+            landed. Passing `undefined` during "running" makes SessionChips/RevertChip fall back
+            to a plain, non-interactive pill — the UI never offers an action the API would refuse. */}
+        {chipsPhase && effectiveStatus !== null && (
+          <SessionChips
+            status={effectiveStatus}
+            onRevert={state.phase === "running" ? undefined : handleRevert}
+          />
+        )}
+        {chipsPhase && revertHint !== null && (
+          <div className="mb-1 text-content-faint" role="status">
+            {revertHint}
+          </div>
         )}
         {state.phase === "done" && <SessionCard jobResult={state.jobResult} />}
         {state.phase === "error" && (
@@ -473,7 +699,11 @@ function SessionPanel({
             </button>
           </>
         )}
-        {state.phase === "done" && (
+        {/* "error" also covers a session that never got created at all (start()'s createProduction
+            rejected before any sessionId existed) — sendMessage() is a silent no-op without a
+            sessionId, so that case must not offer an input that swallows the typed text. */}
+        {(state.phase === "done" ||
+          (state.phase === "error" && state.sessionId !== null)) && (
           <>
             <input
               aria-label="Folgeanfrage"
@@ -495,6 +725,10 @@ function SessionPanel({
             </button>
           </>
         )}
+        {/* Even a failed run is not a dead end: the backend accepts a follow-up message from a
+            terminal "error" phase (a fresh sendMessage healed by an error-phase revert must be
+            reachable too), so error phase gets the same follow-up row as done — plus its own
+            "Zurücksetzen" to abandon the session outright instead of continuing it. */}
         {state.phase === "error" && (
           <button
             type="button"
@@ -626,7 +860,7 @@ export function ChatPanel({ client, assetId, onEvent }: ChatPanelProps): ReactEl
           </div>
         </>
       ) : (
-        <SessionPanel session={session} assetId={assetId} />
+        <SessionPanel session={session} assetId={assetId} client={client} />
       )}
     </aside>
   );

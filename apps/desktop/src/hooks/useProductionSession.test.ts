@@ -189,6 +189,62 @@ describe("useProductionSession", () => {
     expect(client.getJob).not.toHaveBeenCalled();
   });
 
+  it("start(): keeps the enqueue's advisory config warnings on state", async () => {
+    const client = makeClient({
+      createProduction: vi
+        .fn()
+        .mockResolvedValue({ session_id: "s1", job_id: "j1", warnings: ["runs on local ollama"] }),
+    });
+    const { result } = renderHook(() => useProductionSession(client, "asset-1"));
+
+    await act(async () => {
+      await result.current.start("Make a short");
+    });
+
+    expect(result.current.state.warnings).toEqual(["runs on local ollama"]);
+  });
+
+  it("warnings: a follow-up refreshes them, reset() clears them", async () => {
+    const client = makeClient({
+      createProduction: vi
+        .fn()
+        .mockResolvedValue({ session_id: "s1", job_id: "j1", warnings: ["first"] }),
+      // The follow-up's config is re-resolved server-side, so its warnings replace — never
+      // accumulate onto — the ones from create.
+      sendProductionMessage: vi
+        .fn()
+        .mockResolvedValue({ session_id: "s1", job_id: "j2", warnings: ["second"] }),
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+    });
+    const { result } = renderHook(() => useProductionSession(client, "asset-1"));
+
+    await act(async () => {
+      await result.current.start("Make a short");
+    });
+    await act(async () => {
+      await result.current.sendMessage("anderes Kapitel");
+    });
+
+    expect(result.current.state.warnings).toEqual(["second"]);
+
+    act(() => {
+      result.current.reset();
+    });
+
+    expect(result.current.state.warnings).toEqual([]);
+  });
+
+  it("warnings: absent from the response (older backend) reads as none, not undefined", async () => {
+    const client = makeClient();
+    const { result } = renderHook(() => useProductionSession(client, "asset-1"));
+
+    await act(async () => {
+      await result.current.start("Make a short");
+    });
+
+    expect(result.current.state.warnings).toEqual([]);
+  });
+
   it("mount with no localStorage entry stays idle and polls nothing", async () => {
     const client = makeClient();
     const { result } = renderHook(() => useProductionSession(client, "asset-1"));
@@ -440,6 +496,7 @@ describe("useProductionSession", () => {
       status: null,
       jobResult: null,
       error: null,
+      warnings: [],
     });
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
 

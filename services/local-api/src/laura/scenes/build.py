@@ -212,12 +212,20 @@ def group_timeline_scenes(
     project_id: str,
     timeline_id: str,
     asset: dict[str, Any],
-    run_id: str,
+    run_id: str | None,
     clips: list[dict[str, Any]],
     gap_frames: int | None = None,
 ) -> None:
-    """Group clips into scenes (words from transcript) and replace_scenes."""
-    words = _asset_words(repos.get_transcript(db, asset["id"], run_id))
+    """Group clips into scenes (words from transcript) and replace_scenes.
+
+    ``run_id`` is the run to read the transcript from -- a different artifact than whatever run
+    the clips themselves came from (shots and transcript can live on different runs; see
+    :func:`laura.db.repos.get_latest_shots_run` vs
+    :func:`laura.db.repos.get_latest_transcript_run`). ``None`` means this asset has no
+    transcript run at all: grouping degrades to one scene per clip instead of erroring,
+    matching ``group_into_scenes``'s existing no-words behaviour.
+    """
+    words = _asset_words(repos.get_transcript(db, asset["id"], run_id)) if run_id else []
     words_by_clip = _assign_words(clips, words)
     gap = default_gap_frames(asset) if gap_frames is None else gap_frames
     ranges = group_into_scenes(clips, words_by_clip, gap_frames=gap)

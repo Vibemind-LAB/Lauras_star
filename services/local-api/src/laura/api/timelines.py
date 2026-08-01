@@ -462,8 +462,13 @@ def timeline_from_shots(
 
     run_id = body.run_id
     if run_id is None:
-        run = repos.get_latest_analysis_run(db, body.asset_id)
+        # Building from shots is about the run that HAS shots, not plain recency -- a corpse
+        # on top of a good run has none. An explicitly supplied body.run_id above bypasses
+        # this and is used as-is.
+        run = repos.get_latest_shots_run(db, body.asset_id)
         if run is None:
+            # test_timeline_from_shots.py::test_from_shots_422_when_no_analysis_run asserts
+            # "no analysis run" is a substring of this detail -- text kept verbatim.
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run"
             )
@@ -520,7 +525,15 @@ def timeline_from_shots(
     split_cuts: list[SplitCutOut] = []
     quality: RoughCutQualityOut | None = None
     if body.align_editorial:
-        word_rows = repos.list_words_for_run(db, body.asset_id, run_id)
+        # Words come from the run that HOLDS the transcript, not from the shots' run — a
+        # scene-only re-analysis produces shots and no segments. Deliberately independent of
+        # body.run_id, which selects shots.
+        transcript_run = repos.get_latest_transcript_run(db, body.asset_id)
+        word_rows = (
+            repos.list_words_for_run(db, body.asset_id, str(transcript_run["id"]))
+            if transcript_run is not None
+            else []
+        )
         # Thread the stored per-word text (with any ASR punctuation) and the segment's diarization
         # speaker label through the in-memory Word so semantic placement can find sentence ends and
         # speaker turns — no new schema column. Both are graceful: NULL text/speaker -> no signal.

@@ -245,8 +245,8 @@ def handle_shorts_render(ctx: JobContext) -> dict[str, Any]:
     # segment by the cumulative duration of the segments before it so the burned ASS stays
     # aligned across cuts. Missing run / no words is NOT an error — render without captions.
     elif opts.get("captions", True):
-        run = repos.get_latest_analysis_run(ctx.db, asset["id"])
-        if run is not None and run.get("status") == "succeeded":
+        run = repos.get_latest_transcript_run(ctx.db, asset["id"])
+        if run is not None:
             all_words = []
             offset = 0
             for seg_start, seg_end in segment_ranges:

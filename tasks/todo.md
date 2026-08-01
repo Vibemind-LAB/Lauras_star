@@ -493,3 +493,19 @@ verifiziert. Auf dem Weg dorthin fielen: VLM-Kontext-Crash (`3328f25`), Antwort-
 
 **Erledigt aus diesem Befundkreis:** Job-Ergebnis-Kontrakt (`35361d6`), `BoardMeta.status` mit
 Schreiber, `degraded_count`/`checks_ok` in `Board.status()`, Kapazitäts-Budget (`56abc5b`).
+
+## Auto-Overview (Phase 2 des Auto-Short-Bogens)  `[x]`  (Spec + Plan 2026-07-31)
+Ein Thema, mehrere Videos, ein ansehbarer Überblick — über die Sequenz-Maschinerie, nicht über
+das Board. `POST /projects/{pid}/auto-overview`.
+- [x] Discovery trägt die Segment-Frames der Treffer mit (additiv; Phase 1 unberührt)
+- [x] Kandidaten-Fenster als reine Funktion (Polster 1s, auf die Szene geklemmt, Verschmelzen
+      unter 1,5s Lücke, 4–20s) — fehlende Bildrate scheitert laut statt still auf 25fps
+- [x] Overview-Scout wählt und ordnet **per Index**, nie per Frame; validieren → ein Retry →
+      deterministischer Fallback; mindestens zwei Quellen, wenn welche taugen
+- [x] Montage-Bau: eigene Quell-Timeline (`kind="overview"`), eine Szene je Ausschnitt, eigene
+      Sequenz — die Projekt-Sequenz aus „Zusammenfügen" bleibt unangetastet
+- [x] Endpunkt + Render-Anstoß; 404/503/422 vor jedem Schreibvorgang
+- [ ] **Live-Test offen:** ein echter Lauf gegen `workspace-livetest` (Semantik braucht den
+      `laura-qdrant`-Container auf 127.0.0.1:6333)
+- [ ] UI-Einstieg und ein Umschalter zwischen mehreren Sequenzen — eigener Zyklus
+- [ ] Erzählstimme über die Montage — eigener Zyklus (v1 nutzt den Originalton)

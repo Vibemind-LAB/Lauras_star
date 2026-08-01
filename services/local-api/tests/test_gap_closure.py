@@ -75,6 +75,11 @@ def test_search_and_transcript_patch(tmp_path: Path) -> None:
                      "end_frame": 30, "text": "Hallo Welt", "confidence": 0.9},
             words=[],
         )
+        # search_transcript resolves each asset's transcript run the same way
+        # repos.get_latest_transcript_run does: has-segments, then succeeded, then newest
+        # (stale-run segments must not double-count after a re-analysis) — mark this run
+        # succeeded so it unambiguously wins, matching every other seed helper in this repo.
+        repos.finish_analysis_run(db, run["id"], status="succeeded", diagnostics={})
         found = client.post("/search", json={"project_id": p["id"], "query": "hallo"}).json()
         assert len(found) == 1 and found[0]["asset_id"] == asset["id"]
         assert client.post("/search", json={"project_id": p["id"], "query": "zzz"}).json() == []

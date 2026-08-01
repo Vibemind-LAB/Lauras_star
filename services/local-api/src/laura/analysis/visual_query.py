@@ -66,13 +66,19 @@ _NO_TEXT_REASON = "visual extra not installed (text search unavailable)"
 def _asset_frame_embeddings(
     db: Database, asset_id: str
 ) -> dict[int, np.ndarray] | None:
-    """Return ``{frame: vector}`` for the asset's latest analysis run, or ``None``.
+    """Return ``{frame: vector}`` for the asset's latest SUCCEEDED analysis run, or ``None``.
 
-    ``None`` means "no embeddings available" — either no analysis run, or a run
+    ``None`` means "no embeddings available" — either no succeeded analysis run, or a run
     with no stored frame vectors (VE1/VE2 not yet executed).  An empty map is
     collapsed to ``None`` so callers have a single "nothing to query" signal.
+
+    Must agree with the writer: ``analysis/visual_embed.py``'s ``shots.embed_frames`` handler
+    stores frame embeddings under ``get_latest_succeeded_analysis_run``'s run. Reading back via
+    the plain "latest run" resolver would look under a newer corpse, find nothing, and hide
+    embeddings the writer actually stored — see docs/superpowers/specs/
+    2026-07-31-analysis-run-reaper-design.md.
     """
-    run = repos.get_latest_analysis_run(db, asset_id)
+    run = repos.get_latest_succeeded_analysis_run(db, asset_id)
     if run is None:
         return None
     store = SqliteVectorStore(db)

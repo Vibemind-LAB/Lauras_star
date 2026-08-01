@@ -100,6 +100,40 @@ describe("production session client methods", () => {
     );
   });
 
+  it("revertProduction POSTs artifact+version with the token header and maps the response", async () => {
+    const fn = mockFetch({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: ["cutlist", "contact_sheet"],
+      restored: ["script"],
+      status,
+    });
+    const c = new LauraClient("http://h", "tok");
+    const out = await c.revertProduction("s1", "cutlist", 1);
+    expect(out).toEqual({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: ["cutlist", "contact_sheet"],
+      restored: ["script"],
+      status,
+    });
+    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://h/production/s1/revert");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["X-Laura-Token"]).toBe("tok");
+    expect(JSON.parse(init.body as string)).toEqual({ artifact: "cutlist", version: 1 });
+  });
+
+  it("revertProduction rejects on a non-2xx response", async () => {
+    mockFetchError(404, "session not found");
+    const c = new LauraClient("http://h", "tok");
+    await expect(c.revertProduction("missing", "cutlist", 1)).rejects.toThrow(
+      "404: session not found",
+    );
+  });
+
   it("getProductionStatus GETs the session status and maps the response verbatim", async () => {
     const fn = mockFetch(status);
     const c = new LauraClient("http://h", "tok");

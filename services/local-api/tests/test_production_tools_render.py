@@ -525,6 +525,42 @@ def test_render_and_voice_and_sheet_stamp_their_parents(tmp_path: Path) -> None:
     # stamp is asserted in test_production_tools_cutlist.py's synthesis test below.
 
 
+def test_render_report_carries_target_ratio_and_note(tmp_path: Path) -> None:
+    """Live finding 2026-07-20: a 31.6s film against a 174s target shipped with QA 'ship' —
+    voice_fits checks A/V cover, nothing reported target adherence. Reporting only, never a
+    fourth check (a failing length check would provoke render thrashing)."""
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    assert out["ok"] is True
+    assert "target_note" in out
+    assert "vs target" in out["target_note"]
+    render = board.load("render_report")
+    assert isinstance(render, RenderReport)
+    assert render.target_ratio is not None
+    # ratio == video_s / meta.target_seconds, rounded to 3 places
+    assert render.target_ratio == pytest.approx(
+        round(render.video_s / board.meta().target_seconds, 3)
+    )
+    # the checks list stays exactly three — target adherence must never gate
+    assert [c.name for c in render.checks] == [
+        "voice_fits", "export_ready", "has_voice_timings"
+    ]
+
+
+def test_old_render_report_json_without_target_ratio_still_loads() -> None:
+    report = RenderReport.model_validate_json(
+        '{"export_id": "e1", "video_s": 10.0, "width": 1920, "height": 1080}'
+    )
+    assert report.target_ratio is None
+
+
 def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db, asset_id = _seed_asset(tmp_path)
     board = _board(tmp_path, asset_id)

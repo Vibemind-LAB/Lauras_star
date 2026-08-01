@@ -35,7 +35,7 @@ from .board_models import BoardMeta, Format, QaReport, RenderReport, canvas_for
 from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
 from .production_agents import build_production_team
 from .production_tools import ProductionDeps
-from .providers import AgentConfig, Stage
+from .providers import AgentConfig, Stage, config_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -234,13 +234,20 @@ def _parse_outcome(board: Board, result: Any, *, stage: Stage) -> StageOutcome:
     structured ``QaReport`` (``verdict="ship"|"revise"``) to the board via ``save_qa_report``
     rather than saying the word "weak" in chat (v1's convention), so a missing report or a
     "revise" verdict is weak and only an explicit "ship" verdict is not.
+
+    ``summary`` is the LAST non-empty message — the team's final answer. Concatenating all
+    messages and truncating put ``messages[0]`` (the task text) into every summary
+    (live finding 2026-07-20: three runs in a row "summarized" themselves with their own task).
     """
-    text = ""
-    for msg in getattr(result, "messages", None) or []:
+    summary = ""
+    for msg in reversed(getattr(result, "messages", None) or []):
         to_text = getattr(msg, "to_model_text", None)
-        text += (to_text() if callable(to_text) else str(getattr(msg, "content", ""))) + "\n"
+        text = (to_text() if callable(to_text) else str(getattr(msg, "content", ""))).strip()
+        if text:
+            summary = text[:2000]
+            break
     return StageOutcome(
-        status="ok", weak=_qa_weak(board), summary=text.strip()[:2000], team="magentic", stage=stage
+        status="ok", weak=_qa_weak(board), summary=summary, team="magentic", stage=stage
     )
 
 
@@ -416,6 +423,16 @@ def run_production(
             target_seconds=float(target_seconds),
         )
         board = Board.create(root, meta)
+
+    # Advisory (never a gate): say out loud when the text agents will run on a local ollama
+    # model. Live incident 2026-07-20: three production runs silently ran qwen2.5:7b — tool
+    # calls as prose, invented schemas — and nothing anywhere said so.
+    warnings = config_warnings(config)
+    if warnings and event_sink is not None:
+        try:
+            event_sink({"type": "config_warning", "warnings": warnings})
+        except Exception:  # noqa: BLE001 - observability must never break the run
+            logger.warning("config_warning event sink failed", exc_info=True)
 
     # Full-suffix restore (spec 2026-07-20-provenance-chain-design.md): bring back the
     # longest archived suffix whose parent-instance hashes match the board. Runs BEFORE
