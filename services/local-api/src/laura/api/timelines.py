@@ -462,8 +462,13 @@ def timeline_from_shots(
 
     run_id = body.run_id
     if run_id is None:
-        run = repos.get_latest_analysis_run(db, body.asset_id)
+        # Building from shots is about the run that HAS shots, not plain recency -- a corpse
+        # on top of a good run has none. An explicitly supplied body.run_id above bypasses
+        # this and is used as-is.
+        run = repos.get_latest_shots_run(db, body.asset_id)
         if run is None:
+            # test_timeline_from_shots.py::test_from_shots_422_when_no_analysis_run asserts
+            # "no analysis run" is a substring of this detail -- text kept verbatim.
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, "asset has no analysis run"
             )

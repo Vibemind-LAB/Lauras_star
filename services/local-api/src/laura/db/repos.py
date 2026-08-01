@@ -409,16 +409,20 @@ def get_latest_analysis_run(db: Database, asset_id: str) -> dict[str, Any] | Non
         return dict(row) if row is not None else None
 
 
-# The run-resolution ordering shared by get_latest_transcript_run and search_transcript's
-# correlated subquery: has-a-transcript, then succeeded, then newest. Kept in one place so
-# the readers and the lexical search can never drift apart.
-_TRANSCRIPT_RUN_ORDER = (
+# The run-resolution ordering shared by every artifact-scoped resolver (transcript, shots) and
+# search_transcript's correlated subquery: has-the-artifact, then succeeded, then newest. Kept
+# in one place so the readers and the lexical search can never drift apart.
+_ARTIFACT_RUN_ORDER = (
     "ORDER BY CASE WHEN ar.status = 'succeeded' THEN 0 ELSE 1 END, "
     "COALESCE(ar.started_at, '') DESC, ar.id DESC LIMIT 1"
 )
 _TRANSCRIPT_RUN_HAS_SEGMENTS = (
     "EXISTS (SELECT 1 FROM transcript_segments ts "
     "WHERE ts.asset_id = ar.asset_id AND ts.analysis_run_id = ar.id)"
+)
+_SHOTS_RUN_HAS_SHOTS = (
+    "EXISTS (SELECT 1 FROM shots sh "
+    "WHERE sh.asset_id = ar.asset_id AND sh.analysis_run_id = ar.id)"
 )
 
 
@@ -447,7 +451,44 @@ def get_latest_transcript_run(db: Database, asset_id: str) -> dict[str, Any] | N
         row = conn.execute(
             "SELECT ar.* FROM analysis_runs ar "
             f"WHERE ar.asset_id = ? AND {_TRANSCRIPT_RUN_HAS_SEGMENTS} "
-            f"{_TRANSCRIPT_RUN_ORDER}",
+            f"{_ARTIFACT_RUN_ORDER}",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def get_latest_shots_run(db: Database, asset_id: str) -> dict[str, Any] | None:
+    """The run that carries this asset's shots, or None if no run has any.
+
+    NOT the same question as :func:`get_latest_analysis_run`. A failed or stranded run is
+    still the newest row for the asset while carrying no shots at all -- resolving by plain
+    recency hands a shots-based build a corpse to read from and it comes back empty, even
+    though an older successful run's shots are sitting right there.
+
+    NOT the same question as :func:`get_latest_succeeded_analysis_run` either. That is the gate
+    question ("has this asset been analysed successfully"), and it is too strict for a reader:
+    a run still ``'running'`` that has already written its shots is a legitimate answer here --
+    that is exactly the shape analysis leaves mid-flight, and it is the shape the endpoints that
+    build from shots need to keep working with.
+
+    Resolution order mirrors :func:`get_latest_transcript_run`:
+
+    1. only runs that HAVE shots,
+    2. ``succeeded`` outranks anything unfinished,
+    3. newest first.
+
+    ``LIMIT 1`` is the exclusion property: exactly one run per asset, so callers filtering on
+    ``analysis_run_id`` can never mix two runs' shots.
+
+    Deliberately does not filter on ``shots.keep`` -- that is a per-shot editorial flag, not a
+    property of the run. A run whose shots were all dropped is still the run that analysed the
+    asset; callers do their own kept-filtering with their own error messages.
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT ar.* FROM analysis_runs ar "
+            f"WHERE ar.asset_id = ? AND {_SHOTS_RUN_HAS_SHOTS} "
+            f"{_ARTIFACT_RUN_ORDER}",
             (asset_id,),
         ).fetchone()
         return dict(row) if row is not None else None
@@ -1585,7 +1626,7 @@ def search_transcript(
             "AND s.analysis_run_id = ("
             "  SELECT ar.id FROM analysis_runs ar "
             f"  WHERE ar.asset_id = s.asset_id AND {_TRANSCRIPT_RUN_HAS_SEGMENTS} "
-            f"  {_TRANSCRIPT_RUN_ORDER}"
+            f"  {_ARTIFACT_RUN_ORDER}"
             ") "
             "ORDER BY s.start_sample LIMIT ?",
             (project_id, pattern, limit),

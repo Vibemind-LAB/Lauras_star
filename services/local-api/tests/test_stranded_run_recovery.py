@@ -379,3 +379,95 @@ def test_shorts_candidates_accepts_an_asset_whose_newest_run_failed(
 
     assert res.status_code == 202
     assert res.json()["analysis_run_id"] == good
+
+
+def _seed_kept_shots(db: Database, *, asset_id: str, run_id: str) -> None:
+    """Two contiguous kept shots on *run_id* -- the corpse in
+    _asset_with_a_corpse_on_top seeds none, so a build that reaches for the corpse's
+    shots instead of the succeeded run's comes back empty."""
+    repos.insert_shots(
+        db,
+        asset_id=asset_id,
+        run_id=run_id,
+        shots=[
+            {"src_in_frame": 0, "src_out_frame_exclusive": 50, "keep": True},
+            {"src_in_frame": 50, "src_out_frame_exclusive": 100, "keep": True},
+        ],
+    )
+
+
+def test_scene_generation_accepts_an_asset_whose_newest_run_failed(
+    tmp_path: Path,
+) -> None:
+    """A newer corpse used to make scenes:generate 422 with 'no kept shots to build a
+    rough cut from' even though the succeeded run underneath it already has kept shots."""
+    settings = Settings(workspace_root=tmp_path / "ws", token=None, start_runner=False)
+    app = create_app(settings)
+    db: Database = app.state.db
+    asset_id, good = _asset_with_a_corpse_on_top(db, tmp_path)
+    _seed_kept_shots(db, asset_id=asset_id, run_id=good)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    timeline = repos.create_timeline(
+        db, project_id=asset["project_id"], name="Rough Cut", kind="rough_cut"
+    )
+
+    with TestClient(app) as client:
+        res = client.post(
+            f"/timelines/{timeline['id']}/scenes:generate",
+            json={"asset_id": asset_id},
+        )
+
+    assert res.status_code == 200
+    scenes = res.json()
+    # Non-empty, and tiling the full 0..100 range, is only possible if the clips were
+    # built from the succeeded run's shots -- the corpse has none, so resolving to it
+    # would have 422'd before any scene existed.
+    assert scenes
+    assert scenes[0]["seq_in_frame"] == 0
+    assert scenes[-1]["seq_out_frame_exclusive"] == 100
+
+
+def test_timeline_from_shots_accepts_an_asset_whose_newest_run_failed(
+    tmp_path: Path,
+) -> None:
+    """A newer corpse used to make from-shots build an empty timeline even though the
+    succeeded run underneath it already has kept shots to build from."""
+    settings = Settings(workspace_root=tmp_path / "ws", token=None, start_runner=False)
+    app = create_app(settings)
+    db: Database = app.state.db
+    asset_id, good = _asset_with_a_corpse_on_top(db, tmp_path)
+    _seed_kept_shots(db, asset_id=asset_id, run_id=good)
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+
+    with TestClient(app) as client:
+        res = client.post(
+            f"/projects/{asset['project_id']}/timelines/from-shots",
+            json={"asset_id": asset_id, "align_editorial": False},
+        )
+
+    assert res.status_code == 201
+    clips = res.json()["timeline"]["clips"]
+    # The corpse has no shots, so an empty (or partial) result here would mean the
+    # build reached for the corpse's shots instead of the succeeded run's.
+    assert [(c["src_in_frame"], c["src_out_frame_exclusive"]) for c in clips] == [
+        (0, 50),
+        (50, 100),
+    ]
+
+
+def test_shots_run_resolves_an_unfinished_run_that_has_shots(
+    db: Database, tmp_path: Path
+) -> None:
+    """get_latest_shots_run answers "which run holds the shots I'm about to read", not the
+    succeeded-gate question -- a single run left 'queued' (never finished) that already wrote
+    its shots must still resolve. This is the property the reverted fe04544 attempt got wrong:
+    switching the two build-from-shots call sites to get_latest_succeeded_analysis_run broke
+    15 pre-existing tests that seed exactly this shape (a queued run with shots)."""
+    asset_id, run_id = _seed_run(db, tmp_path, status="queued")
+    _seed_kept_shots(db, asset_id=asset_id, run_id=run_id)
+
+    resolved = repos.get_latest_shots_run(db, asset_id)
+
+    assert resolved is not None and resolved["id"] == run_id
