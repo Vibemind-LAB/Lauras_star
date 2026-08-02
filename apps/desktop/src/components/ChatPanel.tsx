@@ -479,27 +479,46 @@ interface SessionResultInfo {
   ok: boolean;
   weak: boolean;
   exportId: string | null;
+  /** Whether a film actually exists. `null` on an older backend that predates the field —
+   * unknown, which must keep the previous tone rather than read as failure. */
+  complete: boolean | null;
+  /** The chain link the run never got past, when it did not complete. */
+  stoppedAt: string | null;
 }
 
 function narrowSessionResult(value: unknown): SessionResultInfo {
   const record =
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const complete = typeof record.complete === "boolean" ? record.complete : null;
   return {
     ok: typeof record.ok === "boolean" ? record.ok : false,
     weak: typeof record.weak === "boolean" ? record.weak : false,
     exportId: typeof record.export_id === "string" ? record.export_id : null,
+    complete,
+    stoppedAt:
+      complete === false && typeof record.resume_point === "string" ? record.resume_point : null,
   };
 }
 
 /** Done-phase result card — same tone language as v1's DoneCard (ok/weak/failed), plus the
- * export id when the terminal job result carries one. */
+ * export id when the terminal job result carries one.
+ *
+ * `ok` is the agent LOOP's verdict: it ran without crashing. Live 2026-08-02 (Drive-Test) two
+ * runs came back `ok: true` having produced no film at all — the team spent its whole turn
+ * budget failing to save a storyline — and this card called both of them fertig. `complete` is
+ * the field that answers the question the user is actually asking, so it decides the tone. */
 function SessionCard({ jobResult }: { jobResult: unknown }): ReactElement {
   const info = narrowSessionResult(jobResult);
   const tone = !info.ok
     ? { cls: "border-status-err text-status-err", text: "✗ Nicht geklappt" }
-    : info.weak
-      ? { cls: "border-status-warn text-status-warn", text: "⚠ Fertig — QA meldet Schwächen" }
-      : { cls: "border-status-ok text-status-ok", text: "✓ Session fertig" };
+    : info.complete === false
+      ? {
+          cls: "border-status-err text-status-err",
+          text: `✗ Kein Film — stehengeblieben bei: ${info.stoppedAt ?? "unbekannt"}`,
+        }
+      : info.weak
+        ? { cls: "border-status-warn text-status-warn", text: "⚠ Fertig — QA meldet Schwächen" }
+        : { cls: "border-status-ok text-status-ok", text: "✓ Session fertig" };
   return (
     <div className={`mt-1 rounded-md border bg-surface-2 px-1.5 py-1 ${tone.cls}`}>
       <div className="font-medium">{tone.text}</div>

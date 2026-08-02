@@ -734,6 +734,14 @@ export interface ProductionJobState {
   /** Artifact names a resume restored from the provenance chain (empty when nothing was
    * restored, or on an older backend that predates this field). */
   restored?: string[];
+  /** Whether the run actually produced a film. `null` while nothing is known yet (queued or
+   * still running) — the job's own `status` only says the handler did not raise, which was
+   * true of runs that delivered nothing. */
+  complete?: boolean | null;
+  /** The rendered export, when the run produced one. */
+  export_id?: string | null;
+  /** The chain link an incomplete run never got past (`null` for a finished one). */
+  stopped_at?: string | null;
 }
 
 /** GET /production/{sessionId} when the board exists: full board status + liveness. */

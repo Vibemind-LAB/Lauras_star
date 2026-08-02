@@ -289,6 +289,71 @@ def test_save_storyline_rejects_duplicate_scene_window(tmp_path: Path) -> None:
     assert board.load("storyline") is None
 
 
+def test_a_rejected_storyline_is_told_how_much_material_it_actually_has(
+    tmp_path: Path,
+) -> None:
+    """Live 2026-08-02 (Drive-Test): an uncut screen recording is ONE scene, its review
+    proposed ONE window, and the architect was told to build the four-chapter arc. Four
+    chapters need four distinct (scene, window) refs; there was one. It spent 269 turns
+    alternating between 'window 1 is referenced but scene 1 has 1' and 'window 0 is referenced
+    more than once', and the run ended with no film.
+
+    The schema never demanded four chapters — ``arc`` is ``min_length=1``. Only the prompt did.
+    So the rejection has to carry the arithmetic: how many distinct refs exist, and that fewer
+    chapters is the legal way out. An error that only says what is forbidden leaves the caller
+    guessing what is allowed."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # exactly one window
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1]),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[1]),
+        ],
+    )
+
+    assert out["ok"] is False
+    hint = out.get("material_hint", "")
+    assert "1" in hint, "say how many distinct scene/window refs the reviews actually offer"
+    assert "fewer chapters" in hint.lower()
+
+
+def test_a_single_window_scene_can_carry_a_one_chapter_arc(tmp_path: Path) -> None:
+    """The way out has to actually work: one scene, one window, one chapter — accepted."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt", chapters=[_chapter(chapter=1, scene_numbers=[1])]
+    )
+
+    assert out["ok"] is True, out
+    assert board.load("storyline") is not None
+
+
+def test_a_storyline_that_fits_gets_no_material_hint(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1]),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[{"scene": 1, "window": 1}]),
+        ],
+    )
+
+    assert out["ok"] is True, out
+    assert "material_hint" not in out
+
+
 def test_save_script_chapter_merges_per_chapter(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)

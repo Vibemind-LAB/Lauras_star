@@ -573,6 +573,51 @@ describe("ChatPanel session mode (v2)", () => {
     expect(screen.queryByLabelText("Folgeanfrage")).toBeNull();
     expect(screen.getByRole("button", { name: "Zurücksetzen" })).toBeTruthy();
   });
+
+  // Live 2026-08-02 (Drive-Test): two runs ended with no film at all — the team never got a
+  // storyline saved — and the card read "Fertig". `ok` only says the agent loop did not crash;
+  // `complete` is the field that says a film exists (see run_production's own docstring).
+  it("a run that produced no film is not called fertig", async () => {
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(
+        job({
+          status: "succeeded",
+          result_json:
+            '{"ok":true,"complete":false,"weak":true,"export_id":null,"resume_point":"storyline"}',
+        }),
+      ),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Kein Film/)).toBeTruthy();
+    expect(screen.getByText(/storyline/)).toBeTruthy();
+    expect(screen.queryByText(/Session fertig/)).toBeNull();
+  });
+
+  it("an older result without a complete flag keeps the previous tone", async () => {
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(
+        job({ status: "succeeded", result_json: '{"ok":true,"weak":false,"export_id":"e9"}' }),
+      ),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Session fertig/)).toBeTruthy();
+  });
 });
 
 // -------------------------------------------------------------------------------------------

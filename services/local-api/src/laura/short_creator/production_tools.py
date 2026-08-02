@@ -710,6 +710,13 @@ def silent_chapters(script: Script, storyline: Storyline | None) -> list[int]:
     return [chapter.chapter for chapter in storyline.arc if chapter.chapter not in written]
 
 
+def _with_material_hint(reply: dict[str, Any], hint: str | None) -> dict[str, Any]:
+    """Attach ``material_hint`` to a rejection when there is one to give (never otherwise)."""
+    if hint is not None:
+        reply["material_hint"] = hint
+    return reply
+
+
 def silent_seconds_share(script: Script, storyline: Storyline | None) -> tuple[list[int], float]:
     """The silent chapters and the share of the storyline's planned seconds they carry.
 
@@ -1388,6 +1395,31 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def _material_hint(n_chapters: int) -> str | None:
+        """What the reviews can actually carry, when the arc asks for more than exists.
+
+        Live 2026-08-02 (Drive-Test): an uncut screen recording is ONE scene and its review
+        proposed ONE window. The prompt asks for the four-chapter arc; a (scene, window) pair
+        may be used once; so four chapters need four distinct refs and there was one. The agent
+        alternated between "window 1 is referenced but scene 1 has 1" and "window 0 is
+        referenced more than once" for 269 turns and the run ended with no film.
+
+        The schema never demanded four chapters — ``arc`` is ``min_length=1``. Only the prompt
+        did. So the rejection carries the arithmetic and names the legal way out; an error that
+        says only what is forbidden leaves the caller to guess what is allowed.
+        """
+        reviews = board.scene_reviews()
+        available = sum(len(r.windows) for r in reviews)
+        if available == 0 or n_chapters <= available:
+            return None
+        per_scene = ", ".join(f"scene {r.scene_number}: {len(r.windows)}" for r in reviews)
+        return (
+            f"these reviews offer {available} distinct scene/window ref(s) ({per_scene}), and a "
+            f"(scene, window) pair may be used only once — so at most {available} chapter(s) "
+            f"can be built from them, not {n_chapters}. Use fewer chapters (an arc of one is "
+            "valid) or have review_scene propose more windows for a long scene first."
+        )
+
     def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
         """Validate and save the short's storyline (red thread + chapter arc) to the board.
         A scene_numbers entry is a plain scene number (= that review's primary window 0) or
@@ -1401,7 +1433,9 @@ def build_production_tool_specs(
             try:
                 storyline = Storyline(red_thread=red_thread, arc=[Chapter(**c) for c in chapters])
             except ValidationError as exc:
-                return {"ok": False, "errors": _validation_errors(exc)}
+                return _with_material_hint(
+                    {"ok": False, "errors": _validation_errors(exc)}, _material_hint(len(chapters))
+                )
             refs = [
                 as_scene_window(entry)
                 for chapter in storyline.arc
@@ -1418,7 +1452,9 @@ def build_production_tool_specs(
                     f"(0..{len(reviews[s].windows) - 1}) but window {w} is referenced"
                     for s, w in bad_refs
                 )
-                return {"ok": False, "reason": detail}
+                return _with_material_hint(
+                    {"ok": False, "reason": detail}, _material_hint(len(chapters))
+                )
             # A storyline save invalidates the whole chain below — including a script that is
             # still perfectly right. Live finding (run 48d5660a): a re-save changing ONLY
             # messages and target_seconds wiped a finished script and its voice; the author

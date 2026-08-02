@@ -175,19 +175,57 @@ def _restored_from_job(job: dict[str, Any]) -> list[str]:
     unparseable ``result_json``, or a result missing/mistyping the key must degrade to ``[]``
     rather than raise or 500 the whole status endpoint.
     """
-    raw = job.get("result_json")
-    if not raw:
-        return []
-    try:
-        result = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if not isinstance(result, dict):
+    result = _result_of(job)
+    if result is None:
         return []
     restored = result.get("restored")
     if not isinstance(restored, list):
         return []
     return [item for item in restored if isinstance(item, str)]
+
+
+def _result_of(job: dict[str, Any]) -> dict[str, Any] | None:
+    """*job*'s parsed ``result_json``, or None when there is none / it is unusable.
+
+    A pure status read: a queued job, unparseable JSON, or a non-object result must degrade to
+    None rather than raise and 500 the endpoint that reports liveness.
+    """
+    raw = job.get("result_json")
+    if not raw:
+        return None
+    try:
+        result = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _outcome_from_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Did the run actually produce a film — and if not, where did it stop?
+
+    The job status answers a different question than the user is asking. It means "the handler
+    returned without raising", which is true of a run that spent its whole turn budget failing
+    to save a storyline. Live 2026-08-02 (Drive-Test): two such runs both read ``succeeded``
+    with ``export_id: null`` and half a board. ``run_production``'s result has carried the real
+    answer all along (``complete`` = ``resume_point == "done"``; see its own docstring on why
+    ``ok`` is not it) — nobody read it. ``complete`` is None while nothing is known yet: a
+    queued job has not failed to deliver, it simply has not run.
+    """
+    result = _result_of(job)
+    if result is None:
+        return {"complete": None, "export_id": None, "stopped_at": None}
+    complete = result.get("complete")
+    complete = bool(complete) if isinstance(complete, bool) else None
+    export_id = result.get("export_id")
+    resume_point = result.get("resume_point")
+    return {
+        "complete": complete,
+        "export_id": export_id if isinstance(export_id, str) else None,
+        # Only an INCOMPLETE run stopped somewhere; a finished one stopped nowhere.
+        "stopped_at": (
+            str(resume_point) if complete is False and isinstance(resume_point, str) else None
+        ),
+    }
 
 
 def _job_view(job: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -203,6 +241,7 @@ def _job_view(job: dict[str, Any] | None) -> dict[str, Any] | None:
         "lease_expires_at": job["lease_expires_at"],
         "finished_at": job["finished_at"],
         "restored": _restored_from_job(job),
+        **_outcome_from_job(job),
     }
 
 
