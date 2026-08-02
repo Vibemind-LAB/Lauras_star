@@ -112,7 +112,7 @@ from pydantic import ValidationError
 from ..analysis.transition_review import extract_frames
 from ..db import repos
 from ..db.database import Database
-from ..ingest.ffmpeg import ffmpeg_bin
+from ..ingest.ffmpeg import ffmpeg_bin, probe
 from ..render.zoom import roi_to_window
 from ..util import new_id, utcnow_iso
 from . import context
@@ -223,6 +223,30 @@ _VOICE_FIT_TOLERANCE_S = 0.05
 # instead of spending another render, and the turn budget stops the rest. A prompt saying "one
 # revise round" did not hold — gpt-5-mini rendered four times, gpt-5.5 more.
 _MAX_RENDER_CYCLES = 2
+# How much of a storyline may stay unwritten before the render reports a failing check. Some
+# slack is deliberate — a short closing beat the author folded into the previous chapter is not
+# a broken film — but a majority of the planned seconds without narration is.
+_SILENT_SHARE_LIMIT = 0.4
+# How much of the usable length an arc must plan for before save_storyline warns. The plan is
+# the ceiling: a film cannot come out longer than the seconds its chapters asked for.
+_PLAN_COVERAGE_MIN = 0.8
+
+
+def _probe_duration(path: str) -> float | None:
+    """The measured length of a rendered file in seconds, or None when it cannot be measured.
+
+    Measuring must never break a finished render: a missing ffprobe, a file the renderer wrote
+    somewhere else, a container without a duration — all of them mean "unknown", which the
+    report says plainly instead of falling back to a number that would read as measured.
+    """
+    try:
+        if not Path(path).is_file():
+            return None
+        raw = probe(path).get("format", {}).get("duration")
+        seconds = float(raw)
+    except Exception:  # ffprobe failure, unparsable JSON, no duration field
+        return None
+    return seconds if seconds > 0.0 else None
 
 
 def _shape_of(out_w: int, out_h: int) -> str:
@@ -254,6 +278,7 @@ class ProductionDeps:
     frame_extract: Callable[[Database, str, list[int]], list[bytes]] | None = None
     voice_backend: VoiceBackend | None = None  # used from Task 5 on
     render_segments: RenderSegmentsFn | None = None  # used from Task 6 on
+    probe_duration: Callable[[str], float | None] | None = None  # measures the rendered file
 
 
 # --- reply parsing + clamping (pure) ------------------------------------------------------------
@@ -685,6 +710,22 @@ def silent_chapters(script: Script, storyline: Storyline | None) -> list[int]:
     return [chapter.chapter for chapter in storyline.arc if chapter.chapter not in written]
 
 
+def silent_seconds_share(script: Script, storyline: Storyline | None) -> tuple[list[int], float]:
+    """The silent chapters and the share of the storyline's planned seconds they carry.
+
+    Counting chapters alone would weigh a 2s sting the same as the 25s payoff that actually made
+    the live film a fifth of its target. The share is what says how much of the story is gone.
+    """
+    silent = silent_chapters(script, storyline)
+    if storyline is None or not silent:
+        return silent, 0.0
+    planned = sum(chapter.target_seconds for chapter in storyline.arc)
+    if planned <= 0.0:
+        return silent, 0.0
+    unwritten = sum(c.target_seconds for c in storyline.arc if c.chapter in set(silent))
+    return silent, unwritten / planned
+
+
 # script_hash lives with the model it hashes (board_models) so the board can compute it too —
 # it is the one identity every derived artifact is checked against, and a second copy of that
 # rule is precisely the drift these checks exist to catch. Re-exported here for its callers.
@@ -904,6 +945,32 @@ def allocate_chapter_seconds(
         return dict(capacity_per_chapter)
     scale = usable_seconds / total
     return {chapter: seconds * scale for chapter, seconds in capacity_per_chapter.items()}
+
+
+def plan_coverage(*, planned_seconds: float, usable_seconds: float) -> dict[str, Any] | None:
+    """How much of the usable length the storyline's chapters actually plan for.
+
+    The arc is the film's ceiling: the cut is built per chapter against the chapter's target, so
+    seconds nobody planned are seconds nobody shoots. Live 2026-08-02: a 60s short was planned
+    as 3+12+25=40s and nothing weighed the plan against the length it was for. Measured against
+    the SAME usable length ``script_budget`` uses, not the raw target — under-planning a target
+    the footage cannot reach anyway is the honest answer, not a mistake.
+    """
+    if usable_seconds <= 0.0:
+        return None
+    pct = planned_seconds / usable_seconds * 100.0
+    out: dict[str, Any] = {
+        "planned_seconds": round(planned_seconds, 1),
+        "usable_seconds": round(usable_seconds, 1),
+        "coverage_pct": round(pct, 1),
+    }
+    if planned_seconds < usable_seconds * _PLAN_COVERAGE_MIN:
+        out["plan_warning"] = (
+            f"this arc plans {planned_seconds:.1f}s of the {usable_seconds:.1f}s the material "
+            f"can carry ({pct:.0f}%) — the film cannot come out longer than its plan. Add a "
+            "chapter or give the existing ones longer targets before writing the script."
+        )
+    return out
 
 
 def usable_budget_seconds(*, material_seconds: float, target_seconds: float) -> float:
@@ -1363,6 +1430,22 @@ def build_production_tool_specs(
             old_voice = board.load("voice")
             version = board.save("storyline", storyline)
             result: dict[str, Any] = {"ok": True, "version": version}
+            # Weigh the plan against the length it is for, here, where it can still be fixed
+            # for free. Guarded on its own: the save already happened, so a material lookup
+            # that fails must cost the report, never turn a completed save into ok: False.
+            try:
+                per_chapter, _missing, _n = _storyline_material(db, board, asset_id, storyline)
+                coverage = plan_coverage(
+                    planned_seconds=sum(c.target_seconds for c in storyline.arc),
+                    usable_seconds=usable_budget_seconds(
+                        material_seconds=sum(per_chapter.values()),
+                        target_seconds=board.meta().target_seconds,
+                    ),
+                )
+            except Exception:  # the storyline is saved either way — reporting is best-effort
+                coverage = None
+            if coverage is not None:
+                result.update(coverage)
             # Carry over ONLY when the save actually invalidated something. An identical
             # re-save is a complete no-op (board.save short-circuits it) and the script is
             # still on the board — "rescuing" it then would bump versions and wipe the very
@@ -2020,10 +2103,13 @@ def build_production_tool_specs(
         them with captions on and a blur-filled letterbox onto the canvas the board's format
         selects (insta 1080x1920, x 1920x1080, linkedin 1080x1080), plus the board's voice as
         the new audio track. Polls the resulting export (bounded by
-        RENDER_WAIT_SECONDS) until it leaves the "rendering" state, then grades three checks:
-        voice_fits (the rendered video covers the whole voice track, small tolerance),
-        export_ready, and has_voice_timings (captions can be burned in). The RenderReport is
-        saved to the board regardless of the verdict, so a failing render stays inspectable.
+        RENDER_WAIT_SECONDS) until it leaves the "rendering" state, MEASURES the finished file
+        with ffprobe (``delivered_s`` — the mux ends with whichever stream runs out first, so
+        the cut is not the film), then grades four checks: voice_fits (the rendered video
+        covers the whole voice track, small tolerance), export_ready, has_voice_timings
+        (captions can be burned in), and story_covered (the script wrote the chapters the
+        storyline planned). The RenderReport is saved to the board regardless of the verdict,
+        so a failing render stays inspectable.
 
         CODING-AGENT CHARTER: if voice_fits comes back False, do NOT shorten or cut the voice —
         build_cutlist already sizes segments to the voice's chapter audio windows, so a
@@ -2144,6 +2230,14 @@ def build_production_tool_specs(
                 row = repos.get_export(db, export_id) or row
 
             export_ready = row is not None and str(row.get("status")) == "ready"
+            # What the mux actually produced, not what was cut. ffmpeg's -shortest ends the
+            # film with whichever stream runs out first, so a cut longer than its voiceover
+            # ships short and every number derived from the cut reads too high.
+            delivered_s: float | None = None
+            export_path = row.get("path") if row is not None else None
+            if export_ready and export_path:
+                measure = d.probe_duration if d.probe_duration is not None else _probe_duration
+                delivered_s = measure(str(export_path))
             voice_fits = voice.voice_s is None or (
                 video_s + _VOICE_FIT_TOLERANCE_S >= voice.voice_s
             )
@@ -2153,6 +2247,10 @@ def build_production_tool_specs(
                 if voice.voice_s is not None
                 else f"video={video_s:.2f}s voice=unknown"
             )
+            if delivered_s is not None:
+                voice_note += f" delivered={delivered_s:.2f}s"
+            silent, silent_share = silent_seconds_share(script, storyline)
+            story_covered = silent_share <= _SILENT_SHARE_LIMIT
 
             checks = [
                 RenderCheck(name="voice_fits", ok=voice_fits, note=voice_note),
@@ -2166,12 +2264,29 @@ def build_production_tool_specs(
                     ok=has_voice_timings,
                     note="" if has_voice_timings else "no timings sidecar on the voice artifact",
                 ),
+                # Whether the script covered the story it was written for. get_script has
+                # reported silent_chapters for a while and it changed nothing, because the
+                # author reads its own report and moves on: only a failing check reaches the
+                # loop. Unlike target adherence this is not a length to chase — the remedy is
+                # "write chapter N", one save, no re-render spiral.
+                RenderCheck(
+                    name="story_covered",
+                    ok=story_covered,
+                    note=(
+                        "every planned chapter has narration"
+                        if not silent
+                        else f"chapters {silent} were never written — {silent_share:.0%} of the "
+                        "storyline's planned seconds have no narration"
+                    ),
+                ),
             ]
             target_s = board.meta().target_seconds
-            target_ratio = round(video_s / target_s, 3) if target_s > 0 else None
+            measured_s = delivered_s if delivered_s is not None else video_s
+            target_ratio = round(measured_s / target_s, 3) if target_s > 0 else None
             report = RenderReport(
                 export_id=export_id,
                 video_s=video_s,
+                delivered_s=delivered_s,
                 voice_s=voice.voice_s,
                 width=out_w,
                 height=out_h,
@@ -2195,9 +2310,14 @@ def build_production_tool_specs(
                 "checks": [c.model_dump() for c in checks],
             }
             if target_ratio is not None:
-                reply["target_note"] = (
-                    f"video {video_s:.1f}s vs target {target_s:.1f}s ({target_ratio:.0%})"
-                )
+                label = "delivered" if delivered_s is not None else "video"
+                note = f"{label} {measured_s:.1f}s vs target {target_s:.1f}s ({target_ratio:.0%})"
+                if delivered_s is not None and delivered_s + 0.5 < video_s:
+                    note += (
+                        f" — cut {video_s:.1f}s, so the mux ended with the voice and dropped "
+                        "the rest of the footage; lengthen the narration or shorten the cut"
+                    )
+                reply["target_note"] = note
             return reply
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

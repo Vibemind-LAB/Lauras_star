@@ -416,9 +416,15 @@ class RenderReport(BaseModel):
     # Which parent artifact instances this was built from: chain name -> content_hash of the
     # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
     parents: dict[str, str] = Field(default_factory=dict)
-    # video_s / the board's target_seconds, rounded to 3 places; None when no usable target.
-    # Reporting only — never a member of checks (a failing length gate would provoke render
-    # thrashing); QA reads it and weighs the shortfall in its verdict.
+    # What the muxed file actually runs, measured with ffprobe after the render; None when it
+    # could not be measured. video_s is the CUT, which is not the same thing: ffmpeg's
+    # -shortest trims the mux to the shorter stream, so a cut longer than its voiceover ships
+    # short. Live 2026-08-02: a 37.8s cut against a 12.2s voice delivered a 12.2s film.
+    delivered_s: float | None = None
+    # The delivered length (falling back to video_s when unmeasurable) / the board's
+    # target_seconds, rounded to 3 places; None when no usable target. Reporting only — never a
+    # member of checks (a failing length gate would provoke render thrashing); QA reads it and
+    # weighs the shortfall in its verdict.
     target_ratio: float | None = None
 
 

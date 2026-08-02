@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
@@ -162,10 +164,49 @@ def test_save_storyline_happy_and_versioned(tmp_path: Path) -> None:
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     first = specs["save_storyline"].func(red_thread="stop scrolling", chapters=[_chapter()])
-    assert first == {"ok": True, "version": 1}
+    assert first["ok"] is True
+    assert first["version"] == 1
 
     second = specs["save_storyline"].func(red_thread="stop scrolling v2", chapters=[_chapter()])
-    assert second == {"ok": True, "version": 2}
+    assert second["ok"] is True
+    assert second["version"] == 2
+
+
+def test_save_storyline_reports_plan_coverage_and_warns_when_short(tmp_path: Path) -> None:
+    """Live 2026-08-02: a 60s short was planned as an arc summing to 40s, and the plan itself
+    was never weighed against the length it was for. A film cannot come out longer than its
+    plan, so the shortfall is decided here — before a word of script is written — yet
+    save_storyline only ever answered 'ok'. The budget the plan is measured against is the
+    SAME usable length script_budget uses (the smaller of target and material): planning less
+    than the footage can carry is a mistake, planning less than a target the footage cannot
+    reach is not."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    _review(board, 2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    short = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[{**_chapter(chapter=1), "target_seconds": 0.5}],
+    )
+
+    assert short["ok"] is True
+    assert short["planned_seconds"] == pytest.approx(0.5)
+    usable = short["usable_seconds"]
+    assert usable > 0.5, "the fixture must have room the plan leaves unused"
+    assert short["coverage_pct"] == pytest.approx(round(0.5 / usable * 100.0, 1))
+    assert "plan_warning" in short
+    assert f"{usable:.1f}s" in short["plan_warning"], "name the length that was left unplanned"
+
+    full = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[{**_chapter(chapter=1), "target_seconds": usable}],
+    )
+
+    assert full["ok"] is True
+    assert full["coverage_pct"] == pytest.approx(100.0)
+    assert "plan_warning" not in full
 
 
 def test_save_storyline_rejects_invalid_role(tmp_path: Path) -> None:
@@ -211,7 +252,8 @@ def test_save_storyline_accepts_window_refs(tmp_path: Path) -> None:
         chapters=[_chapter(scene_numbers=[1, {"scene": 1, "window": 1}])],
     )
 
-    assert out == {"ok": True, "version": 1}
+    assert out["ok"] is True
+    assert out["version"] == 1
     got = specs["get_storyline"].func()
     assert got["storyline"]["arc"][0]["scene_numbers"] == [1, {"scene": 1, "window": 1}]
 
@@ -583,7 +625,9 @@ def test_a_structural_storyline_change_still_invalidates_and_says_what_was_lost(
 
 
 def test_the_first_storyline_save_keeps_its_bare_response(tmp_path: Path) -> None:
-    """No prior script, nothing carried, nothing lost — no noise in the reply."""
+    """No prior script, nothing carried, nothing lost — no carry-over noise in the reply. (The
+    plan-coverage report is not carry-over noise: it is what this save is being judged on, and
+    it rides on every save.)"""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _review(board, 1)
@@ -591,7 +635,10 @@ def test_the_first_storyline_save_keeps_its_bare_response(tmp_path: Path) -> Non
 
     out = specs["save_storyline"].func(red_thread="v1", chapters=[_chapter()])
 
-    assert out == {"ok": True, "version": 1}
+    assert out["ok"] is True
+    assert out["version"] == 1
+    assert "carried_over" not in out
+    assert "note" not in out
 
 
 def test_window_notation_and_plain_scene_numbers_compare_as_the_same_structure(
@@ -634,7 +681,10 @@ def test_an_identical_storyline_resave_stays_a_complete_noop(tmp_path: Path) -> 
 
     out = specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
 
-    assert out == {"ok": True, "version": 1}, "identical content — same version, no ceremony"
+    assert out["ok"] is True, "identical content — same version, no ceremony"
+    assert out["version"] == 1
+    assert "carried_over" not in out
+    assert "note" not in out
     assert board.load("cutlist") is not None, "the no-op must stay a no-op"
 
 

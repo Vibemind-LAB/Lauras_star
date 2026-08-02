@@ -251,6 +251,9 @@ def _build_board_to_cutlist(
     scene2_roi: Roi | None,
     voice_s: float | None,
     board_format: Format = "insta",
+    storyline: Storyline | None = None,
+    script: Script | None = None,
+    words: list[dict[str, Any]] | None = None,
 ) -> tuple[Database, str, Board]:
     """A full board up to (and including) a real cutlist — reviews, storyline, script, voice,
     then the actual build_cutlist tool. Same word timings as
@@ -259,6 +262,10 @@ def _build_board_to_cutlist(
     start/end=(30, 90) with zoom_start_s~=0.6; segment 1 (scene 2) is (300, 360) and its
     zoom_start_s depends on scene2_roi (None -> no zoom regardless of timing — the "segment
     without roi -> zoom entry None" case render_production must pass through unchanged).
+
+    ``storyline``/``script``/``words`` override that default trio together — the coverage tests
+    need a storyline the script deliberately does NOT cover, and the three have to stay
+    consistent (the voice's script_hash is taken from whatever script is on the board).
     """
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id, board_format)
@@ -269,12 +276,19 @@ def _build_board_to_cutlist(
         roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
     )
     _review(board, 2, best_window=BestWindow(offset_s=0.0, duration_s=3.0), roi=scene2_roi)
-    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=4.0))
-    board.save("script", _script())
+    board.save(
+        "storyline",
+        storyline
+        if storyline is not None
+        else _storyline(scene_numbers=[1, 2], target_seconds=4.0),
+    )
+    board.save("script", script if script is not None else _script())
     _save_voice(
         board,
         tmp_path,
-        words=[
+        words=words
+        if words is not None
+        else [
             {"text": "Stopp", "start_s": 0.2, "end_s": 0.45},
             {"text": "dein", "start_s": 0.5, "end_s": 0.75},
             {"text": "Team", "start_s": 0.9, "end_s": 1.2},
@@ -331,7 +345,7 @@ def test_render_production_passes_zoom_and_reports(tmp_path: Path) -> None:
     assert report.voice_s == pytest.approx(3.4)
     assert report.width == 1080
     assert report.height == 1920
-    assert len(report.checks) == 3
+    assert len(report.checks) == 4
 
     row = repos.get_export(db, report.export_id)
     assert row is not None
@@ -548,9 +562,11 @@ def test_render_report_carries_target_ratio_and_note(tmp_path: Path) -> None:
     assert render.target_ratio == pytest.approx(
         round(render.video_s / board.meta().target_seconds, 3)
     )
-    # the checks list stays exactly three — target adherence must never gate
+    # Target adherence itself must never gate — no check is named after it. (story_covered
+    # gates the STORY, not the length: its remedy is "write chapter 3", a one-shot fix, not
+    # the length-chasing re-render loop this rule exists to prevent.)
     assert [c.name for c in render.checks] == [
-        "voice_fits", "export_ready", "has_voice_timings"
+        "voice_fits", "export_ready", "has_voice_timings", "story_covered"
     ]
 
 
@@ -559,6 +575,130 @@ def test_old_render_report_json_without_target_ratio_still_loads() -> None:
         '{"export_id": "e1", "video_s": 10.0, "width": 1920, "height": 1080}'
     )
     assert report.target_ratio is None
+    assert report.delivered_s is None
+
+
+def test_render_report_measures_the_delivered_file(tmp_path: Path) -> None:
+    """Live 2026-08-02: a 37.8s cut muxed against a 12.2s voice shipped as a 12.2s film —
+    ffmpeg's -shortest trims the mux to the shorter stream — and the report called it 63% of
+    target, because target_ratio measured the CUT. The number the QA reviewer weighs has to
+    describe what actually shipped; video_s stays for the diagnosis (cut vs delivered is the
+    whole finding)."""
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake, probe_duration=lambda _path: 2.5)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert report.video_s == pytest.approx(4.0), "the cut is kept — it is half the diagnosis"
+    assert report.delivered_s == pytest.approx(2.5)
+    assert report.target_ratio == pytest.approx(round(2.5 / board.meta().target_seconds, 3))
+    assert "2.5s" in out["target_note"]
+    assert "cut 4.0s" in out["target_note"], "the truncation must be named, not just implied"
+    voice_note = {c.name: c.note for c in report.checks}["voice_fits"]
+    assert "delivered=2.50s" in voice_note
+
+
+def test_render_report_falls_back_to_the_cut_when_the_file_cannot_be_measured(
+    tmp_path: Path,
+) -> None:
+    """No ffprobe, no file, a corrupt container — measuring must never invent a length. The
+    report then says delivered_s is unknown and target_ratio falls back to the cut."""
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake, probe_duration=lambda _path: None)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert report.delivered_s is None
+    assert report.target_ratio == pytest.approx(round(4.0 / board.meta().target_seconds, 3))
+    assert "cut" not in out["target_note"], "nothing was measured, so there is nothing to compare"
+
+
+def _silent_chapter_board(tmp_path: Path) -> tuple[Database, str, Board]:
+    """A board whose storyline plans two chapters and whose script writes only the first —
+    12 of 16 planned seconds have no narration."""
+    storyline = Storyline(
+        red_thread="stop scrolling",
+        arc=[
+            Chapter(
+                chapter=1, role="hook", message="stop scrolling",
+                scene_numbers=[1], target_seconds=4.0,
+            ),
+            Chapter(
+                chapter=2, role="payoff_cta", message="one click",
+                scene_numbers=[2], target_seconds=12.0,
+            ),
+        ],
+    )
+    script = Script(
+        language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team")]
+    )
+    return _build_board_to_cutlist(
+        tmp_path,
+        scene2_roi=None,
+        voice_s=1.2,
+        storyline=storyline,
+        script=script,
+        words=[
+            {"text": "Stopp", "start_s": 0.2, "end_s": 0.45},
+            {"text": "dein", "start_s": 0.5, "end_s": 0.75},
+            {"text": "Team", "start_s": 0.9, "end_s": 1.2},
+        ],
+    )
+
+
+def test_render_fails_when_most_of_the_storyline_was_never_written(tmp_path: Path) -> None:
+    """Live 2026-08-02: a three-chapter storyline got two chapters of script; the third —
+    25 of 40 planned seconds — stayed silent and the film came out a fifth of its target. Every
+    artifact validated: the script was a valid script, the cut a valid cut. Nobody asked whether
+    the script covered the story it was written for. get_script has reported silent_chapters
+    since the last such run and it changed nothing, because reporting is not a gate."""
+    db, asset_id, board = _silent_chapter_board(tmp_path)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    checks_by_name = {c["name"]: c for c in out["checks"]}
+    assert checks_by_name["voice_fits"]["ok"] is True, "this run fails on coverage, nothing else"
+    assert checks_by_name["export_ready"]["ok"] is True
+    assert checks_by_name["story_covered"]["ok"] is False
+    assert "2" in checks_by_name["story_covered"]["note"], "name the chapter that stayed silent"
+    assert "75%" in checks_by_name["story_covered"]["note"]
+    assert out["ok"] is False
+
+    report = board.load("render_report")
+    assert isinstance(report, RenderReport)
+    assert any(c.name == "story_covered" and not c.ok for c in report.checks)
+
+
+def test_a_fully_written_storyline_passes_the_coverage_check(tmp_path: Path) -> None:
+    db, asset_id, board = _build_board_to_cutlist(tmp_path, scene2_roi=None, voice_s=3.4)
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    checks_by_name = {c["name"]: c for c in out["checks"]}
+    assert checks_by_name["story_covered"]["ok"] is True
+    assert out["ok"] is True
 
 
 def test_review_export_collects_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -718,7 +718,7 @@ export interface ProductionArtifactState {
   checks_ok?: boolean;
   failed_checks?: string[];
   stale?: boolean | null;
-  /** Video length / target; reporting only. */
+  /** Length of the delivered file / target; reporting only. */
   target_ratio?: number;
 }
 
