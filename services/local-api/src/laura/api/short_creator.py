@@ -477,12 +477,14 @@ def _split_by_source_presence(
     return usable, missing
 
 
-@router.post("/projects/{project_id}/auto-short", status_code=status.HTTP_202_ACCEPTED)
-def create_project_auto_short(
+def run_project_auto_short(
+    db: Database,
     project_id: str,
-    body: ProjectAutoShortRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+    *,
+    topic: str,
+    target_seconds: int,
+    format: Format,
+    language: str,
 ) -> dict[str, Any]:
     """Topic in, scouted v2 production session out.
 
@@ -496,13 +498,12 @@ def create_project_auto_short(
     material search or scout call; 422 (no matching material) BEFORE any session is created —
     no corpse sessions on a topic nothing was found for.
     """
-    db = _db(request)
     if repos.get_project(db, project_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     _require_autoshort()
     _require_usable_agent_config()
 
-    material = search_material(db, project_id, body.topic)
+    material = search_material(db, project_id, topic)
     if not material["ranking"]:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -532,7 +533,7 @@ def create_project_auto_short(
 
     config = resolve_from_env()
     decision: ScoutDecision = run_scout(
-        db, config, project_id=project_id, topic=body.topic, material=material
+        db, config, project_id=project_id, topic=topic, material=material
     )
 
     # decision["asset_id"] is always one of material["ranking"]'s asset ids: run_scout only ever
@@ -541,7 +542,7 @@ def create_project_auto_short(
     chosen = next(e for e in material["ranking"] if e["asset_id"] == decision["asset_id"])
     snippets = [hit["snippet"] for hit in chosen["scene_hits"]]
     task = (
-        f"{body.topic}\n\n"
+        f"{topic}\n\n"
         f"Material scout: use asset '{chosen['display_name']}'. Focus on scenes "
         f"{', '.join(map(str, decision['scene_numbers']))} — transcript hits: "
         f"{'; '.join(snippets)}. Scout rationale: {decision['rationale']}"
@@ -551,9 +552,9 @@ def create_project_auto_short(
         db,
         decision["asset_id"],
         task=task,
-        target_seconds=body.target_seconds,
-        format=body.format,
-        language=body.language,
+        target_seconds=target_seconds,
+        format=format,
+        language=language,
     )
 
     warnings = config_warnings(config)
@@ -573,6 +574,24 @@ def create_project_auto_short(
         "ranking": material["ranking"],
         "warnings": warnings,
     }
+
+
+@router.post("/projects/{project_id}/auto-short", status_code=status.HTTP_202_ACCEPTED)
+def create_project_auto_short(
+    project_id: str,
+    body: ProjectAutoShortRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Topic in, scouted v2 production session out. See :func:`run_project_auto_short`."""
+    return run_project_auto_short(
+        _db(request),
+        project_id,
+        topic=body.topic,
+        target_seconds=body.target_seconds,
+        format=body.format,
+        language=body.language,
+    )
 
 
 # --- v2 project-scoped auto-overview endpoint (spec 2026-07-31) ---------------------------------
@@ -621,12 +640,13 @@ def _overview_fps(
     return out
 
 
-@router.post("/projects/{project_id}/auto-overview", status_code=status.HTTP_202_ACCEPTED)
-def create_project_auto_overview(
+def run_project_auto_overview(
+    db: Database,
     project_id: str,
-    body: ProjectAutoOverviewRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+    *,
+    topic: str,
+    target_seconds: int,
+    language: str,
 ) -> dict[str, Any]:
     """Topic in, a watchable overview cut across several videos out.
 
@@ -637,14 +657,17 @@ def create_project_auto_overview(
     404 unknown project; 503 preflight (missing extra / unusable agent config); 422 when the
     topic finds no material, no window survives, or the target is shorter than every
     candidate — all BEFORE anything is written.
+
+    ``language`` is accepted and echoed for symmetry with the short's service function, but
+    changes nothing in v1: the cut runs on the clips' ORIGINAL audio, so there is no script to
+    write in any language (mirrors :class:`ProjectAutoOverviewRequest`'s own docstring).
     """
-    db = _db(request)
     if repos.get_project(db, project_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     _require_autoshort()
     _require_usable_agent_config()
 
-    material = search_material(db, project_id, body.topic)
+    material = search_material(db, project_id, topic)
     if not material["ranking"]:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -691,9 +714,9 @@ def create_project_auto_overview(
     config = resolve_from_env()
     decision: OverviewDecision = run_overview_scout(
         config,
-        topic=body.topic,
+        topic=topic,
         candidates=candidates,
-        target_seconds=body.target_seconds,
+        target_seconds=target_seconds,
         fps_by_asset=fps_by_asset,
     )
 
@@ -709,18 +732,16 @@ def create_project_auto_overview(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "reason": (
-                    f"target_seconds ({body.target_seconds}) is shorter than the shortest "
+                    f"target_seconds ({target_seconds}) is shorter than the shortest "
                     f"available clip (~{shortest_s:.1f}s) — raise target_seconds to at least "
                     "that length"
                 ),
-                "target_seconds": body.target_seconds,
+                "target_seconds": target_seconds,
                 "shortest_candidate_seconds": round(shortest_s, 1),
             },
         )
 
-    built = build_overview(
-        db, project_id=project_id, topic=body.topic, clips=decision["clips"]
-    )
+    built = build_overview(db, project_id=project_id, topic=topic, clips=decision["clips"])
 
     export = repos.create_export(
         db,
@@ -756,7 +777,7 @@ def create_project_auto_overview(
             warnings = [
                 *warnings,
                 "overview covers a single source: target_seconds "
-                f"({body.target_seconds}) left room for only one clip after trimming",
+                f"({target_seconds}) left room for only one clip after trimming",
             ]
     if missing_sources:
         warnings = [
@@ -789,16 +810,30 @@ def create_project_auto_overview(
     }
 
 
-# --- v2 production follow-up + status endpoints (Slice 4) -------------------------------------
-
-
-@router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)
-def send_production_message(
-    session_id: str,
-    body: ProductionMessageRequest,
+@router.post("/projects/{project_id}/auto-overview", status_code=status.HTTP_202_ACCEPTED)
+def create_project_auto_overview(
+    project_id: str,
+    body: ProjectAutoOverviewRequest,
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
 ) -> dict[str, Any]:
+    """Topic in, an overview cut across several videos out.
+
+    See :func:`run_project_auto_overview`.
+    """
+    return run_project_auto_overview(
+        _db(request),
+        project_id,
+        topic=body.topic,
+        target_seconds=body.target_seconds,
+        language=body.language,
+    )
+
+
+# --- v2 production follow-up + status endpoints (Slice 4) -------------------------------------
+
+
+def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[str, Any]:
     """Enqueue a follow-up ``production.run`` job on top of *session_id*'s existing board.
 
     404 if the session is unknown, 503 if the 'autoshort' extra is missing, 404 if the session
@@ -807,7 +842,6 @@ def send_production_message(
     session creation, Task 5) rather than accepted again here — the follow-up only supplies the
     new ``message`` text.
     """
-    db = _db(request)
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
@@ -826,7 +860,7 @@ def send_production_message(
             "session_id": session_id,
             "task": meta.task,
             "target_seconds": int(meta.target_seconds),
-            "message": body.text,
+            "message": text,
         },
         max_attempts=1,
     )
@@ -838,6 +872,17 @@ def send_production_message(
         "job_id": job_id,
         "warnings": config_warnings(resolve_from_env()),
     }
+
+
+@router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)
+def send_production_message(
+    session_id: str,
+    body: ProductionMessageRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Enqueue a follow-up production run. See :func:`run_production_follow_up`."""
+    return run_production_follow_up(_db(request), session_id, body.text)
 
 
 def _production_status_payload(
@@ -940,12 +985,8 @@ def get_production_contact_sheet(
     return FileResponse(path, media_type="image/png")
 
 
-@router.post("/production/{session_id}/revert")
-def revert_production_artifact(
-    session_id: str,
-    body: ProductionRevertRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+def run_production_revert(
+    db: Database, session_id: str, artifact: str, version: int
 ) -> dict[str, Any]:
     """Revert one board artifact to an archived version and heal the suffix — synchronously,
     no job and no agent turn. Mirrors the revert_artifact tool's validation; then
@@ -960,7 +1001,6 @@ def revert_production_artifact(
     from ..short_creator.board import Board, downstream_of
     from ..short_creator.production_orchestrator import board_root_for
 
-    db = _db(request)
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
@@ -977,29 +1017,40 @@ def revert_production_artifact(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session has no board") from None
 
     valid_names = downstream_of("scene_reviews")
-    if body.artifact not in valid_names:
+    if artifact not in valid_names:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"unknown artifact '{body.artifact}'; valid: {', '.join(valid_names)}",
+            f"unknown artifact '{artifact}'; valid: {', '.join(valid_names)}",
         )
-    invalidated = [d for d in downstream_of(body.artifact) if board.load(d) is not None]
+    invalidated = [d for d in downstream_of(artifact) if board.load(d) is not None]
     try:
-        board.revert(body.artifact, body.version)
+        board.revert(artifact, version)
     except FileNotFoundError:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"no archived {body.artifact} v{body.version}",
+            f"no archived {artifact} v{version}",
         ) from None
     restored = board.restore_coherent_suffix()
 
     job_view = _job_view(job)
     return {
         "ok": True,
-        "artifact": body.artifact,
-        "version": body.version,
+        "artifact": artifact,
+        "version": version,
         "invalidated": invalidated,
         "restored": restored,
         "status": _production_status_payload(
             db, asset_id=asset_id, board=board, job_view=job_view
         ),
     }
+
+
+@router.post("/production/{session_id}/revert")
+def revert_production_artifact(
+    session_id: str,
+    body: ProductionRevertRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Revert a board artifact and heal the suffix. See :func:`run_production_revert`."""
+    return run_production_revert(_db(request), session_id, body.artifact, body.version)
