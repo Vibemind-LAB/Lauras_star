@@ -364,6 +364,66 @@ describe("ChatPanel session mode (v2)", () => {
     expect(renderChip.getAttribute("title")).toContain("älteren Skript");
   });
 
+  it("the export chip shows how much of the target the delivered film reached", async () => {
+    // Live 2026-08-02 (Drive-Test): a 60s short came out 15.8s. The chain measures that
+    // honestly since target_ratio reads the DELIVERED file — but the number reached no pixel,
+    // so the user saw a finished short and no reason for its length. A short film is allowed
+    // by the charter ("write less and let the film be shorter"); being silent about it is not.
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        render_report: {
+          version: 1,
+          archived_versions: [],
+          stale: false,
+          checks_ok: true,
+          failed_checks: [],
+          target_ratio: 0.263,
+        },
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    const chip = screen.getByText(/Export v1/);
+    expect(chip.textContent).toContain("26%");
+    expect(chip.textContent).not.toContain("⚠");
+    expect(chip.getAttribute("title")).toContain("Ziellänge");
+  });
+
+  it("an export chip without a ratio stays exactly as it was", async () => {
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        render_report: { version: 1, archived_versions: [], stale: false, checks_ok: true },
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("Export v1")).toBeTruthy();
+  });
+
   it("healthy chips carry no warning markers", async () => {
     const status = boardStatus({
       scene_reviews: { count: 6, scenes: [1, 2, 3, 4, 5, 6], degraded_count: 0, degraded_scenes: [] },

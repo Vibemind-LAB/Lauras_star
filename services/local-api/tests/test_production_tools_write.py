@@ -321,6 +321,79 @@ def test_a_rejected_storyline_is_told_how_much_material_it_actually_has(
     assert "fewer chapters" in hint.lower()
 
 
+def test_a_chapter_without_its_number_takes_it_from_its_position(tmp_path: Path) -> None:
+    """Live 2026-08-02 (Drive-Test): ``chapter: Field required`` came back 42, 53 and 22 times
+    across three runs — by a wide margin the most repeated failure in the whole pipeline. The
+    required field is called ``chapter`` and sits inside a list called ``chapters``: the author
+    reads ``chapters: [{...}]``, takes the object to BE the chapter, and never supplies the
+    number. It is not guessing wrong, it is guessing the only reading the shape suggests.
+
+    The list is ordered and the arc is a sequence, so its position IS the number in every
+    legitimate case. Filling it in costs nothing and removes the loop."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            {
+                "role": "hook",
+                "message": "stop scrolling",
+                "scene_numbers": [1],
+                "target_seconds": 3.0,
+            },
+            {
+                "role": "payoff_cta",
+                "message": "one click",
+                "scene_numbers": [{"scene": 1, "window": 1}],
+                "target_seconds": 3.0,
+            },
+        ],
+    )
+
+    assert out["ok"] is True, out
+    storyline = board.load("storyline")
+    assert isinstance(storyline, Storyline)
+    assert [c.chapter for c in storyline.arc] == [1, 2]
+
+
+def test_an_explicit_chapter_number_is_never_overwritten(tmp_path: Path) -> None:
+    """Filling in a MISSING number must not renumber an author who knows what it wants."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=4, scene_numbers=[1]),
+            _chapter(chapter=7, role="payoff_cta", scene_numbers=[{"scene": 1, "window": 1}]),
+        ],
+    )
+
+    assert out["ok"] is True, out
+    storyline = board.load("storyline")
+    assert isinstance(storyline, Storyline)
+    assert [c.chapter for c in storyline.arc] == [4, 7]
+
+
+def test_a_malformed_chapter_entry_still_reports_validation_errors(tmp_path: Path) -> None:
+    """Filling in the number must not swallow the rejection of a garbage entry."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(red_thread="rt", chapters=["not a chapter"])
+
+    assert out["ok"] is False
+    assert "errors" in out or "reason" in out
+    assert board.load("storyline") is None
+
+
 def test_a_single_window_scene_can_carry_a_one_chapter_arc(tmp_path: Path) -> None:
     """The way out has to actually work: one scene, one window, one chapter — accepted."""
     db, asset_id = _seed_scene(tmp_path)

@@ -430,8 +430,20 @@ function SessionChips({
       // Unknown is not current: null means the artifact predates provenance and cannot be
       // judged either way — saying nothing here would present it as proven-fresh.
       const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
-      const text = `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${warnings.length > 0 ? " ⚠" : ""}`;
-      const title = warnings.length > 0 ? warnings.join(" · ") : unknown;
+      // How much of the requested length the DELIVERED film reached. Live 2026-08-02: a 60s
+      // short came out 15.8s and the panel showed a finished export with no hint why. A short
+      // film is allowed — the Scene Author's charter says to write less rather than invent
+      // material — so this is a fact, never a ⚠: staying silent about it is the defect.
+      const ratio = name === "render_report" ? info.target_ratio : undefined;
+      const ratioText = typeof ratio === "number" ? ` · ${Math.round(ratio * 100)}%` : "";
+      const ratioTitle =
+        typeof ratio === "number"
+          ? `gelieferter Film: ${Math.round(ratio * 100)}% der Ziellänge`
+          : undefined;
+      const text = `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${ratioText}${warnings.length > 0 ? " ⚠" : ""}`;
+      const title =
+        [...warnings, ...(ratioTitle !== undefined ? [ratioTitle] : [])].join(" · ") ||
+        unknown;
       if (onRevert !== undefined && info.archived_versions.some((v) => v !== info.version)) {
         const revert = onRevert;
         const artifact = name;

@@ -710,6 +710,26 @@ def silent_chapters(script: Script, storyline: Storyline | None) -> list[int]:
     return [chapter.chapter for chapter in storyline.arc if chapter.chapter not in written]
 
 
+def numbered_chapters(chapters: list[Any]) -> list[Any]:
+    """Fill in each chapter's missing ``chapter`` number from its position in the list.
+
+    Live 2026-08-02 (Drive-Test): ``chapter: Field required`` came back 42, 53 and 22 times
+    across three runs — by a wide margin the most repeated failure in the pipeline, and the one
+    that actually burned the turn budgets. The required field is called ``chapter`` and sits
+    inside a list called ``chapters``: an author reads ``chapters: [{...}]``, takes the object
+    to BE the chapter, and never supplies the number. That is not a wrong guess so much as the
+    only reading the shape suggests.
+
+    The arc is an ordered sequence, so position IS the number wherever one is missing. An
+    explicit number is never touched (an author that renumbers on purpose keeps its intent),
+    and a non-dict entry is passed through untouched so it still fails validation as before.
+    """
+    return [
+        {**raw, "chapter": index} if isinstance(raw, dict) and "chapter" not in raw else raw
+        for index, raw in enumerate(chapters, start=1)
+    ]
+
+
 def _with_material_hint(reply: dict[str, Any], hint: str | None) -> dict[str, Any]:
     """Attach ``material_hint`` to a rejection when there is one to give (never otherwise)."""
     if hint is not None:
@@ -1422,6 +1442,8 @@ def build_production_tool_specs(
 
     def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
         """Validate and save the short's storyline (red thread + chapter arc) to the board.
+        Each chapter's ``chapter`` number may be omitted — it is taken from the entry's position
+        in the list, so pass the chapters in arc order.
         A scene_numbers entry is a plain scene number (= that review's primary window 0) or
         {"scene": N, "window": K} to play review window K (0-based, see get_reviews); the
         same scene may appear several times with DIFFERENT windows, the same (scene, window)
@@ -1431,7 +1453,10 @@ def build_production_tool_specs(
         is rejected with field-level validation errors instead of raising."""
         try:
             try:
-                storyline = Storyline(red_thread=red_thread, arc=[Chapter(**c) for c in chapters])
+                storyline = Storyline(
+                    red_thread=red_thread,
+                    arc=[Chapter(**c) for c in numbered_chapters(chapters)],
+                )
             except ValidationError as exc:
                 return _with_material_hint(
                     {"ok": False, "errors": _validation_errors(exc)}, _material_hint(len(chapters))
