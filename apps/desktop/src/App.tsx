@@ -886,6 +886,7 @@ export function App(): ReactElement {
             <ShortsView
               client={client}
               asset={detailAsset}
+              projectId={selectedProjectId}
               seek={seek}
               currentFrame={currentFrame}
               onSeek={seekToFrame}

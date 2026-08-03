@@ -38,6 +38,45 @@ _DEFAULT_DISCLOSURE: str = "KI · synthetisch"
 _MAX_INLINE_FILTER_CHARS: int = 8000
 
 
+def _mixed_size_normalize(clips: list[tuple[Path, int, int]]) -> str | None:
+    """A per-clip ``scale``/``pad``/``setsar`` chain when the sources disagree on frame size.
+
+    ffmpeg's ``concat`` (and ``xfade``) demand identical frame parameters on every input, and
+    screen recordings practically never agree — each capture sits a few pixels of window
+    chrome apart. Live 2026-08-03: the first real multi-source overview render (1916x1030 +
+    1920x1026) died with "Input link parameters do not match"; every earlier live run happened
+    to draw all clips from ONE source, so the mixed path had never executed.
+
+    Target canvas = the max width x max height over the sources (rounded up to even for
+    yuv420p); every clip is fitted without cropping and padded centered, SAR pinned to 1.
+    Uniform sources return ``None`` so those paths stay byte-identical to today. A source
+    whose probe fails contributes nothing (the render will surface that error itself).
+    """
+    sizes: dict[Path, tuple[int, int]] = {}
+    for src, _fin, _fout in clips:
+        if src in sizes:
+            continue
+        try:
+            streams = probe(src).get("streams", [])
+            video: dict[str, object] = next(
+                (s for s in streams if s.get("codec_type") == "video"), {}
+            )
+            sizes[src] = (int(str(video.get("width", 0))), int(str(video.get("height", 0))))
+        except (FFmpegError, OSError, ValueError, TypeError):
+            continue
+    unique = {s for s in sizes.values() if s[0] > 0 and s[1] > 0}
+    if len(unique) <= 1:
+        return None
+    width = max(s[0] for s in unique)
+    height = max(s[1] for s in unique)
+    width += width % 2
+    height += height % 2
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    )
+
+
 def _effective_disclosure(disclosure_text: str | None) -> str | None:
     """Map disclosure_text to the effective value for the renderer.
 
@@ -402,11 +441,16 @@ def _xfade_base_graph(
     n = len(clips)
     parts: list[str] = []
     lens = [fout - fin for _, fin, fout in clips]
+    # xfade is as strict as concat about frame parameters — mixed-size sources must be
+    # normalized onto one canvas here too (None for uniform sources: unchanged graph).
+    normalize = _mixed_size_normalize(clips)
+    norm_chain = f",{normalize}" if normalize else ""
     for i, (_src, fin, fout) in enumerate(clips):
         reserve = xdur[i] if i < n - 1 else 0
         end = fout + reserve
         parts.append(
-            f"[{i}:v]trim=start_frame={fin}:end_frame={end},setpts=PTS-STARTPTS,settb=AVTB[v{i}]"
+            f"[{i}:v]trim=start_frame={fin}:end_frame={end},"
+            f"setpts=PTS-STARTPTS,settb=AVTB{norm_chain}[v{i}]"
         )
         if has_base_audio:
             if audio_flags[i]:
@@ -667,12 +711,17 @@ def render_clips_mp4(
                 fold_parts.append(f"[{a_label}]anull[abase]")
             parts = ";".join(fold_parts)
         else:
-            # Byte-identical concat path (hard cuts + optional dip-to-black ``fade``).
+            # Byte-identical concat path (hard cuts + optional dip-to-black ``fade``) — except
+            # when the sources disagree on frame size, where concat would refuse to configure
+            # (see _mixed_size_normalize); uniform sources get an unchanged graph.
+            normalize = _mixed_size_normalize(clips)
+            norm_chain = f",{normalize}" if normalize else ""
             filt: list[str] = []
             for i, (_src, fin, fout) in enumerate(clips):
                 # Frame-exact, end-exclusive: trim keeps input frames [start_frame, end_frame).
                 filt.append(
-                    f"[{i}:v]trim=start_frame={fin}:end_frame={fout},setpts=PTS-STARTPTS[v{i}]"
+                    f"[{i}:v]trim=start_frame={fin}:end_frame={fout},"
+                    f"setpts=PTS-STARTPTS{norm_chain}[v{i}]"
                 )
                 if has_base_audio:
                     start = fin * rate_den / rate_num

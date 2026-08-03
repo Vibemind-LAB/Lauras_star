@@ -708,6 +708,38 @@ export interface AutoShortRequest {
   target_seconds?: number;
 }
 
+/** Body for POST /projects/{pid}/auto-overview — topic in, cross-video montage out. */
+export interface AutoOverviewRequest {
+  topic: string;
+  /** Backend default: 180 (an overview spanning several videos needs room). */
+  target_seconds?: number;
+  language?: string;
+}
+
+/** One clip the overview scout picked — enough to say WHAT plays and WHY. */
+export interface AutoOverviewClip {
+  asset_id: string;
+  display_name: string;
+  scene_number: number;
+  start_frame: number;
+  end_frame_exclusive: number;
+  snippet: string;
+}
+
+/** 202 response of POST /projects/{pid}/auto-overview: the built sequence + enqueued render.
+ * A one-shot, not a production session — the film lands as an export (job_id tracks it). */
+export interface AutoOverviewResult {
+  sequence_id: string;
+  source_timeline_id: string;
+  clips: AutoOverviewClip[];
+  rationale: string;
+  fallback: boolean;
+  ranking: unknown[];
+  warnings: string[];
+  export_id: string;
+  job_id: string;
+}
+
 /** Presence + version bookkeeping for one artifact slot on a v2 production session board.
  * Some artifacts additionally record whether their work actually came off (checks_ok /
  * failed_checks) and whether they still match the script on the board (stale — null when the
@@ -943,6 +975,16 @@ export class LauraClient {
    */
   getProductionStatus(sessionId: string): Promise<ProductionStatus> {
     return this.request<ProductionStatus>(`/production/${sessionId}`);
+  }
+
+  /** Topic in, cross-video montage out: builds an overview sequence over the whole project
+   * and enqueues its render. One-shot (no production session) — track `job_id` for the
+   * render; the film lands as an export. POST /projects/{pid}/auto-overview -> 202. */
+  autoOverview(projectId: string, body: AutoOverviewRequest): Promise<AutoOverviewResult> {
+    return this.request<AutoOverviewResult>(`/projects/${projectId}/auto-overview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   /** The session's current contact-sheet PNG (the visual pre-render checkpoint) as an object
