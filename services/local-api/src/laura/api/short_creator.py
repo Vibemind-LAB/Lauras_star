@@ -955,6 +955,57 @@ def get_production_status(
     return _production_status_payload(db, asset_id=asset_id, board=board, job_view=job_view)
 
 
+@router.get("/production/{session_id}/events")
+def get_production_events(
+    session_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("read"))],
+    after: int = 0,
+) -> dict[str, Any]:
+    """The session's newest run log as a pollable event stream (spec 2026-08-03).
+
+    Cursor = 0-based line index into the newest ``runs/*.ndjson``; unparsable lines are
+    skipped but still advance the cursor, so a client can never loop on a bad line.
+    ``done`` mirrors whether a terminal ``{"type": "done"}`` line exists in the file.
+    """
+    from ..short_creator.production_orchestrator import board_root_for
+
+    db = _db(request)
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    try:
+        runs_dir = board_root_for(db, str(session["asset_id"]), session_id).parent / "runs"
+    except ValueError:
+        return {"events": [], "next": max(0, after), "done": False}
+    logs = (
+        sorted(runs_dir.glob("*.ndjson"), key=lambda p: p.stat().st_mtime)
+        if runs_dir.is_dir()
+        else []
+    )
+    if not logs:
+        return {"events": [], "next": max(0, after), "done": False}
+    lines = logs[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+    start = max(0, after)
+    events: list[dict[str, Any]] = []
+    done = False
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == "done":
+            done = True
+    for line in lines[start:]:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return {"events": events, "next": len(lines), "done": done}
+
+
 @router.get("/production/{session_id}/contact-sheet")
 def get_production_contact_sheet(
     session_id: str,
