@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from laura.auth import Principal
 from laura.chat.executor import execute_decision, execute_import_approval
 from laura.chat.router import RouterDecision
 from laura.config import Settings
@@ -118,6 +119,41 @@ def test_create_project_mirrors_projects_create_and_activates(tmp_path: Path) ->
     assert bool(project["drop_frame"]) is False
     assert Path(project["workspace_root"]).is_dir()
     assert Path(project["workspace_root"]) == settings.workspace_root / f"project-{pid}"
+    assert project["org_id"] is None, "no principal -> no org, matching a desktop/local caller"
+
+    # Without a request principal (every pre-existing caller), the endpoint's audit trail is
+    # still written — using the SAME implicit local-owner identity auth/deps.resolve_principal
+    # falls back to, not a chat-invented actor.
+    audit_events = repos.list_audit_events(db)
+    audit_event = next(e for e in audit_events if e["action"] == "project.create")
+    assert audit_event["entity_id"] == pid
+    assert audit_event["principal_kind"] == "local"
+    assert audit_event["org_id"] is None
+
+
+def test_create_project_with_principal_sets_org_and_writes_audit(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    principal = Principal(kind="key", role="owner", user_id="user-1", org_id="org-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("create_project", {"name": "Drive-Test"}), now_utc=_NOW,
+        principal=principal,
+    )
+
+    pid = _conversation_row(db, conversation_id)["active_project_id"]
+    assert pid is not None
+    project = repos.get_project(db, pid)
+    assert project is not None and project["org_id"] == "org-1"
+    assert messages[0]["content"]["text"] == "Projekt ‚Drive-Test' angelegt und aktiviert."
+
+    audit_events = repos.list_audit_events(db)
+    audit_event = next(e for e in audit_events if e["action"] == "project.create")
+    assert audit_event["entity_id"] == pid
+    assert audit_event["principal_kind"] == "key"
+    assert audit_event["principal_id"] == "user-1"
+    assert audit_event["org_id"] == "org-1"
 
 
 # --- switch_project --------------------------------------------------------------------------
@@ -415,6 +451,32 @@ def test_follow_up_falls_back_to_newest_action_when_ref_unresolved(
     )
 
     assert calls == ["sess-2"], "newest action wins when the ref does not exactly match"
+
+
+def test_follow_up_exact_session_id_match_wins_over_a_newer_action(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """An exact ``session_id`` match must win even when a NEWER, non-matching action exists —
+    resolution is "exact match first, newest as fallback", never "newest first"."""
+    calls: list[str] = []
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-9", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="s-old", created_utc=_NOW)
+    _seed_action(db, conversation_id, session_id="s-new", created_utc=_NOW2)
+
+    execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("follow_up", {"session_ref": "s-old", "text": "mach lauter"}),
+        now_utc=_NOW2,
+    )
+
+    assert calls == ["s-old"], "the exact match must win, not the newer action"
 
 
 def test_follow_up_without_any_session_asks(tmp_path: Path) -> None:

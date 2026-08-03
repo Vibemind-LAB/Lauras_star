@@ -15,6 +15,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from .. import audit
+
 # Documented exception to the private-import rule: the approval flow's only entry point into
 # the existing import machinery is this asset-creation + enqueue helper. Mirrors discovery.py's
 # own use of context._scene_src_ranges.
@@ -28,6 +30,7 @@ from ..api.short_creator import (
     run_project_auto_overview,
     run_project_auto_short,
 )
+from ..auth import Principal
 from ..config import Settings
 from ..db import repos
 from ..db.database import Database
@@ -157,12 +160,24 @@ def _handle_reply(
 
 
 def _handle_create_project(
-    db: Database, settings: Settings, conversation_id: str, decision: RouterDecision, now_utc: str
+    db: Database,
+    settings: Settings,
+    conversation_id: str,
+    decision: RouterDecision,
+    now_utc: str,
+    principal: Principal | None,
 ) -> list[dict[str, Any]]:
+    """Mirrors ``api/projects.create_project``'s core exactly, including its two
+    request-scoped side effects: the project's ``org_id`` and the audit trail. Chat has no
+    HTTP principal of its own — when none is supplied (the default, matching every caller
+    before this fix), this uses the SAME implicit local-owner identity
+    ``auth/deps.resolve_principal`` falls back to when no API key is presented
+    (:func:`laura.audit.system_principal`), rather than inventing a new actor scheme."""
     name = str(decision["args"]["name"])
     pid = new_id()
     project_root = settings.workspace_root / f"project-{pid}"
     project_root.mkdir(parents=True, exist_ok=True)
+    org_id = principal.org_id if principal is not None else None
     repos.create_project(
         db,
         project_id=pid,
@@ -171,6 +186,11 @@ def _handle_create_project(
         rate_den=1,
         drop_frame=False,
         workspace_root=str(project_root),
+        org_id=org_id,
+    )
+    audit.record(
+        db, principal or audit.system_principal(), "project.create",
+        entity_type="project", entity_id=pid,
     )
     repos.set_conversation_project(db, conversation_id, pid)
     text = f"Projekt ‚{name}' angelegt und aktiviert."
@@ -362,6 +382,7 @@ def execute_decision(
     conversation_id: str,
     decision: RouterDecision,
     now_utc: str,
+    principal: Principal | None = None,
 ) -> list[dict[str, Any]]:
     """Run one validated router decision, appending the resulting message(s) to the thread.
 
@@ -369,6 +390,11 @@ def execute_decision(
     machinery it calls, an unresolved reference, or anything else gone wrong (including a
     programming error) — becomes an assistant ``text`` message instead, so a chat turn can
     never 500 the thread.
+
+    ``principal`` is the HTTP caller (Task 6 passes the resolved request principal); it
+    defaults to ``None`` so every pre-existing caller keeps working. Only ``create_project``
+    consumes it, to give chat-created projects the same ``org_id``/audit-trail parity as
+    ``POST /projects``.
     """
     try:
         conversation = repos.get_conversation(db, conversation_id)
@@ -378,7 +404,9 @@ def execute_decision(
         if tool == "reply":
             return _handle_reply(db, conversation_id, decision, now_utc)
         if tool == "create_project":
-            return _handle_create_project(db, settings, conversation_id, decision, now_utc)
+            return _handle_create_project(
+                db, settings, conversation_id, decision, now_utc, principal
+            )
         if tool == "switch_project":
             return _handle_switch_project(db, conversation_id, decision, now_utc)
         if tool == "propose_import":
