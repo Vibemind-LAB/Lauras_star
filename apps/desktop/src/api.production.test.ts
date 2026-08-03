@@ -151,3 +151,32 @@ describe("production session client methods", () => {
     await expect(c.getProductionStatus("missing")).rejects.toThrow("404: session not found");
   });
 });
+
+describe("contactSheetUrl", () => {
+  // The backend has served GET /production/{sid}/contact-sheet since the Kontaktbogen arc;
+  // the desktop never grew a client method for it, so the "Bogen" chip existed with no way
+  // to SHOW the sheet — the last open gap of that feature.
+  it("fetches the sheet PNG with the token and returns an object URL", async () => {
+    const fn = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["png-bytes"]),
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fn);
+    const c = new LauraClient("http://h", "tok");
+
+    const url = await c.contactSheetUrl("s1");
+
+    expect(url).toBe("blob:stub");
+    const [reqUrl, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(reqUrl).toBe("http://h/production/s1/contact-sheet");
+    expect((init.headers as Record<string, string>)["X-Laura-Token"]).toBe("tok");
+  });
+
+  it("rejects on a non-2xx response", async () => {
+    mockFetchError(404, "no sheet");
+    const c = new LauraClient("http://h", "tok");
+    await expect(c.contactSheetUrl("s1")).rejects.toThrow("404: no sheet");
+  });
+});

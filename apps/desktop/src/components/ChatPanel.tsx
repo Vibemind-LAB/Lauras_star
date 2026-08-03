@@ -541,6 +541,70 @@ function SessionCard({ jobResult }: { jobResult: unknown }): ReactElement {
   );
 }
 
+/** Inline viewer for the session's contact sheet — the visual pre-render checkpoint. The
+ * backend has served the PNG via GET /production/{sid}/contact-sheet since the Kontaktbogen
+ * arc; the chip said "Bogen" and the app had no way to display it — the feature's last open
+ * gap. Loads lazily on first open, revokes its object URL on close/unmount, and re-fetches
+ * when the sheet's version changes (a cutlist rebuild archives and rewrites the sheet). */
+function ContactSheetViewer({
+  client,
+  sessionId,
+  version,
+}: {
+  client: LauraClient;
+  sessionId: string;
+  version: number;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setError(null);
+    void client
+      .contactSheetUrl(sessionId)
+      .then((u) => {
+        if (cancelled) {
+          URL.revokeObjectURL(u);
+          return;
+        }
+        objectUrl = u;
+        setUrl(u);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+      setUrl(null);
+    };
+  }, [client, sessionId, version, open]);
+
+  return (
+    <div className="mb-1">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className={`${SESSION_CHIP_CLS} cursor-pointer hover:bg-accent/25`}
+      >
+        {open ? "Bogen ausblenden" : "Bogen anzeigen"}
+      </button>
+      {open && error !== null && (
+        <div className="mt-1 text-status-err" role="alert">
+          ⚠ Bogen konnte nicht geladen werden: {error}
+        </div>
+      )}
+      {open && error === null && url !== null && (
+        <img src={url} alt="Kontaktbogen" className="mt-1 w-full rounded border border-bezel" />
+      )}
+    </div>
+  );
+}
+
 /** Shared input/button look, matching the v1 input row exactly. */
 const SESSION_INPUT_CLS =
   "min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px] text-content-strong disabled:opacity-40";
@@ -596,6 +660,14 @@ function SessionPanel({
   // reverting from. Only "idle" (no session yet) has nothing to show.
   const chipsPhase =
     state.phase === "running" || state.phase === "done" || state.phase === "error";
+  // The contact-sheet viewer needs the sheet's presence + version; both live behind the
+  // board_ready discriminant. Same defensive read as the chips loop — a pre-Kontaktbogen
+  // backend sends no contact_sheet key at all, and a missing key must skip, never crash.
+  const sheetVersion =
+    effectiveStatus !== null && effectiveStatus.board_ready
+      ? ((effectiveStatus.artifacts.contact_sheet as ProductionArtifactState | undefined)
+          ?.version ?? null)
+      : null;
 
   // Both the optimistic revertStatus snapshot and the transient revert hint stop being
   // trustworthy the moment either a fresh poll result lands (`state.status` changes) or a new
@@ -692,6 +764,13 @@ function SessionPanel({
           <SessionChips
             status={effectiveStatus}
             onRevert={state.phase === "running" ? undefined : handleRevert}
+          />
+        )}
+        {chipsPhase && sheetVersion !== null && state.sessionId !== null && (
+          <ContactSheetViewer
+            client={client}
+            sessionId={state.sessionId}
+            version={sheetVersion}
           />
         )}
         {chipsPhase && revertHint !== null && (

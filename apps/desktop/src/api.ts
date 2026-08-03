@@ -945,6 +945,21 @@ export class LauraClient {
     return this.request<ProductionStatus>(`/production/${sessionId}`);
   }
 
+  /** The session's current contact-sheet PNG (the visual pre-render checkpoint) as an object
+   * URL. The caller owns the URL and should revoke it when replacing it — the sheet is a
+   * single moderate image, so a blob (like posters/thumbnails) is the right vehicle here,
+   * unlike the media proxies which stream via laura-media://. */
+  async contactSheetUrl(sessionId: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/production/${sessionId}/contact-sheet`, {
+      headers: { "X-Laura-Token": this.token },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+    return URL.createObjectURL(await res.blob());
+  }
+
   health(): Promise<Health> {
     return this.request<Health>("/healthz");
   }

@@ -401,6 +401,87 @@ describe("ChatPanel session mode (v2)", () => {
     expect(chip.getAttribute("title")).toContain("Ziellänge");
   });
 
+  it("the Bogen chip gets a viewer: toggle shows the sheet PNG, toggle hides it", async () => {
+    // The visual pre-render checkpoint the whole contact-sheet feature exists for: the
+    // backend serves the PNG, the chip said "Bogen", and the app had no way to display it.
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        contact_sheet: { version: 2, archived_versions: [] },
+      },
+    });
+    const contactSheetUrl = vi.fn().mockResolvedValue("blob:stub");
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      contactSheetUrl,
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.queryByAltText("Kontaktbogen")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Bogen anzeigen" }));
+    await flushSession();
+
+    const img = screen.getByAltText("Kontaktbogen");
+    expect(img.getAttribute("src")).toBe("blob:stub");
+    expect(contactSheetUrl).toHaveBeenCalledWith("s1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Bogen ausblenden" }));
+    expect(screen.queryByAltText("Kontaktbogen")).toBeNull();
+  });
+
+  it("no Bogen toggle without a contact sheet on the board", async () => {
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(boardStatus()),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.queryByRole("button", { name: "Bogen anzeigen" })).toBeNull();
+  });
+
+  it("a failing sheet load shows a message instead of crashing", async () => {
+    const status = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        contact_sheet: { version: 1, archived_versions: [] },
+      },
+    });
+    const client = mockSessionClient({
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      contactSheetUrl: vi.fn().mockRejectedValue(new Error("404: no sheet")),
+    });
+    render(<ChatPanel client={client} assetId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Session (v2)" }));
+    fireEvent.change(screen.getByLabelText("Sitzungsauftrag"), { target: { value: "Katzen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await flushSession();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Bogen anzeigen" }));
+    await flushSession();
+
+    expect(screen.queryByAltText("Kontaktbogen")).toBeNull();
+    expect(screen.getByText(/Bogen konnte nicht geladen werden/)).toBeTruthy();
+  });
+
   it("an export chip without a ratio stays exactly as it was", async () => {
     const status = boardStatus({
       artifacts: {
