@@ -60,7 +60,11 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "60", num: 60, den: 1, drop: false },
 ];
 
-export const EXPECTED_SCHEMA_VERSION = 32;
+// Must track the newest migration in services/local-api/src/laura/db/migrations/ — live
+// 2026-08-03 this sat at 32 while the backend had long been at 33 (0033_production_session_job),
+// so every CURRENT pairing showed an amber "Frontend veraltet" badge. The lag is invisible in
+// tests (they pin relative mismatches, not the absolute number), so it only ever shows live.
+export const EXPECTED_SCHEMA_VERSION = 33;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
@@ -953,7 +957,11 @@ function AssetImportRow({
 }
 
 export function HealthBadge({ health, offline }: { health: Health | null; offline: boolean }): ReactElement {
-  if (offline) return <Badge color="red" text="Service offline" />;
+  // A fetched health is PROOF of a connection and always beats the offline flag. The flag is
+  // set once when the preload bridge is missing at mount and nothing ever clears it — live
+  // 2026-08-03 the badge read "Service offline" while the same panel listed projects from the
+  // very service it declared dead (HMR preserves the stale flag into a connected session).
+  if (offline && !health) return <Badge color="red" text="Service offline" />;
   if (!health) return <Badge color="amber" text="verbinde…" />;
   if (health.schema_version < EXPECTED_SCHEMA_VERSION) {
     return (
