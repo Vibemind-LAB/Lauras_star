@@ -64,10 +64,14 @@ def test_missing_required_arg_is_a_validation_error() -> None:
 
 
 def test_runner_exception_goes_straight_to_fallback() -> None:
-    def runner(_task: str) -> str:
+    calls: list[str] = []
+
+    def runner(task: str) -> str:
+        calls.append(task)
         raise TimeoutError("model down")
 
     decision = run_router(_config(), context="", user_text="x", runner=runner)
+    assert len(calls) == 1, "exception path never retries"
     assert decision["tool"] == "reply" and decision["fallback"] is True
     assert decision["args"]["text"], "the fallback reply carries readable text"
 
