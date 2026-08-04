@@ -1072,7 +1072,9 @@ def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
 
     monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
     monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _mock_run_overview_scout)
-    monkeypatch.setattr("laura.api.short_creator._split_by_source_presence", _mock_split_by_source_presence)
+    monkeypatch.setattr(
+        "laura.api.short_creator._split_by_source_presence", _mock_split_by_source_presence
+    )
     monkeypatch.setattr("laura.api.short_creator.build_candidates", _mock_build_candidates)
     monkeypatch.setattr("laura.api.short_creator._require_autoshort", lambda: None)
     monkeypatch.setattr("laura.api.short_creator._require_usable_agent_config", lambda: None)
@@ -1166,7 +1168,9 @@ def test_run_project_auto_overview_no_warning_when_transcript_confirmed(
 
     monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
     monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _mock_run_overview_scout)
-    monkeypatch.setattr("laura.api.short_creator._split_by_source_presence", _mock_split_by_source_presence)
+    monkeypatch.setattr(
+        "laura.api.short_creator._split_by_source_presence", _mock_split_by_source_presence
+    )
     monkeypatch.setattr("laura.api.short_creator.build_candidates", _mock_build_candidates)
     monkeypatch.setattr("laura.api.short_creator._require_autoshort", lambda: None)
     monkeypatch.setattr("laura.api.short_creator._require_usable_agent_config", lambda: None)
