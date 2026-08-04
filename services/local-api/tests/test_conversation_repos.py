@@ -1,10 +1,13 @@
 """Conversation repos: the chat-first persistence layer (spec 2026-08-03).
 
 seq must be gapless per conversation (the thread is rebuilt from it after restarts),
-delete must cascade, and content_json round-trips as a dict.
+delete must cascade, and content_json round-trips as a dict. Appends must survive a
+concurrently committing writer (the job runner) instead of dying "database is locked".
 """
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 from laura.config import Settings
@@ -68,6 +71,52 @@ def test_update_message_content_and_get(tmp_path: Path) -> None:
     )
     updated = repos.get_conversation_message(db, "m1")
     assert updated is not None and updated["content"]["status"] == "approved"
+
+
+def test_append_survives_a_concurrent_writers_commit(tmp_path: Path) -> None:
+    """A job runner committing mid-turn must not kill the chat append (live 2026-08-04:
+    POST /message 500'd three times with "database is locked" while shorts.render wrote).
+
+    The failure is NOT a missing busy_timeout: a deferred SELECT-then-INSERT takes a read
+    snapshot, and when another connection commits before the INSERT upgrades to a write,
+    SQLite fails with SQLITE_BUSY_SNAPSHOT immediately — the busy handler is never
+    consulted. The append must instead wait out the writer and then succeed.
+    """
+    db = _db(tmp_path)
+    assert isinstance(db, SqliteDatabase)  # the writer below needs a raw .connect()
+    repos.create_conversation(db, conversation_id="c1", created_utc="2026-08-04T10:00:00Z")
+
+    lock_held = threading.Event()
+
+    def hold_write_lock_then_commit() -> None:
+        conn = db.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE conversations SET updated_at=? WHERE id=?",
+                ("2026-08-04T10:00:01Z", "c1"),
+            )
+            lock_held.set()
+            # Long enough for the main thread's append to take its read snapshot and
+            # start waiting on the write lock — well under the 5s busy_timeout.
+            time.sleep(0.5)
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+    writer = threading.Thread(target=hold_write_lock_then_commit)
+    writer.start()
+    try:
+        assert lock_held.wait(5.0), "writer thread never acquired the lock"
+        seq = repos.append_conversation_message(
+            db, message_id="m1", conversation_id="c1", role="user", kind="text",
+            content={"text": "hallo"}, created_utc="2026-08-04T10:00:02Z",
+        )
+    finally:
+        writer.join()
+    assert seq == 1
+    msgs = repos.list_conversation_messages(db, "c1")
+    assert [m["id"] for m in msgs] == ["m1"]
 
 
 def test_delete_cascades_messages(tmp_path: Path) -> None:

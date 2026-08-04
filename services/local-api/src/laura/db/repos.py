@@ -2587,8 +2587,14 @@ def append_conversation_message(
     seq is computed as MAX(seq)+1 inside the same transaction as the INSERT, so
     it stays gapless and per-conversation (the thread is rebuilt from it after
     restarts).
+
+    immediate=True: this transaction reads (MAX(seq)) before it writes. A deferred
+    BEGIN would take a read snapshot at the SELECT, and if any other connection (the
+    job runner) commits before the INSERT, the write upgrade fails SQLITE_BUSY_SNAPSHOT
+    without ever consulting busy_timeout. Starting as a writer makes contention wait
+    on busy_timeout instead of killing the chat turn.
     """
-    with db.transaction() as conn:
+    with db.transaction(immediate=True) as conn:
         row = conn.execute(
             "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM conversation_messages "
             "WHERE conversation_id=?",
