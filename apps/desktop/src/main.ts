@@ -61,6 +61,24 @@ async function resolveMediaPath(assetId: string, kind: string): Promise<string |
   return file.path;
 }
 
+// exportId -> on-disk path, resolved once via GET /exports/{id} and reused for every range.
+// Only cached once the export is "ready" — a still-rendering export must be re-checked.
+const exportPathCache = new Map<string, string>();
+
+async function resolveExportPath(exportId: string): Promise<string | null> {
+  const cached = exportPathCache.get(exportId);
+  if (cached) return cached;
+  if (!serviceInfo) return null;
+  const res = await net.fetch(`${serviceInfo.baseUrl}/exports/${exportId}`, {
+    headers: { "X-Laura-Token": serviceInfo.token },
+  });
+  if (!res.ok) return null;
+  const exp = (await res.json()) as { status?: string; path?: string | null };
+  if (exp.status !== "ready" || !exp.path) return null;
+  exportPathCache.set(exportId, exp.path);
+  return exp.path;
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
@@ -123,13 +141,16 @@ app
     // laura-media://media/<assetId>/<kind> -> stream the artifact straight off disk with
     // native Range support. Serving large media from the main process (not the loopback
     // uvicorn) avoids the connection-reset churn that made <video> playback flaky.
+    // laura-media://media/export/<exportId> is a second lane sharing the same host/scheme:
+    // the chat preview plays finished renders by export id rather than asset id/kind.
     const toBody = (stream: Readable): BodyInit => Readable.toWeb(stream) as unknown as BodyInit;
     protocol.handle("laura-media", async (request) => {
       const [assetId, kind] = new URL(request.url).pathname.split("/").filter(Boolean);
       if (!assetId || !kind) {
         return new Response("bad media url", { status: 400 });
       }
-      const filePath = await resolveMediaPath(assetId, kind);
+      const filePath =
+        assetId === "export" ? await resolveExportPath(kind) : await resolveMediaPath(assetId, kind);
       if (!filePath) {
         return new Response("media not found", { status: 404 });
       }

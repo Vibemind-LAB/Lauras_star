@@ -1524,6 +1524,20 @@ def list_project_exports(
     return out
 
 
+@router.get("/exports/{export_id}", response_model=RenderExportOut)
+def get_export(export_id: str, request: Request) -> RenderExportOut:
+    """One export row — the laura-media export lane resolves file paths through this."""
+    e = repos.get_export(_db(request), export_id)
+    if e is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "export not found")
+    opts: dict[str, object] = e.get("options") or {}
+    return RenderExportOut(
+        **{k: v for k, v in e.items() if k != "options"},
+        quality_status=opts.get("quality_status"),  # type: ignore[arg-type]
+        quality_verified=opts.get("quality_verified"),  # type: ignore[arg-type]
+    )
+
+
 @router.post(
     "/timelines/{timeline_id}/exports",
     response_model=ExportOut,
