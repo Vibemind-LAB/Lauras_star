@@ -551,6 +551,13 @@ class TranscriptRealignAccepted(BaseModel):
     job_id: str
 
 
+class TranscriptConfirmOut(BaseModel):
+    """Response for POST /assets/{asset_id}/transcript:confirm (Transkript-Gates, Gate A)."""
+
+    asset_id: str
+    transcript_confirmed_at: str
+
+
 class VoiceoverRequest(BaseModel):
     segment_id: str | None = None
     text: str | None = Field(default=None, min_length=1)
