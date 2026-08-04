@@ -176,7 +176,7 @@ function DoneCard({
 }
 
 /** One streamed event rendered as a chat line. */
-function EventLine({ event }: { event: AgentEvent }): ReactElement | null {
+export function EventLine({ event }: { event: AgentEvent }): ReactElement | null {
   switch (event.type) {
     case "stage":
       return (
