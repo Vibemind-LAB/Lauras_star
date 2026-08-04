@@ -39,6 +39,10 @@ TOOLS: frozenset[str] = frozenset(
         "start_overview",
         "follow_up",
         "revert",
+        "review_transcript",
+        "correct_transcript",
+        "confirm_transcript",
+        "approve_script",
     }
 )
 
@@ -66,7 +70,17 @@ _SYSTEM_PROMPT = (
     '- follow_up: {"session_ref": str, "text": str} — send a follow-up instruction to an '
     "existing production session.\n"
     '- revert: {"session_ref": str, "artifact": str, "version": int} — revert a session\'s '
-    "artifact to an earlier version.\n\n"
+    "artifact to an earlier version.\n"
+    '- review_transcript: {"asset_ref": str} — show the transcript of an asset for review. '
+    "Example: 'zeig mir das Transkript von Clip 3'.\n"
+    '- correct_transcript: {"asset_ref": str, "corrections": [{"segment_index": int, '
+    '"text": str}, ...]} — apply one or more text corrections to transcript segments '
+    "(segment_index is 1-based). Example: 'ersetze in Segment 3 \"Carpati\" durch "
+    "\"Karpathy\"'.\n"
+    '- confirm_transcript: {"asset_ref": str} — confirm the transcript is correct as-is, '
+    "unlocking downstream steps. Example: 'Transkript passt'.\n"
+    '- approve_script: {"session_ref": str} — approve the generated script so production can '
+    "proceed. Example: 'Script freigeben'.\n\n"
     "Rules: reply with EXACTLY one JSON object, no prose before or after it. Never invent "
     "project names, session references, or URLs that were not mentioned in the context or the "
     "user's latest message — ask via reply when unsure."
@@ -202,6 +216,24 @@ def _validate_optional_target_seconds(args: dict[str, Any]) -> str | None:
 _SHORT_FORMATS = frozenset({"insta", "x", "linkedin"})
 
 
+def _validate_correction_item(item: Any) -> str | None:
+    """One ``corrections[]`` entry: ``segment_index`` (int >= 1, not bool — mirrors
+    ``revert.version``) and a non-empty ``text``."""
+    if not isinstance(item, dict):
+        return "correct_transcript.corrections items must be objects"
+    segment_index = item.get("segment_index")
+    if (
+        not isinstance(segment_index, int)
+        or isinstance(segment_index, bool)
+        or segment_index < 1
+    ):
+        return "correct_transcript.corrections[].segment_index must be an integer >= 1"
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return "correct_transcript.corrections[].text is missing or not a non-empty string"
+    return None
+
+
 def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
     """Required (and constrained optional) args per tool. Returns ``None`` when valid, else a
     short, agent-correctable error naming exactly what was wrong."""
@@ -251,6 +283,28 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
             if error is not None:
                 return error
         return _require_int(args, "version")
+
+    if tool == "review_transcript":
+        return _require_str(args, "asset_ref")
+
+    if tool == "correct_transcript":
+        error = _require_str(args, "asset_ref")
+        if error is not None:
+            return error
+        corrections = args.get("corrections")
+        if not isinstance(corrections, list) or not corrections:
+            return "correct_transcript.corrections is missing, not a list, or empty"
+        for item in corrections:
+            error = _validate_correction_item(item)
+            if error is not None:
+                return error
+        return None
+
+    if tool == "confirm_transcript":
+        return _require_str(args, "asset_ref")
+
+    if tool == "approve_script":
+        return _require_str(args, "session_ref")
 
     return f"tool {tool!r} has no validator (programming error)"  # unreachable: tool in TOOLS
 

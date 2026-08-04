@@ -99,4 +99,103 @@ def test_every_tool_is_reachable() -> None:
     assert frozenset({
         "reply", "create_project", "switch_project", "propose_import",
         "start_short", "start_overview", "follow_up", "revert",
+        "review_transcript", "correct_transcript", "confirm_transcript", "approve_script",
     }) == TOOLS
+
+
+def test_new_tools_in_toolset() -> None:
+    for t in ("review_transcript", "correct_transcript", "confirm_transcript", "approve_script"):
+        assert t in TOOLS
+
+
+def test_review_transcript_requires_asset_ref() -> None:
+    replies = iter([
+        json.dumps({"tool": "review_transcript", "args": {"asset_ref": ""}}),
+        json.dumps({"tool": "review_transcript", "args": {"asset_ref": "a1"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "review_transcript" and decision["fallback"] is False
+
+
+def test_correct_transcript_requires_nonempty_corrections() -> None:
+    calls: list[str] = []
+
+    def runner(task: str) -> str:
+        calls.append(task)
+        if len(calls) == 1:
+            return json.dumps(
+                {"tool": "correct_transcript", "args": {"asset_ref": "a", "corrections": []}}
+            )
+        return json.dumps({
+            "tool": "correct_transcript",
+            "args": {
+                "asset_ref": "a",
+                "corrections": [{"segment_index": 3, "text": "Claude Code"}],
+            },
+        })
+
+    decision = run_router(_config(), context="", user_text="x", runner=runner)
+    assert len(calls) == 2, "exactly one retry"
+    assert "corrections" in calls[1], "the retry names the validation error"
+    assert decision == {
+        "tool": "correct_transcript",
+        "args": {
+            "asset_ref": "a",
+            "corrections": [{"segment_index": 3, "text": "Claude Code"}],
+        },
+        "fallback": False,
+    }
+
+
+def test_correct_transcript_segment_index_rejects_bool_and_zero() -> None:
+    replies = iter([
+        json.dumps({
+            "tool": "correct_transcript",
+            "args": {"asset_ref": "a", "corrections": [{"segment_index": True, "text": "x"}]},
+        }),
+        json.dumps({
+            "tool": "correct_transcript",
+            "args": {"asset_ref": "a", "corrections": [{"segment_index": 0, "text": "x"}]},
+        }),
+        json.dumps({
+            "tool": "correct_transcript",
+            "args": {"asset_ref": "a", "corrections": [{"segment_index": 1, "text": "x"}]},
+        }),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    # only one retry is granted; the third (valid) reply is never reached, so the router
+    # falls back — this proves both the bool-as-int and the zero segment_index were rejected.
+    assert decision["tool"] == "reply" and decision["fallback"] is True
+
+
+def test_correct_transcript_requires_nonempty_text() -> None:
+    replies = iter([
+        json.dumps({
+            "tool": "correct_transcript",
+            "args": {"asset_ref": "a", "corrections": [{"segment_index": 1, "text": ""}]},
+        }),
+        json.dumps({
+            "tool": "correct_transcript",
+            "args": {"asset_ref": "a", "corrections": [{"segment_index": 1, "text": "ok"}]},
+        }),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "correct_transcript" and decision["fallback"] is False
+
+
+def test_confirm_transcript_requires_asset_ref() -> None:
+    replies = iter([
+        json.dumps({"tool": "confirm_transcript", "args": {}}),
+        json.dumps({"tool": "confirm_transcript", "args": {"asset_ref": "a1"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "confirm_transcript" and decision["fallback"] is False
+
+
+def test_approve_script_requires_session_ref() -> None:
+    replies = iter([
+        json.dumps({"tool": "approve_script", "args": {}}),
+        json.dumps({"tool": "approve_script", "args": {"session_ref": "s1"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "approve_script" and decision["fallback"] is False
