@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentEvent, JobStatus, LauraClient, ProductionBoardStatus } from "../api";
-import { ChatPanel, pickHighlights } from "./ChatPanel";
+import { ChatPanel, EventLine, pickHighlights } from "./ChatPanel";
 
 // v2 session-mode tests write a `laura.production.<assetId>` localStorage entry via
 // useProductionSession's start()/sendMessage(). Clear it before every test (v1 tests never touch
@@ -153,6 +153,25 @@ describe("ChatPanel", () => {
     ]);
     await waitFor(() => expect(screen.getByText(/QA meldet Schwächen/)).toBeTruthy());
     expect(screen.queryByText(/✓ Short fertig/)).toBeNull();
+  });
+});
+
+describe("EventLine", () => {
+  it("renders a resume-path done event that carries no team/summary", () => {
+    // Real run logs written by the restore path omit team and summary entirely
+    // (seen live 2026-08-04: the DoneCard crashed on summary.trim and white-screened
+    // the whole app — no error boundary above the thread).
+    const resumeDone: AgentEvent = {
+      type: "done",
+      ok: true,
+      stage: "A",
+      weak: true,
+      escalated: false,
+    };
+    render(<EventLine event={resumeDone} />);
+    expect(screen.getByText(/Fertig — QA meldet Schwächen/)).not.toBeNull();
+    expect(screen.getByText(/Stufe A/)).not.toBeNull();
+    expect(screen.queryByText("Verlauf")).toBeNull();
   });
 });
 

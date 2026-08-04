@@ -696,10 +696,12 @@ export type AgentEvent =
       type: "done";
       ok: boolean;
       stage: string;
-      team: string;
+      // Resume-path done lines omit team/summary (the run log is the source, not a
+      // live team) — consumers must treat both as optional.
+      team?: string;
       weak: boolean;
       escalated: boolean;
-      summary: string;
+      summary?: string;
     }
   | { type: "error"; message: string };
 

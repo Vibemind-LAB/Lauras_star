@@ -163,9 +163,10 @@ function DoneCard({
         {event.escalated ? " · eskaliert" : ""}
       </div>
       <div className="text-[10px] text-content-faint">
-        Stufe {event.stage} · {event.team}
+        Stufe {event.stage}
+        {event.team !== undefined && event.team !== "" ? ` · ${event.team}` : ""}
       </div>
-      {event.summary.trim() !== "" && (
+      {(event.summary ?? "").trim() !== "" && (
         <details className="mt-0.5 text-[10px] text-content-muted">
           <summary className="cursor-pointer select-none">Verlauf</summary>
           <p className="whitespace-pre-wrap break-words">{event.summary}</p>
