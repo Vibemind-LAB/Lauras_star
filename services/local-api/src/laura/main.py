@@ -26,6 +26,7 @@ from .api import (
     assets,
     audio,
     batch,
+    chat,
     demo,
     generate,
     jobs,
@@ -165,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(demo.router)
     app.include_router(generate.router)
     app.include_router(short_creator.router)
+    app.include_router(chat.router)
     return app
 
 
