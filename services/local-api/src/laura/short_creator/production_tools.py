@@ -112,7 +112,7 @@ from pydantic import ValidationError
 from ..analysis.transition_review import extract_frames
 from ..db import repos
 from ..db.database import Database
-from ..ingest.ffmpeg import ffmpeg_bin, probe
+from ..ingest.ffmpeg import FFmpegError, ffmpeg_bin, probe
 from ..render.zoom import roi_to_window
 from ..util import new_id, utcnow_iso
 from . import context
@@ -505,6 +505,22 @@ def _run_ffmpeg_quiet(args: list[str]) -> bool:
     except OSError:
         return False
     return proc.returncode == 0
+
+
+def _probe_video_dims(path: str) -> tuple[int, int]:
+    """The video stream's own width/height, ``(0, 0)`` when unprobeable.
+
+    ``(0, 0)`` flows into the letterbox-never-crop fallback downstream — a sheet
+    without zoom framing beats no sheet at all.
+    """
+    try:
+        streams = probe(path).get("streams", [])
+    except FFmpegError:
+        return 0, 0
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video is None:
+        return 0, 0
+    return int(video.get("width") or 0), int(video.get("height") or 0)
 
 
 def _tile_filter(
@@ -2086,8 +2102,12 @@ def build_production_tool_specs(
 
             # Tiles are framed the way the render frames them (crop for a zoomed segment,
             # letterbox otherwise), so the sheet can show the framing faults it gates.
-            src_w = int(asset.get("width") or 0)
-            src_h = int(asset.get("height") or 0)
+            # The crop window must live in the PROXY's pixel space, not the source's:
+            # the sheet samples the proxy, and a 4K source's 1080p proxy is smaller than
+            # a source-space window — every roi'd tile then overflows the frame and the
+            # PNG encoder dies with "Invalid argument" (live finding 2026-08-04). The ROI
+            # is normalized, so proxy-space windows frame identically, just smaller.
+            src_w, src_h = _probe_video_dims(proxy)
             _, (out_w, out_h) = canvas_for(board.meta().format)
             roi_by_order = {
                 s.order: (s.roi.x, s.roi.y, s.roi.w, s.roi.h) if s.roi is not None else None
