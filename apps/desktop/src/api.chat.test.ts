@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { LauraClient, type ChatMessage } from "./api";
+import { LauraClient, type ChatMessage, type ProductionBoardStatus } from "./api";
 
 function mockFetch(json: unknown) {
   const fn = vi.fn().mockResolvedValue({
@@ -214,6 +214,90 @@ describe("getProductionEvents", () => {
     mockFetchError(404, "session not found");
     const c = new LauraClient("http://h", "tok");
     await expect(c.getProductionEvents("missing", 0)).rejects.toThrow("404: session not found");
+  });
+});
+
+describe("getProductionStatus (script gate contracts)", () => {
+  it("parses script_gate + script_lines from the board status with typed access", async () => {
+    const board: ProductionBoardStatus = {
+      board_ready: true,
+      job: null,
+      meta: {
+        session_id: "s1",
+        asset_id: "a1",
+        created_utc: "2026-08-04T00:00:00Z",
+        task: "make a reel",
+        format: "insta",
+        target_seconds: 60,
+        status: "active",
+      },
+      scene_reviews: { count: 1, scenes: [1], degraded_count: 0, degraded_scenes: [] },
+      artifacts: {
+        storyline: { version: 1, archived_versions: [] },
+        script: { version: 1, archived_versions: [] },
+        voice: { version: null, archived_versions: [] },
+        cutlist: { version: null, archived_versions: [] },
+        contact_sheet: { version: null, archived_versions: [] },
+        render_report: { version: null, archived_versions: [] },
+        qa_report: { version: null, archived_versions: [] },
+      },
+      resume_point: "voice",
+      script_gate: { enabled: true, approved: false, pending: true },
+      script_lines: [{ chapter: 1, scene_number: 1, text: "Hallo Welt" }],
+    };
+    mockFetch(board);
+    const c = new LauraClient("http://h", "tok");
+
+    const status = await c.getProductionStatus("s1");
+
+    if (status.board_ready) {
+      expect(status.script_gate?.pending).toBe(true);
+      expect(status.script_gate?.enabled).toBe(true);
+      expect(status.script_gate?.approved).toBe(false);
+      expect(status.script_lines?.[0].text).toBe("Hallo Welt");
+      expect(status.script_lines?.[0].chapter).toBe(1);
+      expect(status.script_lines?.[0].scene_number).toBe(1);
+    } else {
+      throw new Error("expected board_ready status");
+    }
+  });
+
+  it("omits script_gate/script_lines cleanly when an older backend does not send them", async () => {
+    const board: ProductionBoardStatus = {
+      board_ready: true,
+      job: null,
+      meta: {
+        session_id: "s1",
+        asset_id: "a1",
+        created_utc: "2026-08-04T00:00:00Z",
+        task: "make a reel",
+        format: "insta",
+        target_seconds: 60,
+        status: "active",
+      },
+      scene_reviews: { count: 1, scenes: [1], degraded_count: 0, degraded_scenes: [] },
+      artifacts: {
+        storyline: { version: 1, archived_versions: [] },
+        script: { version: 1, archived_versions: [] },
+        voice: { version: null, archived_versions: [] },
+        cutlist: { version: null, archived_versions: [] },
+        contact_sheet: { version: null, archived_versions: [] },
+        render_report: { version: null, archived_versions: [] },
+        qa_report: { version: null, archived_versions: [] },
+      },
+      resume_point: "voice",
+    };
+    mockFetch(board);
+    const c = new LauraClient("http://h", "tok");
+
+    const status = await c.getProductionStatus("s1");
+
+    if (status.board_ready) {
+      expect(status.script_gate).toBeUndefined();
+      expect(status.script_lines).toBeUndefined();
+    } else {
+      throw new Error("expected board_ready status");
+    }
   });
 });
 

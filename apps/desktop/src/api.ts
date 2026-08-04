@@ -808,6 +808,12 @@ export interface ProductionBoardStatus {
     ProductionArtifactState
   >;
   resume_point: string;
+  /** Gate B (script checkpoint): whether the gate is active for this session, and its current
+   * decision state. Optional — older backends that predate the gate never send this field. */
+  script_gate?: { enabled: boolean; approved: boolean; pending: boolean };
+  /** The script's lines for the chat card to render inline, keyed by chapter + scene. Optional
+   * for the same reason as `script_gate`: no client call needed, the card's payload carries it. */
+  script_lines?: { chapter: number; scene_number: number; text: string }[];
 }
 
 /** GET /production/{sessionId} before a board exists — queued, or died before building one.
