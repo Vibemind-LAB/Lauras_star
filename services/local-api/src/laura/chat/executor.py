@@ -17,10 +17,10 @@ from fastapi import HTTPException, status
 
 from .. import audit
 
-# Documented exception to the private-import rule: the approval flow's only entry point into
-# the existing import machinery is this asset-creation + enqueue helper. Mirrors discovery.py's
-# own use of context._scene_src_ranges.
-from ..api.assets import _enqueue_url_fetch
+# Documented exception to the private-import rule: the approval flow's only entry points into
+# the existing import machinery are this playlist-expansion + asset-creation/enqueue pair.
+# Mirrors discovery.py's own use of context._scene_src_ranges.
+from ..api.assets import _enqueue_url_fetch, _expand_playlist_urls
 
 # Imported BY NAME (not `from ..api import short_creator`) so tests can monkeypatch
 # `laura.chat.executor.<name>` without touching the real service functions.
@@ -448,6 +448,10 @@ def execute_import_approval(db: Database, *, message_id: str, now_utc: str) -> l
     translates the ``HTTPException`` into the response. Raises 404 on an unknown message, 409
     when the card is already decided OR when the card's project has since been deleted (card
     stays "pending" in that case, not flipped).
+
+    Playlist/channel URLs fan out exactly like the HTTP import lane: one asset + fetch job
+    per entry. The action message's ``args.urls`` stays the approved URLs; ``refs``/``result``
+    carry the full fan-out.
     """
     message = repos.get_conversation_message(db, message_id)
     if message is None:
@@ -484,11 +488,17 @@ def execute_import_approval(db: Database, *, message_id: str, now_utc: str) -> l
     asset_ids: list[str] = []
     job_ids: list[str] = []
     for url in urls:
-        asset_id, job_id = _enqueue_url_fetch(
-            db, project_id, url, display_name=None, fmt=None, cookies_from_browser=None,
-        )
-        asset_ids.append(asset_id)
-        job_ids.append(job_id)
+        # A playlist/channel URL fans out into one asset + fetch job per entry — the same
+        # expansion the HTTP import lane runs (assets.import_asset); chat has no browser
+        # cookies to forward. A falsy expansion (None/empty) keeps the URL a single asset.
+        entry_urls = _expand_playlist_urls(url, None)
+        for entry_url in entry_urls if entry_urls else [url]:
+            asset_id, job_id = _enqueue_url_fetch(
+                db, project_id, entry_url, display_name=None, fmt=None,
+                cookies_from_browser=None,
+            )
+            asset_ids.append(asset_id)
+            job_ids.append(job_id)
 
     executed_content = {
         **approved_content, "status": "executed", "result": {"asset_ids": asset_ids},

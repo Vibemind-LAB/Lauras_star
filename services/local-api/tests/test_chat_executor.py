@@ -675,14 +675,25 @@ def _fake_enqueue_url_fetch(
     return f"asset-{url[-1]}", f"job-{url[-1]}"
 
 
-def _seed_pending_approval(db: Database, conversation_id: str, *, project_id: str) -> str:
+def _no_playlist_expansion(source_url: str, cookies_from_browser: Any) -> list[str] | None:
+    """Hermetic stand-in for ``_expand_playlist_urls``: with the ``[fetch]`` extra installed,
+    the real one would probe the network even for these fake URLs."""
+    return None
+
+
+def _seed_pending_approval(
+    db: Database, conversation_id: str, *, project_id: str, urls: list[str] | None = None,
+) -> str:
     message_id = "approval-1"
     repos.append_conversation_message(
         db, message_id=message_id, conversation_id=conversation_id, role="assistant",
         kind="approval_request",
         content={
             "action_type": "import_urls",
-            "payload": {"urls": ["https://x/a", "https://x/b"], "project_id": project_id},
+            "payload": {
+                "urls": urls if urls is not None else ["https://x/a", "https://x/b"],
+                "project_id": project_id,
+            },
             "status": "pending",
             "decided_at": None,
             "result": None,
@@ -694,6 +705,7 @@ def _seed_pending_approval(db: Database, conversation_id: str, *, project_id: st
 
 def test_execute_import_approval_executes_and_appends(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr("laura.chat.executor._enqueue_url_fetch", _fake_enqueue_url_fetch)
+    monkeypatch.setattr("laura.chat.executor._expand_playlist_urls", _no_playlist_expansion)
     db, _settings = _setup(tmp_path)
     project = _project(db, tmp_path)
     conversation_id = _conversation(db, project_id=project["id"])
@@ -717,6 +729,51 @@ def test_execute_import_approval_executes_and_appends(tmp_path: Path, monkeypatc
     assert stored is not None and stored["content"]["status"] == "executed"
     thread = repos.list_conversation_messages(db, conversation_id)
     assert [m["kind"] for m in thread] == ["approval_request", "action"]
+
+
+def test_execute_import_approval_expands_playlists_like_the_import_endpoint(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """A playlist/channel URL approved via chat must fan out into one asset + fetch job per
+    entry — the same expansion the HTTP import lane runs (assets.import_asset). A URL whose
+    expansion returns None keeps importing as a single asset."""
+    enqueued_urls: list[str] = []
+
+    def _tracking_enqueue(
+        db: Any, project_id: str, url: str, *, display_name: Any, fmt: Any,
+        cookies_from_browser: Any,
+    ) -> tuple[str, str]:
+        enqueued_urls.append(url)
+        return f"asset-{len(enqueued_urls)}", f"job-{len(enqueued_urls)}"
+
+    def _fake_expand(source_url: str, cookies_from_browser: Any) -> list[str] | None:
+        assert cookies_from_browser is None, "chat approvals carry no browser cookies"
+        if source_url == "https://x/list":
+            return ["https://x/v1", "https://x/v2"]
+        return None
+
+    monkeypatch.setattr("laura.chat.executor._enqueue_url_fetch", _tracking_enqueue)
+    monkeypatch.setattr("laura.chat.executor._expand_playlist_urls", _fake_expand)
+    db, _settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    message_id = _seed_pending_approval(
+        db, conversation_id, project_id=project["id"],
+        urls=["https://x/list", "https://x/b"],
+    )
+
+    result = execute_import_approval(db, message_id=message_id, now_utc=_NOW2)
+
+    assert enqueued_urls == ["https://x/v1", "https://x/v2", "https://x/b"]
+    card, action = result
+    assert card["content"]["status"] == "executed"
+    assert card["content"]["result"] == {"asset_ids": ["asset-1", "asset-2", "asset-3"]}
+    # args records what the user actually approved; refs carry the full fan-out.
+    assert action["content"]["args"] == {"urls": ["https://x/list", "https://x/b"]}
+    assert action["content"]["refs"] == {
+        "asset_ids": ["asset-1", "asset-2", "asset-3"],
+        "job_ids": ["job-1", "job-2", "job-3"],
+    }
 
 
 def test_execute_import_approval_unknown_message_404(tmp_path: Path) -> None:
@@ -796,6 +853,7 @@ def test_execute_import_approval_second_decide_conflicts(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
     monkeypatch.setattr("laura.chat.executor._enqueue_url_fetch", _fake_enqueue_url_fetch)
+    monkeypatch.setattr("laura.chat.executor._expand_playlist_urls", _no_playlist_expansion)
     db, _settings = _setup(tmp_path)
     project = _project(db, tmp_path)
     conversation_id = _conversation(db, project_id=project["id"])

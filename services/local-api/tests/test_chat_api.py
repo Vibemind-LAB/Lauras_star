@@ -210,6 +210,11 @@ def test_approve_executes_and_appends_action(
         "laura.chat.executor._enqueue_url_fetch",
         lambda db, project_id, url, *, display_name, fmt, cookies_from_browser: ("a1", "j1"),
     )
+    # Hermetic: with the [fetch] extra installed, the real expansion would probe the network.
+    monkeypatch.setattr(
+        "laura.chat.executor._expand_playlist_urls",
+        lambda source_url, cookies_from_browser: None,
+    )
     client, db, _settings = _app(tmp_path)
     conversation_id, message_id = _seed_pending_card(client, db, tmp_path)
 
@@ -256,6 +261,10 @@ def test_approve_twice_conflicts(tmp_path: Path, monkeypatch: Any) -> None:
         "laura.chat.executor._enqueue_url_fetch",
         lambda db, project_id, url, *, display_name, fmt, cookies_from_browser: ("a1", "j1"),
     )
+    monkeypatch.setattr(
+        "laura.chat.executor._expand_playlist_urls",
+        lambda source_url, cookies_from_browser: None,
+    )
     client, db, _settings = _app(tmp_path)
     conversation_id, message_id = _seed_pending_card(client, db, tmp_path)
 
@@ -278,6 +287,10 @@ def test_reject_after_approve_conflicts(tmp_path: Path, monkeypatch: Any) -> Non
     monkeypatch.setattr(
         "laura.chat.executor._enqueue_url_fetch",
         lambda db, project_id, url, *, display_name, fmt, cookies_from_browser: ("a1", "j1"),
+    )
+    monkeypatch.setattr(
+        "laura.chat.executor._expand_playlist_urls",
+        lambda source_url, cookies_from_browser: None,
     )
     client, db, _settings = _app(tmp_path)
     conversation_id, message_id = _seed_pending_card(client, db, tmp_path)
