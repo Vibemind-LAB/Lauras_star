@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { EXPECTED_SCHEMA_VERSION, HealthBadge } from "./App";
+import { App, EXPECTED_SCHEMA_VERSION, HealthBadge } from "./App";
 
 describe("HealthBadge", () => {
   it("shows a backend schema mismatch clearly", () => {
@@ -40,5 +40,17 @@ describe("HealthBadge", () => {
   it("offline with no health still reads offline", () => {
     render(<HealthBadge offline={true} health={null} />);
     expect(screen.getByText("Service offline")).toBeTruthy();
+  });
+});
+
+describe("App default stage", () => {
+  it("renders the chat nav item as active by default (chat-first, spec 2026-08-03)", () => {
+    // No `window.laura` bridge in jsdom — App falls back to its offline state, which is fine
+    // here: the assertion is purely about which NavRail item starts active, not about the
+    // (client-gated) ChatStage content itself.
+    render(<App />);
+    expect(screen.getByRole("button", { name: "💬 Chat" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
   });
 });

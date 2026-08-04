@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { AssembleView } from "./components/AssembleView";
 import { ChatPanel } from "./components/ChatPanel";
+import { ChatStage } from "./components/chat/ChatStage";
 import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ExportView } from "./components/ExportView";
@@ -72,7 +73,7 @@ function fpsLabel(p: Project): string {
 }
 
 export function App(): ReactElement {
-  const [stage, setStage] = useState<Stage>("import");
+  const [stage, setStage] = useState<Stage>("chat");
   const [mediaCollapsed, setMediaCollapsed] = useState(false);
 
   const [client, setClient] = useState<LauraClient | null>(null);
@@ -542,6 +543,8 @@ export function App(): ReactElement {
         )}
 
         <div className="flex min-h-0 flex-1 flex-col">
+          {stage === "chat" && client && <ChatStage client={client} />}
+
           {stage === "download" && (client ? (
             <DownloadView
               client={client}
