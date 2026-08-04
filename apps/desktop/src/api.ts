@@ -839,6 +839,43 @@ export interface ProductionReverted {
   status: ProductionStatus;
 }
 
+// --- Chat (conversations) API (spec 2026-08-03-chat-first) ------------------------------------
+
+/** One row of GET /conversations — the conversation list's sidebar shape. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+/** How a chat message renders: plain text, an approval card, or an executed-action card. */
+export type ChatMessageKind = "text" | "approval_request" | "action";
+
+/** One stored turn in a conversation thread. `content` is kind-dependent — narrow on `kind`. */
+export interface ChatMessage {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  role: "user" | "assistant";
+  kind: ChatMessageKind;
+  content: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Response shape shared by POST .../message and POST .../approvals/{id}: every message
+ * appended by the turn, in the same shape a GET reload would return. */
+export interface ChatTurnResult {
+  messages: ChatMessage[];
+}
+
+/** One poll of GET /production/{sessionId}/events?after=N: the new events since the cursor,
+ * the next cursor to poll from, and whether the run has reached a terminal `done` line. */
+export interface ProductionEvents {
+  events: AgentEvent[];
+  next: number;
+  done: boolean;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -1741,5 +1778,78 @@ export class LauraClient {
       `/assets/${assetId}/shorts-candidates:extract`,
       { method: "POST", body: JSON.stringify(opts) },
     );
+  }
+
+  // --- Chat (conversations) --------------------------------------------------------------------
+
+  /** Start a new empty conversation. POST /conversations -> 200 { id }. */
+  createConversation(): Promise<{ id: string }> {
+    return this.request<{ id: string }>("/conversations", { method: "POST" });
+  }
+
+  /** The conversation sidebar list, newest-touched first (backend-ordered). */
+  listConversations(): Promise<ConversationSummary[]> {
+    return this.request<ConversationSummary[]>("/conversations");
+  }
+
+  /** A conversation's full thread — same message shape POST .../message returns, so a
+   *  reload renders identically to the live turn. */
+  getConversation(
+    id: string,
+  ): Promise<{ id: string; title: string; active_project_id: string | null; messages: ChatMessage[] }> {
+    return this.request<{
+      id: string;
+      title: string;
+      active_project_id: string | null;
+      messages: ChatMessage[];
+    }>(`/conversations/${id}`);
+  }
+
+  /** Delete a conversation and its messages. DELETE /conversations/{id} -> 204. */
+  deleteConversation(id: string): Promise<void> {
+    return this.del(`/conversations/${id}`);
+  }
+
+  /** One chat turn: persist the user's text, route it, execute the resulting tool call.
+   *  POST /conversations/{id}/message {text} -> 202 { messages }. */
+  sendChatMessage(id: string, text: string): Promise<ChatTurnResult> {
+    return this.request<ChatTurnResult>(`/conversations/${id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  /** Approve or reject a pending approval card. Approve runs the executor's import
+   *  machinery; reject is a plain status flip.
+   *  POST /conversations/{id}/approvals/{messageId} {decision} -> 200 { messages }. */
+  decideApproval(
+    id: string,
+    messageId: string,
+    decision: "approve" | "reject",
+  ): Promise<ChatTurnResult> {
+    return this.request<ChatTurnResult>(`/conversations/${id}/approvals/${messageId}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+  }
+
+  /** Poll a v2 production session's run log from cursor `after`. Same event shape as
+   *  `streamAutoShort`'s live stream, but pull-based — for chat threads that watch a
+   *  production session without holding an open connection.
+   *  GET /production/{sessionId}/events?after=N -> 200 { events, next, done }. */
+  getProductionEvents(sessionId: string, after: number): Promise<ProductionEvents> {
+    return this.request<ProductionEvents>(`/production/${sessionId}/events?after=${after}`);
+  }
+
+  /** Read an export's render status. GET /exports/{exportId} -> 200. */
+  getExport(
+    exportId: string,
+  ): Promise<{ id: string; status: string; path: string | null; size_bytes: number | null }> {
+    return this.request<{
+      id: string;
+      status: string;
+      path: string | null;
+      size_bytes: number | null;
+    }>(`/exports/${exportId}`);
   }
 }
