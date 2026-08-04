@@ -864,3 +864,250 @@ def test_execute_import_approval_second_decide_conflicts(
     with pytest.raises(HTTPException) as excinfo:
         execute_import_approval(db, message_id=message_id, now_utc=_NOW2)
     assert excinfo.value.status_code == 409
+
+
+# --- Transcript confirmation warnings (Task 6) ---
+
+
+def test_run_project_auto_short_warns_when_asset_transcript_unconfirmed(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Warn when auto-short asset has unconfirmed transcript."""
+    from laura.api.short_creator import run_project_auto_short
+    from laura.short_creator.scout import ScoutDecision
+
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+
+    # Create an asset without transcript_confirmed_at (defaults to NULL).
+    asset = repos.create_asset(
+        db, project_id=project["id"], display_name="Test Video",
+        source_path="/tmp/test.mp4", kind="video",
+    )
+
+    # Mock search_material to return this asset in the ranking.
+    def _mock_search_material(
+        db_param: Any, project_id: str, topic: str,
+    ) -> dict[str, Any]:
+        return {
+            "ranking": [
+                {
+                    "asset_id": asset["id"],
+                    "display_name": asset["display_name"],
+                    "score": 1.0,
+                    "scene_hits": [{"snippet": "test snippet"}],
+                }
+            ],
+            "skipped": [],
+            "source": "lexical",
+        }
+
+    def _mock_run_scout(
+        db_param: Any, config: Any, *, project_id: str, topic: str, material: Any,
+    ) -> ScoutDecision:
+        return {
+            "asset_id": asset["id"],
+            "scene_numbers": [1],
+            "rationale": "test rationale",
+            "fallback": False,
+        }
+
+    monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
+    monkeypatch.setattr("laura.api.short_creator.run_scout", _mock_run_scout)
+
+    result = run_project_auto_short(
+        db, project["id"],
+        topic="test", target_seconds=60, format="insta", language="German",
+    )
+
+    assert "Transkript unbestätigt: Test Video" in result["warnings"]
+
+
+def test_run_project_auto_short_no_warning_when_transcript_confirmed(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """No warning when auto-short asset has confirmed transcript."""
+    from laura.api.short_creator import run_project_auto_short
+    from laura.short_creator.scout import ScoutDecision
+
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+
+    # Create an asset and mark transcript as confirmed.
+    asset = repos.create_asset(
+        db, project_id=project["id"], display_name="Test Video",
+        source_path="/tmp/test.mp4", kind="video",
+    )
+    repos.set_transcript_confirmed_at(db, asset["id"], "2026-08-05T00:00:00Z")
+
+    # Mock search_material to return this asset.
+    def _mock_search_material(
+        db_param: Any, project_id: str, topic: str,
+    ) -> dict[str, Any]:
+        return {
+            "ranking": [
+                {
+                    "asset_id": asset["id"],
+                    "display_name": asset["display_name"],
+                    "score": 1.0,
+                    "scene_hits": [{"snippet": "test snippet"}],
+                }
+            ],
+            "skipped": [],
+            "source": "lexical",
+        }
+
+    def _mock_run_scout(
+        db_param: Any, config: Any, *, project_id: str, topic: str, material: Any,
+    ) -> ScoutDecision:
+        return {
+            "asset_id": asset["id"],
+            "scene_numbers": [1],
+            "rationale": "test rationale",
+            "fallback": False,
+        }
+
+    monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
+    monkeypatch.setattr("laura.api.short_creator.run_scout", _mock_run_scout)
+
+    result = run_project_auto_short(
+        db, project["id"],
+        topic="test", target_seconds=60, format="insta", language="German",
+    )
+
+    assert not any(
+        "Transkript unbestätigt" in w for w in result["warnings"]
+    ), "should not warn when transcript is confirmed"
+
+
+def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Warn when auto-overview asset has unconfirmed transcript."""
+    from laura.api.short_creator import run_project_auto_overview
+    from laura.short_creator.overview_scout import (
+        OverviewClip,
+        OverviewDecision,
+    )
+
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+
+    # Create an asset without transcript_confirmed_at.
+    asset = repos.create_asset(
+        db, project_id=project["id"], display_name="Test Video",
+        source_path="/tmp/test.mp4", kind="video",
+    )
+
+    # Mock search_material.
+    def _mock_search_material(
+        db_param: Any, project_id: str, topic: str,
+    ) -> dict[str, Any]:
+        return {
+            "ranking": [
+                {
+                    "asset_id": asset["id"],
+                    "display_name": asset["display_name"],
+                    "score": 1.0,
+                    "scene_hits": [{"snippet": "test snippet"}],
+                }
+            ],
+            "skipped": [],
+            "source": "lexical",
+        }
+
+    def _mock_run_overview_scout(
+        config: Any, *, topic: str, candidates: Any, target_seconds: int, fps_by_asset: Any,
+    ) -> OverviewDecision:
+        # Return a clip from the asset.
+        clip = OverviewClip(
+            asset_id=asset["id"],
+            display_name=asset["display_name"],
+            scene_number=1,
+            start_frame=0,
+            end_frame_exclusive=100,
+            snippet="test snippet",
+        )
+        return {
+            "clips": [clip],
+            "rationale": "test rationale",
+            "fallback": False,
+        }
+
+    monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
+    monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _mock_run_overview_scout)
+
+    result = run_project_auto_overview(
+        db, project["id"],
+        topic="test", target_seconds=60, language="German",
+    )
+
+    assert "Transkript unbestätigt: Test Video" in result["warnings"]
+
+
+def test_run_project_auto_overview_no_warning_when_transcript_confirmed(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """No warning when auto-overview asset has confirmed transcript."""
+    from laura.api.short_creator import run_project_auto_overview
+    from laura.short_creator.overview_scout import (
+        OverviewClip,
+        OverviewDecision,
+    )
+
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+
+    # Create an asset and mark transcript as confirmed.
+    asset = repos.create_asset(
+        db, project_id=project["id"], display_name="Test Video",
+        source_path="/tmp/test.mp4", kind="video",
+    )
+    repos.set_transcript_confirmed_at(db, asset["id"], "2026-08-05T00:00:00Z")
+
+    # Mock search_material.
+    def _mock_search_material(
+        db_param: Any, project_id: str, topic: str,
+    ) -> dict[str, Any]:
+        return {
+            "ranking": [
+                {
+                    "asset_id": asset["id"],
+                    "display_name": asset["display_name"],
+                    "score": 1.0,
+                    "scene_hits": [{"snippet": "test snippet"}],
+                }
+            ],
+            "skipped": [],
+            "source": "lexical",
+        }
+
+    def _mock_run_overview_scout(
+        config: Any, *, topic: str, candidates: Any, target_seconds: int, fps_by_asset: Any,
+    ) -> OverviewDecision:
+        # Return a clip from the asset.
+        clip = OverviewClip(
+            asset_id=asset["id"],
+            display_name=asset["display_name"],
+            scene_number=1,
+            start_frame=0,
+            end_frame_exclusive=100,
+            snippet="test snippet",
+        )
+        return {
+            "clips": [clip],
+            "rationale": "test rationale",
+            "fallback": False,
+        }
+
+    monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
+    monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _mock_run_overview_scout)
+
+    result = run_project_auto_overview(
+        db, project["id"],
+        topic="test", target_seconds=60, language="German",
+    )
+
+    assert not any(
+        "Transkript unbestätigt" in w for w in result["warnings"]
+    ), "should not warn when transcript is confirmed"

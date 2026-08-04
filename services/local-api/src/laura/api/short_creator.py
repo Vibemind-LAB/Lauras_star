@@ -529,6 +529,13 @@ def run_project_auto_short(
         )
     material = {**material, "ranking": ranking}
 
+    # Check for unconfirmed transcripts in the ranking.
+    unconfirmed_assets: list[str] = []
+    for entry in ranking:
+        asset = repos.get_asset(db, str(entry["asset_id"]))
+        if asset is not None and not asset.get("transcript_confirmed_at"):
+            unconfirmed_assets.append(str(entry.get("display_name") or ""))
+
     from ..short_creator.providers import config_warnings, resolve_from_env
 
     config = resolve_from_env()
@@ -562,6 +569,11 @@ def run_project_auto_short(
         warnings = [
             *warnings,
             "left out of the material, source file missing: " + ", ".join(missing_sources),
+        ]
+    if unconfirmed_assets:
+        warnings = [
+            *warnings,
+            *(f"Transkript unbestätigt: {name}" for name in unconfirmed_assets),
         ]
 
     return {
@@ -692,6 +704,13 @@ def run_project_auto_overview(
             },
         )
 
+    # Check for unconfirmed transcripts in the ranking.
+    unconfirmed_assets: list[str] = []
+    for entry in ranking:
+        asset = repos.get_asset(db, str(entry["asset_id"]))
+        if asset is not None and not asset.get("transcript_confirmed_at"):
+            unconfirmed_assets.append(str(entry.get("display_name") or ""))
+
     fps_by_asset = _overview_fps(db, project_id, ranking)
     candidates = build_candidates(
         ranking,
@@ -783,6 +802,11 @@ def run_project_auto_overview(
         warnings = [
             *warnings,
             "left out of the overview, source file missing: " + ", ".join(missing_sources),
+        ]
+    if unconfirmed_assets:
+        warnings = [
+            *warnings,
+            *(f"Transkript unbestätigt: {name}" for name in unconfirmed_assets),
         ]
 
     return {
