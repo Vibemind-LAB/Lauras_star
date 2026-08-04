@@ -1,4 +1,4 @@
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, ChatTurnResult, ConversationSummary, LauraClient } from "../../api";
 import { log } from "../../shared/log";
@@ -103,9 +103,21 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [sending, setSending] = useState(false);
+  // True while EITHER onSend's or onDecide's turn is in flight — the composer must stay locked
+  // for both, not just a text send (Finding 1: a pending approval decision is still a turn).
+  const [turnInFlight, setTurnInFlight] = useState(false);
+  // Set by onFocusAction's manual "▶ ansehen" pick; cleared when the active conversation
+  // switches. While set, the default preview-derivation effect below must not clobber it with
+  // its own recompute (Finding 2).
+  const [manualPreview, setManualPreview] = useState(false);
   const [preview, setPreview] = useState<PreviewTarget>({ kind: "none" });
   const [error, setError] = useState<string | null>(null);
+
+  // The latest activeId, readable synchronously from inside an already-in-flight onSend/onDecide
+  // promise callback — a plain closure over `activeId` would see the value from when the turn
+  // started, not whether the user has since switched conversations (Finding 3).
+  const activeIdRef = useRef<string | null>(activeId);
+  activeIdRef.current = activeId;
 
   const reloadConversations = useCallback(async (): Promise<void> => {
     try {
@@ -120,8 +132,13 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
   }, [reloadConversations]);
 
   // Load the active conversation's thread whenever it changes. Cancelled-guarded: switching
-  // conversations again before this settles must not let the stale response win.
+  // conversations again before this settles must not let the stale response win. Also the one
+  // place a conversation switch is detected, so it resets the two pieces of state that are only
+  // meaningful for the conversation being left: a manual preview pick (Finding 2) and an
+  // in-flight turn lock that otherwise belongs to no one once its conversation is gone (Finding 3).
   useEffect(() => {
+    setManualPreview(false);
+    setTurnInFlight(false);
     if (activeId === null) {
       setMessages([]);
       return;
@@ -141,8 +158,13 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
   }, [client, activeId]);
 
   // Default preview target: recompute from the newest action message whenever the thread
-  // changes. Cancelled-guarded the same way as the conversation load above.
+  // changes. Cancelled-guarded the same way as the conversation load above. Skipped entirely
+  // while `manualPreview` is set — a manual "▶ ansehen" pick (onFocusAction) must survive later
+  // messages changes (e.g. a follow-up text turn) instead of being clobbered by this effect's own
+  // recompute (Finding 2). manualPreview is cleared on conversation switch (see the load effect
+  // above), so a fresh conversation still gets its default derivation.
   useEffect(() => {
+    if (manualPreview) return;
     const action = newestActionMessage(messages);
     if (action === null) {
       setPreview({ kind: "none" });
@@ -155,7 +177,7 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [client, messages]);
+  }, [client, messages, manualPreview]);
 
   const onNew = useCallback((): void => {
     void (async () => {
@@ -192,15 +214,25 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
     (text: string): void => {
       if (activeId === null) return;
       const conversationId = activeId;
-      setSending(true);
+      setTurnInFlight(true);
       client
         .sendChatMessage(conversationId, text)
         .then((result) => {
-          applyTurn(result);
+          // Drop the result if the user has since switched conversations — a slow response for
+          // A must not merge into B's thread (Finding 3). The list reload is conversation-
+          // agnostic (it re-reads the whole sidebar) so it always runs on success.
+          if (activeIdRef.current === conversationId) applyTurn(result);
           void reloadConversations();
         })
-        .catch((e: unknown) => setError(errorText(e)))
-        .finally(() => setSending(false));
+        .catch((e: unknown) => {
+          if (activeIdRef.current === conversationId) setError(errorText(e));
+        })
+        .finally(() => {
+          // Only reset the lock if it still belongs to this conversation's turn — the load
+          // effect already reset it (to false) on switch, and a stale finally here must not
+          // stomp on whatever conversation B is doing now.
+          if (activeIdRef.current === conversationId) setTurnInFlight(false);
+        });
     },
     [client, activeId, applyTurn, reloadConversations],
   );
@@ -208,18 +240,32 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
   const onDecide = useCallback(
     (messageId: string, decision: "approve" | "reject"): void => {
       if (activeId === null) return;
+      const conversationId = activeId;
+      setTurnInFlight(true);
       client
-        .decideApproval(activeId, messageId, decision)
-        .then((result) => applyTurn(result))
-        .catch((e: unknown) => setError(errorText(e)));
+        .decideApproval(conversationId, messageId, decision)
+        .then((result) => {
+          if (activeIdRef.current === conversationId) applyTurn(result);
+          // The backend touches updated_at on both approve and reject, which can move this
+          // conversation to the top of the sidebar — reload the list like onSend does
+          // (Finding 4).
+          void reloadConversations();
+        })
+        .catch((e: unknown) => {
+          if (activeIdRef.current === conversationId) setError(errorText(e));
+        })
+        .finally(() => {
+          if (activeIdRef.current === conversationId) setTurnInFlight(false);
+        });
     },
-    [client, activeId, applyTurn],
+    [client, activeId, applyTurn, reloadConversations],
   );
 
   const onFocusAction = useCallback(
     (messageId: string): void => {
       const message = messages.find((m) => m.id === messageId);
       if (message === undefined) return;
+      setManualPreview(true);
       void deriveTarget(client, message).then((target) => setPreview(target));
     },
     [client, messages],
@@ -252,7 +298,7 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
           onDecide={onDecide}
           onFocusAction={onFocusAction}
         />
-        <ChatComposer disabled={activeId === null || sending} onSend={onSend} />
+        <ChatComposer disabled={activeId === null || turnInFlight} onSend={onSend} />
       </section>
 
       <section aria-label="Vorschau" className="flex min-h-0 flex-col overflow-hidden bg-surface-0">
