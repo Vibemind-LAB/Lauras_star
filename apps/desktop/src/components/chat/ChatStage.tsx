@@ -214,6 +214,9 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
     (text: string): void => {
       if (activeId === null) return;
       const conversationId = activeId;
+      // A stale error from a previous failed turn must not stain the default view of a fresh
+      // one — clear it the moment a new turn starts, not just on eventual success.
+      setError(null);
       setTurnInFlight(true);
       client
         .sendChatMessage(conversationId, text)
@@ -241,6 +244,7 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
     (messageId: string, decision: "approve" | "reject"): void => {
       if (activeId === null) return;
       const conversationId = activeId;
+      setError(null);
       setTurnInFlight(true);
       client
         .decideApproval(conversationId, messageId, decision)
@@ -252,7 +256,22 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
           void reloadConversations();
         })
         .catch((e: unknown) => {
-          if (activeIdRef.current === conversationId) setError(errorText(e));
+          if (activeIdRef.current !== conversationId) return;
+          setError(errorText(e));
+          // A decide failure (e.g. a 409 already-decided race) leaves the card's LOCAL state
+          // stale and still clickable — the spec mandates reloading the persisted state instead
+          // of trusting the optimistic pending card: "die UI lädt den Nachrichtenstand nach und
+          // zeigt den echten Status". Reuse the same conversation-load path the switch effect
+          // uses, guarded the same way (activeIdRef) so a slow reload for a conversation the
+          // user has since left does not clobber whatever is showing now.
+          void client
+            .getConversation(conversationId)
+            .then((conversation) => {
+              if (activeIdRef.current === conversationId) setMessages(conversation.messages);
+            })
+            .catch((reloadError: unknown) => {
+              if (activeIdRef.current === conversationId) setError(errorText(reloadError));
+            });
         })
         .finally(() => {
           if (activeIdRef.current === conversationId) setTurnInFlight(false);

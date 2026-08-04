@@ -31,10 +31,12 @@ export interface ApprovalCardProps {
 
 /**
  * One `approval_request` message rendered as a thread card: the proposed URLs plus
- * „Freigeben"/„Ablehnen" while the card is still `pending`. Any other status (`executed`,
- * `rejected`, or a stray `approved` left behind by a crash mid-approval — see
- * `execute_import_approval`'s two-write sequence) is the PERSISTED decision: a read-only line,
- * no buttons — re-deciding an already-decided card is exactly what the backend 409s on.
+ * „Freigeben"/„Ablehnen" while the card is still `pending`. Any other status is the PERSISTED
+ * decision: a read-only line, no buttons — re-deciding an already-decided card is exactly what
+ * the backend 409s on. `approved` gets its own honest line (rather than reading as `rejected`):
+ * it is a stray status left behind when `execute_import_approval` crashes between its two
+ * writes (card flipped to "approved", then the import machinery itself fails before the card
+ * reaches "executed") — the user DID approve, execution just never finished.
  */
 export function ApprovalCard({ message, onDecide }: ApprovalCardProps): ReactElement {
   const { urls, status } = narrowApprovalContent(message.content);
@@ -67,6 +69,8 @@ export function ApprovalCard({ message, onDecide }: ApprovalCardProps): ReactEle
             Ablehnen
           </button>
         </div>
+      ) : status === "approved" ? (
+        <div className="text-status-warn">⏳ freigegeben — Ausführung unterbrochen</div>
       ) : (
         <div className={status === "executed" ? "text-status-ok" : "text-status-err"}>
           {status === "executed" ? "✓ freigegeben & ausgeführt" : "✗ abgelehnt"}

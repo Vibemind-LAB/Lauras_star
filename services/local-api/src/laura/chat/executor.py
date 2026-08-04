@@ -435,7 +435,9 @@ def execute_import_approval(db: Database, *, message_id: str, now_utc: str) -> l
     import machinery from chat. Called ONLY by the approvals endpoint on an ``approve``
     decision; a ``reject`` only flips the card's status and never reaches this function
     (Task 6). Unlike :func:`execute_decision`, this DOES raise: the approvals endpoint
-    translates the ``HTTPException`` into the response.
+    translates the ``HTTPException`` into the response. Raises 404 on an unknown message, 409
+    when the card is already decided OR when the card's project has since been deleted (card
+    stays "pending" in that case, not flipped).
     """
     message = repos.get_conversation_message(db, message_id)
     if message is None:
@@ -452,6 +454,17 @@ def execute_import_approval(db: Database, *, message_id: str, now_utc: str) -> l
     payload = content.get("payload") or {}
     urls = [str(u) for u in payload.get("urls") or []]
     project_id = str(payload.get("project_id"))
+
+    # The card's project can be deleted between the card's creation and the user clicking
+    # "Freigeben" — verify it still exists BEFORE flipping the card to "approved". Without this,
+    # _enqueue_url_fetch hits an FK failure mid-loop and the endpoint 500s with the card stuck
+    # "approved" forever (unlike a genuine crash mid-execution, this one is fully preventable:
+    # the card must stay "pending" so a later, valid approve can still run).
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={"reason": "Projekt wurde gelöscht — Import kann nicht ausgeführt werden."},
+        )
 
     # Record the decision BEFORE executing: a crash mid-loop then leaves the card "approved",
     # not stuck "pending" — never re-executable by a naive retry.

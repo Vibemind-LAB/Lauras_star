@@ -688,6 +688,46 @@ def test_execute_import_approval_after_reject_conflicts(tmp_path: Path, monkeypa
     assert thread[0]["content"]["status"] == "rejected"
 
 
+def test_execute_import_approval_deleted_project_409s_and_leaves_card_pending(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """The project can be deleted between the approval card's creation and the user clicking
+    "Freigeben" — this must 409 BEFORE flipping the card, leaving it re-decidable, and must
+    never reach the enqueue machinery (no FK-failure 500 with an "approved" corpse card)."""
+    enqueue_calls: list[str] = []
+
+    def _tracking_enqueue(
+        db: Any, project_id: str, url: str, *, display_name: Any, fmt: Any,
+        cookies_from_browser: Any,
+    ) -> tuple[str, str]:
+        enqueue_calls.append(url)
+        return _fake_enqueue_url_fetch(
+            db, project_id, url, display_name=display_name, fmt=fmt,
+            cookies_from_browser=cookies_from_browser,
+        )
+
+    monkeypatch.setattr("laura.chat.executor._enqueue_url_fetch", _tracking_enqueue)
+    db, _settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    message_id = _seed_pending_approval(db, conversation_id, project_id=project["id"])
+
+    assert repos.delete_project(db, project["id"]) is True
+
+    with pytest.raises(HTTPException) as excinfo:
+        execute_import_approval(db, message_id=message_id, now_utc=_NOW2)
+    assert excinfo.value.status_code == 409
+    assert "reason" in excinfo.value.detail
+
+    stored = repos.get_conversation_message(db, message_id)
+    assert stored is not None and stored["content"]["status"] == "pending"
+    assert enqueue_calls == [], "a deleted project must never reach the enqueue machinery"
+
+    # No stray "action" message was appended either — the thread is untouched.
+    thread = repos.list_conversation_messages(db, conversation_id)
+    assert [m["kind"] for m in thread] == ["approval_request"]
+
+
 def test_execute_import_approval_second_decide_conflicts(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:

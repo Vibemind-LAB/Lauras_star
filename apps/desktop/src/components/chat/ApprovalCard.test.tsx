@@ -70,4 +70,18 @@ describe("ApprovalCard", () => {
     expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
     expect(screen.getByText("✗ abgelehnt")).toBeTruthy();
   });
+
+  it(`approved (crash mid-execution) shows no buttons and an honest "interrupted" line — not "abgelehnt"`, () => {
+    render(
+      <ApprovalCard
+        message={approvalMessage({ status: "approved", decided_at: "2026-01-01T00:01:00Z" })}
+        onDecide={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ablehnen" })).toBeNull();
+    expect(screen.getByText("⏳ freigegeben — Ausführung unterbrochen")).toBeTruthy();
+    expect(screen.queryByText("✗ abgelehnt")).toBeNull();
+  });
 });

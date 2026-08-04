@@ -1,7 +1,7 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
 import type { AgentEvent, ChatMessage, LauraClient, ProductionStatus } from "../../api";
-import { useJobStatus } from "../../hooks/useJobStatus";
+import { parseJobError, useJobStatus } from "../../hooks/useJobStatus";
 import { log } from "../../shared/log";
 import { EventLine } from "../ChatPanel";
 
@@ -82,35 +82,67 @@ function narrowProductionResult(status: ProductionStatus | null): ProductionResu
   return { exportId, ratioPercent, qaVerdict, qaFailedChecks };
 }
 
+/** Statuses `useJobStatus` (and the backend jobs runner) consider terminal-non-success:
+ * `failed` outright, or `cancelled` — a job someone/something killed never writes its own
+ * "done" event line either, so it must finalize the card the same way a `failed` job does
+ * (see the job-status backstop below). */
+const JOB_TERMINAL_FAILURE = new Set(["failed", "cancelled"]);
+
 /**
  * `start_short` / `follow_up`: narrates the live run via the production session's event log
  * (`GET /production/{sessionId}/events`, polled every {@link POLL_INTERVAL_MS}) — the last
  * {@link EVENT_PREVIEW_COUNT} lines via the re-exported `EventLine`, with an „alle anzeigen"
- * expander for the rest. Once a poll's `done` flag lands, the interval stops and the board
- * status is read ONCE for the result line (export id + target_ratio + QA verdict).
+ * expander for the rest.
+ *
+ * The events reader always serves the NEWEST run log for the session, which two backstops
+ * guard against here (via `jobId` — `refs.job_id`, written by the executor's
+ * `_handle_start_short`/`_handle_start_overview`/`_handle_follow_up`):
+ * - A follow-up's first poll can land on the PREVIOUS run's log, whose last line is already
+ *   `{"type":"done"}` — the events effect defers finalizing on `done` to the job-status effect
+ *   below instead of trusting it outright, so a stale done never terminally shows a stale result.
+ * - A dead/killed job never writes `done` at all — the job-status effect finalizes as FAILED
+ *   the moment the tracked job itself reports `failed`/`cancelled`, independent of whether the
+ *   events log ever said anything, so the card stops spinning „⚙ läuft …" forever.
+ * A `null` jobId (an old message from before this backstop existed, or a tool that never wrote
+ * one) behaves exactly as before: `done` finalizes immediately, no job cross-check.
  */
 function ProductionActionCard({
   client,
   sessionId,
+  jobId,
   initialOutcome,
   onFocus,
 }: {
   client: LauraClient;
   sessionId: string;
+  jobId: string | null;
   initialOutcome: string;
   onFocus?: () => void;
 }): ReactElement {
   const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [phase, setPhase] = useState<"running" | "done">(
+  const [phase, setPhase] = useState<"running" | "done" | "failed">(
     initialOutcome === "running" ? "running" : "done",
   );
   const [showAll, setShowAll] = useState(false);
   const [status, setStatus] = useState<ProductionStatus | null>(null);
+  // Set once the events reader itself has returned a `done` batch — see the module doc above.
+  // Only meaningful when `jobId` is non-null; the null-jobId path finalizes straight off the
+  // events poll and never reads this.
+  const [eventsDone, setEventsDone] = useState(false);
   // The events cursor lives in a ref, not state: it must be read/written synchronously across
   // poll ticks without waiting on a re-render, the same reason useProductionSession keeps its
   // generation token in a ref rather than state.
   const cursorRef = useRef(0);
   const tickInFlightRef = useRef(false);
+  // Guards the job-status effect's async success finalization against firing twice (e.g. a
+  // second jobStatus update landing while the first getProductionStatus fetch is still in
+  // flight) — the same overlap the events poll's tickInFlightRef guards against.
+  const finalizingRef = useRef(false);
+
+  // Independent job-status poll (same `useJobStatus` every other job-backed card in this file
+  // uses): self-stops once the job reaches a terminal status, and keeps its last known value
+  // around afterward (never re-nulled) so the failed-render below still has a reason to show.
+  const { jobStatus } = useJobStatus(client, jobId);
 
   useEffect(() => {
     if (phase !== "running") return;
@@ -127,16 +159,23 @@ function ProductionActionCard({
         cursorRef.current = batch.next;
         setEvents((prev) => [...prev, ...batch.events]);
         if (batch.done) {
-          window.clearInterval(intervalId);
-          let finalStatus: ProductionStatus | null = null;
-          try {
-            finalStatus = await client.getProductionStatus(sessionId);
-          } catch (e) {
-            log.warn("ActionCard: final production status fetch failed", e);
-          }
-          if (!cancelled) {
-            setStatus(finalStatus);
-            setPhase("done");
+          if (jobId === null) {
+            window.clearInterval(intervalId);
+            let finalStatus: ProductionStatus | null = null;
+            try {
+              finalStatus = await client.getProductionStatus(sessionId);
+            } catch (e) {
+              log.warn("ActionCard: final production status fetch failed", e);
+            }
+            if (!cancelled) {
+              setStatus(finalStatus);
+              setPhase("done");
+            }
+          } else {
+            // Stop re-polling an events log that already said it's done — but let the
+            // job-status effect below decide whether the card actually finalizes.
+            window.clearInterval(intervalId);
+            if (!cancelled) setEventsDone(true);
           }
         }
       } catch (e) {
@@ -153,10 +192,36 @@ function ProductionActionCard({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [client, sessionId, phase]);
+  }, [client, sessionId, phase, jobId]);
+
+  // The job-status backstop: a failure finalizes unconditionally (fixes the dead-job case); a
+  // success only finalizes once the events log has ALSO said done (fixes the stale-log case) —
+  // a job can flip to "succeeded" before its own run's events poll has caught up.
+  useEffect(() => {
+    if (phase !== "running" || jobId === null || jobStatus === null) return;
+    if (JOB_TERMINAL_FAILURE.has(jobStatus.status)) {
+      setPhase("failed");
+      return;
+    }
+    if (jobStatus.status === "succeeded" && eventsDone) {
+      if (finalizingRef.current) return;
+      finalizingRef.current = true;
+      void (async () => {
+        let finalStatus: ProductionStatus | null = null;
+        try {
+          finalStatus = await client.getProductionStatus(sessionId);
+        } catch (e) {
+          log.warn("ActionCard: final production status fetch failed", e);
+        }
+        setStatus(finalStatus);
+        setPhase("done");
+      })();
+    }
+  }, [client, sessionId, jobId, jobStatus, phase, eventsDone]);
 
   const shown = showAll ? events : events.slice(-EVENT_PREVIEW_COUNT);
   const result = narrowProductionResult(status);
+  const failReason = jobStatus !== null ? parseJobError(jobStatus) ?? "unbekannter Fehler" : "unbekannter Fehler";
 
   return (
     <div className="mb-1.5 rounded-md border border-bezel bg-surface-2 px-1.5 py-1 text-[11px]">
@@ -175,6 +240,11 @@ function ProductionActionCard({
       {phase === "running" && (
         <div className="animate-pulse text-content-faint" role="status">
           ⚙ läuft …
+        </div>
+      )}
+      {phase === "failed" && (
+        <div className="mt-0.5 text-status-err" role="alert">
+          ✗ fehlgeschlagen: {failReason}
         </div>
       )}
       {phase === "done" &&
@@ -258,10 +328,12 @@ export function ActionCard({ message, client, onFocus }: ActionCardProps): React
   if (tool === "start_short" || tool === "follow_up") {
     const sessionId = typeof refs.session_id === "string" ? refs.session_id : null;
     if (sessionId === null) return <UnknownActionLine tool={tool} />;
+    const jobId = typeof refs.job_id === "string" ? refs.job_id : null;
     return (
       <ProductionActionCard
         client={client}
         sessionId={sessionId}
+        jobId={jobId}
         initialOutcome={outcome}
         onFocus={onFocus}
       />

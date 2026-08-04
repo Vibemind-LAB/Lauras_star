@@ -105,6 +105,10 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     ];
     const c = client({
       getProductionEvents: vi.fn().mockResolvedValue({ events, next: 2, done: false }),
+      // Unrelated to this test (events rendering), but job_id is present in the fixture like a
+      // real action message — give the job-status backstop a resolved value so it does not
+      // dangle in "loading" for the whole test.
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
     });
     renderWithQuery(
       <ActionCard
@@ -262,6 +266,120 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
       await vi.advanceTimersByTimeAsync(2500 * 3);
     });
     expect(getProductionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  // --- job-status backstop (refs.job_id) ---------------------------------------------------
+  //
+  // The events reader always serves the NEWEST run log for the session: (a) a follow-up's
+  // first poll can land on the PREVIOUS run's already-"done" log, and (b) a dead/killed job
+  // never writes "done" at all. Both are fixed by cross-checking the tracked job (client.getJob)
+  // instead of trusting the events log alone.
+
+  it("events say done but the tracked job is still running: does not finalize, keeps polling the job", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn();
+    const getJob = vi.fn().mockResolvedValue(job({ status: "running" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    // A stale "done" events log must not finalize the card while its own job is still running.
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.queryByText(/Export:/)).toBeNull();
+    expect(getProductionStatus).not.toHaveBeenCalled();
+
+    const jobCallsSoFar = getJob.mock.calls.length;
+    expect(jobCallsSoFar).toBeGreaterThan(0);
+
+    // It keeps polling the job (useJobStatus's own cadence) instead of giving up.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(getJob.mock.calls.length).toBeGreaterThan(jobCallsSoFar);
+  });
+
+  it("a failed (or killed/cancelled) job finalizes as failed independent of the events log, and stops polling", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: false });
+    const getProductionStatus = vi.fn();
+    const getJob = vi
+      .fn()
+      .mockResolvedValue(
+        job({ status: "failed", error_json: JSON.stringify({ error: "Agent-Team abgestürzt" }) }),
+      );
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText("✗ fehlgeschlagen: Agent-Team abgestürzt")).toBeTruthy();
+    expect(getProductionStatus).not.toHaveBeenCalled();
+
+    // Polling has stopped entirely (events never even said "done" — the dead-job case).
+    expect(getProductionEvents).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500 * 3);
+    });
+    expect(getProductionEvents).not.toHaveBeenCalled();
+  });
+
+  it("events done + job succeeded finalizes exactly as before (result line)", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(boardStatus());
+    const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(getProductionStatus).toHaveBeenCalledWith("s1");
+    expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
+  });
+
+  it("a null job_id (old message) behaves exactly as before: done finalizes immediately, no job cross-check", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(boardStatus());
+    const getJob = vi.fn();
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
+    expect(getJob).not.toHaveBeenCalled();
   });
 });
 

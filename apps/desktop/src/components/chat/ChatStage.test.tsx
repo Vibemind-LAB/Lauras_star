@@ -185,6 +185,67 @@ describe("ChatStage", () => {
     expect(screen.getByText("Hallo zurück!")).toBeTruthy();
   });
 
+  it("a failed send's error banner clears the moment the next send starts", async () => {
+    const sendChatMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockReturnValue(new Promise<ChatTurnResult>(() => undefined));
+    const c = client({
+      listConversations: vi.fn().mockResolvedValue([summary()]),
+      getConversation: vi
+        .fn()
+        .mockResolvedValue({ id: "c1", title: "Erster Chat", active_project_id: null, messages: [] }),
+      sendChatMessage,
+    });
+
+    renderWithQuery(<ChatStage client={c} />);
+    fireEvent.click(await screen.findByText("Erster Chat"));
+    await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("c1"));
+
+    fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Hallo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+
+    await waitFor(() => expect(screen.getByText("network down")).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Nochmal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a rejected decideApproval (e.g. a 409 already-decided race) reloads the conversation and renders the real persisted status", async () => {
+    const pending = approvalMessage("m1", 1, "pending");
+    const executedElsewhere: ChatMessage = {
+      ...pending,
+      content: { ...pending.content, status: "executed", result: { asset_ids: ["a1"] } },
+    };
+    const getConversation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: "c1", title: "Erster Chat", active_project_id: null, messages: [pending],
+      })
+      .mockResolvedValueOnce({
+        id: "c1", title: "Erster Chat", active_project_id: null, messages: [executedElsewhere],
+      });
+    const c = client({
+      listConversations: vi.fn().mockResolvedValue([summary()]),
+      getConversation,
+      decideApproval: vi.fn().mockRejectedValue(new Error("409 approval already decided")),
+    });
+
+    renderWithQuery(<ChatStage client={c} />);
+    fireEvent.click(await screen.findByText("Erster Chat"));
+    fireEvent.click(await screen.findByRole("button", { name: "Freigeben" }));
+
+    expect(c.decideApproval).toHaveBeenCalledWith("c1", "m1", "approve");
+    await waitFor(() => expect(getConversation).toHaveBeenCalledTimes(2));
+    expect(getConversation).toHaveBeenNthCalledWith(2, "c1");
+    await waitFor(() => expect(screen.getByText("✓ freigegeben & ausgeführt")).toBeTruthy());
+    // The stale optimistic "pending" card (still clickable) must be gone, replaced by the
+    // refetched read-only persisted state.
+    expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
+  });
+
   it("an approval decision calls through, updates the card in place, and renders the appended action", async () => {
     // Real backend shape (execute_import_approval): the turn returns the SAME approval-card id
     // with updated content PLUS a newly appended `action` message narrating the executed import.

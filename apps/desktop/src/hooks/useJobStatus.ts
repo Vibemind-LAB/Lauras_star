@@ -15,7 +15,11 @@ export interface JobStatusResult {
   isRunning: boolean;
 }
 
-function parseJobError(job: JobStatus): string | null {
+/** A job's `error_json` is `{"error": "..."}` from the runner's own JSON dump when available,
+ * else the raw string, else `null` (no error recorded). Exported so other job-status readers
+ * (e.g. `ActionCard.tsx`'s production-job backstop) render the same failure text this hook's
+ * own `error` field does, instead of re-deriving it. */
+export function parseJobError(job: JobStatus): string | null {
   if (!job.error_json) return null;
   try {
     const parsed = JSON.parse(job.error_json) as unknown;

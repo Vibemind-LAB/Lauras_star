@@ -65,7 +65,9 @@ const FPS_PRESETS: readonly FpsPreset[] = [
 // 2026-08-03 this sat at 32 while the backend had long been at 33 (0033_production_session_job),
 // so every CURRENT pairing showed an amber "Frontend veraltet" badge. The lag is invisible in
 // tests (they pin relative mismatches, not the absolute number), so it only ever shows live.
-export const EXPECTED_SCHEMA_VERSION = 33;
+// Bumped to 34 the same day for 0034_chat_conversations (chat-first arc, CH1) — same class of
+// bug, same fix: keep this pinned to the newest migration file whenever one lands.
+export const EXPECTED_SCHEMA_VERSION = 34;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
