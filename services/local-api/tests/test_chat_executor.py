@@ -429,9 +429,12 @@ def test_follow_up_resolves_exact_session_id_and_appends_running_action(
     assert messages[0]["content"]["outcome"] == "running"
 
 
-def test_follow_up_falls_back_to_newest_action_when_ref_unresolved(
-    tmp_path: Path, monkeypatch: Any,
+@pytest.mark.parametrize("placeholder", ["last", "latest", "Last", ""])
+def test_follow_up_placeholder_ref_falls_back_to_newest_action(
+    tmp_path: Path, monkeypatch: Any, placeholder: str,
 ) -> None:
+    """Only the literal placeholders ("last"/"latest", or an empty ref) may fall back to the
+    newest action — an explicit ref never does (see the unmatched-ref test below)."""
     calls: list[str] = []
 
     def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
@@ -446,11 +449,42 @@ def test_follow_up_falls_back_to_newest_action_when_ref_unresolved(
 
     execute_decision(
         db, settings, conversation_id=conversation_id,
-        decision=_decision("follow_up", {"session_ref": "last", "text": "mach lauter"}),
+        decision=_decision("follow_up", {"session_ref": placeholder, "text": "mach lauter"}),
         now_utc=_NOW2,
     )
 
-    assert calls == ["sess-2"], "newest action wins when the ref does not exactly match"
+    assert calls == ["sess-2"], "a placeholder ref resolves to the newest action"
+
+
+def test_follow_up_explicit_unmatched_ref_asks_instead_of_executing(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """An explicit ref the thread never saw (e.g. hallucinated by the router) must trigger
+    the Rückfrage, never silently redirect the mutation to the newest session (spec
+    2026-08-03-chat-first: "kann er nicht auflösen → Rückfrage")."""
+    calls: list[str] = []
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-9", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="sess-1", created_utc=_NOW)
+    _seed_action(db, conversation_id, session_id="sess-2", created_utc=_NOW2)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "follow_up", {"session_ref": "sess-hallucinated", "text": "mach lauter"}
+        ),
+        now_utc=_NOW2,
+    )
+
+    assert calls == [], "an unmatched explicit ref must never execute"
+    assert messages[0]["kind"] == "text"
+    assert "Session" in messages[0]["content"]["text"]
 
 
 def test_follow_up_exact_session_id_match_wins_over_a_newer_action(
@@ -555,6 +589,36 @@ def test_revert_conflict_becomes_honest_text(tmp_path: Path, monkeypatch: Any) -
         now_utc=_NOW,
     )
     assert messages[0]["content"]["text"] == "run in progress — revert would race the team"
+
+
+def test_revert_explicit_unmatched_ref_asks_instead_of_executing(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Same Rückfrage rule as follow_up: a revert aimed at a ref the thread never saw must
+    ask back, not rewind the newest session."""
+    calls: list[tuple[str, str, int]] = []
+
+    def _fake_revert(db: Any, session_id: str, artifact: str, version: int) -> dict[str, Any]:
+        calls.append((session_id, artifact, version))
+        return {"ok": True}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_revert", _fake_revert)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="sess-1", created_utc=_NOW)
+    _seed_action(db, conversation_id, session_id="sess-2", created_utc=_NOW2)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "revert", {"session_ref": "sess-hallucinated", "artifact": "cutlist", "version": 1}
+        ),
+        now_utc=_NOW2,
+    )
+
+    assert calls == [], "an unmatched explicit ref must never execute"
+    assert messages[0]["kind"] == "text"
+    assert "Session" in messages[0]["content"]["text"]
 
 
 def test_revert_without_any_session_asks(tmp_path: Path) -> None:

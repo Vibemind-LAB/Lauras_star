@@ -87,10 +87,18 @@ def _rationale_text(result: dict[str, Any]) -> str:
     return "\n\n".join(line for line in lines if line)
 
 
+# The only refs that may fall back to the newest action. An explicit ref that matches
+# nothing must NOT — the spec's Rückfrage rule (2026-08-03-chat-first: "kann er nicht
+# auflösen → Rückfrage"), so a hallucinated router ref can never silently redirect a
+# follow_up/revert mutation to the newest session.
+_LAST_SESSION_PLACEHOLDERS = frozenset({"", "last", "latest"})
+
+
 def _resolve_session_id(messages: list[dict[str, Any]], session_ref: str) -> str | None:
-    """Exact ``session_id`` match against the thread's ``action`` messages; otherwise the
-    NEWEST action carrying one — covers ``session_ref == "last"`` and any ref the thread never
-    saw. ``None`` when the thread has no production action at all."""
+    """Exact ``session_id`` match against the thread's ``action`` messages; the literal
+    placeholders ``"last"``/``"latest"`` (or an empty ref) resolve to the NEWEST action.
+    ``None`` when the thread has no production action at all — or when an explicit ref
+    matches nothing, so the caller asks back instead of executing."""
     action_refs: list[str] = []
     for message in messages:
         if message.get("kind") != "action":
@@ -104,7 +112,9 @@ def _resolve_session_id(messages: list[dict[str, Any]], session_ref: str) -> str
     for session_id in action_refs:
         if session_id == session_ref:
             return session_id
-    return action_refs[-1]
+    if session_ref.strip().lower() in _LAST_SESSION_PLACEHOLDERS:
+        return action_refs[-1]
+    return None
 
 
 # --- message construction ----------------------------------------------------------------------
