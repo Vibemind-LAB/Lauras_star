@@ -879,10 +879,14 @@ def test_run_project_auto_short_warns_when_asset_transcript_unconfirmed(
     db, settings = _setup(tmp_path)
     project = _project(db, tmp_path)
 
+    # Create a temporary source file.
+    source_file = tmp_path / "test.mp4"
+    source_file.write_bytes(b"fake video")
+
     # Create an asset without transcript_confirmed_at (defaults to NULL).
     asset = repos.create_asset(
         db, project_id=project["id"], display_name="Test Video",
-        source_path="/tmp/test.mp4", kind="video",
+        source_path=str(source_file), type="video",
     )
 
     # Mock search_material to return this asset in the ranking.
@@ -895,7 +899,9 @@ def test_run_project_auto_short_warns_when_asset_transcript_unconfirmed(
                     "asset_id": asset["id"],
                     "display_name": asset["display_name"],
                     "score": 1.0,
-                    "scene_hits": [{"snippet": "test snippet"}],
+                    "scene_hits": [
+                        {"snippet": "test snippet", "scene_number": 1, "start_frame": 0}
+                    ],
                 }
             ],
             "skipped": [],
@@ -914,6 +920,8 @@ def test_run_project_auto_short_warns_when_asset_transcript_unconfirmed(
 
     monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
     monkeypatch.setattr("laura.api.short_creator.run_scout", _mock_run_scout)
+    monkeypatch.setattr("laura.api.short_creator._require_autoshort", lambda: None)
+    monkeypatch.setattr("laura.api.short_creator._require_usable_agent_config", lambda: None)
 
     result = run_project_auto_short(
         db, project["id"],
@@ -933,10 +941,14 @@ def test_run_project_auto_short_no_warning_when_transcript_confirmed(
     db, settings = _setup(tmp_path)
     project = _project(db, tmp_path)
 
+    # Create a temporary source file.
+    source_file = tmp_path / "test.mp4"
+    source_file.write_bytes(b"fake video")
+
     # Create an asset and mark transcript as confirmed.
     asset = repos.create_asset(
         db, project_id=project["id"], display_name="Test Video",
-        source_path="/tmp/test.mp4", kind="video",
+        source_path=str(source_file), type="video",
     )
     repos.set_transcript_confirmed_at(db, asset["id"], "2026-08-05T00:00:00Z")
 
@@ -950,7 +962,9 @@ def test_run_project_auto_short_no_warning_when_transcript_confirmed(
                     "asset_id": asset["id"],
                     "display_name": asset["display_name"],
                     "score": 1.0,
-                    "scene_hits": [{"snippet": "test snippet"}],
+                    "scene_hits": [
+                        {"snippet": "test snippet", "scene_number": 1, "start_frame": 0}
+                    ],
                 }
             ],
             "skipped": [],
@@ -969,6 +983,8 @@ def test_run_project_auto_short_no_warning_when_transcript_confirmed(
 
     monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
     monkeypatch.setattr("laura.api.short_creator.run_scout", _mock_run_scout)
+    monkeypatch.setattr("laura.api.short_creator._require_autoshort", lambda: None)
+    monkeypatch.setattr("laura.api.short_creator._require_usable_agent_config", lambda: None)
 
     result = run_project_auto_short(
         db, project["id"],
@@ -985,10 +1001,8 @@ def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
 ) -> None:
     """Warn when auto-overview asset has unconfirmed transcript."""
     from laura.api.short_creator import run_project_auto_overview
-    from laura.short_creator.overview_scout import (
-        OverviewClip,
-        OverviewDecision,
-    )
+    from laura.short_creator.overview_scout import OverviewDecision
+    from laura.short_creator.overview_windows import Candidate
 
     db, settings = _setup(tmp_path)
     project = _project(db, tmp_path)
@@ -996,7 +1010,7 @@ def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
     # Create an asset without transcript_confirmed_at.
     asset = repos.create_asset(
         db, project_id=project["id"], display_name="Test Video",
-        source_path="/tmp/test.mp4", kind="video",
+        source_path="/tmp/test.mp4", type="video",
     )
 
     # Mock search_material.
@@ -1009,7 +1023,9 @@ def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
                     "asset_id": asset["id"],
                     "display_name": asset["display_name"],
                     "score": 1.0,
-                    "scene_hits": [{"snippet": "test snippet"}],
+                    "scene_hits": [
+                        {"snippet": "test snippet", "scene_number": 1, "start_frame": 0}
+                    ],
                 }
             ],
             "skipped": [],
@@ -1020,7 +1036,7 @@ def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
         config: Any, *, topic: str, candidates: Any, target_seconds: int, fps_by_asset: Any,
     ) -> OverviewDecision:
         # Return a clip from the asset.
-        clip = OverviewClip(
+        clip = Candidate(
             asset_id=asset["id"],
             display_name=asset["display_name"],
             scene_number=1,
@@ -1034,8 +1050,32 @@ def test_run_project_auto_overview_warns_when_asset_transcript_unconfirmed(
             "fallback": False,
         }
 
+    def _mock_split_by_source_presence(
+        db_param: Any, ranking: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        return ranking, []
+
+    def _mock_build_candidates(
+        ranking: list[dict[str, Any]], scene_bounds: Any, fps_by_asset: Any,
+    ) -> list[Candidate]:
+        # Return a simple candidate for the test.
+        return [
+            Candidate(
+                asset_id=asset["id"],
+                display_name=asset["display_name"],
+                scene_number=1,
+                start_frame=0,
+                end_frame_exclusive=100,
+                snippet="test snippet",
+            )
+        ]
+
     monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
     monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _mock_run_overview_scout)
+    monkeypatch.setattr("laura.api.short_creator._split_by_source_presence", _mock_split_by_source_presence)
+    monkeypatch.setattr("laura.api.short_creator.build_candidates", _mock_build_candidates)
+    monkeypatch.setattr("laura.api.short_creator._require_autoshort", lambda: None)
+    monkeypatch.setattr("laura.api.short_creator._require_usable_agent_config", lambda: None)
 
     result = run_project_auto_overview(
         db, project["id"],
@@ -1050,18 +1090,20 @@ def test_run_project_auto_overview_no_warning_when_transcript_confirmed(
 ) -> None:
     """No warning when auto-overview asset has confirmed transcript."""
     from laura.api.short_creator import run_project_auto_overview
-    from laura.short_creator.overview_scout import (
-        OverviewClip,
-        OverviewDecision,
-    )
+    from laura.short_creator.overview_scout import OverviewDecision
+    from laura.short_creator.overview_windows import Candidate
 
     db, settings = _setup(tmp_path)
     project = _project(db, tmp_path)
 
+    # Create a temporary source file.
+    source_file = tmp_path / "test.mp4"
+    source_file.write_bytes(b"fake video")
+
     # Create an asset and mark transcript as confirmed.
     asset = repos.create_asset(
         db, project_id=project["id"], display_name="Test Video",
-        source_path="/tmp/test.mp4", kind="video",
+        source_path=str(source_file), type="video",
     )
     repos.set_transcript_confirmed_at(db, asset["id"], "2026-08-05T00:00:00Z")
 
@@ -1075,7 +1117,9 @@ def test_run_project_auto_overview_no_warning_when_transcript_confirmed(
                     "asset_id": asset["id"],
                     "display_name": asset["display_name"],
                     "score": 1.0,
-                    "scene_hits": [{"snippet": "test snippet"}],
+                    "scene_hits": [
+                        {"snippet": "test snippet", "scene_number": 1, "start_frame": 0}
+                    ],
                 }
             ],
             "skipped": [],
@@ -1086,7 +1130,7 @@ def test_run_project_auto_overview_no_warning_when_transcript_confirmed(
         config: Any, *, topic: str, candidates: Any, target_seconds: int, fps_by_asset: Any,
     ) -> OverviewDecision:
         # Return a clip from the asset.
-        clip = OverviewClip(
+        clip = Candidate(
             asset_id=asset["id"],
             display_name=asset["display_name"],
             scene_number=1,
@@ -1100,8 +1144,32 @@ def test_run_project_auto_overview_no_warning_when_transcript_confirmed(
             "fallback": False,
         }
 
+    def _mock_split_by_source_presence(
+        db_param: Any, ranking: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        return ranking, []
+
+    def _mock_build_candidates(
+        ranking: list[dict[str, Any]], scene_bounds: Any, fps_by_asset: Any,
+    ) -> list[Candidate]:
+        # Return a simple candidate for the test.
+        return [
+            Candidate(
+                asset_id=asset["id"],
+                display_name=asset["display_name"],
+                scene_number=1,
+                start_frame=0,
+                end_frame_exclusive=100,
+                snippet="test snippet",
+            )
+        ]
+
     monkeypatch.setattr("laura.api.short_creator.search_material", _mock_search_material)
     monkeypatch.setattr("laura.api.short_creator.run_overview_scout", _mock_run_overview_scout)
+    monkeypatch.setattr("laura.api.short_creator._split_by_source_presence", _mock_split_by_source_presence)
+    monkeypatch.setattr("laura.api.short_creator.build_candidates", _mock_build_candidates)
+    monkeypatch.setattr("laura.api.short_creator._require_autoshort", lambda: None)
+    monkeypatch.setattr("laura.api.short_creator._require_usable_agent_config", lambda: None)
 
     result = run_project_auto_overview(
         db, project["id"],
