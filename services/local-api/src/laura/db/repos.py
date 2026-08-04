@@ -2647,3 +2647,21 @@ def update_conversation_message_content(
             "UPDATE conversation_messages SET content_json=? WHERE id=?",
             (json.dumps(content), message_id),
         )
+
+
+# --- Transcript confirmation (Transkript-Gates Task 1) -----------------------------------------
+
+
+def set_transcript_confirmed_at(
+    db: Database, asset_id: str, confirmed_utc: str | None
+) -> None:
+    """Set (or clear) the timestamp when a user confirmed the transcript is correct.
+
+    confirmed_utc: ISO 8601 UTC timestamp (e.g. "2026-08-04T12:00:00+00:00"), or None to
+    clear the confirmation.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE media_assets SET transcript_confirmed_at=? WHERE id=?",
+            (confirmed_utc, asset_id),
+        )

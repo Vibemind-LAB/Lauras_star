@@ -55,9 +55,9 @@ def _make_emb(frame: int, *values: float) -> FrameEmbedding:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_34_after_migrate(tmp_path: Path) -> None:
+def test_schema_version_is_35_after_migrate(tmp_path: Path) -> None:
     db = _db(tmp_path)
-    assert db.schema_version() == 34
+    assert db.schema_version() == 35
 
 
 # ---------------------------------------------------------------------------
