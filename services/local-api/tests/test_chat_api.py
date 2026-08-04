@@ -308,6 +308,34 @@ def test_approval_unknown_message_404(tmp_path: Path) -> None:
     assert resp.status_code == 404
 
 
+def test_approval_message_from_different_conversation_404(
+    tmp_path: Path,
+) -> None:
+    """Approving a message from conversation A via conversation B's URL must 404."""
+    client, db, _settings = _app(tmp_path)
+
+    # Seed a pending approval card in conversation A
+    conversation_a_id, message_id_a = _seed_pending_card(client, db, tmp_path)
+
+    # Create an unrelated conversation B
+    conversation_b_id = client.post("/conversations", headers=_H).json()["id"]
+
+    # Try to approve message from A via URL for conversation B — should 404
+    resp = client.post(
+        f"/conversations/{conversation_b_id}/approvals/{message_id_a}",
+        json={"decision": "approve"},
+        headers=_H,
+    )
+    assert resp.status_code == 404
+
+    # Verify the message in A is still pending
+    thread = repos.list_conversation_messages(db, conversation_a_id)
+    assert any(
+        m["id"] == message_id_a and m["content"]["status"] == "pending"
+        for m in thread
+    )
+
+
 # --- auth ------------------------------------------------------------------------------------
 
 

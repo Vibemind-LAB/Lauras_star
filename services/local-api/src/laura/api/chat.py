@@ -188,6 +188,10 @@ def decide_approval(
     _conversation_or_404(db, conversation_id)
     now = utcnow_iso()
 
+    message = repos.get_conversation_message(db, message_id)
+    if message is None or message["conversation_id"] != conversation_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
+
     if body.decision == "approve":
         messages = execute_import_approval(db, message_id=message_id, now_utc=now)
         return {"messages": messages}
