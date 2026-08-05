@@ -146,6 +146,7 @@ from .board_models import lines_in_storyline_order as _lines_in_storyline_order_
 from .board_models import script_hash as _script_hash
 from .board_models import script_text as _script_text
 from .describe import DescribeBackend, resolve_describe_backend
+from .script_match import match_lines_to_scenes
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
 from .voice import VoiceBackend, resolve_voice_backend
 
@@ -2048,6 +2049,28 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def suggest_scenes_for_script() -> dict[str, Any]:
+        """Deterministic, LLM-free check: for each of the board's script lines, which rough-cut
+        scene actually carries that text (same matching discovery.search_material uses,
+        restricted to this asset) — ``scene_number: null`` when no scene's transcript matches.
+        This is the TEXT'S opinion of where each line belongs, independent of what scene the
+        author assigned it to; call it after every script (re-)approval and compare its
+        suggestions against the storyline before treating the script as final. Requires
+        save_script_chapter to have run first."""
+        try:
+            script = board.load("script")
+            if not isinstance(script, Script):
+                return {"ok": False, "reason": "no script on the board; save_script_chapter first"}
+            asset = repos.get_asset(db, asset_id)
+            if asset is None:
+                return {"ok": False, "reason": "unknown asset"}
+            project_id = str(asset["project_id"])
+            lines = [line.text for line in script.lines]
+            suggestions = match_lines_to_scenes(db, project_id, asset_id, lines)
+            return {"ok": True, "suggestions": suggestions}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     def synthesize_script_voice() -> dict[str, Any]:
         """Speak the board's current script — in STORYLINE scene order, not the order the
         lines were written in (see _lines_in_storyline_order) — with the configured voice
@@ -2797,6 +2820,7 @@ def build_production_tool_specs(
         script_budget,
         save_script_chapter,
         get_script,
+        suggest_scenes_for_script,
         synthesize_script_voice,
         build_cutlist,
         save_contact_sheet,
