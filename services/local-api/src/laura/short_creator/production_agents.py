@@ -135,6 +135,12 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "Effizienz') is a defect, not a style. Keep the tone energetic with concrete "
                 "value, no marketing fog, no sleepy phrasing — this has to hook a cold, "
                 "scrolling viewer in the first seconds. "
+                "SECOND BRAIN (when available): search_second_brain and read_brain_note reach "
+                "the user's own notes for a correct product name, feature term or fact the "
+                "transcript alone does not spell out — search there before writing a claim you "
+                "are unsure of instead of guessing it. If these tools are not offered to you, "
+                "none is configured for this run — ground everything in get_scene_transcript and "
+                "get_reviews as usual. "
                 "Save chapter by chapter via save_script_chapter (it "
                 "merges — other chapters' lines stay untouched); fix and resave on validation "
                 "errors. Verify with get_script once every chapter in the storyline has its "
@@ -163,6 +169,15 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "get_scene_transcript",
                 "save_script_chapter",
                 "get_script",
+                # Task 10 (Transkript-Gates): named UNCONDITIONALLY — build_production_team
+                # only wires an AssistantAgent's tools by name-lookup against the tool specs
+                # actually built for this run (``[tools_by_name[n] for n in spec.tool_names if
+                # n in tools_by_name]``), so a name with no matching spec is silently dropped,
+                # never an error. When LAURA_SECONDBRAIN_PATH is unset, build_production_tool_
+                # specs simply never builds these two, and the scene_author ends up without
+                # them — no gating needed here to keep team construction safe.
+                "search_second_brain",
+                "read_brain_note",
             ),
             max_tool_iterations=6,
         ),

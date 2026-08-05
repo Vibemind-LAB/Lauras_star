@@ -145,6 +145,7 @@ from .board_models import content_hash as _content_hash
 from .board_models import lines_in_storyline_order as _lines_in_storyline_order_impl
 from .board_models import script_hash as _script_hash
 from .board_models import script_text as _script_text
+from .brain_tools import brain_root, read_brain_note, search_second_brain
 from .describe import DescribeBackend, resolve_describe_backend
 from .script_match import match_lines_to_scenes
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
@@ -2829,4 +2830,9 @@ def build_production_tool_specs(
         save_qa_report,
         revert_artifact,
     ]
+    # Optional extra, env-gated (LAURA_SECONDBRAIN_PATH): only offered when a vault is actually
+    # configured — same convention as the VLM/voice backends (see brain_tools' module docstring).
+    if brain_root() is not None:
+        funcs.append(search_second_brain)
+        funcs.append(read_brain_note)
     return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]

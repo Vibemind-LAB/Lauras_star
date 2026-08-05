@@ -70,6 +70,11 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
             "get_scene_transcript",
             "save_script_chapter",
             "get_script",
+            # Task 10 (Transkript-Gates): named unconditionally in production_agents.py —
+            # env-gated absence from build_production_tool_specs is handled by silent
+            # tool_names filtering in build_production_team, not by gating this tuple.
+            "search_second_brain",
+            "read_brain_note",
         ),
         6,
     ),
@@ -182,10 +187,18 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
 # --- pure roster tests -----------------------------------------------------------------------
 
 
-def test_roster_shape_and_tool_names_resolve(tmp_path: Path) -> None:
+def test_roster_shape_and_tool_names_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     deps = ProductionDeps()
+    # Every NAMED tool must resolve to a real spec — including scene_author's
+    # search_second_brain/read_brain_note, which only build when a vault is configured
+    # (Task 10, Transkript-Gates). A vault-less run is covered separately: see
+    # tests/test_brain_tools.py::test_tools_absent_from_specs_without_env.
+    (tmp_path / "vault").mkdir()
+    monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(tmp_path / "vault"))
 
     specs = production_agents.production_agent_specs()
 
@@ -356,6 +369,11 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _install_fake_autogen(monkeypatch)
+    # A configured vault so scene_author's search_second_brain/read_brain_note (Task 10,
+    # Transkript-Gates) actually resolve to tools here too — see
+    # test_roster_shape_and_tool_names_resolve for why this is required.
+    (tmp_path / "vault").mkdir()
+    monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(tmp_path / "vault"))
 
     team = production_agents.build_production_team(
         db, board, providers.resolve_from_env({}), asset_id=asset_id
