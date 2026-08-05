@@ -9,6 +9,7 @@ production board.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -1157,19 +1158,21 @@ def _seed_board(
     return str(asset["id"])
 
 
-def test_approve_script_sets_approved_and_starts_follow_up_run(
+def test_approve_script_sets_approved_and_starts_resume_run(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
+    """MP4: approve_script enqueues a pure resume (:func:`run_production_resume`), not a
+    text follow-up — no ``message`` involved at all, so there is nothing to assert about its
+    content anymore (was: ``"freigegeben" in text``)."""
     from laura.short_creator.board import Board
     from laura.short_creator.board_models import Script, content_hash
     from laura.short_creator.production_orchestrator import board_root_for
 
-    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
         assert session_id == "sess-1"
-        assert "freigegeben" in text
         return {"session_id": session_id, "job_id": "job-42", "warnings": []}
 
-    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
     asset_id = _seed_board(db, tmp_path, session_id="sess-1")
@@ -1193,20 +1196,67 @@ def test_approve_script_sets_approved_and_starts_follow_up_run(
     assert board.meta().script_approved_script_hash == content_hash(script)
 
 
-def test_approve_script_already_approved_says_so_and_starts_no_new_run(
+def _fill_chain(board: Any) -> None:
+    """Save one valid artifact for every step of the chain, so ``resume_point`` == 'done'.
+    Mirrors ``test_production_orchestrator.py``'s module-private helper of the same name/purpose
+    (kept local per this file's self-contained-test-file convention) — ``_seed_board``'s asset
+    has no rough-cut/transcript, so ``_expected_scenes_for`` is ``[]`` here and no scene reviews
+    are needed. Re-saves ``script`` AFTER ``storyline`` even when a script already exists on the
+    board: ``Board.save`` invalidates everything DOWNSTREAM of the artifact it just wrote
+    (module docstring), so saving ``storyline`` alone would archive-and-remove the board's
+    existing script out from under a caller who approved it first — callers that need the
+    APPROVED script to still be the one on the board after this call must re-approve using the
+    hash of whatever ``board.load("script")`` returns AFTER this call, not before."""
+    from laura.short_creator.board_models import (
+        Chapter,
+        ContactSheet,
+        ContactSheetTile,
+        Cutlist,
+        CutSegment,
+        QaReport,
+        RenderCheck,
+        RenderReport,
+        Script,
+        ScriptLine,
+        Storyline,
+        VoiceArtifact,
+    )
+
+    board.save("storyline", Storyline(red_thread="t", arc=[Chapter(
+        chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0)]))
+    board.save("script", Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt, schau mal her.")],
+    ))
+    board.save("voice", VoiceArtifact(script_hash="h", mp3_path="/tmp/v.mp3", voice_s=3.0))
+    board.save("cutlist", Cutlist(segments=[CutSegment(
+        order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)]))
+    board.save("contact_sheet", ContactSheet(png_path="/tmp/s.png", cols=1, rows=1, tiles=[
+        ContactSheetTile(order=0, scene_number=1, frame=45, label="0 S1")]))
+    board.save("render_report", RenderReport(
+        export_id="exp1", video_s=3.0, voice_s=3.0, width=1920, height=1080,
+        checks=[RenderCheck(name="export_ready", ok=True)]))
+    board.save("qa_report", QaReport(verdict="ship"))
+
+
+def test_approve_script_double_approve_on_unfinished_board_resumes_again(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
+    """MP4: already-approved + hash current + board INCOMPLETE -> a SECOND 'Script freigeben'
+    enqueues another resume (the recovery path after a failed deterministic tail) instead of
+    only replying. Replaces the pre-MP4 assumption that any already-approved board was always a
+    no-op — that is now scoped to a FINISHED board only (see the complete-board test below)."""
     from laura.short_creator.board import Board
     from laura.short_creator.board_models import Script, content_hash
     from laura.short_creator.production_orchestrator import board_root_for
 
     calls: list[str] = []
 
-    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
         calls.append(session_id)
-        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+        return {"session_id": session_id, "job_id": "job-again", "warnings": []}
 
-    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
     asset_id = _seed_board(db, tmp_path, session_id="sess-1")
@@ -1221,27 +1271,93 @@ def test_approve_script_already_approved_says_so_and_starts_no_new_run(
         decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW2,
     )
 
-    assert calls == [], "an already-approved board must never start a second run"
+    assert calls == ["sess-1"], "an incomplete board must resume again, not just reply"
+    assert messages[0]["kind"] == "action"
+    assert messages[0]["content"]["tool"] == "approve_script"
+    assert messages[0]["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-again"}
+    # already_current -> the existing (still-current) stamp is left untouched, not re-stamped.
+    reloaded = Board.open(board_root_for(db, asset_id, "sess-1"))
+    assert reloaded.meta().script_approved_utc == _NOW
+
+
+def test_approve_script_double_approve_on_complete_board_stays_a_noop(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import Script, content_hash
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    calls: list[str] = []
+
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    _fill_chain(board)  # saves storyline THEN script — see _fill_chain's own docstring on why
+    script = board.load("script")
+    assert isinstance(script, Script)
+    board.set_script_approved(_NOW, content_hash(script))
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW2,
+    )
+
+    assert calls == [], "a fully finished board must never start a second run"
     assert messages[0]["kind"] == "text"
     assert messages[0]["content"]["text"] == "Script war schon freigegeben."
+
+
+def test_approve_script_enqueues_a_pure_resume_without_message(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """The approve job payload must not carry a message key — a message run is a team run
+    (MP3's ``deterministic_eligible`` predicate), the whole point of the modular arc. Exercises
+    the REAL enqueue (not monkeypatched) so the actual job row's payload can be inspected —
+    mirrors ``test_production_api.py``'s ``_autoshort_available`` monkeypatch convention; the
+    agent-config preflight passes on its own since the test env sets no ``LAURA_AGENT_*``
+    (default: local ollama, always usable)."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_board(db, tmp_path, session_id="sess-1")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+
+    assert messages[0]["kind"] == "action"
+    job_id = messages[0]["content"]["refs"]["job_id"]
+    job = repos.get_job(db, job_id)
+    assert job is not None
+    payload = json.loads(job["payload_json"])
+    assert "message" not in payload
 
 
 def test_approve_script_without_a_script_refuses_and_stamps_nothing(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
     """Finding 2: approving before the team has written any script must refuse outright — no
-    approval stamp, no follow-up run — instead of landing pre-emptively so the gate never
+    approval stamp, no resume run — instead of landing pre-emptively so the gate never
     actually pauses the run."""
     from laura.short_creator.board import Board
     from laura.short_creator.production_orchestrator import board_root_for
 
     calls: list[str] = []
 
-    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
         calls.append(session_id)
         return {"session_id": session_id, "job_id": "job-42", "warnings": []}
 
-    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
     asset_id = _seed_board(db, tmp_path, session_id="sess-1", with_script=False)
@@ -1252,7 +1368,7 @@ def test_approve_script_without_a_script_refuses_and_stamps_nothing(
         decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
     )
 
-    assert calls == [], "no script on the board -> no follow-up run must ever start"
+    assert calls == [], "no script on the board -> no resume run must ever start"
     assert len(messages) == 1
     assert messages[0]["kind"] == "text"
     assert messages[0]["content"]["text"] == (
@@ -1267,7 +1383,7 @@ def test_approve_script_after_a_script_change_is_a_fresh_approval_not_a_no_op(
 ) -> None:
     """Finding 3: an approved board whose script has since changed (a team rewrite via
     budget/capacity feedback) must NOT read as "already approved" — the old stamp no longer
-    speaks for the NEW text, so re-approving starts a fresh follow-up run and stamps the new
+    speaks for the NEW text, so re-approving starts a fresh resume run and stamps the new
     content's hash, exactly like a first-time approval would."""
     from laura.short_creator.board import Board
     from laura.short_creator.board_models import Script, ScriptLine, content_hash
@@ -1275,11 +1391,11 @@ def test_approve_script_after_a_script_change_is_a_fresh_approval_not_a_no_op(
 
     calls: list[str] = []
 
-    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
         calls.append(session_id)
         return {"session_id": session_id, "job_id": "job-99", "warnings": []}
 
-    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
     asset_id = _seed_board(db, tmp_path, session_id="sess-1")
@@ -1299,7 +1415,7 @@ def test_approve_script_after_a_script_change_is_a_fresh_approval_not_a_no_op(
         decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW2,
     )
 
-    assert calls == ["sess-1"], "a changed script must start a fresh follow-up run"
+    assert calls == ["sess-1"], "a changed script must start a fresh resume run"
     assert messages[0]["kind"] == "action"
     assert messages[0]["content"]["tool"] == "approve_script"
     assert messages[0]["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-99"}
@@ -1323,10 +1439,10 @@ def test_approve_script_without_any_session_asks(tmp_path: Path) -> None:
 def test_approve_script_http_exception_becomes_honest_text(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
-    def _fails(db: Any, session_id: str, text: str) -> dict[str, Any]:
+    def _fails(db: Any, session_id: str) -> dict[str, Any]:
         raise HTTPException(404, "session not found")
 
-    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fails)
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fails)
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
     _seed_board(db, tmp_path, session_id="sess-1")

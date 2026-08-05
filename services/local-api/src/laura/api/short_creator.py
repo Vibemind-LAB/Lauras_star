@@ -869,14 +869,22 @@ def create_project_auto_overview(
 # --- v2 production follow-up + status endpoints (Slice 4) -------------------------------------
 
 
-def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[str, Any]:
-    """Enqueue a follow-up ``production.run`` job on top of *session_id*'s existing board.
+def _enqueue_production_run(
+    db: Database, session_id: str, message: str | None
+) -> dict[str, Any]:
+    """Shared enqueue for both a text follow-up (``message`` set — a request for a team turn)
+    and a pure resume (``message`` is ``None`` — the chat approval flow's recovery/continue
+    path, spec 2026-08-05 modular production). 404 if the session is unknown, 503 if the
+    'autoshort' extra is missing or the agent provider is not usable, 404 if the session has no
+    board yet. ``task``/``target_seconds`` are always read back from the board's own meta (fixed
+    at session creation, Task 5) rather than accepted again here.
 
-    404 if the session is unknown, 503 if the 'autoshort' extra is missing, 404 if the session
-    has no board yet (a follow-up assumes a prior production run — there is nothing to follow up
-    on otherwise). ``task``/``target_seconds`` are read back from the board's own meta (fixed at
-    session creation, Task 5) rather than accepted again here — the follow-up only supplies the
-    new ``message`` text.
+    The payload OMITS the ``message`` key entirely when *message* is ``None`` — not
+    ``"message": None`` — because the job handler and ``production_orchestrator``'s
+    ``deterministic_eligible`` (MP3) both key off "no message" to decide whether an eligible
+    gated board takes the deterministic tail instead of spinning up an agent team; a
+    present-but-null key would be an easy way to accidentally reintroduce a team run through the
+    resume path, so the key's mere presence is one bit and it must actually be missing.
     """
     session = repos.get_production_session(db, session_id)
     if session is None:
@@ -886,18 +894,20 @@ def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[s
     asset_id = str(session["asset_id"])
     board = _open_board_or_404(db, asset_id, session_id)
     meta = board.meta()
+    payload: dict[str, Any] = {
+        "asset_id": asset_id,
+        "session_id": session_id,
+        "task": meta.task,
+        "target_seconds": int(meta.target_seconds),
+    }
+    if message is not None:
+        payload["message"] = message
     # LLM-driven production runs are expensive + non-idempotent — do not auto-retry.
     job_id = enqueue(
         db,
         queue=queue_for("production.run"),
         kind="production.run",
-        payload={
-            "asset_id": asset_id,
-            "session_id": session_id,
-            "task": meta.task,
-            "target_seconds": int(meta.target_seconds),
-            "message": text,
-        },
+        payload=payload,
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
@@ -908,6 +918,27 @@ def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[s
         "job_id": job_id,
         "warnings": config_warnings(resolve_from_env()),
     }
+
+
+def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[str, Any]:
+    """Enqueue a follow-up ``production.run`` job on top of *session_id*'s existing board.
+
+    404 if the session is unknown, 503 if the 'autoshort' extra is missing, 404 if the session
+    has no board yet (a follow-up assumes a prior production run — there is nothing to follow up
+    on otherwise). ``task``/``target_seconds`` are read back from the board's own meta (fixed at
+    session creation, Task 5) rather than accepted again here — the follow-up only supplies the
+    new ``message`` text.
+    """
+    return _enqueue_production_run(db, session_id, text)
+
+
+def run_production_resume(db: Database, session_id: str) -> dict[str, Any]:
+    """Enqueue the SAME kind of ``production.run`` job as :func:`run_production_follow_up`, but
+    with NO ``message`` — the chat approval flow's resume (spec 2026-08-05 modular production):
+    an eligible gated board (``production_orchestrator.deterministic_eligible``) takes the
+    deterministic post-gate tail instead of a full agent-team turn.
+    """
+    return _enqueue_production_run(db, session_id, None)
 
 
 @router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)

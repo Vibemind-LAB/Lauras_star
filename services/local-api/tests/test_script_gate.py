@@ -472,20 +472,22 @@ def test_build_production_task_names_the_script_approval_checkpoint(tmp_path: Pa
     assert "synthesize_script_voice" in task_text
 
 
-# --- executor: approve_script rolls the gate back when the follow-up fails to start --------------
+# --- executor: approve_script rolls the gate back when the resume run fails to start -------------
 
 
-def test_approve_script_reverts_the_stamp_when_the_follow_up_run_fails_to_start(
+def test_approve_script_reverts_the_stamp_when_the_resume_run_fails_to_start(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
-    """Review finding: ``set_script_approved`` used to persist BEFORE ``run_production_follow_up``
-    was known to succeed. A session race, a config preflight failure, or any bug in that call
-    then left the gate permanently open while the user read an error implying nothing had
-    happened. The approval still has to land on the board before the follow-up run is enqueued
-    (the voice tool reads it at job runtime), so the fix is a compensating rollback via
-    ``Board.clear_script_approval()``, not a reorder — this pins exactly the assertion the
-    review said was missing: the gate is closed again after the failure, not just the error
-    text."""
+    """Review finding: ``set_script_approved`` used to persist BEFORE the resume run
+    (``run_production_resume``, spec 2026-08-05 modular production — was
+    ``run_production_follow_up`` before MP4) was known to succeed. A session race, a config
+    preflight failure, or any bug in that call then left the gate permanently open while the
+    user read an error implying nothing had happened. The approval still has to land on the
+    board before the resume run is enqueued (the voice tool reads it at job runtime), so the fix
+    is a compensating rollback via ``Board.clear_script_approval()``, not a reorder — this pins
+    exactly the assertion the review said was missing: the gate is closed again after the
+    failure, not just the error text. This is a FRESH approval (no prior stamp), so the
+    rollback's ``not already_current`` guard (MP4) does not change this test's outcome."""
     session_id = "sess-1"
     db, asset_id = _seed_scene(tmp_path)
     repos.create_production_session(
@@ -512,10 +514,10 @@ def test_approve_script_reverts_the_stamp_when_the_follow_up_run_fails_to_start(
         created_utc="2026-08-04T00:00:00Z",
     )
 
-    def _fails(db: Database, session_id: str, text: str) -> dict[str, Any]:
+    def _fails(db: Database, session_id: str) -> dict[str, Any]:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fails)
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fails)
 
     decision: RouterDecision = {
         "tool": "approve_script", "args": {"session_ref": session_id}, "fallback": False,
