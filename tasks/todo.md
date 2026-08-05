@@ -509,3 +509,30 @@ das Board. `POST /projects/{pid}/auto-overview`.
       `laura-qdrant`-Container auf 127.0.0.1:6333)
 - [ ] UI-Einstieg und ein Umschalter zwischen mehreren Sequenzen — eigener Zyklus
 - [ ] Erzählstimme über die Montage — eigener Zyklus (v1 nutzt den Originalton)
+
+## Transkript-Gates (Gate A + Gate B im Chat)  `[x]`  (Spec + Plan 2026-08-04)
+Zwei Gates gegen stille Fehlstände in der Chat-Produktionskette: Transkripte müssen vor
+dem Produzieren bestätigt sein, Skripte müssen vor der Stimmsynthese freigegeben sein.
+- [x] **Gate A — Transkript-Bestätigung** — Migration `0035` (Confirm-Stempel), Chat-Tools
+      `review_transcript`/`correct_transcript`/`confirm_transcript`, `POST
+      /assets/{id}/transcript:confirm`, Segment-PATCH stößt automatisch Qdrant-Reindex an;
+      Produktions-Services warnen sichtbar „Transkript unbestätigt: {display_name}" statt
+      still auf einem unbestätigten Transkript zu produzieren
+- [x] **Gate B — Skript-Freigabe** — neue chat-gestartete Produktions-Sessions tragen
+      `BoardMeta.script_gate`; `synthesize_script_voice` verweigert die Stimmsynthese bis
+      zur Freigabe; Chat-Tool `approve_script` gibt frei + setzt die Session fort; die
+      ActionCard zeigt „📝 Sprechertext wartet auf Freigabe" + Skriptzeilen, kein
+      „▶ ansehen" solange offen
+- [x] Gemessene Sprechraten-Kalibrierung (`script_budget.rate_source`: `measured`|
+      `heuristic`) statt fixer Heuristik
+- [x] Text-first Szenen-Matching (`suggest_scenes_for_script`) vor Embedding-Suche
+- [x] Read-only Second-Brain-Tools (`search_second_brain`/`read_brain_note`), env-gated
+      über `LAURA_SECONDBRAIN_PATH`, pfadtraversal-gesichert
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2560 passed, 12
+      skipped, 585.9s; bare `uv run mypy` clean (518 Dateien); `uv run ruff check src tests`
+      clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 496 Tests grün; `pnpm typecheck`
+      clean.
+- **Exit:** ✓ beide Gates greifen chat-seitig End-to-End (Tools ↔ Endpoints ↔ Board/Karten);
+  volle Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter Chat-Durchlauf in
+  der laufenden App (Gate A Round-Trip, Gate B Round-Trip, Warnungs-Sichtbarkeit) — siehe
+  `.superpowers/sdd/2026-08-04-transcript-gates/task-13-report.md`.
