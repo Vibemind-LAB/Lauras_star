@@ -205,6 +205,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "get_storyline",
                 "get_script",
                 "get_reviews",
+                "suggest_scenes_for_script",
                 "synthesize_script_voice",
                 "build_cutlist",
                 "save_contact_sheet",

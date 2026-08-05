@@ -79,6 +79,11 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
             "get_storyline",
             "get_script",
             "get_reviews",
+            # Task 9 (Transkript-Gates): the deterministic line->scene check the
+            # orchestrator's SCRIPT-APPROVAL CHECKPOINT sentence tells the team to call
+            # FIRST after every script (re-)approval, before synthesize_script_voice spends
+            # any work on a possibly misaligned storyline.
+            "suggest_scenes_for_script",
             "synthesize_script_voice",
             "build_cutlist",
             "save_contact_sheet",
