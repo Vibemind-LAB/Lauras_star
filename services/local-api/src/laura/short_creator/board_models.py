@@ -478,3 +478,13 @@ class BoardMeta(BaseModel):
     # Set once, by ``Board.set_script_approved``, when the user approves the script in chat.
     # ``None`` means "not yet approved" — irrespective of whether the gate is even enabled.
     script_approved_utc: str | None = None
+    # The approved script's ``content_hash`` (board_models.content_hash), stamped alongside
+    # ``script_approved_utc`` by the SAME write. Binds the approval to what was actually
+    # approved: a post-approval script edit (team rewrite, or ``Board.revert("script")`` to a
+    # DIFFERENT version) changes the content hash without touching the timestamp, so a bare
+    # ``script_approved_utc is not None`` check used to keep reading "approved" for text the
+    # user never saw. Both status()'s ``script_gate.approved`` and
+    # ``synthesize_script_voice``'s gate check compare this against the CURRENT script's
+    # content_hash — approval is content-aware, not just a stamp. Optional so every meta.json
+    # written before this field existed still loads unchanged (pydantic default).
+    script_approved_script_hash: str | None = None

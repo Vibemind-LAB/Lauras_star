@@ -26,7 +26,7 @@ from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
 from laura.short_creator import orchestrator, production_orchestrator, providers
 from laura.short_creator.board import Board
-from laura.short_creator.board_models import BoardMeta, Script, ScriptLine
+from laura.short_creator.board_models import BoardMeta, Script, ScriptLine, content_hash
 from laura.short_creator.production_tools import build_production_tool_specs
 
 FPS = 30
@@ -173,11 +173,23 @@ def test_old_meta_json_without_gate_fields_loads_unchanged(tmp_path: Path) -> No
 def test_set_script_approved_writes_atomically_and_updates_meta(tmp_path: Path) -> None:
     board = _board(tmp_path, "a1", script_gate=True)
     assert board.meta().script_approved_utc is None
+    assert board.meta().script_approved_script_hash is None
 
-    board.set_script_approved("2026-08-05T10:00:00Z")
+    board.set_script_approved("2026-08-05T10:00:00Z", "hash-abc")
 
     assert board.meta().script_approved_utc == "2026-08-05T10:00:00Z"
+    assert board.meta().script_approved_script_hash == "hash-abc"
     assert board.meta().script_gate is True  # untouched by the approval write
+
+
+def test_clear_script_approval_clears_both_the_timestamp_and_the_hash(tmp_path: Path) -> None:
+    board = _board(tmp_path, "a1", script_gate=True)
+    board.set_script_approved("2026-08-05T10:00:00Z", "hash-abc")
+
+    board.clear_script_approval()
+
+    assert board.meta().script_approved_utc is None
+    assert board.meta().script_approved_script_hash is None
 
 
 # --- synthesize_script_voice: deterministic gate -------------------------------------------------
@@ -196,11 +208,13 @@ def test_synthesize_script_voice_refuses_while_gate_pending(tmp_path: Path) -> N
 
 
 def test_synthesize_script_voice_gate_lifts_after_approval(tmp_path: Path) -> None:
-    """Once approved, the gate reason is gone — the tool falls through to its NEXT prereq
-    (no storyline yet), never the gate."""
+    """Once approved (with a hash that matches the CURRENT script), the gate reason is gone —
+    the tool falls through to its NEXT prereq (no storyline yet), never the gate."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id, script_gate=True)
-    board.set_script_approved("2026-08-05T10:00:00Z")
+    script = _script()
+    board.save("script", script)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(script))
     specs = _specs(db, board, asset_id)
 
     out = specs["synthesize_script_voice"].func()
@@ -219,6 +233,76 @@ def test_synthesize_script_voice_ignores_a_disabled_gate(tmp_path: Path) -> None
 
     assert out["ok"] is False
     assert "script gate" not in out["reason"]
+
+
+def test_synthesize_script_voice_refuses_when_script_changed_after_approval(
+    tmp_path: Path,
+) -> None:
+    """Review finding: approval used to be a bare timestamp, so a post-approval script edit
+    (a team rewrite via budget/capacity feedback) left the gate reading "approved" for text the
+    user never actually signed off on. The stamped hash no longer matching the CURRENT script
+    must refuse with a DISTINCT reason from the never-approved case."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, script_gate=True)
+    original = _script()
+    board.save("script", original)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(original))
+    # The team rewrites the script AFTER approval — same board, new content, hash now differs.
+    rewritten = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Ganz anderer Text jetzt.")],
+    )
+    board.save("script", rewritten)
+    specs = _specs(db, board, asset_id)
+
+    out = specs["synthesize_script_voice"].func()
+
+    assert out["ok"] is False
+    assert "script gate" in out["reason"]
+    assert "changed after approval" in out["reason"]
+    assert "re-approve" in out["reason"]
+
+
+def test_synthesize_script_voice_proceeds_after_reapproving_the_changed_script(
+    tmp_path: Path,
+) -> None:
+    """The stale gate lifts again once the user re-approves the NEW content — falls through to
+    the next prereq (no storyline), same as the happy path."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, script_gate=True)
+    original = _script()
+    board.save("script", original)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(original))
+    rewritten = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Ganz anderer Text jetzt.")],
+    )
+    board.save("script", rewritten)
+    # Re-approve the NEW content.
+    board.set_script_approved("2026-08-05T10:10:00Z", content_hash(rewritten))
+    specs = _specs(db, board, asset_id)
+
+    out = specs["synthesize_script_voice"].func()
+
+    assert out["ok"] is False
+    assert "script gate" not in out["reason"]
+    assert "storyline" in out["reason"]
+
+
+def test_synthesize_script_voice_refuses_when_approved_but_script_missing(tmp_path: Path) -> None:
+    """Defensive: an approved gate whose script has since vanished from the board entirely
+    (no plausible write path today, but the hash comparison must not silently pass a ``None``
+    current hash) refuses with the stale reason rather than crashing or falling through."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, script_gate=True)
+    board.set_script_approved("2026-08-05T10:00:00Z", "some-hash")
+    specs = _specs(db, board, asset_id)
+
+    out = specs["synthesize_script_voice"].func()
+
+    assert out["ok"] is False
+    assert "script gate" in out["reason"]
+    assert "changed after approval" in out["reason"]
 
 
 # --- Board.status(): script_gate + script_lines -------------------------------------------------
@@ -255,13 +339,80 @@ def test_status_script_gate_not_pending_before_a_script_exists(tmp_path: Path) -
 
 def test_status_script_gate_not_pending_once_approved(tmp_path: Path) -> None:
     board = _board(tmp_path, "a1", script_gate=True)
-    board.save("script", _script())
-    board.set_script_approved("2026-08-05T10:00:00Z")
+    script = _script()
+    board.save("script", script)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(script))
 
     status = board.status()
 
     assert status["script_gate"] == {"enabled": True, "approved": True, "pending": False}
     assert "script_lines" not in status
+
+
+def test_status_script_gate_re_pending_when_script_changed_after_approval(tmp_path: Path) -> None:
+    """Review finding: approval used to be a bare timestamp — status() kept reporting
+    "approved" for a script the team had since rewritten. The stamped hash no longer matching
+    the CURRENT script must flip the gate back to pending, with fresh lines for the NEW text."""
+    board = _board(tmp_path, "a1", script_gate=True)
+    original = _script()
+    board.save("script", original)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(original))
+    rewritten = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Ganz anderer Text jetzt.")],
+    )
+    board.save("script", rewritten)
+
+    status = board.status()
+
+    assert status["script_gate"] == {"enabled": True, "approved": False, "pending": True}
+    assert status["script_lines"] == [
+        {"chapter": 1, "scene_number": 1, "text": "Ganz anderer Text jetzt."}
+    ]
+
+
+def test_status_script_gate_approved_again_after_reapproving_the_changed_script(
+    tmp_path: Path,
+) -> None:
+    board = _board(tmp_path, "a1", script_gate=True)
+    original = _script()
+    board.save("script", original)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(original))
+    rewritten = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Ganz anderer Text jetzt.")],
+    )
+    board.save("script", rewritten)
+    board.set_script_approved("2026-08-05T10:10:00Z", content_hash(rewritten))
+
+    status = board.status()
+
+    assert status["script_gate"] == {"enabled": True, "approved": True, "pending": False}
+
+
+def test_status_script_gate_revert_to_a_different_version_re_arms_the_gate(
+    tmp_path: Path,
+) -> None:
+    """``Board.revert("script")`` restoring a DIFFERENT archived version than the one that was
+    approved must re-arm the gate too — the stamped hash binds to specific content, not to "a
+    script existed once"."""
+    board = _board(tmp_path, "a1", script_gate=True)
+    v1 = Script(
+        language="German", lines=[ScriptLine(chapter=1, scene_number=1, text="Version eins.")],
+    )
+    board.save("script", v1)  # version 1
+    v2 = Script(
+        language="German", lines=[ScriptLine(chapter=1, scene_number=1, text="Version zwei.")],
+    )
+    board.save("script", v2)  # version 2, v1 archived
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(v2))
+
+    board.revert("script", 1)  # back to v1 — different content than what was approved
+
+    status = board.status()
+
+    assert status["script_gate"]["approved"] is False
+    assert status["script_gate"]["pending"] is True
 
 
 # --- run_production: seeding the gate onto a FRESH board -----------------------------------------
@@ -341,13 +492,16 @@ def test_approve_script_reverts_the_stamp_when_the_follow_up_run_fails_to_start(
         db, session_id=session_id, asset_id=asset_id, created_utc="2026-08-04T00:00:00Z",
     )
     root = production_orchestrator.board_root_for(db, asset_id, session_id)
-    Board.create(
+    board = Board.create(
         root,
         BoardMeta(
             session_id=session_id, asset_id=asset_id, created_utc="2026-08-04T00:00:00Z",
             task="t", target_seconds=20.0, script_gate=True,
         ),
     )
+    # A script must exist for approve_script to get past the no-script guard (Finding 2) and
+    # reach the write-then-enqueue sequence this test actually exercises.
+    board.save("script", _script())
     repos.create_conversation(db, conversation_id="c1", created_utc="2026-08-04T00:00:00Z")
     repos.append_conversation_message(
         db, message_id="m-action", conversation_id="c1", role="assistant", kind="action",

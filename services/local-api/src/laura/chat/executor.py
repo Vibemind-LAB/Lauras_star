@@ -407,6 +407,9 @@ def _handle_follow_up(
 
 
 _SCRIPT_ALREADY_APPROVED_TEXT = "Script war schon freigegeben."
+_NO_SCRIPT_TO_APPROVE_TEXT = (
+    "Es gibt noch kein Script zum Freigeben — die Produktion hält von selbst am Gate."
+)
 _SCRIPT_APPROVED_FOLLOW_UP_TEXT = (
     "Script freigegeben — bitte fortsetzen: Voice, Cutlist, Contact Sheet, Render."
 )
@@ -425,19 +428,31 @@ def _handle_approve_script(
     in ``api/short_creator.py``, and keeps this module import-light for callers without the
     'autoshort' extra) to read and flip the gate itself, then enqueues the SAME follow-up run
     ``follow_up`` would (:func:`run_production_follow_up`) so voice/cutlist/contact
-    sheet/render actually continue. An already-approved board is a no-op: German text, no new
-    run — approving twice must not burn a second production turn.
+    sheet/render actually continue.
+
+    Refuses outright (no stamp, no run) when the board has no script yet — an approval before
+    the team ever wrote one would otherwise land pre-emptively and the gate would never
+    actually pause the run (review finding).
+
+    Approval is bound to the script's CONTENT, not just a bare timestamp
+    (:func:`~laura.short_creator.board_models.content_hash`, the same idiom
+    ``synthesize_script_voice``/``build_cutlist`` already use for staleness): an
+    already-approved board whose stamped hash still matches the CURRENT script is a no-op
+    (German text, no new run — approving twice must not burn a second production turn), but
+    one whose script has since changed (a team rewrite, or a revert to a DIFFERENT version) is
+    treated as a FRESH approval — the whole point of content-binding is that the old stamp no
+    longer speaks for new text.
 
     The approval stamp must land on the board BEFORE the follow-up run is enqueued (the voice
-    tool reads ``meta.script_approved_utc`` at job runtime, which can start before the enqueue
-    call here even returns), so a failure to start that follow-up run cannot be fixed by
-    reordering the two calls — only by a COMPENSATING rollback once the failure is known
-    (review finding: the stamp used to persist unconditionally, so a session race, a config
-    preflight failure, or any bug in the follow-up call left the gate permanently open while the
-    user read an error implying nothing had happened). Both exception paths below revert via
-    ``board.clear_script_approval()`` before the existing error text goes out — the known
-    ``HTTPException`` case keeps its honest-passthrough text, and anything else re-raises into
-    ``execute_decision``'s own catch-all, unchanged."""
+    tool reads ``meta.script_approved_utc``/``script_approved_script_hash`` at job runtime,
+    which can start before the enqueue call here even returns), so a failure to start that
+    follow-up run cannot be fixed by reordering the two calls — only by a COMPENSATING rollback
+    once the failure is known (review finding: the stamp used to persist unconditionally, so a
+    session race, a config preflight failure, or any bug in the follow-up call left the gate
+    permanently open while the user read an error implying nothing had happened). Both
+    exception paths below revert via ``board.clear_script_approval()`` before the existing
+    error text goes out — the known ``HTTPException`` case keeps its honest-passthrough text,
+    and anything else re-raises into ``execute_decision``'s own catch-all, unchanged."""
     args = decision["args"]
     session_ref = str(args["session_ref"])
     session_id = _resolve_session_id(messages, session_ref)
@@ -449,6 +464,7 @@ def _handle_approve_script(
     asset_id = str(session["asset_id"])
 
     from ..short_creator.board import Board
+    from ..short_creator.board_models import Script, content_hash
     from ..short_creator.production_orchestrator import board_root_for
 
     try:
@@ -456,9 +472,18 @@ def _handle_approve_script(
     except (ValueError, FileNotFoundError):
         return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
 
-    if board.meta().script_approved_utc is not None:
+    script = board.load("script")
+    if not isinstance(script, Script):
+        return [_append_text(db, conversation_id, _NO_SCRIPT_TO_APPROVE_TEXT, now_utc)]
+    current_hash = content_hash(script)
+
+    meta = board.meta()
+    if (
+        meta.script_approved_utc is not None
+        and meta.script_approved_script_hash == current_hash
+    ):
         return [_append_text(db, conversation_id, _SCRIPT_ALREADY_APPROVED_TEXT, now_utc)]
-    board.set_script_approved(now_utc)
+    board.set_script_approved(now_utc, current_hash)
 
     try:
         result = run_production_follow_up(db, session_id, _SCRIPT_APPROVED_FOLLOW_UP_TEXT)
@@ -544,19 +569,20 @@ def _review_transcript_content(db: Database, asset: dict[str, Any]) -> tuple[dic
 def _append_review_transcript_messages(
     db: Database, conversation_id: str, asset: dict[str, Any], now_utc: str
 ) -> list[dict[str, Any]]:
-    """Append the review card (capped at ``_REVIEW_SEGMENT_LIMIT`` segments), plus one extra
-    text line naming the remainder when the transcript has more. Shared by
-    ``_handle_review_transcript`` and ``_handle_correct_transcript`` (whose card is the SAME
-    shape, just built from the just-corrected transcript)."""
-    content, total = _review_transcript_content(db, asset)
+    """Append the review card (capped at ``_REVIEW_SEGMENT_LIMIT`` segments). Shared by
+    ``_handle_review_transcript``, ``_handle_correct_transcript`` (whose card is the SAME
+    shape, just built from the just-corrected transcript), and ``_handle_confirm_transcript``
+    (re-appends the SAME card so its confirmed badge flips after reload).
+
+    Deliberately does NOT append a remainder text line: the card itself already renders
+    "… und N weitere Segmente" from ``payload.total - payload.segments.length``
+    (``ReviewTranscriptCard`` in ``apps/desktop/src/components/chat/ActionCard.tsx``) — a
+    second text message here just repeated the same fact in the thread (review finding)."""
+    content, _total = _review_transcript_content(db, asset)
     card = _append(
         db, conversation_id, role="assistant", kind="action", content=content, now_utc=now_utc
     )
-    messages = [card]
-    if total > _REVIEW_SEGMENT_LIMIT:
-        extra_text = f"… und {total - _REVIEW_SEGMENT_LIMIT} weitere Segmente."
-        messages.append(_append_text(db, conversation_id, extra_text, now_utc))
-    return messages
+    return [card]
 
 
 def _invalid_segment_index_text(segment_index: int, total: int) -> str:
@@ -657,7 +683,19 @@ def _handle_confirm_transcript(
         entity_type="asset", entity_id=asset_id,
     )
     text = f"Transkript von ‚{asset['display_name']}' bestätigt."
-    return [_append_text(db, conversation_id, text, now_utc)]
+    text_msg = _append_text(db, conversation_id, text, now_utc)
+    # Re-append a FRESH review_transcript card so its confirmed badge flips after reload — the
+    # card already in the thread is frozen at the content it was built from (message content
+    # never mutates in place), so without this the badge stays "unbestätigt" forever even
+    # though the confirmation itself took (review finding). Re-fetch the asset first:
+    # `asset` above was resolved BEFORE `set_transcript_confirmed_at` ran, so it still carries
+    # the OLD (pre-confirm) `transcript_confirmed_at`.
+    refreshed_asset = repos.get_asset(db, asset_id)
+    assert refreshed_asset is not None  # just confirmed against this id; cannot vanish mid-call
+    return [
+        text_msg,
+        *_append_review_transcript_messages(db, conversation_id, refreshed_asset, now_utc),
+    ]
 
 
 # --- entry points --------------------------------------------------------------------------

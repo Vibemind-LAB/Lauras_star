@@ -766,7 +766,12 @@ def test_review_transcript_no_assets_in_project_asks_without_listing(tmp_path: P
     assert "keine Videos" in messages[0]["content"]["text"]
 
 
-def test_review_transcript_over_limit_adds_remainder_text(tmp_path: Path) -> None:
+def test_review_transcript_over_limit_caps_segments_without_a_duplicate_text_message(
+    tmp_path: Path,
+) -> None:
+    """Finding 5: the card itself renders "… und N weitere Segmente" from
+    payload.total - payload.segments.length (ReviewTranscriptCard in ActionCard.tsx) — a
+    second text message here just repeated the same fact, so this must be the ONLY message."""
     db, settings = _setup(tmp_path)
     project = _project(db, tmp_path)
     conversation_id = _conversation(db, project_id=project["id"])
@@ -778,13 +783,11 @@ def test_review_transcript_over_limit_adds_remainder_text(tmp_path: Path) -> Non
         decision=_decision("review_transcript", {"asset_ref": "Long Clip"}), now_utc=_NOW,
     )
 
-    assert len(messages) == 2
-    card, extra = messages
+    assert len(messages) == 1
+    card = messages[0]
     assert card["kind"] == "action"
     assert card["content"]["payload"]["total"] == 105
     assert len(card["content"]["payload"]["segments"]) == 100
-    assert extra["kind"] == "text"
-    assert extra["content"]["text"] == "… und 5 weitere Segmente."
 
 
 def test_review_transcript_no_transcript_run_returns_empty_card(tmp_path: Path) -> None:
@@ -1039,9 +1042,15 @@ def test_confirm_transcript_sets_stamp_and_replies_german(tmp_path: Path) -> Non
         decision=_decision("confirm_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
     )
 
-    assert len(messages) == 1
+    # Finding 6: confirm re-appends a FRESH review_transcript card so its badge flips after
+    # reload — the text reply plus the refreshed card, no leftover remainder text message
+    # (Finding 5 dropped that).
+    assert len(messages) == 2
     assert messages[0]["kind"] == "text"
     assert messages[0]["content"]["text"] == "Transkript von ‚Clip 1' bestätigt."
+    assert messages[1]["kind"] == "action"
+    assert messages[1]["content"]["tool"] == "review_transcript"
+    assert messages[1]["content"]["payload"]["confirmed_at"] == _NOW
     updated = repos.get_asset(db, asset["id"])
     assert updated is not None and updated["transcript_confirmed_at"] == _NOW
 
@@ -1109,13 +1118,16 @@ def test_confirm_transcript_without_active_project_asks(tmp_path: Path) -> None:
 
 def _seed_board(
     db: Database, tmp_path: Path, *, session_id: str, script_gate: bool = True,
+    with_script: bool = True,
 ) -> str:
     """Project (REAL workspace_root under tmp_path) + asset + production session + a board
     already created via ``Board.create`` — mirrors ``test_production_api.py``'s
     ``_seed_session_with_board`` (kept local per this repo's self-contained-test-file
-    convention). Returns ``asset_id``."""
+    convention). ``with_script`` (default True) also saves a one-line script onto the board —
+    most approve_script tests need one to get past the Finding-2 no-script guard; pass False
+    for the tests that specifically exercise that guard. Returns ``asset_id``."""
     from laura.short_creator.board import Board
-    from laura.short_creator.board_models import BoardMeta
+    from laura.short_creator.board_models import BoardMeta, Script, ScriptLine
     from laura.short_creator.production_orchestrator import board_root_for
 
     project = repos.create_project(
@@ -1133,7 +1145,15 @@ def _seed_board(
         session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
         task="t", target_seconds=30.0, script_gate=script_gate,
     )
-    Board.create(root, meta)
+    board = Board.create(root, meta)
+    if with_script:
+        board.save(
+            "script",
+            Script(
+                language="German",
+                lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt, schau mal her.")],
+            ),
+        )
     return str(asset["id"])
 
 
@@ -1141,6 +1161,7 @@ def test_approve_script_sets_approved_and_starts_follow_up_run(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
     from laura.short_creator.board import Board
+    from laura.short_creator.board_models import Script, content_hash
     from laura.short_creator.production_orchestrator import board_root_for
 
     def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
@@ -1167,12 +1188,16 @@ def test_approve_script_sets_approved_and_starts_follow_up_run(
 
     board = Board.open(board_root_for(db, asset_id, "sess-1"))
     assert board.meta().script_approved_utc == _NOW
+    script = board.load("script")
+    assert isinstance(script, Script)
+    assert board.meta().script_approved_script_hash == content_hash(script)
 
 
 def test_approve_script_already_approved_says_so_and_starts_no_new_run(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
     from laura.short_creator.board import Board
+    from laura.short_creator.board_models import Script, content_hash
     from laura.short_creator.production_orchestrator import board_root_for
 
     calls: list[str] = []
@@ -1185,7 +1210,10 @@ def test_approve_script_already_approved_says_so_and_starts_no_new_run(
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
     asset_id = _seed_board(db, tmp_path, session_id="sess-1")
-    Board.open(board_root_for(db, asset_id, "sess-1")).set_script_approved(_NOW)
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    script = board.load("script")
+    assert isinstance(script, Script)
+    board.set_script_approved(_NOW, content_hash(script))
     _seed_action(db, conversation_id, session_id="sess-1")
 
     messages = execute_decision(
@@ -1196,6 +1224,88 @@ def test_approve_script_already_approved_says_so_and_starts_no_new_run(
     assert calls == [], "an already-approved board must never start a second run"
     assert messages[0]["kind"] == "text"
     assert messages[0]["content"]["text"] == "Script war schon freigegeben."
+
+
+def test_approve_script_without_a_script_refuses_and_stamps_nothing(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Finding 2: approving before the team has written any script must refuse outright — no
+    approval stamp, no follow-up run — instead of landing pre-emptively so the gate never
+    actually pauses the run."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    calls: list[str] = []
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1", with_script=False)
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+
+    assert calls == [], "no script on the board -> no follow-up run must ever start"
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == (
+        "Es gibt noch kein Script zum Freigeben — die Produktion hält von selbst am Gate."
+    )
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    assert board.meta().script_approved_utc is None
+
+
+def test_approve_script_after_a_script_change_is_a_fresh_approval_not_a_no_op(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Finding 3: an approved board whose script has since changed (a team rewrite via
+    budget/capacity feedback) must NOT read as "already approved" — the old stamp no longer
+    speaks for the NEW text, so re-approving starts a fresh follow-up run and stamps the new
+    content's hash, exactly like a first-time approval would."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import Script, ScriptLine, content_hash
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    calls: list[str] = []
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-99", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    original = board.load("script")
+    assert isinstance(original, Script)
+    board.set_script_approved(_NOW, content_hash(original))
+    rewritten = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Ganz anderer Text jetzt.")],
+    )
+    board.save("script", rewritten)
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW2,
+    )
+
+    assert calls == ["sess-1"], "a changed script must start a fresh follow-up run"
+    assert messages[0]["kind"] == "action"
+    assert messages[0]["content"]["tool"] == "approve_script"
+    assert messages[0]["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-99"}
+    reloaded_meta = Board.open(board_root_for(db, asset_id, "sess-1")).meta()
+    assert reloaded_meta.script_approved_utc == _NOW2
+    assert reloaded_meta.script_approved_script_hash == content_hash(rewritten)
 
 
 def test_approve_script_without_any_session_asks(tmp_path: Path) -> None:

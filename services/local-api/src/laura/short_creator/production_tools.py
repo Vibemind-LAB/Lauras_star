@@ -2084,17 +2084,35 @@ def build_production_tool_specs(
         the backend itself fails. Deterministically refuses first of all when Gate B is active
         and unapproved (script_gate: the user must approve the script in chat — approve_script —
         before voice, cutlist or render may run); this is enforced HERE, not just in the
-        orchestrator prompt, so a run cannot talk its way past the checkpoint."""
+        orchestrator prompt, so a run cannot talk its way past the checkpoint. The refusal is
+        content-aware, not just a bare timestamp check: a script edited (or reverted to a
+        DIFFERENT version) AFTER approval changes its content_hash while
+        ``script_approved_utc`` stays set, so the approval only still counts when the stamped
+        hash matches the CURRENT script — otherwise voice would run on text the user never
+        actually signed off on (review finding)."""
         try:
             meta = board.meta()
-            if meta.script_gate and meta.script_approved_utc is None:
-                return {
-                    "ok": False,
-                    "reason": (
-                        "script gate: awaiting user approval — the user must approve the "
-                        "script in chat before voice is synthesized"
-                    ),
-                }
+            if meta.script_gate:
+                if meta.script_approved_utc is None:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "script gate: awaiting user approval — the user must approve the "
+                            "script in chat before voice is synthesized"
+                        ),
+                    }
+                gate_script = board.load("script")
+                gate_hash = (
+                    _content_hash(gate_script) if isinstance(gate_script, Script) else None
+                )
+                if gate_hash is None or meta.script_approved_script_hash != gate_hash:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "script gate: script changed after approval — the user must "
+                            "re-approve the script in chat"
+                        ),
+                    }
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
                 return {
