@@ -67,7 +67,8 @@ const FPS_PRESETS: readonly FpsPreset[] = [
 // tests (they pin relative mismatches, not the absolute number), so it only ever shows live.
 // Bumped to 34 the same day for 0034_chat_conversations (chat-first arc, CH1) — same class of
 // bug, same fix: keep this pinned to the newest migration file whenever one lands.
-export const EXPECTED_SCHEMA_VERSION = 34;
+// 35: 0035_transcript_confirm (Transkript-Gates) — caught live again 2026-08-05, same class.
+export const EXPECTED_SCHEMA_VERSION = 35;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
