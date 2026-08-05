@@ -123,6 +123,7 @@ def test_every_tool_is_reachable() -> None:
         "reply", "create_project", "switch_project", "propose_import",
         "start_short", "start_overview", "follow_up", "revert",
         "review_transcript", "correct_transcript", "confirm_transcript", "approve_script",
+        "discuss",
     }) == TOOLS
 
 
@@ -259,3 +260,48 @@ def test_approve_script_requires_session_ref() -> None:
     ])
     decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
     assert decision["tool"] == "approve_script" and decision["fallback"] is False
+
+
+def test_discuss_is_a_known_tool_with_text_arg() -> None:
+    assert "discuss" in TOOLS
+    reply = json.dumps({"tool": "discuss", "args": {"text": "warum ist szene 2 so lang?"}})
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: reply)
+    assert decision == {
+        "tool": "discuss",
+        "args": {"text": "warum ist szene 2 so lang?"},
+        "fallback": False,
+    }
+
+
+def test_discuss_requires_nonempty_text() -> None:
+    replies = iter([
+        json.dumps({"tool": "discuss", "args": {"text": ""}}),
+        json.dumps({"tool": "discuss", "args": {"text": "ok"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "discuss" and decision["fallback"] is False
+
+
+def test_discuss_single_key_shape_normalizes() -> None:
+    reply = json.dumps({"discuss": {"text": "die captions sind zu klein"}})
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: reply)
+    assert decision["tool"] == "discuss" and decision["fallback"] is False
+
+
+def test_system_prompt_carries_the_priority_and_proposal_rules() -> None:
+    """The prompt work IS the feature for routing quality — pin the load-bearing strings
+    so a later prompt edit cannot silently drop them (live incident 2026-08-05: a free
+    critique containing 'Transkript' was answered with a transcript card)."""
+    from laura.chat.router import _SYSTEM_PROMPT
+
+    assert "discuss" in _SYSTEM_PROMPT
+    assert "warum steht das im transkript" in _SYSTEM_PROMPT  # negative example verbatim
+    assert "Vorschlag:" in _SYSTEM_PROMPT                      # yes-after-proposal rule
+    assert "mach Szene 2 kürzer" in _SYSTEM_PROMPT             # adjustment example
+
+
+def test_build_one_shot_runner_is_public() -> None:
+    from laura.chat.router import build_one_shot_runner
+
+    runner = build_one_shot_runner(_config())
+    assert callable(runner)

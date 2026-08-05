@@ -43,6 +43,7 @@ TOOLS: frozenset[str] = frozenset(
         "correct_transcript",
         "confirm_transcript",
         "approve_script",
+        "discuss",
     }
 )
 
@@ -80,10 +81,24 @@ _SYSTEM_PROMPT = (
     '- confirm_transcript: {"asset_ref": str} — confirm the transcript is correct as-is, '
     "unlocking downstream steps. Example: 'Transkript passt'.\n"
     '- approve_script: {"session_ref": str} — approve the generated script so production can '
-    "proceed. Example: 'Script freigeben'.\n\n"
+    "proceed. Example: 'Script freigeben'.\n"
+    '- discuss: {"text": str} — answer a question, critique, or comment about the result or '
+    "process; pass the user's message verbatim as text. Choose this whenever the user is "
+    "ASKING or COMPLAINING about the video, its scenes, its wording, or the transcript "
+    "quality rather than requesting a specific action. Example: 'warum steht das im "
+    "transkript das macht kein sinn' -> discuss (NOT review_transcript — review_transcript "
+    "is ONLY for explicitly asking to SEE the transcript, e.g. 'zeig mir das Transkript').\n\n"
     "Rules: reply with EXACTLY one JSON object, no prose before or after it. Never invent "
     "project names, session references, or URLs that were not mentioned in the context or the "
-    "user's latest message — ask via reply when unsure."
+    "user's latest message — ask via reply when unsure.\n"
+    " When the context shows an active production session and the message talks about the "
+    "RESULT (video, scenes, cut, captions, wording, transcript quality), prefer discuss or "
+    "follow_up over asset tools. Adjustment requests are follow_up on the active session — "
+    "examples: 'mach Szene 2 kürzer', 'anderes Intro', 'zeig das volle Bild', 'die Captions "
+    "sind zu klein'. If the user agrees ('ja', 'mach das', 'genau') right after an assistant "
+    "message containing a line starting with 'Vorschlag:', choose follow_up with the active "
+    "session and use the text AFTER 'Vorschlag:' as the follow-up text — never the bare "
+    "'ja'."
 )
 
 
@@ -316,6 +331,9 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
     if tool == "approve_script":
         return _require_str(args, "session_ref")
 
+    if tool == "discuss":
+        return _require_str(args, "text")
+
     return f"tool {tool!r} has no validator (programming error)"  # unreachable: tool in TOOLS
 
 
@@ -411,6 +429,13 @@ def _default_runner(config: AgentConfig) -> Callable[[str], str]:
         return asyncio.run(asyncio.wait_for(_run(), _ROUTER_TIMEOUT_S))
 
     return run
+
+
+def build_one_shot_runner(config: AgentConfig) -> Callable[[str], str]:
+    """Public facade over the router's one-shot agent runner — the discuss handler
+    (chat/executor.py) runs its grounded answer through the same single-agent,
+    wall-clock-capped machinery instead of growing a second LLM client path."""
+    return _default_runner(config)
 
 
 # --- orchestration (pure given the injected/real runner) ---------------------------------------
