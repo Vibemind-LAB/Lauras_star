@@ -142,3 +142,127 @@ def test_tail_tool_menu_is_pinned_exactly() -> None:
     assert tuple(_STEP_BY_RESUME_POINT.keys()) == (
         "voice", "cutlist", "contact_sheet", "render_report",
     )
+
+
+def test_oscillating_resume_point_ends_the_run_with_cycled_not_a_hang() -> None:
+    """The no-progress guard only compares against the IMMEDIATELY prior resume
+    point, so a two-step oscillation (voice -> cutlist -> voice -> ...) — possible
+    under concurrent/downstream invalidation on a live board — slips past it: each
+    single step looks like progress relative to its predecessor. The iteration cap
+    must still end the run as a failure instead of looping forever.
+
+    The fake board's own safety_cap (independent of the production cap) guards the
+    TEST from hanging if `run_deterministic_tail`'s cap ever regresses: it turns a
+    reintroduced infinite loop into a fast, clear assertion failure instead of a
+    hang, without relying on the code under test to behave correctly.
+    """
+    import itertools
+    from collections.abc import Iterator
+
+    from laura.short_creator.toolset import ToolSpec
+
+    @dataclass
+    class _OscillatingBoard:
+        cycle: Iterator[str]
+        safety_cap: int = 1000
+        calls: int = 0
+
+        def resume_point(self, expected: list[int]) -> str:
+            self.calls += 1
+            if self.calls > self.safety_cap:
+                raise AssertionError(
+                    "iteration cap regression: run_deterministic_tail did not stop"
+                )
+            return next(self.cycle)
+
+    board = _OscillatingBoard(cycle=itertools.cycle(["voice", "cutlist"]))
+    rec = _Recorder()
+
+    def make(name: str) -> Callable[..., dict[str, Any]]:
+        def tool(**kwargs: Any) -> dict[str, Any]:
+            rec.calls.append(name)
+            return {"ok": True}
+        return tool
+
+    specs = [
+        ToolSpec(name=n, description=n, func=make(n))
+        for n in ("synthesize_script_voice", "build_cutlist",
+                  "save_contact_sheet", "render_production")
+    ]
+
+    outcome = run_deterministic_tail(
+        board, specs, expected_scenes=[1], event_sink=rec.sink
+    )
+    assert not outcome.ok
+    assert "cycled" in (outcome.reason or "")
+    # Small, well-defined bound: 2*len(chain) iterations, ~2 resume_point calls each,
+    # plus one closing call — nowhere near the fake's 1000-call safety net.
+    assert board.calls < 50
+
+
+def test_event_sink_exception_does_not_break_the_run() -> None:
+    """MINOR 1: the sink raising on every call must not stop the chain — `_emit`
+    swallows sink errors, but that contract needs its own test, not just an
+    incidental pass in the happy-path test (which uses a non-raising sink)."""
+    board = _FakeBoard(["voice", "cutlist", "contact_sheet", "render_report", "qa_report"])
+    rec = _Recorder()
+
+    def raising_sink(event: dict[str, Any]) -> None:
+        raise RuntimeError("sink boom")
+
+    outcome = run_deterministic_tail(
+        board, _specs(board, rec), expected_scenes=[1], event_sink=raising_sink
+    )
+    assert outcome.ok and outcome.failed_step is None
+    assert rec.calls == ["synthesize_script_voice", "build_cutlist",
+                         "save_contact_sheet", "render_production"]
+
+
+def test_raising_tool_recovers_on_retry() -> None:
+    """MINOR 2a: a tool that RAISES (instead of returning ok:False) on the first
+    call and succeeds on the retry must let the run recover, same as a returned
+    failure would."""
+    board = _FakeBoard(["voice", "cutlist", "contact_sheet", "render_report", "qa_report"])
+    rec = _Recorder()
+
+    from laura.short_creator.toolset import ToolSpec
+
+    attempts = {"n": 0}
+
+    def flaky_voice(**kwargs: Any) -> dict[str, Any]:
+        rec.calls.append("synthesize_script_voice")
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("transient boom")
+        board.advance()
+        return {"ok": True}
+
+    specs = [
+        ToolSpec(name="synthesize_script_voice", description="", func=flaky_voice)
+        if s.name == "synthesize_script_voice" else s
+        for s in _specs(board, rec)
+    ]
+    outcome = _run(board, rec, specs)
+    assert outcome.ok and outcome.failed_step is None
+    assert rec.calls == ["synthesize_script_voice", "synthesize_script_voice",
+                         "build_cutlist", "save_contact_sheet", "render_production"]
+
+
+def test_double_raising_tool_fails_with_exception_type_in_reason() -> None:
+    """MINOR 2b: a tool that raises on both attempts must fail honestly, and the
+    reason must carry the exception type name (not just its message) so a
+    double-raise is distinguishable from a returned ok:False failure."""
+    board = _FakeBoard(["voice", "cutlist", "contact_sheet", "render_report", "qa_report"])
+    rec = _Recorder()
+
+    from laura.short_creator.toolset import ToolSpec
+
+    def always_raises(**kwargs: Any) -> dict[str, Any]:
+        rec.calls.append("synthesize_script_voice")
+        raise RuntimeError("boom")
+
+    specs = [ToolSpec(name="synthesize_script_voice", description="", func=always_raises)]
+    outcome = _run(board, rec, specs)
+    assert not outcome.ok
+    assert outcome.failed_step == "synthesize_script_voice"
+    assert "RuntimeError" in (outcome.reason or "")

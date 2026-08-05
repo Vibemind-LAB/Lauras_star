@@ -30,6 +30,14 @@ _STEP_BY_RESUME_POINT: dict[str, str] = {
     "render_report": "render_production",
 }
 
+# Defensive cap on the outer loop (fix round, MP1 review). The per-step no-progress
+# guard below only compares against the IMMEDIATELY prior resume point, so a
+# multi-step oscillation (voice -> cutlist -> voice -> ...) — possible under
+# concurrent/downstream invalidation on a live board — would slip past it and spin
+# forever. Two full passes over the chain is generous headroom for legitimate runs
+# (which visit each step at most once) while still catching a cycle promptly.
+_MAX_TAIL_ITERATIONS = 2 * len(_STEP_BY_RESUME_POINT)
+
 
 @dataclass
 class TailOutcome:
@@ -66,13 +74,13 @@ def run_deterministic_tail(
     funcs = {s.name: s.func for s in specs if s.name in _STEP_BY_RESUME_POINT.values()}
     done: list[str] = []
 
-    while True:
+    for _ in range(_MAX_TAIL_ITERATIONS):
         point = board.resume_point(expected_scenes)
         tool_name = _STEP_BY_RESUME_POINT.get(point)
         if tool_name is None:
             # Past the chain (qa_report/done) or before it (creative work missing —
             # the eligibility predicate should have prevented that; stop either way).
-            break
+            return TailOutcome(True, None, None, _summary(done))
         func = funcs.get(tool_name)
         if func is None:
             return TailOutcome(False, tool_name, "tool not available", _summary(done))
@@ -88,7 +96,12 @@ def run_deterministic_tail(
             )
         done.append(tool_name)
 
-    return TailOutcome(True, None, None, _summary(done))
+    # Cap exceeded: the resume point kept oscillating among the chain steps without
+    # ever landing past them. Report the step current at the moment of the cap so the
+    # failure is actionable, not just "gave up".
+    point = board.resume_point(expected_scenes)
+    tool_name = _STEP_BY_RESUME_POINT.get(point) or (done[-1] if done else "unknown")
+    return TailOutcome(False, tool_name, "resume point cycled", _summary(done))
 
 
 def _call_with_retry(
