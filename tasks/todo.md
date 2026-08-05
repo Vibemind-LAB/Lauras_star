@@ -567,3 +567,41 @@ freigegebene Scripts sonst hätte umschreiben können.
   Chat-Durchlauf in der laufenden App (Pipeline-Tool-Events auf der Karte, keine zweite
   Freigabe nötig, Text-Follow-up läuft weiterhin über das Team und bewaffnet das Gate neu)
   — siehe `.superpowers/sdd/2026-08-05-modular-production/task-MP5-report.md`.
+
+## Follow-up-Erlebnis (discuss + Session-Grounding)  `[x]`  (Spec + Plan 2026-08-05)
+Freie Kritik/Fragen zum Video bekommen gegrundete Antworten mit umsetzbarem Vorschlag,
+Anpassungs-Sprache landet zuverlässig als Follow-up, und die Fertig-Karte lädt zum
+Weitermachen ein.
+- [x] **FE1 — `discuss`-Tool + Router-Prompt-Regeln** — neues Router-Tool `discuss`
+      (`{"text": str}`), Prioritätsregel: aktive Session + Rede über das ERGEBNIS
+      (Video/Szenen/Schnitt/Captions/Wortlaut/Transkript-Qualität) bevorzugt `discuss`
+      oder `follow_up` vor Asset-Werkzeugen; ein „ja" direkt nach einer `Vorschlag:`-Zeile
+      routet als `follow_up` mit dem Text NACH `Vorschlag:`, nie mit dem bloßen „ja";
+      `build_one_shot_runner` als öffentliche Fassade über den bestehenden Router-Runner
+- [x] **FE2 — Gegrundeter Discuss-Handler** — `_handle_discuss` baut den Task-Text aus
+      Board-Kompakt (`resume_point`/Gate/Export), Skriptzeilen, Transkript-Treffern
+      (`_matching_segments`: explizite „Segment N" schlägt Bigram-Suche) und Thread-Tail
+      und lässt ihn über einen injizierbaren `discuss_runner` laufen; ein fehlender/
+      leerer/fehlschlagender Runner fällt deterministisch auf einen festen Text zurück —
+      ein Chat-Turn endet nie im 500
+- [x] **FE3 — Active-Session-Zeile im Router-Kontext** — `compose_context` bekommt
+      `active_session` (`done+export`/`awaiting-approval`/`running`/`failed`/
+      `in-progress`), in `api/chat.py` best-effort ermittelt (jeder Fehler lässt die
+      Zeile einfach weg) — genau das Signal, das den Live-Vorfall verhindert (freie
+      Kritik mit „Transkript" im Wortlaut landete als Transkript-Karte statt als Antwort)
+- [x] **FE4 — Fertig-Karten-Hinweis** — die ProductionActionCard lädt im Export-Zweig
+      unter „▶ ansehen" zur Weiterbearbeitung ein: „Weiter anpassen: sag z. B. ‚mach den
+      Hook kürzer' — oder frag einfach."
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2625 passed, 7
+      skipped, 742.45s; bare `uv run mypy` clean (520 Dateien); `uv run ruff check src
+      tests` clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 499 Tests grün;
+      `pnpm typecheck` clean.
+- **Exit:** ✓ freie Fragen/Kritik zu einer aktiven Session bekommen eine gegrundete
+  Antwort im `Vorschlag:`-Format, ein „ja" setzt den Vorschlag als Follow-up-Lauf um, die
+  Fertig-Karte lädt sichtbar zum Weitermachen ein; volle Backend- + Desktop-Gates grün.
+  **Manuell zu prüfen:** kompletter Chat-Durchlauf in der laufenden App (Live-Vorfall als
+  Regressionsfall: freie Kritik mit „Transkript" im Wortlaut bei aktiver Session →
+  discuss-Antwort statt Transkript-Karte; „ja" auf eine `Vorschlag:`-Zeile → Follow-up-Lauf
+  startet, Karte zeigt „⚙ läuft"; Fertig-Karte zeigt die Hinweiszeile) — App-Neustart mit
+  detachtem Backend nötig, siehe
+  `.superpowers/sdd/2026-08-05-follow-up-experience/task-FE4-report.md`.

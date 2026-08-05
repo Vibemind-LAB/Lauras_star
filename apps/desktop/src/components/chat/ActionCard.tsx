@@ -405,6 +405,9 @@ function ProductionActionCard({
             >
               ▶ ansehen
             </button>
+            <div className="mt-0.5 text-content-faint">
+              Weiter anpassen: sag z. B. ‚mach den Hook kürzer' — oder frag einfach.
+            </div>
           </div>
         ) : (
           <div className="mt-0.5 text-content-faint">Kein Export erzeugt.</div>

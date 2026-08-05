@@ -264,6 +264,27 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     expect(screen.getByText(/82%/)).toBeTruthy();
   });
 
+  it("the done state invites further adjustment", async () => {
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      getProductionStatus: vi.fn().mockResolvedValue(boardStatus()),
+    });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Weiter anpassen: sag z. B. ‚mach den Hook kürzer' — oder frag einfach.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("'▶ ansehen' fires onFocus", async () => {
     const c = client({
       getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
@@ -396,6 +417,8 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
 
     expect(screen.getByText("✗ fehlgeschlagen: Agent-Team abgestürzt")).toBeTruthy();
     expect(getProductionStatus).not.toHaveBeenCalled();
+    // The adjustment hint belongs to the done+export card only, not a failed run.
+    expect(screen.queryByText(/Weiter anpassen/)).toBeNull();
 
     // Polling has stopped entirely (events never even said "done" — the dead-job case).
     expect(getProductionEvents).not.toHaveBeenCalled();
@@ -489,6 +512,8 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     // export id from a prior run, the pending gate must win, not the export line/button.
     expect(screen.queryByText(/Export:/)).toBeNull();
     expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
+    // The adjustment hint is part of the export result block, not the pending-gate block.
+    expect(screen.queryByText(/Weiter anpassen/)).toBeNull();
   });
 
   it("an approved (non-pending) script_gate falls through to the normal result line", async () => {

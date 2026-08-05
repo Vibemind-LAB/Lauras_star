@@ -35,6 +35,8 @@ Lese-/QA-Werkzeugen; das Team, das Skripte umschreiben könnte, ist auf diesem P
 außen vor. `approve_script` setzt dafür nur noch einen puren Resume fort; das Team fasst
 freigegebene Scripts nicht mehr an, ein Text-Follow-up nach der Freigabe bewaffnet das Gate
 dagegen neu.
+Fragen und Kritik zu einer aktiven Session beantwortet Laura gegrundet über `discuss` und
+schlägt die Änderung als `Vorschlag:` vor; ein „ja" setzt sie als Follow-up-Lauf um.
 Read-only Second-Brain-Recherche (`search_second_brain`/`read_brain_note`) ist optional über
 `LAURA_SECONDBRAIN_PATH` env-gated. Details: [`agentic-short-creator`](agentic-short-creator.md).
 
