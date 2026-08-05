@@ -176,6 +176,7 @@ def post_message(
     appended = execute_decision(
         db, settings, conversation_id=conversation_id, decision=decision, now_utc=now,
         principal=principal,
+        discuss_runner=getattr(request.app.state, "discuss_runner", None),
     )
     return {"messages": [user_message, *appended]}
 

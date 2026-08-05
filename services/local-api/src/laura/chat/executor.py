@@ -11,6 +11,8 @@ the one exception: it is called ONLY by the approvals endpoint (Task 6), which n
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -40,7 +42,7 @@ from ..config import Settings
 from ..db import repos
 from ..db.database import Database
 from ..util import new_id
-from .router import RouterDecision
+from .router import RouterDecision, _compact_message
 
 logger = logging.getLogger(__name__)
 
@@ -741,6 +743,158 @@ def _handle_confirm_transcript(
     ]
 
 
+# --- discuss (FE2, spec 2026-08-05-follow-up-experience) ---------------------------------------
+
+
+_DISCUSS_FALLBACK_TEXT = (
+    "Dazu kann ich gerade nichts Fundiertes sagen — beschreib konkret, "
+    "was am Video anders sein soll."
+)
+
+_DISCUSS_SYSTEM = (
+    "You are Laura's editor-side voice. Answer the user's question or critique about "
+    "their video project, in the user's language, short and concrete. Use ONLY the "
+    "provided context — never invent transcript content, scenes, or status. If the "
+    "critique is actionable as a production change, end with EXACTLY one line starting "
+    "with 'Vorschlag: ' containing the concrete follow-up instruction, followed by the "
+    "sentence \"Antworte 'ja', dann setze ich das um — oder beschreib es anders.\" "
+    "If nothing is actionable, end without a Vorschlag line."
+)
+
+
+def _latest_session_id(messages: list[dict[str, Any]]) -> str | None:
+    """The most recent action card's ``refs.session_id`` — ``discuss`` has no ``session_ref``
+    arg of its own; the active session is simply the last one the thread talked about. Same
+    iteration direction as :func:`_resolve_session_id`'s newest-wins fallback."""
+    for message in reversed(messages):
+        content = message.get("content") or {}
+        refs = content.get("refs") or {}
+        session_id = refs.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            return session_id
+    return None
+
+
+_SEGMENT_NUMBER_RE = re.compile(r"[Ss]egment\s+(\d+)")
+
+
+def _matching_segments(
+    text: str, segments: list[dict[str, Any]], *, limit: int = 3
+) -> list[dict[str, Any]]:
+    """Transcript grounding for ``discuss``: an explicit ``"Segment N"`` mention in *text*
+    wins outright (every segment whose ``index`` was named, in segment order); otherwise
+    case-insensitive word-bigrams of *text* (words longer than 2 chars, consecutive pairs)
+    are matched as substrings against each segment's text, scored by hit count, top *limit*.
+    ``segments`` is the same ``{"index", "text", ...}`` row shape
+    :func:`_review_transcript_content` already produces."""
+    explicit = {int(n) for n in _SEGMENT_NUMBER_RE.findall(text)}
+    if explicit:
+        return [s for s in segments if s.get("index") in explicit][:limit]
+    words = [w for w in re.findall(r"\w+", text.lower()) if len(w) > 2]
+    bigrams = {f"{a} {b}" for a, b in zip(words, words[1:], strict=False)}
+    if not bigrams:
+        return []
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for seg in segments:
+        seg_text = str(seg.get("text", "")).lower()
+        hits = sum(1 for bg in bigrams if bg in seg_text)
+        if hits:
+            scored.append((hits, seg))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [seg for _hits, seg in scored[:limit]]
+
+
+def _discuss_context(
+    db: Database, messages: list[dict[str, Any]], session_id: str | None, *, user_text: str
+) -> str:
+    """The task text handed to the discuss runner: :data:`_DISCUSS_SYSTEM` as a header, then a
+    stack of grounding blocks (board status/QA, script lines, transcript hits — all only when
+    *session_id* resolves to a real, openable board), then the last 6 thread messages, then the
+    user's own message. Every block is fault-tolerant on its own: a missing session, a session
+    with no board yet, no script, or no transcript run each just drop their block rather than
+    raising — the same "omit, never crash" posture as :func:`execute_decision` itself."""
+    lines: list[str] = [_DISCUSS_SYSTEM]
+
+    if session_id is not None:
+        session = repos.get_production_session(db, session_id)
+        if session is not None:
+            asset_id = str(session["asset_id"])
+
+            from ..api.short_creator import _expected_scenes_for
+            from ..short_creator.board import Board
+            from ..short_creator.board_models import QaReport, Script
+            from ..short_creator.production_orchestrator import board_root_for
+
+            try:
+                board = Board.open(board_root_for(db, asset_id, session_id))
+            except (ValueError, FileNotFoundError):
+                board = None
+
+            if board is not None:
+                board_status = board.status()
+                resume_point = board.resume_point(_expected_scenes_for(db, asset_id))
+                gate = "approved" if board_status["script_gate"]["approved"] else "pending"
+                rendered = board_status["artifacts"]["render_report"]["version"] is not None
+                lines.append(
+                    f"Status: resume_point={resume_point}, gate={gate}, "
+                    f"export={'ja' if rendered else 'nein'}"
+                )
+
+                qa_report = board.load("qa_report")
+                if isinstance(qa_report, QaReport):
+                    lines.append(f"QA verdict: {qa_report.verdict}")
+                    for finding in qa_report.findings:
+                        lines.append(f"QA finding: {finding.note[:200]}")
+
+                script = board.load("script")
+                if isinstance(script, Script):
+                    for line in script.lines:
+                        lines.append(
+                            f"Kapitel {line.chapter} · Szene {line.scene_number} · {line.text}"
+                        )
+
+                asset = repos.get_asset(db, asset_id)
+                if asset is not None:
+                    review_content, _total = _review_transcript_content(db, asset)
+                    hits = _matching_segments(user_text, review_content["payload"]["segments"])
+                    for hit in hits:
+                        lines.append(f"Segment {hit['index']}: {hit['text']}")
+
+    for message in messages[-6:]:
+        lines.append(_compact_message(message))
+
+    lines.append(f"User message: {user_text}")
+    lines.append("Answer now.")
+    return "\n".join(lines)
+
+
+def _handle_discuss(
+    db: Database,
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    decision: RouterDecision,
+    now_utc: str,
+    discuss_runner: Callable[[str], str] | None,
+) -> list[dict[str, Any]]:
+    text = str(decision["args"]["text"])
+    session_id = _latest_session_id(messages)
+    task = _discuss_context(db, messages, session_id, user_text=text)
+    runner = discuss_runner
+    if runner is None:
+        from ..short_creator.providers import resolve_from_env
+        from .router import build_one_shot_runner
+
+        runner = build_one_shot_runner(resolve_from_env())
+    try:
+        reply = (runner(task) or "").strip()
+    except Exception:  # noqa: BLE001 — a chat turn never fails on the model
+        logger.warning("discuss runner failed; deterministic fallback", exc_info=True)
+        reply = ""
+    if not reply:
+        reply = _DISCUSS_FALLBACK_TEXT
+    return [_append_text(db, conversation_id, reply, now_utc)]
+
+
 # --- entry points --------------------------------------------------------------------------
 
 
@@ -752,6 +906,7 @@ def execute_decision(
     decision: RouterDecision,
     now_utc: str,
     principal: Principal | None = None,
+    discuss_runner: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run one validated router decision, appending the resulting message(s) to the thread.
 
@@ -767,6 +922,11 @@ def execute_decision(
     way for their ``transcript.update`` / ``transcript.confirm`` audit rows (falling back to
     :func:`laura.audit.system_principal` when chat has no HTTP caller of its own, exactly
     like ``create_project`` — and matching each tool's HTTP twin in ``api/analysis.py``).
+
+    ``discuss_runner`` is the one-shot LLM seam ``discuss`` runs its grounded answer through
+    (:func:`laura.chat.router.build_one_shot_runner`); it defaults to ``None`` so every
+    pre-existing caller keeps working — ``_handle_discuss`` builds the real runner itself when
+    no runner is injected, same seam design as the router's own ``runner`` param.
     """
     try:
         conversation = repos.get_conversation(db, conversation_id)
@@ -808,6 +968,11 @@ def execute_decision(
         if tool == "approve_script":
             messages = repos.list_conversation_messages(db, conversation_id)
             return _handle_approve_script(db, conversation_id, messages, decision, now_utc)
+        if tool == "discuss":
+            messages = repos.list_conversation_messages(db, conversation_id)
+            return _handle_discuss(
+                db, conversation_id, messages, decision, now_utc, discuss_runner
+            )
 
         # Defensive: the router only ever hands out a tool from TOOLS, so this branch should be
         # unreachable — but the thread must never crash on a decision it does not recognize.

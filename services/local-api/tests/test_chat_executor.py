@@ -1581,6 +1581,135 @@ def test_approve_script_after_job_succeeded_runs_normally(
     assert board.meta().script_approved_utc == _NOW
 
 
+# --- discuss (FE2: grounded discuss handler with injectable one-shot runner) -------------------
+
+
+def _seed_discuss_session(
+    db: Database, tmp_path: Path, *, session_id: str = "sess-1",
+) -> str:
+    """Project (active) + conversation + an asset with a transcript segment mentioning
+    'Konfix' + a production session/board carrying a one-line script — everything
+    ``_discuss_context`` can ground an answer on. Mirrors ``_seed_board``/``_seed_transcript``'s
+    own seeding style (kept local per this file's self-contained-test-file convention).
+    Returns the conversation id; the session is referenced via an action card, same as every
+    other session-resolving handler's tests in this file."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import BoardMeta, Script, ScriptLine
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    project = _project(db, tmp_path, name="Discuss-Test")
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, _seg_ids = _seed_transcript(
+        db, project["id"], display_name="Clip 1",
+        texts=["intro satz", "Du kannst Konfix aktuell halten, uns weiter und sofort."],
+    )
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+    )
+    root = board_root_for(db, asset["id"], session_id)
+    meta = BoardMeta(
+        session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+        task="t", target_seconds=30.0, script_gate=True,
+    )
+    board = Board.create(root, meta)
+    board.save(
+        "script",
+        Script(
+            language="German",
+            lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt, schau mal her.")],
+        ),
+    )
+    _seed_action(db, conversation_id, session_id=session_id)
+    return conversation_id
+
+
+def _run_discuss(
+    db: Database, settings: Settings, conversation_id: str, text: str, discuss_runner: Any,
+) -> list[dict[str, Any]]:
+    return execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("discuss", {"text": text}), now_utc=_NOW,
+        discuss_runner=discuss_runner,
+    )
+
+
+def test_discuss_answers_via_injected_runner_with_grounded_context(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _seed_discuss_session(db, tmp_path)
+    captured: list[str] = []
+
+    def runner(task: str) -> str:
+        captured.append(task)
+        return (
+            "Das ist die rohe Whisper-Transkription.\n"
+            "Vorschlag: ersetze in Segment 2 'Konfix' durch 'Configs'\n"
+            "Antworte 'ja', dann setze ich das um — oder beschreib es anders."
+        )
+
+    messages = _run_discuss(
+        db, settings, conversation_id, "warum steht Konfix aktuell im transkript?", runner,
+    )
+
+    assert len(messages) == 1
+    msg = messages[0]
+    assert msg["kind"] == "text" and "Vorschlag:" in msg["content"]["text"]
+    task = captured[0]
+    assert "Konfix" in task  # the transcript hit made it into the context
+    assert "Segment" in task, "a real bigram hit against the seeded segment, not just an echo"
+    assert "resume_point" in task or "Status" in task  # board summary present
+
+
+def test_discuss_matches_segments_by_bigram_and_by_explicit_number() -> None:
+    from laura.chat.executor import _matching_segments
+
+    segments = [
+        {"index": 86, "text": "Dele herzunehmen, also welche Modelle du haben willst."},
+        {"index": 87, "text": "Du kannst Konfix aktuell halten, uns weiter und sofort."},
+        {"index": 88, "text": "Was haben wir noch?"},
+    ]
+    hits = _matching_segments("warum steht Konfix aktuell da drin", segments)
+    assert [h["index"] for h in hits] == [87]
+    hits = _matching_segments("Segment 88 macht keinen Sinn", segments)
+    assert [h["index"] for h in hits] == [88]
+    assert _matching_segments("völlig anderes thema", segments) == []
+
+
+def test_discuss_without_session_still_answers(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = _run_discuss(
+        db, settings, conversation_id, "was kannst du eigentlich?",
+        lambda task: "Ich baue Shorts aus deinen Videos.",
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["content"]["text"].startswith("Ich baue Shorts")
+
+
+def test_discuss_runner_failure_falls_back_deterministically(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _seed_discuss_session(db, tmp_path)
+
+    def broken(task: str) -> str:
+        raise TimeoutError("model down")
+
+    messages = _run_discuss(db, settings, conversation_id, "hm?", broken)
+
+    assert len(messages) == 1
+    assert "nichts Fundiertes" in messages[0]["content"]["text"]
+
+
+def test_discuss_empty_runner_reply_falls_back(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _seed_discuss_session(db, tmp_path)
+
+    messages = _run_discuss(db, settings, conversation_id, "hm?", lambda t: "   ")
+
+    assert len(messages) == 1
+    assert "nichts Fundiertes" in messages[0]["content"]["text"]
+
+
 # --- defensive: unknown tool + never-raises ---------------------------------------------------
 
 
