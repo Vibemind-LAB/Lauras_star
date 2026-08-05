@@ -1,6 +1,12 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-import type { AgentEvent, ChatMessage, LauraClient, ProductionStatus } from "../../api";
+import type {
+  AgentEvent,
+  ChatMessage,
+  LauraClient,
+  ProductionBoardStatus,
+  ProductionStatus,
+} from "../../api";
 import { parseJobError, useJobStatus } from "../../hooks/useJobStatus";
 import { log } from "../../shared/log";
 import { EventLine } from "../ChatPanel";
@@ -33,6 +39,84 @@ function narrowActionContent(content: Record<string, unknown>): ActionContent {
       : {};
   const outcome = typeof content.outcome === "string" ? content.outcome : "";
   return { tool, refs, outcome };
+}
+
+/** One segment row of a `review_transcript` card's payload (`_segment_review_row` in
+ * services/local-api/src/laura/chat/executor.py). */
+interface ReviewSegmentRow {
+  index: number;
+  id: string;
+  start_s: number;
+  text: string;
+}
+
+/** The load-bearing facts of a `review_transcript` action card's `content.payload` — Gate A
+ * (Task 5's `_review_transcript_content`): `{ confirmed_at, segments (capped server-side at 100),
+ * total }`. `total` can exceed `segments.length` even below the cap, so the card computes its own
+ * remainder line rather than trusting the two to match. Narrowed defensively for the same reason
+ * as `narrowActionContent` — `content` is typed `Record<string, unknown>`. */
+interface ReviewTranscriptPayload {
+  confirmedAt: string | null;
+  segments: ReviewSegmentRow[];
+  total: number;
+}
+
+function narrowReviewTranscriptPayload(content: Record<string, unknown>): ReviewTranscriptPayload {
+  const payload =
+    typeof content.payload === "object" && content.payload !== null
+      ? (content.payload as Record<string, unknown>)
+      : {};
+  const confirmedAt = typeof payload.confirmed_at === "string" ? payload.confirmed_at : null;
+  const rawSegments = Array.isArray(payload.segments) ? payload.segments : [];
+  const segments: ReviewSegmentRow[] = rawSegments.map((raw, i) => {
+    const row = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    return {
+      index: typeof row.index === "number" ? row.index : i + 1,
+      id: typeof row.id === "string" ? row.id : String(i),
+      start_s: typeof row.start_s === "number" ? row.start_s : 0,
+      text: typeof row.text === "string" ? row.text : "",
+    };
+  });
+  const total = typeof payload.total === "number" ? payload.total : segments.length;
+  return { confirmedAt, segments, total };
+}
+
+/**
+ * Gate A (`review_transcript`/`correct_transcript` — both share this card shape; the executor
+ * hard-codes `content.tool = "review_transcript"` for either, see `_review_transcript_content`):
+ * the confirmed/unconfirmed badge, the segment list (scrollable — the backend already caps it at
+ * 100, this just keeps a long-but-under-cap list from pushing the rest of the thread offscreen),
+ * a remainder line when `total` exceeds what is shown, and the correction hint. Read-only —
+ * corrections and confirmation both happen via chat messages routed to
+ * `correct_transcript`/`confirm_transcript`, never buttons on this card.
+ */
+function ReviewTranscriptCard({ message }: { message: ChatMessage }): ReactElement {
+  const { confirmedAt, segments, total } = narrowReviewTranscriptPayload(message.content);
+  const rest = total - segments.length;
+
+  return (
+    <div className="mb-1.5 rounded-md border border-bezel bg-surface-2 px-1.5 py-1 text-[11px]">
+      <div className="mb-1 flex items-center justify-between gap-1">
+        <span className="font-medium text-content-strong">Transkript prüfen</span>
+        {confirmedAt !== null ? (
+          <span className="text-status-ok">✓ bestätigt</span>
+        ) : (
+          <span className="text-content-faint">unbestätigt</span>
+        )}
+      </div>
+      <div className="mb-1 max-h-64 overflow-y-auto">
+        {segments.map((seg) => (
+          <div key={seg.id} className="text-content-muted">
+            #{seg.index} · {seg.start_s}s · {seg.text}
+          </div>
+        ))}
+      </div>
+      {rest > 0 && <div className="mb-1 text-content-faint">… und {rest} weitere Segmente</div>}
+      <div className="text-content-faint">
+        Korrigieren per Nachricht: {"‚ersetze in Segment 3 …’"}
+      </div>
+    </div>
+  );
 }
 
 /** The single job this card tracks: `refs.job_id` (start_overview) or the first entry of
@@ -81,6 +165,25 @@ function narrowProductionResult(status: ProductionStatus | null): ProductionResu
     }
   }
   return { exportId, ratioPercent, qaVerdict, qaFailedChecks };
+}
+
+/** One line of a pending `script_gate`'s script, exactly `ProductionBoardStatus`'s
+ * `script_lines` element type (Task 11, api.ts) — reused rather than redeclared. */
+type ScriptGateLine = NonNullable<ProductionBoardStatus["script_lines"]>[number];
+
+/** Gate B (script checkpoint, Task 7/11): the script's lines when this session's board has the
+ * gate enabled and the script is still awaiting approval — `null` when there is nothing to show
+ * (no board yet, gate off, already approved). Prefers the server-computed `script_gate.pending`
+ * flag; falls back to `enabled && !approved` if a future payload ever omits it, the same
+ * defensive-narrowing posture as `narrowProductionResult` above. */
+function narrowPendingScript(status: ProductionStatus | null): ScriptGateLine[] | null {
+  if (status === null || !status.board_ready) return null;
+  const gate = status.script_gate;
+  if (gate === undefined) return null;
+  const pending =
+    typeof gate.pending === "boolean" ? gate.pending : gate.enabled && !gate.approved;
+  if (!pending) return null;
+  return status.script_lines ?? [];
 }
 
 /** Statuses `useJobStatus` (and the backend jobs runner) consider terminal-non-success:
@@ -222,6 +325,7 @@ function ProductionActionCard({
 
   const shown = showAll ? events : events.slice(-EVENT_PREVIEW_COUNT);
   const result = narrowProductionResult(status);
+  const pendingScript = narrowPendingScript(status);
   const failReason = jobStatus !== null ? parseJobError(jobStatus) ?? "unbekannter Fehler" : "unbekannter Fehler";
 
   return (
@@ -262,7 +366,19 @@ function ProductionActionCard({
         </div>
       )}
       {phase === "done" &&
-        (result.exportId !== null ? (
+        (pendingScript !== null ? (
+          <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1">
+            <div className="text-content-strong">📝 Sprechertext wartet auf Freigabe</div>
+            {pendingScript.map((line) => (
+              <div key={`${line.chapter}-${line.scene_number}`} className="mt-0.5 text-content-muted">
+                Kapitel {line.chapter} · Szene {line.scene_number} · {line.text}
+              </div>
+            ))}
+            <div className="mt-0.5 text-content-faint">
+              Antworte {"‚Script freigeben’"} oder nenne Änderungen.
+            </div>
+          </div>
+        ) : result.exportId !== null ? (
           <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1">
             <div className="text-content-strong">
               Export: {result.exportId}
@@ -334,7 +450,9 @@ export interface ActionCardProps {
  * One `action` message rendered as a thread card. Dispatches on `content.tool`: the production
  * tools (`start_short`/`follow_up`) narrate live via the session's event log
  * ({@link ProductionActionCard}); the one-shot job tools (`start_overview`/`import_urls`) show a
- * plain running/done/failed line ({@link JobActionCard}).
+ * plain running/done/failed line ({@link JobActionCard}); Gate A's `review_transcript` (also
+ * emitted by `correct_transcript` — the executor hard-codes the same tool name for both) renders
+ * the segment list read-only ({@link ReviewTranscriptCard}).
  */
 export function ActionCard({ message, client, onFocus }: ActionCardProps): ReactElement {
   const { tool, refs, outcome } = narrowActionContent(message.content);
@@ -358,6 +476,10 @@ export function ActionCard({ message, client, onFocus }: ActionCardProps): React
     const jobId = firstJobId(refs);
     if (jobId === null) return <UnknownActionLine tool={tool} />;
     return <JobActionCard client={client} jobId={jobId} />;
+  }
+
+  if (tool === "review_transcript") {
+    return <ReviewTranscriptCard message={message} />;
   }
 
   return <UnknownActionLine tool={tool} />;

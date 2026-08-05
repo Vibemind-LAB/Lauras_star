@@ -27,6 +27,28 @@ function actionMessage(
   };
 }
 
+/** A `review_transcript` action card (Gate A) — `content.payload` shape from
+ * `_review_transcript_content` (services/local-api/src/laura/chat/executor.py). */
+function reviewTranscriptMessage(payload: Record<string, unknown>): ChatMessage {
+  return {
+    id: "m2",
+    conversation_id: "c1",
+    seq: 4,
+    role: "assistant",
+    kind: "action",
+    content: { tool: "review_transcript", refs: { asset_id: "a1" }, outcome: "done", payload },
+    created_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+function reviewSegment(
+  index: number,
+  text: string,
+  start_s = index,
+): { index: number; id: string; start_s: number; text: string } {
+  return { index, id: `seg-${index}`, start_s, text };
+}
+
 function job(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
     id: "j1",
@@ -380,6 +402,151 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
 
     expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
     expect(getJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("ActionCard — Gate B (script checkpoint)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a pending script_gate shows the checkpoint block with both lines and no '▶ ansehen'", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(
+      boardStatus({
+        script_gate: { enabled: true, approved: false, pending: true },
+        script_lines: [
+          { chapter: 1, scene_number: 1, text: "Erste Zeile" },
+          { chapter: 1, scene_number: 2, text: "Zweite Zeile" },
+        ],
+      }),
+    );
+    const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("📝 Sprechertext wartet auf Freigabe")).toBeTruthy();
+    expect(screen.getByText(/Erste Zeile/)).toBeTruthy();
+    expect(screen.getByText(/Zweite Zeile/)).toBeTruthy();
+    // Priority over the ordinary result row — even though the fixture job still carries an
+    // export id from a prior run, the pending gate must win, not the export line/button.
+    expect(screen.queryByText(/Export:/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
+  });
+
+  it("an approved (non-pending) script_gate falls through to the normal result line", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(
+      boardStatus({ script_gate: { enabled: true, approved: true, pending: false } }),
+    );
+    const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
+    expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+  });
+});
+
+describe("ActionCard — review_transcript (Gate A)", () => {
+  it("renders the segment list and an 'unbestätigt' badge when not yet confirmed", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: [
+            reviewSegment(1, "Erstes Segment"),
+            reviewSegment(2, "Zweites Segment"),
+            reviewSegment(3, "Drittes Segment"),
+          ],
+          total: 3,
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText("unbestätigt")).toBeTruthy();
+    expect(screen.getByText(/#1 · 1s · Erstes Segment/)).toBeTruthy();
+    expect(screen.getByText(/#2 · 2s · Zweites Segment/)).toBeTruthy();
+    expect(screen.getByText(/#3 · 3s · Drittes Segment/)).toBeTruthy();
+    expect(screen.getByText(/Korrigieren per Nachricht/)).toBeTruthy();
+  });
+
+  it("shows a '✓ bestätigt' badge once confirmed_at is set", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: "2026-01-01T00:00:00Z",
+          segments: [reviewSegment(1, "Erstes Segment")],
+          total: 1,
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("✓ bestätigt")).toBeTruthy();
+    expect(screen.queryByText("unbestätigt")).toBeNull();
+  });
+
+  it("shows a remainder line when total exceeds the shown segments", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: [reviewSegment(1, "Erstes Segment"), reviewSegment(2, "Zweites Segment")],
+          total: 7,
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("… und 5 weitere Segmente")).toBeTruthy();
+  });
+
+  it("shows no remainder line when total matches the shown segments", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: [reviewSegment(1, "Erstes Segment")],
+          total: 1,
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.queryByText(/weitere Segmente/)).toBeNull();
   });
 });
 
