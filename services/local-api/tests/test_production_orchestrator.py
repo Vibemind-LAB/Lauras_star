@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1425,8 +1425,13 @@ def test_run_production_uses_tail_not_team_when_eligible(
         db: Database, board: Board, config: providers.AgentConfig, **kwargs: object
     ) -> tuple[object, object]:
         called["tail"] += 1
+        from laura.short_creator.board_models import QaReport
         from laura.short_creator.production_pipeline import TailOutcome
 
+        # I1: a real "ok" QA stage always ends with a saved qa_report — the deterministic
+        # branch now treats an "ok" outcome with none on the board as stranded (see the
+        # dedicated stranding test below), so the fake here must do what a real QA turn does.
+        board.save("qa_report", QaReport(verdict="ship"))
         return (
             TailOutcome(True, None, None, "deterministic tail: all"),
             orchestrator.StageOutcome(
@@ -1516,3 +1521,102 @@ def test_run_production_qa_hard_fail_sets_failed_status(
     assert "qa" in result["summary"].lower()
     root = production_orchestrator.board_root_for(db, asset_id, "sess-qa-fail")
     assert Board.open(root).meta().status == "failed"
+
+
+def test_run_production_qa_ok_without_saved_report_strands_and_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """I1 (2026-08-05 final review): a QA StageOutcome reporting ``ok`` that never actually
+    wrote a ``qa_report`` to the board — a zero-tool-call QA turn that
+    ``_make_qa_execute``'s ``require_tool_call`` guard should already have caught, or any
+    future QA execute that bypasses that guard — must not let the board finish with no
+    verdict on record. Checked here as defense in depth, one write later than the guard
+    itself."""
+    db, asset_id, config = _seeded_gated_run(tmp_path, "sess-qa-stranded")
+
+    def fake_tail(
+        db: Database, board: Board, config: providers.AgentConfig, **kwargs: object
+    ) -> tuple[object, orchestrator.StageOutcome]:
+        from laura.short_creator.production_pipeline import TailOutcome
+
+        return (
+            TailOutcome(True, None, None, "deterministic tail: voice, cutlist, "
+                        "contact_sheet, render_report"),
+            orchestrator.StageOutcome(
+                status="ok", weak=False, summary="board already complete",
+                team="magentic", stage="A",
+            ),
+        )
+
+    monkeypatch.setattr(production_orchestrator, "run_tail_with_qa", fake_tail)
+
+    def never_team(*a: object, **k: object) -> orchestrator.StageOutcome:
+        raise AssertionError("team must not run on the deterministic path")
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess-qa-stranded", task="t",
+        execute=never_team,
+    )
+
+    assert result["ok"] is False
+    assert "qa_report" in result["summary"]
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-qa-stranded")
+    assert Board.open(root).meta().status == "failed"
+
+
+# --- C1 (2026-08-05 final review): the deterministic branch must raise the render cap ------
+# deterministic_eligible() requires `message is None`, so the OLD `_deps_for_run(deps, board,
+# message)` call in this branch never raised the cap — an approve->rewrite cycle that already
+# exhausted _MAX_RENDER_CYCLES silently promoted a stale render. An explicit approval now
+# grants exactly one render above what has already been spent, the same policy a message run
+# gets (follow_up_render_cap).
+
+
+def test_run_production_deterministic_branch_raises_render_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from laura.short_creator.board_models import QaReport
+    from laura.short_creator.production_tools import _MAX_RENDER_CYCLES, follow_up_render_cap
+
+    db, asset_id, config = _seeded_gated_run(tmp_path, "sess-cap-raise")
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-cap-raise")
+    board = Board.open(root)
+    # Spend the plain cap directly on the board (mirrors test_production_tools_render.py's
+    # test_follow_up_render_cap_values — distinct export ids so each save really counts as
+    # a new version instead of a same-content no-op).
+    for i in range(_MAX_RENDER_CYCLES):
+        board.save(
+            "render_report",
+            RenderReport(export_id=f"e{i}", video_s=4.0, width=1080, height=1920, checks=[]),
+        )
+    expected_cap = follow_up_render_cap(board)
+    assert expected_cap > _MAX_RENDER_CYCLES, "the fixture must actually have spent the cap"
+
+    captured: dict[str, Any] = {}
+
+    def fake_tail(
+        db: Database, board: Board, config: providers.AgentConfig, *,
+        deps: Any, **kwargs: object,
+    ) -> tuple[object, object]:
+        captured["max_render_cycles"] = deps.max_render_cycles
+        from laura.short_creator.production_pipeline import TailOutcome
+
+        board.save("qa_report", QaReport(verdict="ship"))
+        return (
+            TailOutcome(True, None, None, "deterministic tail: all"),
+            orchestrator.StageOutcome(
+                status="ok", weak=False, summary="ship", team="magentic", stage="A"
+            ),
+        )
+
+    monkeypatch.setattr(production_orchestrator, "run_tail_with_qa", fake_tail)
+
+    def never_team(*a: object, **k: object) -> orchestrator.StageOutcome:
+        raise AssertionError("team must not run on the deterministic path")
+
+    production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess-cap-raise", task="t",
+        execute=never_team,
+    )
+
+    assert captured["max_render_cycles"] == expected_cap

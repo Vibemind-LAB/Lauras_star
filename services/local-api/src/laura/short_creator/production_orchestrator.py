@@ -664,7 +664,20 @@ def run_production(
     # skipping this check would let a pre-chain or already-finished board reach the tail and
     # come back reporting a hollow success.
     if deterministic_eligible(board, message, expected_scenes):
-        run_deps = _deps_for_run(deps, board, message)
+        # C1 incident class (2026-08-05 final review): deterministic_eligible() requires
+        # `message is None`, so routing this branch through `_deps_for_run` (which only
+        # raises the render cap when `message` is set) was a no-op here — the cap never
+        # rose across repeated approve->rewrite cycles. Once _MAX_RENDER_CYCLES was spent,
+        # render_production's cap branch (production_tools.py) silently reverted an
+        # ARCHIVED render onto the board (ok:False, diagnosis buried under `note`) and the
+        # NEXT "Script freigeben" sailed past the missing render, with QA judging the
+        # OLD-script export as if it were the film just approved. An explicit user approval
+        # IS the one-render grant a message run gets — mirror _deps_for_run's policy
+        # directly (same follow_up_render_cap + dataclasses.replace idiom, never mutating
+        # the caller's deps) instead of a message gate that is structurally never open here.
+        run_deps: ProductionDeps | None = replace(
+            deps or ProductionDeps(), max_render_cycles=follow_up_render_cap(board)
+        )
         tail, qa_outcome = run_tail_with_qa(
             db, board, config, asset_id=asset_id, deps=run_deps,
             event_sink=event_sink, expected_scenes=expected_scenes,
@@ -677,6 +690,16 @@ def run_production(
         # (`Board.set_status`: only the job result knowing left a session reporting "active"
         # for 55 minutes after it had actually died).
         qa_hard_failed = qa_outcome is not None and qa_outcome.status == "hard_fail"
+        # I1 (2026-08-05 final review): defense in depth alongside _make_qa_execute's
+        # require_tool_call guard. A QA StageOutcome that reports "ok" but never actually
+        # saved a qa_report (a zero-tool-call turn the guard should already have caught, or
+        # any future QA execute that bypasses _make_qa_execute) must not let the board
+        # finish with no verdict on record — the same stranding class the tail's own
+        # dead-run guard above exists for, just one write later in the chain.
+        qa_stranded = (
+            tail.ok and not qa_hard_failed and qa_outcome is not None
+            and board.load("qa_report") is None
+        )
         if not tail.ok:
             board.set_status("failed")
             summary = f"deterministic tail failed at {tail.failed_step}: {tail.reason}"
@@ -685,6 +708,10 @@ def run_production(
             assert qa_outcome is not None  # narrows for mypy; qa_hard_failed already checked
             board.set_status("failed")
             summary = tail.summary + f"; qa failed: {qa_outcome.summary}"
+            ok = False
+        elif qa_stranded:
+            board.set_status("failed")
+            summary = tail.summary + "; qa stage finished without saving a qa_report"
             ok = False
         else:
             if resume_point == "done":

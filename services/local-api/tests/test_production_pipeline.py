@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from laura.short_creator.production_pipeline import (
     _STEP_BY_RESUME_POINT,
     TailOutcome,
@@ -297,3 +299,65 @@ def test_double_raising_tool_fails_with_exception_type_in_reason() -> None:
     assert not outcome.ok
     assert outcome.failed_step == "synthesize_script_voice"
     assert "RuntimeError" in (outcome.reason or "")
+
+
+# --- C1/M1 (2026-08-05 final review): render_production's revision-cap refusal ------------
+# render_production's revision-cap branch (production_tools.py) reports ok:False with
+# `final`/`stale` and the real diagnosis under `note`, not `reason`. A bare `reason` fallback
+# silently dropped that diagnosis, AND the retry loop burned its one retry on a call that was
+# always going to say the same thing (the refusal is deterministic — a second identical call
+# cannot come back differently).
+
+
+def test_cap_refusal_shape_fails_immediately_without_retry() -> None:
+    board = _FakeBoard(["voice", "cutlist", "contact_sheet", "render_report", "qa_report"])
+    rec = _Recorder()
+
+    from laura.short_creator.toolset import ToolSpec
+
+    def capped_render(**kwargs: Any) -> dict[str, Any]:
+        rec.calls.append("render_production")
+        return {
+            "ok": False, "final": True, "stale": True, "export_id": "e1", "checks": [],
+            "note": "revision limit reached (2 renders); shipping this cut instead of "
+                    "rendering again — WARNING: this render was made from an earlier script",
+        }
+
+    specs = [
+        ToolSpec(name="render_production", description="", func=capped_render)
+        if s.name == "render_production" else s
+        for s in _specs(board, rec)
+    ]
+    outcome = _run(board, rec, specs)
+    assert not outcome.ok
+    assert outcome.failed_step == "render_production"
+    assert rec.calls.count("render_production") == 1, "a deterministic cap refusal must not retry"
+    assert "revision limit reached" in (outcome.reason or "")
+
+
+def test_make_qa_execute_requires_a_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I1 (2026-08-05 final review): _make_qa_execute must ask _make_default_execute for
+    require_tool_call=True — the same 2026-08-04 incident guard _parse_outcome already gives
+    follow-up runs, applied to the QA stage: a QA turn that finishes without ever calling
+    save_qa_report must become a hard_fail, not a silent ship."""
+    import laura.short_creator.production_orchestrator as production_orchestrator
+    from laura.short_creator.production_pipeline import _make_qa_execute
+
+    captured: dict[str, Any] = {}
+
+    def fake_make_default_execute(
+        board: Any, asset_id: Any, deps: Any, event_sink: Any = None, *,
+        require_tool_call: bool = False, agent_names: Any = None,
+    ) -> Any:
+        captured["require_tool_call"] = require_tool_call
+        captured["agent_names"] = agent_names
+        return lambda *a, **k: None
+
+    monkeypatch.setattr(
+        production_orchestrator, "_make_default_execute", fake_make_default_execute
+    )
+
+    _make_qa_execute(board=None, asset_id="a", deps=None, event_sink=None)
+
+    assert captured["require_tool_call"] is True
+    assert captured["agent_names"] == ("qa_reviewer",)

@@ -91,7 +91,12 @@ def run_deterministic_tail(
 
         result = _call_with_retry(func, tool_name, event_sink)
         if not result.get("ok", False):
-            reason = str(result.get("reason", "tool failed"))[:300]
+            # M1 (2026-08-05 final review): render_production's revision-cap branch
+            # (production_tools.py) reports its diagnosis under `note`, not `reason` — a
+            # bare `reason` fallback silently dropped it and the tail failed with a generic
+            # "tool failed" while the real explanation (stale export, cap reached, ...) went
+            # unreported. Fall back to `note` before the generic default.
+            reason = str(result.get("reason") or result.get("note") or "tool failed")[:300]
             return TailOutcome(False, tool_name, reason, _summary(done))
 
         if board.resume_point(expected_scenes) == point:
@@ -115,7 +120,15 @@ def _call_with_retry(
 ) -> dict[str, Any]:
     """One call plus exactly one retry (spec decision 3). Exceptions count as failures
     (the tools' own contract is to return ``{"ok": False}`` instead of raising, but the
-    tail must survive a raising seam too)."""
+    tail must survive a raising seam too).
+
+    M1 (2026-08-05 final review): a result carrying ``final``/``stale`` (render_production's
+    revision-cap branch, production_tools.py — reached when a follow-up's raised cap is
+    ALSO already spent) is a DETERMINISTIC refusal: a second identical call cannot come back
+    differently, so retrying only spends time and never changes the outcome. That shape ends
+    the attempt loop immediately instead of burning the one retry on a call that was always
+    going to say the same thing.
+    """
     result: dict[str, Any] = {"ok": False, "reason": "not called"}
     for attempt in (1, 2):
         _emit(event_sink, {
@@ -132,6 +145,8 @@ def _call_with_retry(
             "summary": str(result)[:300],
         })
         if result.get("ok", False):
+            return result
+        if result.get("final") is True or result.get("stale") is True:
             return result
     return result
 
@@ -201,9 +216,16 @@ def _make_qa_execute(
     event_sink: Callable[[dict[str, Any]], None] | None,
 ) -> ExecuteFn:
     """The real QA ``ExecuteFn``: a one-agent team (``qa_reviewer`` only). Mirrors
-    :func:`production_orchestrator._make_default_execute`, narrowed via ``agent_names``."""
+    :func:`production_orchestrator._make_default_execute`, narrowed via ``agent_names``.
+
+    ``require_tool_call=True`` (I1, 2026-08-05 final review) is the 2026-08-04 incident
+    guard (:func:`production_orchestrator._parse_outcome`) applied to the QA stage: a QA
+    turn that declares success without ever calling ``save_qa_report`` judged nothing and
+    must not read as a ship — it becomes a ``hard_fail`` instead of stranding the board with
+    no verdict on record.
+    """
     from .production_orchestrator import _make_default_execute
 
     return _make_default_execute(
-        board, asset_id, deps, event_sink, agent_names=("qa_reviewer",)
+        board, asset_id, deps, event_sink, require_tool_call=True, agent_names=("qa_reviewer",)
     )
