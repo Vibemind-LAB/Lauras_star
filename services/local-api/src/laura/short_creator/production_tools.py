@@ -941,14 +941,52 @@ def ungrounded_terms(script_text_: str, grounding_text: str) -> list[str]:
 _BUDGET_HEADROOM = 0.10
 
 
-def budget_words_for(usable_seconds: float, language: str = _DEFAULT_LANGUAGE) -> int:
+def budget_words_for(
+    usable_seconds: float,
+    language: str = _DEFAULT_LANGUAGE,
+    *,
+    measured_rate_wps: float | None = None,
+) -> int:
     """The word count to ASK FOR — the usable length minus headroom for the rate's variance.
 
-    ``word_budget_for`` converts seconds to words at the measured rate; this is the number a
-    script should actually be written to. Live finding: budgeting the full usable length put
+    ``word_budget_for`` converts seconds to words at the language heuristic; this is the number
+    a script should actually be written to. Live finding: budgeting the full usable length put
     the voice 2s past the video and voice_fits failed.
+
+    A ``measured_rate_wps`` (words/second, from :func:`_measured_rate_wps` — this board's OWN
+    last synthesis) overrides the language heuristic entirely: ``int(usable_seconds *
+    measured_rate_wps)``, no headroom. Calibration finding 2026-08-04: a 93-word heuristic
+    budget (assuming ~1.55 w/s) actually spoke at ~1.9 w/s and the film came in 10s short — the
+    heuristic's headroom was compensating for the WRONG uncertainty (a per-language guess) and a
+    rate measured on this exact board's own text needs none of it.
     """
+    if measured_rate_wps is not None and measured_rate_wps > 0:
+        return max(0, int(usable_seconds * measured_rate_wps))
     return word_budget_for(usable_seconds * (1.0 - _BUDGET_HEADROOM), language)
+
+
+def _measured_rate_wps(
+    storyline: Storyline, script: Script | None, voice: VoiceArtifact | None
+) -> float | None:
+    """The speech rate (words/second) measured from the board's own last voice synthesis, or
+    None when there is nothing to measure from or the measurement would be stale.
+
+    Trustworthy only when ``voice`` was synthesized from the CURRENT ``script`` — checked the
+    same way ``build_cutlist`` checks it, by re-hashing the script in storyline (played) order
+    and comparing against ``voice.script_hash``. A script edited after the last synthesis makes
+    the stored ``voice_s`` describe words that are no longer what will be spoken; smuggling that
+    stale rate into a fresh budget would be worse than the heuristic it replaces, so this falls
+    back to None (caller uses the heuristic) rather than guess.
+    """
+    if script is None or voice is None or voice.voice_s is None or voice.voice_s <= 0:
+        return None
+    ordered_lines = _lines_in_storyline_order(script, storyline)
+    if voice.script_hash != script_hash(ordered_lines):
+        return None
+    total_words = len(script_text(ordered_lines).split())
+    if total_words <= 0:
+        return None
+    return total_words / voice.voice_s
 
 
 # The under-budget gate (live 2026-08-04): three 45-60s targets shipped as 20-34s films
@@ -975,7 +1013,10 @@ def segment_capacity_seconds(window: BestWindow, scene_duration_s: float) -> flo
 
 
 def chapter_word_budgets(
-    material_per_chapter: dict[int, float], language: str = _DEFAULT_LANGUAGE
+    material_per_chapter: dict[int, float],
+    language: str = _DEFAULT_LANGUAGE,
+    *,
+    measured_rate_wps: float | None = None,
 ) -> dict[int, int]:
     """Words each chapter may spend, from the material that chapter's own windows hold.
 
@@ -986,9 +1027,13 @@ def chapter_word_budgets(
 
     A chapter budgeted at almost nothing is not a bug in this function — it is the storyline
     saying that beat has one second of reviewed footage, which is the thing worth seeing.
+
+    ``measured_rate_wps``, when given, is forwarded to :func:`budget_words_for` for every
+    chapter — the same measured rate throughout, never a mix of chapters on the heuristic and
+    one on a measured number.
     """
     return {
-        chapter: budget_words_for(seconds, language)
+        chapter: budget_words_for(seconds, language, measured_rate_wps=measured_rate_wps)
         for chapter, seconds in material_per_chapter.items()
     }
 
@@ -1697,10 +1742,13 @@ def build_production_tool_specs(
         """How many words the script may spend — ask this instead of guessing a length.
 
         Reads the saved storyline, adds up the reviewed windows it references, and turns
-        that into a word count. Call it ONCE before writing, write to ``words``, then
-        synthesize and correct against the MEASURED ``voice_s`` from render_production.
-        Do not iterate the script by feel: that burned a whole run on 34 saves that never
-        reached a render.
+        that into a word count. Prefers a MEASURED speech rate over the language heuristic
+        when this board's own last ``synthesize_script_voice`` run still matches the current
+        script (``rate_source: "measured"``); falls back to the per-language heuristic
+        otherwise (``rate_source: "heuristic"`` — no voice yet, or the script changed since).
+        Call it ONCE before writing, write to ``words``, then synthesize and correct against
+        the MEASURED ``voice_s`` from render_production. Do not iterate the script by feel:
+        that burned a whole run on 34 saves that never reached a render.
         """
         try:
             storyline = board.load("storyline")
@@ -1713,15 +1761,28 @@ def build_production_tool_specs(
             target = board.meta().target_seconds
             usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
             language = board.meta().language
+            script = board.load("script")
+            voice = board.load("voice")
+            measured_rate_wps = _measured_rate_wps(
+                storyline,
+                script if isinstance(script, Script) else None,
+                voice if isinstance(voice, VoiceArtifact) else None,
+            )
+            rate_source = "measured" if measured_rate_wps is not None else "heuristic"
             # Per chapter as well as in total: a right total over a wrong distribution still
             # breaks the film — one chapter carried 27s of narration for a 1s window.
             shares = allocate_chapter_seconds(per_chapter, usable_seconds=usable)
-            chapter_budgets = chapter_word_budgets(shares, language)
+            chapter_budgets = chapter_word_budgets(
+                shares, language, measured_rate_wps=measured_rate_wps
+            )
+            effective_seconds_per_word = (
+                1.0 / measured_rate_wps if measured_rate_wps else seconds_per_word(language)
+            )
             return {
                 "ok": True,
                 "material_seconds": round(material, 1),
                 "usable_seconds": round(usable, 1),
-                "words": budget_words_for(usable, language),
+                "words": budget_words_for(usable, language, measured_rate_wps=measured_rate_wps),
                 "per_chapter": [
                     {
                         "chapter": ch,
@@ -1732,7 +1793,8 @@ def build_production_tool_specs(
                     for ch in sorted(per_chapter)
                 ],
                 "language": language,
-                "seconds_per_word": seconds_per_word(language),
+                "seconds_per_word": effective_seconds_per_word,
+                "rate_source": rate_source,
                 "tolerance": _VOICE_RATE_TOLERANCE,
                 "segments": n_segments,
                 "unresolved_scenes": missing,
@@ -1744,9 +1806,16 @@ def build_production_tool_specs(
                     "wrong split still breaks the film, because a chapter's video cannot cover "
                     "voice its own scenes do not hold. A chapter budgeted at almost nothing "
                     "means its window is a second long — say less there, or give that beat a "
-                    "longer window in the storyline. Synthesize ONCE and correct from the "
-                    f"measured voice_s; the rate is only good to "
-                    f"+/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                    "longer window in the storyline. "
+                    + (
+                        "This budget uses the MEASURED speech rate from the board's own last "
+                        "synthesis, not a guess."
+                        if rate_source == "measured"
+                        else (
+                            "Synthesize ONCE and correct from the measured voice_s; the "
+                            f"language rate is only good to +/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                        )
+                    )
                 ),
             }
         except Exception as exc:  # tool must never kill the agent loop
@@ -1826,9 +1895,24 @@ def build_production_tool_specs(
                     target_seconds=board.meta().target_seconds,
                 )
                 shares = allocate_chapter_seconds(per_chapter, usable_seconds=usable)
-                budget_words = chapter_word_budgets(shares, language).get(chapter, 0)
+                # Same measured-vs-heuristic rate as script_budget, and for the same reason:
+                # the number in this gate's message and the number script_budget told the
+                # author to write to must never diverge (see _measured_rate_wps).
+                script_for_rate = board.load("script")
+                voice_for_rate = board.load("voice")
+                measured_rate_wps = _measured_rate_wps(
+                    storyline_for_guard,
+                    script_for_rate if isinstance(script_for_rate, Script) else None,
+                    voice_for_rate if isinstance(voice_for_rate, VoiceArtifact) else None,
+                )
+                budget_words = chapter_word_budgets(
+                    shares, language, measured_rate_wps=measured_rate_wps
+                ).get(chapter, 0)
                 words_after = sum(len(line.text.split()) for line in new_lines)
-                missing_s = (budget_words - words_after) * seconds_per_word(language)
+                effective_seconds_per_word = (
+                    1.0 / measured_rate_wps if measured_rate_wps else seconds_per_word(language)
+                )
+                missing_s = (budget_words - words_after) * effective_seconds_per_word
                 under_budget = (
                     budget_words > 0
                     and words_after < _BUDGET_GATE_RATIO * budget_words
