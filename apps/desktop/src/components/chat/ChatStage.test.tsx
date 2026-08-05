@@ -570,9 +570,7 @@ describe("ChatStage", () => {
     // still fell through to {kind: "none"}, so the click left the preview empty.
     vi.useFakeTimers();
     try {
-      const action = actionMessage(
-        "m1", 1, "approve_script", { session_id: "s1", job_id: "j1" }, "running"
-      );
+      const action = actionMessage("m1", 1, "approve_script", { session_id: "s1" }, "running");
       const done = boardStatus();
       const getProductionStatus = vi
         .fn()
