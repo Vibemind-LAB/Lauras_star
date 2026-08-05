@@ -398,3 +398,40 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert len({id(a.model_client) for a in participants}) == 1
     # The orchestrator gets its own client instance (role="orchestrator"), distinct from agents'.
     assert team._model_client is not by_name["vision_reviewer"].model_client
+
+
+def test_agent_names_filter_builds_a_qa_only_team(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """agent_names=('qa_reviewer',) yields exactly one participant whose tools are the
+    QA whitelist — the structural guarantee that the post-gate QA stage cannot write."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _install_fake_autogen(monkeypatch)
+
+    team = production_agents.build_production_team(
+        db, board, providers.resolve_from_env({}), asset_id=asset_id,
+        agent_names=("qa_reviewer",),
+    )
+
+    # list[Any]: same access + reason as test_build_team_constructs's `participants`.
+    participants: list[Any] = team._participants  # noqa: SLF001
+    [agent] = participants
+    assert agent.name == "qa_reviewer"
+    assert tuple(sorted(t.name for t in agent.tools)) == (
+        "board_status", "get_script", "get_storyline", "review_export", "save_qa_report",
+    )
+
+
+def test_agent_names_filter_unknown_name_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _install_fake_autogen(monkeypatch)
+
+    with pytest.raises(ValueError, match="unknown agent"):
+        production_agents.build_production_team(
+            db, board, providers.resolve_from_env({}), asset_id=asset_id,
+            agent_names=("nope",),
+        )

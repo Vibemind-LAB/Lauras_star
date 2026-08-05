@@ -134,3 +134,69 @@ def _call_with_retry(
 
 def _summary(done: list[str]) -> str:
     return "deterministic tail: " + (", ".join(done) if done else "nothing to do")
+
+
+_QA_TASK = (
+    "QA only. The creative chain is complete and the script is user-approved: judge the "
+    "RENDERED export on the board (board_status -> get_storyline/get_script -> "
+    "review_export) and save your verdict via save_qa_report. Report findings; never "
+    "request script or storyline rewrites — the deterministic pipeline owns the chain."
+)
+
+
+def run_tail_with_qa(
+    db: Any,
+    board: Any,
+    config: Any,
+    *,
+    asset_id: str,
+    deps: Any,
+    event_sink: Callable[[dict[str, Any]], None] | None,
+    expected_scenes: list[int],
+    specs: list[ToolSpec] | None = None,
+    qa_execute: Any = None,
+) -> tuple[TailOutcome, Any]:
+    """Chain first, bounded QA second. QA runs only after a fully successful chain and gets
+    exactly one retry via the same ``_safe_execute`` convention (spec decision 3 applies to the
+    stage as a whole: one ``_safe_execute`` call is already exception-safe, a hard_fail QA is
+    reported, not retried into a loop).
+
+    ``db``/``board``/``config``/``deps``/``qa_execute`` stay ``Any`` (not ``Database``/``Board``/
+    ``AgentConfig``/``ProductionDeps``/``ExecuteFn``): this is a test seam as much as a real
+    entrypoint — the pipeline tests drive it with ``None`` for everything the injected
+    ``specs``/``qa_execute`` make unnecessary, and a stricter annotation would fail mypy on those
+    calls.
+    """
+    if specs is None:
+        from .production_tools import build_production_tool_specs
+
+        specs = build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+
+    tail = run_deterministic_tail(
+        board, specs, expected_scenes=expected_scenes, event_sink=event_sink
+    )
+    if not tail.ok:
+        return tail, None
+
+    from .orchestrator import _safe_execute
+
+    execute = qa_execute if qa_execute is not None else _make_qa_execute(
+        board, asset_id, deps, event_sink
+    )
+    qa_outcome = _safe_execute(execute, db, config, "A", "magentic", _QA_TASK)
+    return tail, qa_outcome
+
+
+def _make_qa_execute(
+    board: Any,
+    asset_id: str,
+    deps: Any,
+    event_sink: Callable[[dict[str, Any]], None] | None,
+) -> Any:
+    """The real QA ``ExecuteFn``: a one-agent team (``qa_reviewer`` only). Mirrors
+    :func:`production_orchestrator._make_default_execute`, narrowed via ``agent_names``."""
+    from .production_orchestrator import _make_default_execute
+
+    return _make_default_execute(
+        board, asset_id, deps, event_sink, agent_names=("qa_reviewer",)
+    )

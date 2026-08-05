@@ -14,6 +14,7 @@ from laura.short_creator.production_pipeline import (
     _STEP_BY_RESUME_POINT,
     TailOutcome,
     run_deterministic_tail,
+    run_tail_with_qa,
 )
 
 
@@ -246,6 +247,36 @@ def test_raising_tool_recovers_on_retry() -> None:
     assert outcome.ok and outcome.failed_step is None
     assert rec.calls == ["synthesize_script_voice", "synthesize_script_voice",
                          "build_cutlist", "save_contact_sheet", "render_production"]
+
+
+def test_run_tail_with_qa_calls_qa_after_successful_chain() -> None:
+    board = _FakeBoard(["voice", "cutlist", "contact_sheet", "render_report", "qa_report"])
+    rec = _Recorder()
+    qa_calls: list[str] = []
+
+    def fake_qa(db: Any, config: Any, stage: str, kind: str, task: str) -> Any:
+        qa_calls.append(task)
+        from laura.short_creator.orchestrator import StageOutcome
+        return StageOutcome(status="ok", weak=False, summary="ship", team="magentic", stage="A")
+
+    tail, qa = run_tail_with_qa(
+        None, board, None, asset_id="a", deps=None, event_sink=rec.sink,
+        expected_scenes=[1], specs=_specs(board, rec), qa_execute=fake_qa,
+    )
+    assert tail.ok and qa is not None and qa.status == "ok"
+    assert qa_calls and "save_qa_report" in qa_calls[0]
+
+
+def test_run_tail_with_qa_skips_qa_when_chain_failed() -> None:
+    board = _FakeBoard(["voice", "cutlist", "contact_sheet", "render_report", "qa_report"])
+    rec = _Recorder()
+    tail, qa = run_tail_with_qa(
+        None, board, None, asset_id="a", deps=None, event_sink=rec.sink,
+        expected_scenes=[1],
+        specs=_specs(board, rec, fail={"synthesize_script_voice": 2}),
+        qa_execute=lambda *a: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    assert not tail.ok and qa is None
 
 
 def test_double_raising_tool_fails_with_exception_type_in_reason() -> None:

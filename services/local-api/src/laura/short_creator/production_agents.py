@@ -273,6 +273,7 @@ def build_production_team(
     asset_id: str,
     stage: Stage = "A",
     deps: ProductionDeps | None = None,
+    agent_names: tuple[str, ...] | None = None,
 ) -> MagenticOneGroupChat:
     """Assemble the v2 production Magentic-One team (roster + orchestrator model client).
 
@@ -283,6 +284,12 @@ def build_production_team(
     pattern as :func:`laura.short_creator.toolset.build_function_tools`, inlined here since that
     builder needs ``board``/``asset_id``/``deps`` that the plain short-creator toolset does not).
     Raises a clear :class:`RuntimeError` if the optional ``autoshort`` extra is missing.
+
+    ``agent_names`` narrows the roster (MP2, the bounded QA stage): ``None`` builds the full
+    five-agent roster as before; a tuple builds ONLY those agents — the structural guarantee that
+    a one-agent QA team cannot hold any write-capable creative tool. An unknown name is a
+    programmer error (a caller misspelled a roster name), so it raises immediately rather than
+    silently building a smaller-than-intended team.
     """
     try:
         from autogen_agentchat.agents import AssistantAgent
@@ -300,6 +307,15 @@ def build_production_team(
         for spec in tool_specs
     }
     model_client = build_model_client(config, role="agent", stage=stage)
+
+    specs_all = production_agent_specs(board.meta().language)
+    if agent_names is not None:
+        known = {s.name for s in specs_all}
+        unknown = [n for n in agent_names if n not in known]
+        if unknown:
+            raise ValueError(f"unknown agent name(s): {unknown}")
+        specs_all = [s for s in specs_all if s.name in agent_names]
+
     # list[Any]: participants wants list[ChatAgent]; AssistantAgent subclasses it, but list is
     # invariant (and ChatAgent is only importable with the extra installed).
     agents: list[Any] = [
@@ -311,7 +327,7 @@ def build_production_team(
             system_message=spec.system_message,
             max_tool_iterations=spec.max_tool_iterations,
         )
-        for spec in production_agent_specs(board.meta().language)
+        for spec in specs_all
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
     return MagenticOneGroupChat(participants=agents, model_client=orchestrator, max_turns=MAX_TURNS)

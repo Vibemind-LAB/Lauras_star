@@ -361,6 +361,7 @@ def _make_default_execute(
     event_sink: Callable[[dict[str, Any]], None] | None = None,
     *,
     require_tool_call: bool = False,
+    agent_names: tuple[str, ...] | None = None,
 ) -> ExecuteFn:
     """The default ``ExecuteFn``: lazily builds and runs the real production team.
 
@@ -377,6 +378,10 @@ def _make_default_execute(
     ``tool_call`` events are additionally COUNTED (sink or no sink) and handed to
     :func:`_parse_outcome`, which — with *require_tool_call* set for a follow-up run — turns a
     zero-tool-call finish into a ``hard_fail`` instead of a false success.
+
+    ``agent_names`` passes straight through to :func:`production_agents.build_production_team`
+    (MP2, the bounded QA stage): ``None`` builds the full roster as before, a narrower tuple
+    builds only those agents.
     """
 
     def execute(
@@ -388,7 +393,8 @@ def _make_default_execute(
 
         async def _run() -> tuple[Any, int]:
             team = build_production_team(
-                db, board, config, asset_id=asset_id, stage=stage, deps=deps
+                db, board, config, asset_id=asset_id, stage=stage, deps=deps,
+                agent_names=agent_names,
             )
             final: Any = None
             n_tool_calls = 0
