@@ -50,10 +50,13 @@ def run_deterministic_tail(
   save_contact_sheet → render` — jeweils der EXISTIERENDE Tool-Closure aus
   `build_production_tool_specs` (bzw. dieselben zugrunde liegenden Funktionen mit
   denselben `ProductionDeps`). Kein neuer Render-/Voice-Code.
-- **Skip-Semantik = Resume-Semantik:** Ein Schritt, dessen Artefakt bereits vorhanden
-  und nicht stale ist, wird übersprungen (`board.load(...)` + bestehende
-  Staleness-Logik). Ein zweiter Anlauf nach einem Fehler setzt exakt am
-  fehlgeschlagenen Schritt fort.
+- **Skip-Semantik = Resume-Semantik:** Ein Schritt wird übersprungen, wenn
+  `board.resume_point(expected_scenes)` schon daran vorbei ist — reine
+  Artefakt-PRESENCE (`board.load(name) is not None`), keine Staleness-Neubewertung pro
+  Schritt **(Implementierungsstand 2026-08-05: `run_deterministic_tail` liest
+  `resume_point`, nicht eine Staleness-Prüfung — die ursprünglich geplante
+  „vorhanden und nicht stale"-Formel wurde nicht so gebaut)**. Ein zweiter Anlauf nach
+  einem Fehler setzt exakt am fehlgeschlagenen Schritt fort.
 - **Retry:** Genau ein automatischer Wiederholungsversuch pro Schritt. Schlägt auch der
   fehl, endet die Kette mit `TailOutcome(status="hard_fail", failed_step=<name>,
   reason=<Tool-Reason>)`.
@@ -71,9 +74,12 @@ Nach erfolgreichem Render ruft die Kette die bestehende Execute-Maschinerie
 QA-Agent, dessen `tool_names` ausschließlich Lese- + QA-Tools enthalten (get_*,
 script_budget, qa-Report-Save; exakte Liste im Plan als Exakt-Tupel-Test gepinnt).
 Ergebnis ist das gewohnte `qa_report`-Artefakt mit Ship/Weak-Urteil. Scheitert die
-QA-Stufe, gilt Entscheidung 3 (1 Retry, dann ehrliches Scheitern) — ein gerenderter Film
-ohne QA-Urteil bleibt als Artefakt erhalten und der nächste Anlauf beginnt bei
-`qa_report`.
+QA-Stufe, gilt **nicht** Entscheidung 3: die QA-Stufe läuft genau EINMAL, ohne
+automatischen Retry **(Implementierungsstand 2026-08-05: `run_tail_with_qa` ruft
+`_safe_execute` genau einmal auf; ein `hard_fail`-`StageOutcome` wird as-is gemeldet, nie
+erneut versucht — die 1-Retry-Regel aus Entscheidung 3 gilt nur für die vier
+Kettenschritte, nicht für die QA-Stufe)** — ein gerenderter Film ohne QA-Urteil bleibt
+als Artefakt erhalten und der nächste Anlauf beginnt bei `qa_report`.
 
 ### Einstieg: ein Zweig in `run_production`
 
@@ -112,11 +118,15 @@ die Kette läuft deterministisch. Die kompensierende Rollback-Logik
 - Schritt schlägt zweimal fehl → `board.set_status("failed")`, Ergebnis nennt
   `failed_step` + Tool-Reason; Karte zeigt ✗ mit dieser Zeile; Chat-Antwort nennt den
   Schritt. Bereits erzeugte Artefakte bleiben auf dem Board.
-- Erneutes „Script freigeben" ist dank content-aware Idempotenz ein No-Op-Stempel
-  (Hash unverändert → „Script war schon freigegeben." **plus** Resume, wenn das Board
-  nicht komplett ist — die bestehende Doppel-Freigabe-Antwort wird dafür um den
-  Resume-Fall erweitert: schon freigegeben + Board unfertig → Lauf wird erneut
-  angestoßen statt nur zu antworten).
+- Erneutes „Script freigeben" ist dank content-aware Idempotenz ein No-Op fürs Stempeln
+  (Hash unverändert → kein Re-Stempeln). Ist das Board dabei fertig
+  (`resume_point == "done"`), antwortet der Handler NUR mit
+  „Script war schon freigegeben." — kein neuer Lauf. Ist das Board NICHT fertig, entfällt
+  dieser Text vollständig **(Implementierungsstand 2026-08-05: `_handle_approve_script`
+  prüft `resume_point` VOR dem Text und liefert bei einem unfertigen Board direkt die
+  normale Aktionskarte des angestoßenen Resume-Laufs, ohne die
+  „schon freigegeben"-Formulierung — anders als ursprünglich als „Text plus Resume"
+  geplant)**.
 - Das Voice-Gate in `synthesize_script_voice` bleibt als Defense-in-Depth unverändert
   bestehen — die Kette läuft ohnehin nur bei aktueller Freigabe.
 
