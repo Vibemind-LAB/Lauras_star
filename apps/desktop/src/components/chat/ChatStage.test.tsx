@@ -563,4 +563,54 @@ describe("ChatStage", () => {
       vi.useRealTimers();
     }
   });
+
+  it(`an approve_script card's "▶ ansehen" also derives the export preview`, async () => {
+    // Live finding 2026-08-05: the final-review fix routed approve_script into
+    // ProductionActionCard, but deriveTarget — the OTHER reader of the tool string —
+    // still fell through to {kind: "none"}, so the click left the preview empty.
+    vi.useFakeTimers();
+    try {
+      const action = actionMessage(
+        "m1", 1, "approve_script", { session_id: "s1", job_id: "j1" }, "running"
+      );
+      const done = boardStatus();
+      const getProductionStatus = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<never>(() => {}))
+        .mockResolvedValue(done);
+      const c = client({
+        listConversations: vi.fn().mockResolvedValue([summary()]),
+        getConversation: vi.fn().mockResolvedValue({
+          id: "c1",
+          title: "Erster Chat",
+          active_project_id: null,
+          messages: [action],
+        }),
+        getProductionStatus,
+        getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      });
+
+      renderWithQuery(<ChatStage client={c} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByText("Erster Chat"));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      const ansehenButton = screen.getByRole("button", { name: "▶ ansehen" });
+      await act(async () => {
+        fireEvent.click(ansehenButton);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const video = document.querySelector("video");
+      expect(video?.getAttribute("src")).toBe("laura-media://media/export/exp-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

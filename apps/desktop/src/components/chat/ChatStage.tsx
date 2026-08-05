@@ -52,7 +52,10 @@ async function deriveTarget(client: LauraClient, message: ChatMessage): Promise<
     return exportId !== null ? { kind: "export", exportId } : { kind: "none" };
   }
 
-  if (tool === "start_short" || tool === "follow_up") {
+  // approve_script resumes the production and carries the same {session_id, job_id} refs —
+  // it must derive like the other production cards (live finding 2026-08-05: it fell through
+  // to "none", so the finished film's "▶ ansehen" left the preview empty).
+  if (tool === "start_short" || tool === "follow_up" || tool === "approve_script") {
     const sessionId = typeof refs.session_id === "string" ? refs.session_id : null;
     if (sessionId === null) return { kind: "none" };
     try {
