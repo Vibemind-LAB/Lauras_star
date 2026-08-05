@@ -452,16 +452,18 @@ export interface ActionCardProps {
 
 /**
  * One `action` message rendered as a thread card. Dispatches on `content.tool`: the production
- * tools (`start_short`/`follow_up`) narrate live via the session's event log
+ * tools (`start_short`/`follow_up`/`approve_script` — Gate B's resumed run carries the SAME
+ * `refs.session_id`/`refs.job_id` contract, see `_handle_approve_script` in
+ * `services/local-api/src/laura/chat/executor.py`) narrate live via the session's event log
  * ({@link ProductionActionCard}); the one-shot job tools (`start_overview`/`import_urls`) show a
  * plain running/done/failed line ({@link JobActionCard}); Gate A's `review_transcript` (also
- * emitted by `correct_transcript` — the executor hard-codes the same tool name for both) renders
- * the segment list read-only ({@link ReviewTranscriptCard}).
+ * emitted by `correct_transcript`/`confirm_transcript` — the executor hard-codes the same tool
+ * name for all three) renders the segment list read-only ({@link ReviewTranscriptCard}).
  */
 export function ActionCard({ message, client, onFocus }: ActionCardProps): ReactElement {
   const { tool, refs, outcome } = narrowActionContent(message.content);
 
-  if (tool === "start_short" || tool === "follow_up") {
+  if (tool === "start_short" || tool === "follow_up" || tool === "approve_script") {
     const sessionId = typeof refs.session_id === "string" ? refs.session_id : null;
     if (sessionId === null) return <UnknownActionLine tool={tool} />;
     const jobId = typeof refs.job_id === "string" ? refs.job_id : null;

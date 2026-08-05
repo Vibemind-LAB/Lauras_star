@@ -163,6 +163,33 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     expect(screen.getByText(/sucht Momente/)).toBeTruthy();
   });
 
+  it("approve_script (Gate B) renders as a production card, not the unknown-action fallback", async () => {
+    // Regression for the review finding: approve_script's card carries the SAME
+    // refs.session_id/refs.job_id contract as start_short/follow_up (see
+    // _handle_approve_script in services/local-api/src/laura/chat/executor.py), so the
+    // resumed production (voice -> cutlist -> render -> export) must narrate live here too,
+    // not fall through to UnknownActionLine's bare tool-name text.
+    const events: AgentEvent[] = [{ type: "stage", stage: "voice", team: "core" }];
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events, next: 1, done: false }),
+      getJob: vi.fn().mockResolvedValue(job({ status: "running" })),
+    });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("approve_script", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(c.getProductionEvents).toHaveBeenCalledWith("s1", 0);
+    expect(screen.getByText(/voice/)).toBeTruthy();
+    expect(screen.queryByText("approve_script")).toBeNull();
+  });
+
   it("advances the cursor and accumulates events across polls", async () => {
     const getProductionEvents = vi
       .fn()
