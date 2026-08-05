@@ -32,9 +32,18 @@ from ..db import repos
 from ..db.database import Database
 from . import context
 from .board import Board
-from .board_models import BoardMeta, Format, QaReport, RenderReport, canvas_for
+from .board_models import (
+    BoardMeta,
+    Format,
+    QaReport,
+    RenderReport,
+    Script,
+    canvas_for,
+    content_hash,
+)
 from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
 from .production_agents import build_production_team
+from .production_pipeline import run_tail_with_qa
 from .production_tools import ProductionDeps, follow_up_render_cap
 from .providers import AgentConfig, Stage, config_warnings
 
@@ -476,6 +485,46 @@ def _completed_result(
     }
 
 
+# The five resume points that :func:`production_pipeline.run_deterministic_tail` actually
+# advances (``_STEP_BY_RESUME_POINT`` plus its terminal ``qa_report``). A resume point OUTSIDE
+# this set (``storyline``/``script``, still creative work; ``done``, nothing left) makes the
+# tail a no-op that still reports ``ok`` — by design, so a caller who has already checked
+# eligibility can call it unconditionally. That makes this set-membership check the ONLY guard
+# stopping ``run_production`` from handing a pre-chain or already-finished board to the tail and
+# getting back a hollow "ok" that did nothing.
+_TAIL_RESUME_POINTS = frozenset({
+    "voice", "cutlist", "contact_sheet", "render_report", "qa_report",
+})
+
+
+def deterministic_eligible(
+    board: Board, message: str | None, expected_scenes: list[int]
+) -> bool:
+    """Spec 2026-08-05 (modular production): the post-approval resume of a gated session
+    runs the deterministic tail instead of the agent team.
+
+    True IFF ALL of: no follow-up ``message`` (a follow-up is itself a request for a team
+    turn, same rule the full-restore short-circuit above uses); Gate B is on and approved;
+    the approval is content-current — stamped against the SAME script that is on the board
+    right now, the identical compare :meth:`Board.status`'s ``script_gate.approved`` uses, so
+    an edit or revert after approval re-arms the gate here too; and the creative work is
+    actually done, i.e. the board's resume point is one of the five the deterministic tail
+    advances (:data:`_TAIL_RESUME_POINTS`) — never ``storyline``/``script`` (creative work
+    still pending) or ``done`` (nothing left to run).
+    """
+    if message is not None:
+        return False
+    meta = board.meta()
+    if not meta.script_gate or meta.script_approved_utc is None:
+        return False
+    script = board.load("script")
+    if not isinstance(script, Script):
+        return False
+    if meta.script_approved_script_hash != content_hash(script):
+        return False
+    return board.resume_point(expected_scenes) in _TAIL_RESUME_POINTS
+
+
 def run_production(
     db: Database,
     config: AgentConfig,
@@ -601,6 +650,43 @@ def run_production(
             summary="board already coherent through qa_report; no team turn needed",
             export_id=_export_id_of(board),
             resume_point="done",
+        )
+
+    # Spec 2026-08-05 (modular production): a gated session resuming past user approval needs
+    # no creative agent turn at all — voice/cutlist/contact_sheet/render/qa are plain tool
+    # calls the deterministic pipeline runs itself, so an approved script can never be
+    # silently rewritten by a resumed team. deterministic_eligible is the ONE guard deciding
+    # this; run_deterministic_tail is a no-op-but-``ok`` outside its five resume points, so
+    # skipping this check would let a pre-chain or already-finished board reach the tail and
+    # come back reporting a hollow success.
+    if deterministic_eligible(board, message, expected_scenes):
+        run_deps = _deps_for_run(deps, board, message)
+        tail, qa_outcome = run_tail_with_qa(
+            db, board, config, asset_id=asset_id, deps=run_deps,
+            event_sink=event_sink, expected_scenes=expected_scenes,
+        )
+        resume_point = board.resume_point(expected_scenes)
+        if not tail.ok:
+            board.set_status("failed")
+            summary = f"deterministic tail failed at {tail.failed_step}: {tail.reason}"
+        else:
+            if resume_point == "done":
+                board.set_status("complete")
+            summary = tail.summary + (
+                f"; qa: {qa_outcome.summary}" if qa_outcome is not None else ""
+            )
+        return _completed_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            status="ok" if tail.ok else "hard_fail",
+            stage="A",
+            team="magentic",  # cosmetic result field; cards read summary/status.
+            weak=_qa_weak(board),
+            escalated=False,
+            summary=summary,
+            export_id=_export_id_of(board),
+            resume_point=resume_point,
         )
 
     task_text = build_production_task(

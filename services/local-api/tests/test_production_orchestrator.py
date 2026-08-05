@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
@@ -1254,3 +1256,225 @@ def test_deps_for_run_raises_render_cap_only_for_message_runs(tmp_path: Path) ->
     from_none = _deps_for_run(None, board, "render jetzt")
     assert from_none is not None
     assert from_none.max_render_cycles == follow_up_render_cap(board)
+
+
+# --- deterministic_eligible + run_production's deterministic-tail branch -------------------
+# Spec 2026-08-05 (modular production): once Gate B is approved and the session is resuming
+# past creative work, production_pipeline.run_tail_with_qa replaces the agent team entirely —
+# voice/cutlist/contact_sheet/render/qa become plain tool calls, never rewritten by a resumed
+# team turn. deterministic_eligible is the pure predicate that decides when that applies.
+
+_EXPECTED_ONE_SCENE = [1]
+
+
+def _gated_board(tmp_path: Path, name: str, *, script_gate: bool) -> Board:
+    """A fresh board (scene reviewed, nothing else) with the given gate setting.
+    resume_point == 'storyline' — no creative work started yet."""
+    root = tmp_path / name
+    meta = BoardMeta(
+        session_id=name,
+        asset_id="a1",
+        created_utc="2026-08-05T00:00:00+00:00",
+        task="t",
+        language="German",
+        target_seconds=60.0,
+        script_gate=script_gate,
+    )
+    board = Board.create(root, meta)
+    board.save_scene_review(_review(1))
+    return board
+
+
+def _gated_board_with_storyline(tmp_path: Path, name: str, *, script_gate: bool) -> Board:
+    """Storyline saved, script not yet — resume_point == 'script', still pre-chain."""
+    board = _gated_board(tmp_path, name, script_gate=script_gate)
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="t",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0
+                )
+            ],
+        ),
+    )
+    return board
+
+
+def _gated_board_with_script(tmp_path: Path, name: str, *, script_gate: bool) -> Board:
+    """Storyline + script saved, gate not yet approved — resume_point == 'voice'."""
+    board = _gated_board_with_storyline(tmp_path, name, script_gate=script_gate)
+    board.save("script", _script_artifact("hallo welt schauen wir uns das dashboard an"))
+    return board
+
+
+def _approve_current(board: Board) -> None:
+    from laura.short_creator.board_models import content_hash
+
+    script = board.load("script")
+    assert script is not None
+    board.set_script_approved("2026-08-05T12:00:00Z", content_hash(script))
+
+
+class TestDeterministicEligible:
+    def test_true_only_for_gated_current_post_script_no_message(self, tmp_path: Path) -> None:
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board_with_script(tmp_path, "elig-true", script_gate=True)
+        _approve_current(board)
+        assert board.resume_point(_EXPECTED_ONE_SCENE) == "voice"
+        assert deterministic_eligible(board, None, _EXPECTED_ONE_SCENE) is True
+
+    def test_false_without_gate(self, tmp_path: Path) -> None:
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board_with_script(tmp_path, "elig-nogate", script_gate=False)
+        _approve_current(board)
+        assert deterministic_eligible(board, None, _EXPECTED_ONE_SCENE) is False
+
+    def test_false_when_approval_stale(self, tmp_path: Path) -> None:
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board_with_script(tmp_path, "elig-stale", script_gate=True)
+        board.set_script_approved("2026-08-05T12:00:00Z", "not-the-current-hash")
+        assert deterministic_eligible(board, None, _EXPECTED_ONE_SCENE) is False
+
+    def test_false_when_never_approved(self, tmp_path: Path) -> None:
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board_with_script(tmp_path, "elig-noapproval", script_gate=True)
+        assert deterministic_eligible(board, None, _EXPECTED_ONE_SCENE) is False
+
+    def test_false_with_follow_up_message(self, tmp_path: Path) -> None:
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board_with_script(tmp_path, "elig-followup", script_gate=True)
+        _approve_current(board)
+        assert deterministic_eligible(
+            board, "mach den Hook punchiger", _EXPECTED_ONE_SCENE
+        ) is False
+
+    def test_false_before_script_exists(self, tmp_path: Path) -> None:
+        """Pre-chain resume point 'storyline' (nothing saved yet) — never approved, so this
+        already fails the gate check, but it must still read False, not crash."""
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board(tmp_path, "elig-nostoryline", script_gate=True)
+        assert board.resume_point(_EXPECTED_ONE_SCENE) == "storyline"
+        assert deterministic_eligible(board, None, _EXPECTED_ONE_SCENE) is False
+
+    def test_false_when_resume_point_is_script(self, tmp_path: Path) -> None:
+        """Pre-chain resume point 'script' (storyline saved, script not yet) — the second
+        half of the pre-chain matrix the storyline case above doesn't cover. Ledger note:
+        deterministic_eligible's resume_point membership check is the ONLY guard stopping
+        run_deterministic_tail from being handed a pre-chain board and reporting a hollow
+        ok+empty tail — this pins that the guard actually excludes 'script' too, not just
+        'storyline'."""
+        from laura.short_creator.production_orchestrator import deterministic_eligible
+
+        board = _gated_board_with_storyline(tmp_path, "elig-noscript", script_gate=True)
+        assert board.resume_point(_EXPECTED_ONE_SCENE) == "script"
+        assert deterministic_eligible(board, None, _EXPECTED_ONE_SCENE) is False
+
+
+def _seeded_gated_run(
+    tmp_path: Path, session_id: str
+) -> tuple[Database, str, providers.AgentConfig]:
+    """db + asset + a gated, approved board (resume_point == 'voice') under that session,
+    ready for run_production to reopen."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, session_id)
+    meta = BoardMeta(
+        session_id=session_id,
+        asset_id=asset_id,
+        created_utc="2026-08-05T00:00:00+00:00",
+        task="t",
+        language="German",
+        target_seconds=60.0,
+        script_gate=True,
+    )
+    board = Board.create(root, meta)
+    board.save_scene_review(_review(1))
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="t",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0
+                )
+            ],
+        ),
+    )
+    board.save("script", _script_artifact("hallo welt schauen wir uns das dashboard an"))
+    _approve_current(board)
+    config = providers.resolve_from_env({})
+    return db, asset_id, config
+
+
+def test_run_production_uses_tail_not_team_when_eligible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An eligible resume must NOT run the agent team: run_tail_with_qa is called exactly
+    once, the fake team execute is never called."""
+    db, asset_id, config = _seeded_gated_run(tmp_path, "sess-tail")
+    called = {"tail": 0, "team": 0}
+
+    def fake_tail(
+        db: Database, board: Board, config: providers.AgentConfig, **kwargs: object
+    ) -> tuple[object, object]:
+        called["tail"] += 1
+        from laura.short_creator.production_pipeline import TailOutcome
+
+        return (
+            TailOutcome(True, None, None, "deterministic tail: all"),
+            orchestrator.StageOutcome(
+                status="ok", weak=False, summary="ship", team="magentic", stage="A"
+            ),
+        )
+
+    monkeypatch.setattr(production_orchestrator, "run_tail_with_qa", fake_tail)
+
+    def team_execute(*a: object, **k: object) -> orchestrator.StageOutcome:
+        called["team"] += 1
+        raise AssertionError("team must not run on the deterministic path")
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess-tail", task="t", execute=team_execute
+    )
+
+    assert called == {"tail": 1, "team": 0}
+    assert result["ok"] is True
+    assert result["summary"].startswith("deterministic tail")
+
+
+def test_run_production_tail_failure_sets_failed_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db, asset_id, config = _seeded_gated_run(tmp_path, "sess-tail-fail")
+
+    def fake_tail(
+        db: Database, board: Board, config: providers.AgentConfig, **kwargs: object
+    ) -> tuple[object, None]:
+        from laura.short_creator.production_pipeline import TailOutcome
+
+        return (
+            TailOutcome(False, "render_production", "boom", "deterministic tail: voice"),
+            None,
+        )
+
+    monkeypatch.setattr(production_orchestrator, "run_tail_with_qa", fake_tail)
+
+    def never_team(*a: object, **k: object) -> orchestrator.StageOutcome:
+        raise AssertionError("team must not run on the deterministic path")
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess-tail-fail", task="t",
+        execute=never_team,
+    )
+
+    assert result["ok"] is False
+    assert "render_production" in result["summary"]
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-tail-fail")
+    assert Board.open(root).meta().status == "failed"
