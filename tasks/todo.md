@@ -536,3 +536,34 @@ dem Produzieren bestätigt sein, Skripte müssen vor der Stimmsynthese freigegeb
   volle Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter Chat-Durchlauf in
   der laufenden App (Gate A Round-Trip, Gate B Round-Trip, Warnungs-Sichtbarkeit) — siehe
   `.superpowers/sdd/2026-08-04-transcript-gates/task-13-report.md`.
+
+## Modulare Produktion (deterministischer Post-Gate-Pfad)  `[x]`  (Spec + Plan 2026-08-05)
+Nach Gate B bleibt in der Produktionskette nichts Kreatives mehr übrig: Voice→Cutlist→
+Kontaktbogen→Render laufen als reine Werkzeugkette statt über das Agenten-Team, das
+freigegebene Scripts sonst hätte umschreiben können.
+- [x] **MP1 — `production_pipeline.run_deterministic_tail`** — Kette ohne QA: Skip-Semantik
+      über `Board.resume_point`, genau ein Auto-Retry pro Schritt, ehrliches Scheitern mit
+      Schrittname; kein Schreibpfad auf `script`/`storyline` (Exakt-Tupel-Test pinnt das
+      Vier-Werkzeuge-Menü)
+- [x] **MP2 — begrenzte QA-Stufe** — `build_production_team` bekommt einen `agent_names`-
+      Filter (Exakt-Tupel-Whitelist, `ValueError` bei unbekanntem Namen); `run_tail_with_qa`
+      hängt ein Ein-Agent-Team (`qa_reviewer`, Lese-/QA-Werkzeuge) nach einer erfolgreichen
+      Kette an, überspringt QA bei Kettenfehler
+- [x] **MP3 — `deterministic_eligible` + Zweig in `run_production`** — reines Prädikat: Gate
+      aktiv, Freigabe content-aktuell (`content_hash`-Vergleich), Kreativarbeit fertig
+      (`resume_point` in Voice…QA-Report), kein Text-Follow-up; `run_production` nimmt bei
+      Eignung den Tail statt des Team-Aufbaus, identische `_completed_result`-Form
+- [x] **MP4 — `approve_script` als purer Resume** — `run_production_resume` ohne
+      `message`-Key im Job-Payload; Doppel-Freigabe auf einem unfertigen Board stößt einen
+      weiteren Resume an (Recovery nach gescheitertem Tail) statt nur zu antworten;
+      `_SCRIPT_APPROVED_FOLLOW_UP_TEXT` entfällt ersatzlos
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2601 passed, 7
+      skipped, 788.97s; bare `uv run mypy` clean (520 Dateien); `uv run ruff check src tests`
+      clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 498 Tests grün; `pnpm typecheck`
+      clean (keine Frontend-Änderung in diesem Arc — der grüne Lauf beweist genau das).
+- **Exit:** ✓ nach „Script freigeben" läuft die Produktion als deterministische
+  Werkzeugkette plus begrenzter QA-Bewertung, das Team fasst freigegebene Scripts nicht
+  mehr an; volle Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter
+  Chat-Durchlauf in der laufenden App (Pipeline-Tool-Events auf der Karte, keine zweite
+  Freigabe nötig, Text-Follow-up läuft weiterhin über das Team und bewaffnet das Gate neu)
+  — siehe `.superpowers/sdd/2026-08-05-modular-production/task-MP5-report.md`.
