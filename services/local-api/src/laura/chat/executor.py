@@ -564,6 +564,7 @@ def _handle_confirm_transcript(
     conversation_id: str,
     decision: RouterDecision,
     now_utc: str,
+    principal: Principal | None,
 ) -> list[dict[str, Any]]:
     if not active_project_id:
         return [_append_text(db, conversation_id, _NO_ACTIVE_PROJECT_TEXT, now_utc)]
@@ -572,7 +573,14 @@ def _handle_confirm_transcript(
     if asset is None:
         assert error_text is not None
         return [_append_text(db, conversation_id, error_text, now_utc)]
-    repos.set_transcript_confirmed_at(db, str(asset["id"]), now_utc)
+    asset_id = str(asset["id"])
+    repos.set_transcript_confirmed_at(db, asset_id, now_utc)
+    # Audit parity with the HTTP twin POST /assets/{asset_id}/transcript:confirm
+    # (api/analysis.py's confirm_transcript), which records the same action.
+    audit.record(
+        db, principal or audit.system_principal(), "transcript.confirm",
+        entity_type="asset", entity_id=asset_id,
+    )
     text = f"Transkript von ‚{asset['display_name']}' bestätigt."
     return [_append_text(db, conversation_id, text, now_utc)]
 
@@ -599,9 +607,10 @@ def execute_decision(
     ``principal`` is the HTTP caller (Task 6 passes the resolved request principal); it
     defaults to ``None`` so every pre-existing caller keeps working. ``create_project``
     consumes it to give chat-created projects the same ``org_id``/audit-trail parity as
-    ``POST /projects``; ``correct_transcript`` consumes it the same way for its per-segment
-    ``transcript.update`` audit rows (falling back to :func:`laura.audit.system_principal`
-    when chat has no HTTP caller of its own, exactly like ``create_project``).
+    ``POST /projects``; ``correct_transcript`` and ``confirm_transcript`` consume it the same
+    way for their ``transcript.update`` / ``transcript.confirm`` audit rows (falling back to
+    :func:`laura.audit.system_principal` when chat has no HTTP caller of its own, exactly
+    like ``create_project`` — and matching each tool's HTTP twin in ``api/analysis.py``).
     """
     try:
         conversation = repos.get_conversation(db, conversation_id)
@@ -638,7 +647,7 @@ def execute_decision(
             )
         if tool == "confirm_transcript":
             return _handle_confirm_transcript(
-                db, active_project_id, conversation_id, decision, now_utc
+                db, active_project_id, conversation_id, decision, now_utc, principal
             )
         # "approve_script" is Task 7's (Gate B script checkpoint) — deliberately falls through
         # to the same defensive branch as a truly unknown tool until that handler lands.

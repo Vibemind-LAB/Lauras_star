@@ -787,6 +787,30 @@ def test_review_transcript_over_limit_adds_remainder_text(tmp_path: Path) -> Non
     assert extra["content"]["text"] == "… und 5 weitere Segmente."
 
 
+def test_review_transcript_no_transcript_run_returns_empty_card(tmp_path: Path) -> None:
+    """An asset that resolves but has no analysis run at all (no ASR ever ran) must still
+    produce a card, never a crash — deliberately treated as segments=[]/total=0 rather than
+    a special error text (see task-5-report.md's "no transcript run" design note)."""
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="No Transcript",
+        source_path="/media/no-transcript.mp4",
+    )
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "No Transcript"}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    card = messages[0]
+    assert card["kind"] == "action"
+    assert card["content"]["payload"]["segments"] == []
+    assert card["content"]["payload"]["total"] == 0
+
+
 # --- correct_transcript ------------------------------------------------------------------------
 
 
@@ -948,6 +972,43 @@ def test_correct_transcript_unknown_asset_ref_asks_no_card(tmp_path: Path) -> No
     assert "Clip 1" in messages[0]["content"]["text"]
 
 
+def test_correct_transcript_no_transcript_run_reports_no_segments_no_writes(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """An asset that resolves but has no transcript run at all: total=0, so the range text's
+    ``total == 0`` branch fires ("noch keine Segmente") instead of a nonsensical "1–0" range,
+    and nothing is written (mirrors the out-of-range-index test above)."""
+    calls: list[tuple[str, list[str]]] = []
+
+    def _fake_reindex(db: Any, asset_id: str, segment_ids: list[str]) -> int:
+        calls.append((asset_id, list(segment_ids)))
+        return len(segment_ids)
+
+    monkeypatch.setattr("laura.chat.executor.reindex_segments", _fake_reindex)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="No Transcript",
+        source_path="/media/no-transcript.mp4",
+    )
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {"asset_ref": "No Transcript", "corrections": [{"segment_index": 1, "text": "x"}]},
+        ),
+        now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "keine Segmente" in messages[0]["content"]["text"]
+    assert calls == []
+    assert repos.list_audit_events(db) == []
+
+
 def test_correct_transcript_without_active_project_asks(tmp_path: Path) -> None:
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
@@ -983,6 +1044,38 @@ def test_confirm_transcript_sets_stamp_and_replies_german(tmp_path: Path) -> Non
     assert messages[0]["content"]["text"] == "Transkript von ‚Clip 1' bestätigt."
     updated = repos.get_asset(db, asset["id"])
     assert updated is not None and updated["transcript_confirmed_at"] == _NOW
+
+    # Audit parity with the HTTP twin POST /assets/{asset_id}/transcript:confirm
+    # (api/analysis.py), which records exactly this action/entity_type/entity_id.
+    audit_events = repos.list_audit_events(db)
+    assert len(audit_events) == 1
+    audit_event = audit_events[0]
+    assert audit_event["action"] == "transcript.confirm"
+    assert audit_event["entity_type"] == "asset"
+    assert audit_event["entity_id"] == asset["id"]
+    assert audit_event["principal_kind"] == "local"  # no principal -> system_principal()
+
+
+def test_confirm_transcript_with_principal_audits_it(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, _seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+    principal = Principal(kind="key", role="owner", user_id="user-1", org_id="org-1")
+
+    execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("confirm_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+        principal=principal,
+    )
+
+    audit_events = repos.list_audit_events(db)
+    assert len(audit_events) == 1
+    audit_event = audit_events[0]
+    assert audit_event["action"] == "transcript.confirm"
+    assert audit_event["entity_id"] == asset["id"]
+    assert audit_event["principal_kind"] == "key"
+    assert audit_event["principal_id"] == "user-1"
 
 
 def test_confirm_transcript_unknown_asset_ref_asks_no_card(tmp_path: Path) -> None:
