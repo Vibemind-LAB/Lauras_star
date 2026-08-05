@@ -12,6 +12,7 @@ than routed through the executor.
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -25,6 +26,8 @@ from ..db import repos
 from ..db.database import Database
 from ..short_creator.providers import resolve_from_env
 from ..util import new_id, utcnow_iso
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -53,6 +56,50 @@ def _running_jobs_count(db: Database) -> int:
             "SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'running')"
         ).fetchone()
         return int(row["n"])
+
+
+def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, str] | None:
+    """The router-context 'Active production session' line's payload — best-effort, never
+    raises: a session referenced by the thread's last action card but whose board can't be
+    read (asset gone, board never created) simply yields no line rather than a 500 (spec FE3).
+
+    ``state`` mirrors the session's actual position: a queued/running job wins over the
+    board's own state (it's the freshest signal); otherwise the script gate's pending decision
+    outranks the board's own status flag, since a board sitting at "active" with a script
+    nobody approved yet is still, from the user's perspective, awaiting-approval.
+    """
+    try:
+        from ..chat.executor import _latest_session_id
+        from ..short_creator.board import Board
+        from ..short_creator.production_orchestrator import board_root_for
+
+        session_id = _latest_session_id(messages)
+        if session_id is None:
+            return None
+        session = repos.get_production_session(db, session_id)
+        if session is None:
+            return None
+        board = Board.open(board_root_for(db, str(session["asset_id"]), session_id))
+        status_payload = board.status()
+        gate = status_payload.get("script_gate") or {}
+        job = repos.get_job(db, str(session["latest_job_id"])) if session.get(
+            "latest_job_id"
+        ) else None
+        job_status = (job or {}).get("status")
+        if job_status in ("queued", "running"):
+            state = "running"
+        elif gate.get("pending"):
+            state = "awaiting-approval"
+        elif board.meta().status == "failed":
+            state = "failed"
+        elif board.meta().status == "complete":
+            state = "done+export"
+        else:
+            state = "in-progress"
+        return {"id": session_id, "state": state}
+    except Exception:  # noqa: BLE001 — the line is best-effort, the turn always runs
+        logger.warning("active-session context line skipped", exc_info=True)
+        return None
 
 
 def _conversation_or_404(db: Database, conversation_id: str) -> dict[str, Any]:
@@ -165,8 +212,10 @@ def post_message(
     )
     running_jobs = _running_jobs_count(db)
     messages = repos.list_conversation_messages(db, conversation_id)
+    active_session = _active_session(db, messages)
     context = compose_context(
-        project=project, running_jobs=running_jobs, messages=messages, asset_names=asset_names
+        project=project, running_jobs=running_jobs, messages=messages,
+        asset_names=asset_names, active_session=active_session,
     )
 
     config = resolve_from_env()

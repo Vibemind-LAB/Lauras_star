@@ -118,6 +118,34 @@ def test_compose_context_omits_videos_line_without_assets() -> None:
         assert "Videos:" not in ctx
 
 
+def test_compose_context_renders_active_session_line() -> None:
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"}, running_jobs=0, messages=[],
+        asset_names=["A"], active_session={"id": "s1", "state": "awaiting-approval"},
+    )
+    lines = ctx.splitlines()
+    videos_idx = next(i for i, line in enumerate(lines) if line.startswith("Videos:"))
+    assert lines[videos_idx + 1] == "Active production session: s1 (awaiting-approval)"
+
+
+def test_compose_context_omits_session_line_when_none() -> None:
+    ctx = compose_context(project={"name": "P", "id": "p1"}, running_jobs=0, messages=[])
+    assert "Active production session" not in ctx
+
+
+def test_compose_context_places_session_line_after_project_when_no_videos() -> None:
+    """FE3: without a video roster (no project, or a project with no assets), the session
+    line still has a deterministic slot right after the project line rather than drifting
+    to wherever the Videos line would have been."""
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"}, running_jobs=0, messages=[],
+        active_session={"id": "s1", "state": "running"},
+    )
+    lines = ctx.splitlines()
+    project_idx = next(i for i, line in enumerate(lines) if line.startswith("Project:"))
+    assert lines[project_idx + 1] == "Active production session: s1 (running)"
+
+
 def test_every_tool_is_reachable() -> None:
     assert frozenset({
         "reply", "create_project", "switch_project", "propose_import",

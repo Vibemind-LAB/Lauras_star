@@ -18,6 +18,7 @@ from laura.main import create_app
 
 _TOKEN = "test-token"
 _H = {"X-Laura-Token": _TOKEN}
+_NOW = "2026-08-05T00:00:00Z"
 
 
 def _app(tmp_path: Path) -> tuple[TestClient, Any, Settings]:
@@ -347,6 +348,113 @@ def test_approval_message_from_different_conversation_404(
         m["id"] == message_id_a and m["content"]["status"] == "pending"
         for m in thread
     )
+
+
+# --- active-session context line (FE3) ------------------------------------------------------
+
+
+def _seed_action_message(
+    db: Any, conversation_id: str, *, session_id: str, job_id: str = "job-x",
+) -> None:
+    """Mirrors ``test_chat_executor.py``'s ``_seed_action`` (kept local per this file's
+    self-contained-test-file convention): an assistant action card whose ``refs.session_id``
+    is what ``_latest_session_id`` (and so the router-context grounding) reads back."""
+    repos.append_conversation_message(
+        db, message_id=f"m-action-{session_id}", conversation_id=conversation_id,
+        role="assistant", kind="action",
+        content={
+            "tool": "start_short", "args": {}, "outcome": "running",
+            "refs": {"session_id": session_id, "job_id": job_id},
+        },
+        created_utc=_NOW,
+    )
+
+
+def test_message_turn_context_carries_active_session_line(tmp_path: Path) -> None:
+    """A seeded board with a pending script gate (script present, not yet approved) grounds
+    the router with an 'awaiting-approval' Active-session line — the whole point of FE3 is
+    that follow_up/discuss no longer have to guess the session from compacted cards."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import BoardMeta, Script, ScriptLine
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    client, db, _settings = _app(tmp_path)
+    project = _project(db, tmp_path)
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a",
+        source_path="/tmp/a.mp4",
+    )
+    session_id = "sess-1"
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+    )
+    root = board_root_for(db, asset["id"], session_id)
+    meta = BoardMeta(
+        session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+        task="t", target_seconds=30.0, script_gate=True,
+    )
+    board = Board.create(root, meta)
+    board.save(
+        "script",
+        Script(
+            language="German",
+            lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt, schau mal her.")],
+        ),
+    )
+
+    conversation_id = client.post("/conversations", headers=_H).json()["id"]
+    repos.set_conversation_project(db, conversation_id, project["id"])
+    _seed_action_message(db, conversation_id, session_id=session_id)
+
+    calls: list[str] = []
+
+    def runner(task: str) -> str:
+        calls.append(task)
+        return json.dumps({"tool": "reply", "args": {"text": "ok"}})
+
+    client.app.state.chat_runner = runner  # type: ignore[attr-defined]
+
+    resp = client.post(
+        f"/conversations/{conversation_id}/message", json={"text": "wie sieht's aus?"},
+        headers=_H,
+    )
+    assert resp.status_code == 202
+    assert len(calls) == 1, "the router runs exactly once for a plain reply"
+    assert f"Active production session: {session_id} (awaiting-approval)" in calls[0]
+
+
+def test_message_turn_context_skips_session_line_for_broken_board(tmp_path: Path) -> None:
+    """A session card whose board directory was never created (``Board.open`` raises
+    ``FileNotFoundError``) must not crash the turn — the Active-session line is best-effort and
+    simply stays absent; the turn still answers."""
+    client, db, _settings = _app(tmp_path)
+    project = _project(db, tmp_path)
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a",
+        source_path="/tmp/a.mp4",
+    )
+    conversation_id = client.post("/conversations", headers=_H).json()["id"]
+    session_id = "ghost-session"
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+    )
+    _seed_action_message(db, conversation_id, session_id=session_id)
+
+    calls: list[str] = []
+
+    def runner(task: str) -> str:
+        calls.append(task)
+        return json.dumps({"tool": "reply", "args": {"text": "ok"}})
+
+    client.app.state.chat_runner = runner  # type: ignore[attr-defined]
+
+    resp = client.post(
+        f"/conversations/{conversation_id}/message", json={"text": "hallo"}, headers=_H,
+    )
+    assert resp.status_code == 202
+    assert len(calls) == 1
+    assert "Active production session" not in calls[0]
+    assert resp.json()["messages"][-1]["content"] == {"text": "ok"}
 
 
 # --- auth ------------------------------------------------------------------------------------

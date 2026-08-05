@@ -152,13 +152,20 @@ def compose_context(
     running_jobs: int,
     messages: list[dict[str, Any]],
     asset_names: list[str] | None = None,
+    active_session: dict[str, str] | None = None,
 ) -> str:
-    """Assemble the router's context string: project line, video roster, running-jobs line,
-    then the last 20 messages compacted to one line each (pure string assembly, no I/O).
+    """Assemble the router's context string: project line, video roster, active-session line,
+    running-jobs line, then the last 20 messages compacted to one line each (pure string
+    assembly, no I/O).
 
     The roster exists because the router's rules forbid inventing names: without it, an
     asset_ref the user names ('die Bildschirmaufnahme') is unverifiable and the model asks
-    back instead of routing review_transcript (seen live 2026-08-05)."""
+    back instead of routing review_transcript (seen live 2026-08-05).
+
+    ``active_session`` (FE3) grounds follow_up/discuss on the session the thread is actually
+    working, instead of the router having to reconstruct it by re-reading compacted action
+    cards: ``{"id": ..., "state": ...}`` renders as one line right after the Videos line (or
+    right after the Project line when no Videos line was rendered), ``None`` omits it."""
     lines: list[str] = []
     if project is not None:
         name = project.get("name") or "?"
@@ -168,6 +175,11 @@ def compose_context(
             lines.append("Videos: " + ", ".join(asset_names[:20]))
     else:
         lines.append("Project: none selected")
+    if active_session is not None:
+        lines.append(
+            f"Active production session: {active_session['id']} "
+            f"({active_session['state']})"
+        )
     lines.append(f"Running jobs: {running_jobs}")
     lines.append("")
     lines.append("Recent conversation (oldest first):")
