@@ -11,6 +11,8 @@ the negative case — env unset -> tools absent from specs — is the one this f
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,34 @@ def _vault(tmp_path: Path) -> Path:
     )
     (root / "unrelated.md").write_text("Just some other note about lunch.\n", encoding="utf-8")
     return root
+
+
+def _plant_escape_link(vault: Path, outside_dir: Path) -> bool:
+    """Create ``vault/linked`` as a link whose RESOLVED target is *outside_dir*, so
+    ``vault.rglob("*.md")`` finds a file that lives inside the link but escapes the vault once
+    resolved — the actual case the traversal guard (``resolve()`` + ``is_relative_to``) exists
+    to catch, unlike a merely-nonexistent ``../name``.
+
+    Prefers a Windows directory junction (``mklink /J`` — no admin rights or Developer Mode
+    needed, verified empirically on this machine); falls back to ``os.symlink`` for POSIX (or an
+    elevated/Developer-Mode Windows). Returns ``False`` if neither could be created so callers can
+    skip cleanly rather than fail on an environment that cannot build the fixture.
+    """
+    link = vault / "linked"
+    try:
+        proc = subprocess.run(  # noqa: S603, S607 — test-only, fixed args, no shell
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside_dir)],
+            capture_output=True,
+        )
+        if proc.returncode == 0 and link.exists():
+            return True
+    except OSError:
+        pass
+    try:
+        os.symlink(outside_dir, link, target_is_directory=True)
+    except OSError:
+        return False
+    return link.exists()
 
 
 # --- brain_root --------------------------------------------------------------------------------
@@ -171,9 +201,19 @@ def test_read_note_unknown_name_not_found(
     assert result == {"ok": False, "reason": "note not found"}
 
 
-def test_read_note_traversal_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A note with the SAME stem exists just outside the vault — proves the guard rejects the
-    # escape rather than merely failing to find a matching stem by coincidence.
+def test_read_note_dotdot_name_is_not_a_path_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``../``-prefixed name never reaches outside the vault — but NOT because of the
+    ``is_relative_to`` guard: ``read_brain_note`` never joins ``name`` onto ``root`` at all, it
+    resolves by CASE-INSENSITIVE STEM against ``root.rglob("*.md")``, and ``Path("../secret").stem
+    == "secret"`` — the ``..`` is simply discarded by ``Path.stem``. Since ``rglob`` can, by
+    construction, never yield a path outside ``root`` in the first place, this test passes
+    IDENTICALLY even with the ``is_relative_to`` check deleted; it pins the "name is never used to
+    build a filesystem path" property, not the traversal guard. The guard's actual job — reading a
+    path that IS inside the vault by directory listing but resolves OUTSIDE it via a link — is
+    covered by ``test_read_note_traversal_guard_rejects_link_escape`` below.
+    """
     vault = _vault(tmp_path)
     (tmp_path / "secret.md").write_text("classified\n", encoding="utf-8")
     monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(vault))
@@ -181,6 +221,57 @@ def test_read_note_traversal_rejected(tmp_path: Path, monkeypatch: pytest.Monkey
     result = read_brain_note("../secret")
 
     assert result == {"ok": False, "reason": "note not found"}
+
+
+def test_read_note_traversal_guard_rejects_link_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The REAL case the traversal guard exists for: a link INSIDE the vault whose resolved
+    target is OUTSIDE it. ``rglob`` follows the link and finds ``vault/linked/secret.md`` (a
+    stem match for "secret"), but ``.resolve()`` walks it out to ``outside/secret.md`` — the
+    ``is_relative_to(root.resolve())`` check must reject that resolved path.
+
+    Manually verified this test actually exercises the guard (not just the "no match" path): with
+    the ``is_relative_to`` check in ``read_brain_note`` commented out, this test FAILED (the
+    outside note's content came back as ``ok: True``); restored, it PASSES. See task-10-report.md
+    fix-round section for the paste.
+    """
+    vault = _vault(tmp_path)
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "secret.md").write_text("classified\n", encoding="utf-8")
+    if not _plant_escape_link(vault, outside_dir):
+        pytest.skip("cannot create a directory junction/symlink on this system")
+    monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(vault))
+
+    result = read_brain_note("secret")
+
+    assert result == {"ok": False, "reason": "note not found"}
+
+
+def test_search_never_leaks_a_result_outside_vault_via_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``search_second_brain`` has its own copy of the same guard (brain_tools.py's
+    ``search_second_brain``, the ``resolved.is_relative_to(root_resolved)`` check) — untested
+    until now. Same link fixture as the read-side test: a note whose content matches the query
+    exists ONLY outside the vault, reachable inside it only via the escaping link. If the guard
+    were absent, this search would return it.
+
+    Manually verified this test actually exercises the guard the same way as the read-side test —
+    commented the check out locally, saw this test fail, restored it, saw it pass.
+    """
+    vault = _vault(tmp_path)
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "secret.md").write_text("wildly classified material\n", encoding="utf-8")
+    if not _plant_escape_link(vault, outside_dir):
+        pytest.skip("cannot create a directory junction/symlink on this system")
+    monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(vault))
+
+    result = search_second_brain("classified material")
+
+    assert result == {"ok": True, "results": []}
 
 
 def test_read_note_without_env_not_found(monkeypatch: pytest.MonkeyPatch) -> None:

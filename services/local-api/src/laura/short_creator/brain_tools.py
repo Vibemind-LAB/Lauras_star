@@ -34,7 +34,16 @@ from typing import Any
 _ENV_VAR = "LAURA_SECONDBRAIN_PATH"
 _SNIPPET_RADIUS = 120
 _MAX_NOTE_CHARS = 8000
-_NOT_FOUND: dict[str, Any] = {"ok": False, "reason": "note not found"}
+
+
+def _not_found() -> dict[str, Any]:
+    """A fresh ``{"ok": False, "reason": "note not found"}`` dict, never a shared reference.
+
+    ``read_brain_note`` returns this from four different branches; a single module-level dict
+    handed out by reference would let one caller's in-place mutation of its own "immutable"
+    reply corrupt what every other caller sees next.
+    """
+    return {"ok": False, "reason": "note not found"}
 
 
 def brain_root() -> Path | None:
@@ -112,11 +121,11 @@ def read_brain_note(name: str) -> dict[str, Any]:
     """
     root = brain_root()
     if root is None:
-        return _NOT_FOUND
+        return _not_found()
     root_resolved = root.resolve()
     wanted = Path(name).stem.lower()
     if not wanted:
-        return _NOT_FOUND
+        return _not_found()
     for path in sorted(root.rglob("*.md")):
         if path.stem.lower() != wanted:
             continue
@@ -129,6 +138,6 @@ def read_brain_note(name: str) -> dict[str, Any]:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return _NOT_FOUND
+            return _not_found()
         return {"ok": True, "note": path.stem, "content": content[:_MAX_NOTE_CHARS]}
-    return _NOT_FOUND
+    return _not_found()
