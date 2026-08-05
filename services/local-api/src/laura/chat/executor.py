@@ -17,6 +17,10 @@ from fastapi import HTTPException, status
 
 from .. import audit
 
+# Imported BY NAME (see the short_creator import block below) so tests can monkeypatch
+# `laura.chat.executor.reindex_segments` without touching the real semantic index.
+from ..analysis.semantic_sync import reindex_segments
+
 # Documented exception to the private-import rule: the approval flow's only entry points into
 # the existing import machinery are this playlist-expansion + asset-creation/enqueue pair.
 # Mirrors discovery.py's own use of context._scene_src_ranges.
@@ -56,6 +60,15 @@ _DEFAULT_SHORT_TARGET_SECONDS = 60
 _DEFAULT_OVERVIEW_TARGET_SECONDS = 180
 _DEFAULT_FORMAT = "insta"
 _DEFAULT_LANGUAGE = "German"
+
+# review_transcript caps its card at the first 100 segments (payload.total still carries the
+# real count) — a transcript with thousands of segments must never blow up the message JSON.
+_REVIEW_SEGMENT_LIMIT = 100
+# media_assets.audio_sample_rate is NULL until a real ffprobe run has populated it (e.g. a
+# synthetic test asset, or an asset probed before ASR); 16kHz matches ingest/audio.py's
+# ASR_SAMPLE_RATE (the resample target ASR always writes samples against), so it is the
+# least-wrong fallback for start_s.
+_DEFAULT_AUDIO_SAMPLE_RATE = 16000
 
 
 # --- small pure helpers -----------------------------------------------------------------------
@@ -115,6 +128,39 @@ def _resolve_session_id(messages: list[dict[str, Any]], session_ref: str) -> str
     if session_ref.strip().lower() in _LAST_SESSION_PLACEHOLDERS:
         return action_refs[-1]
     return None
+
+
+def _resolve_asset_ref(
+    db: Database, active_project_id: str, asset_ref: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve ``asset_ref`` against the active project's assets — mirrors
+    ``_handle_switch_project``'s name matching EXACTLY: an exact ``display_name`` match
+    (case-insensitive) OR an ``id`` prefix match. Returns ``(asset, None)`` on an
+    unambiguous match, else ``(None, <German clarification text>)`` — no match lists the
+    project's available video names (unlike ``switch_project``'s no-match text, which does
+    not enumerate existing projects); more than one match asks which one, same as
+    ``switch_project``.
+    """
+    ref = asset_ref.strip()
+    ref_lower = ref.lower()
+    assets = repos.list_assets(db, active_project_id)
+    matches = [
+        a
+        for a in assets
+        if str(a["display_name"]).strip().lower() == ref_lower
+        or str(a["id"]).lower().startswith(ref_lower)
+    ]
+    if len(matches) == 1:
+        return matches[0], None
+    if not matches:
+        if assets:
+            names = ", ".join(f"‚{a['display_name']}'" for a in assets)
+            text = f"Ich finde kein Video zu ‚{ref}' — meinst du eins von: {names}?"
+        else:
+            text = f"Ich finde kein Video zu ‚{ref}' — in diesem Projekt sind noch keine Videos."
+        return None, text
+    names = ", ".join(f"‚{a['display_name']}'" for a in matches)
+    return None, f"Das ist nicht eindeutig — meinst du {names}?"
 
 
 # --- message construction ----------------------------------------------------------------------
@@ -382,6 +428,155 @@ def _handle_revert(
     return [_append_text(db, conversation_id, text, now_utc)]
 
 
+# --- Transkript-Gates (Task 5): review / correct / confirm --------------------------------------
+
+
+def _segment_review_row(seg: dict[str, Any], index: int, sample_rate: int) -> dict[str, Any]:
+    return {
+        "index": index,
+        "id": seg["id"],
+        "start_s": round(seg["start_sample"] / sample_rate, 1),
+        "text": seg["text"],
+    }
+
+
+def _review_transcript_content(db: Database, asset: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """The ``review_transcript``/``correct_transcript`` action card content plus the real
+    segment count (``payload.total`` — the card itself carries at most the first
+    ``_REVIEW_SEGMENT_LIMIT`` segments)."""
+    asset_id = str(asset["id"])
+    run = repos.get_latest_transcript_run(db, asset_id)
+    segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
+    sample_rate = int(asset.get("audio_sample_rate") or _DEFAULT_AUDIO_SAMPLE_RATE)
+    total = len(segments)
+    rows = [
+        _segment_review_row(seg, i, sample_rate)
+        for i, seg in enumerate(segments[:_REVIEW_SEGMENT_LIMIT], start=1)
+    ]
+    content = {
+        "tool": "review_transcript",
+        "refs": {"asset_id": asset_id},
+        "outcome": "done",
+        "payload": {
+            "confirmed_at": asset.get("transcript_confirmed_at"),
+            "segments": rows,
+            "total": total,
+        },
+    }
+    return content, total
+
+
+def _append_review_transcript_messages(
+    db: Database, conversation_id: str, asset: dict[str, Any], now_utc: str
+) -> list[dict[str, Any]]:
+    """Append the review card (capped at ``_REVIEW_SEGMENT_LIMIT`` segments), plus one extra
+    text line naming the remainder when the transcript has more. Shared by
+    ``_handle_review_transcript`` and ``_handle_correct_transcript`` (whose card is the SAME
+    shape, just built from the just-corrected transcript)."""
+    content, total = _review_transcript_content(db, asset)
+    card = _append(
+        db, conversation_id, role="assistant", kind="action", content=content, now_utc=now_utc
+    )
+    messages = [card]
+    if total > _REVIEW_SEGMENT_LIMIT:
+        extra_text = f"… und {total - _REVIEW_SEGMENT_LIMIT} weitere Segmente."
+        messages.append(_append_text(db, conversation_id, extra_text, now_utc))
+    return messages
+
+
+def _invalid_segment_index_text(segment_index: int, total: int) -> str:
+    if total == 0:
+        return (
+            f"Segment {segment_index} gibt es nicht — für dieses Video gibt es noch "
+            "keine Segmente."
+        )
+    return f"Segment {segment_index} gibt es nicht — gültiger Bereich ist 1–{total}."
+
+
+def _handle_review_transcript(
+    db: Database,
+    active_project_id: str | None,
+    conversation_id: str,
+    decision: RouterDecision,
+    now_utc: str,
+) -> list[dict[str, Any]]:
+    if not active_project_id:
+        return [_append_text(db, conversation_id, _NO_ACTIVE_PROJECT_TEXT, now_utc)]
+    ref = str(decision["args"]["asset_ref"])
+    asset, error_text = _resolve_asset_ref(db, active_project_id, ref)
+    if asset is None:
+        assert error_text is not None  # _resolve_asset_ref always pairs None with a text
+        return [_append_text(db, conversation_id, error_text, now_utc)]
+    return _append_review_transcript_messages(db, conversation_id, asset, now_utc)
+
+
+def _handle_correct_transcript(
+    db: Database,
+    active_project_id: str | None,
+    conversation_id: str,
+    decision: RouterDecision,
+    now_utc: str,
+    principal: Principal | None,
+) -> list[dict[str, Any]]:
+    if not active_project_id:
+        return [_append_text(db, conversation_id, _NO_ACTIVE_PROJECT_TEXT, now_utc)]
+    args = decision["args"]
+    ref = str(args["asset_ref"])
+    asset, error_text = _resolve_asset_ref(db, active_project_id, ref)
+    if asset is None:
+        assert error_text is not None
+        return [_append_text(db, conversation_id, error_text, now_utc)]
+    asset_id = str(asset["id"])
+    run = repos.get_latest_transcript_run(db, asset_id)
+    segments = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
+    total = len(segments)
+    corrections = list(args["corrections"])
+
+    # Validate every correction BEFORE writing any of them — a batch with one bad index must
+    # leave the transcript untouched, not half-corrected.
+    for item in corrections:
+        segment_index = int(item["segment_index"])
+        if segment_index < 1 or segment_index > total:
+            text = _invalid_segment_index_text(segment_index, total)
+            return [_append_text(db, conversation_id, text, now_utc)]
+
+    for item in corrections:
+        segment_index = int(item["segment_index"])
+        segment_id = str(segments[segment_index - 1]["id"])
+        repos.update_segment(db, segment_id, text=str(item["text"]), speaker_id=None)
+        audit.record(
+            db, principal or audit.system_principal(), "transcript.update",
+            entity_type="segment", entity_id=segment_id,
+        )
+        # Best-effort re-index of just this segment (never raises), mirroring the HTTP
+        # PATCH /transcript/segments/{id} endpoint's own sequencing (api/analysis.py).
+        reindex_segments(db, asset_id, [segment_id])
+
+    k = len(corrections)
+    reply_text = f"{k} {'Segment' if k == 1 else 'Segmente'} korrigiert."
+    text_msg = _append_text(db, conversation_id, reply_text, now_utc)
+    return [text_msg, *_append_review_transcript_messages(db, conversation_id, asset, now_utc)]
+
+
+def _handle_confirm_transcript(
+    db: Database,
+    active_project_id: str | None,
+    conversation_id: str,
+    decision: RouterDecision,
+    now_utc: str,
+) -> list[dict[str, Any]]:
+    if not active_project_id:
+        return [_append_text(db, conversation_id, _NO_ACTIVE_PROJECT_TEXT, now_utc)]
+    ref = str(decision["args"]["asset_ref"])
+    asset, error_text = _resolve_asset_ref(db, active_project_id, ref)
+    if asset is None:
+        assert error_text is not None
+        return [_append_text(db, conversation_id, error_text, now_utc)]
+    repos.set_transcript_confirmed_at(db, str(asset["id"]), now_utc)
+    text = f"Transkript von ‚{asset['display_name']}' bestätigt."
+    return [_append_text(db, conversation_id, text, now_utc)]
+
+
 # --- entry points --------------------------------------------------------------------------
 
 
@@ -402,9 +597,11 @@ def execute_decision(
     never 500 the thread.
 
     ``principal`` is the HTTP caller (Task 6 passes the resolved request principal); it
-    defaults to ``None`` so every pre-existing caller keeps working. Only ``create_project``
-    consumes it, to give chat-created projects the same ``org_id``/audit-trail parity as
-    ``POST /projects``.
+    defaults to ``None`` so every pre-existing caller keeps working. ``create_project``
+    consumes it to give chat-created projects the same ``org_id``/audit-trail parity as
+    ``POST /projects``; ``correct_transcript`` consumes it the same way for its per-segment
+    ``transcript.update`` audit rows (falling back to :func:`laura.audit.system_principal`
+    when chat has no HTTP caller of its own, exactly like ``create_project``).
     """
     try:
         conversation = repos.get_conversation(db, conversation_id)
@@ -431,6 +628,20 @@ def execute_decision(
         if tool == "revert":
             messages = repos.list_conversation_messages(db, conversation_id)
             return _handle_revert(db, conversation_id, messages, decision, now_utc)
+        if tool == "review_transcript":
+            return _handle_review_transcript(
+                db, active_project_id, conversation_id, decision, now_utc
+            )
+        if tool == "correct_transcript":
+            return _handle_correct_transcript(
+                db, active_project_id, conversation_id, decision, now_utc, principal
+            )
+        if tool == "confirm_transcript":
+            return _handle_confirm_transcript(
+                db, active_project_id, conversation_id, decision, now_utc
+            )
+        # "approve_script" is Task 7's (Gate B script checkpoint) — deliberately falls through
+        # to the same defensive branch as a truly unknown tool until that handler lands.
 
         # Defensive: the router only ever hands out a tool from TOOLS, so this branch should be
         # unreachable — but the thread must never crash on a decision it does not recognize.

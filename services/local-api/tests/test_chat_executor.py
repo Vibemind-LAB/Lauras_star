@@ -57,6 +57,48 @@ def _conversation_row(db: Database, conversation_id: str) -> dict[str, Any]:
     return row
 
 
+def _seed_transcript(
+    db: Database,
+    project_id: str,
+    *,
+    display_name: str = "Clip 1",
+    texts: list[str] | None = None,
+    audio_sample_rate: int | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """One asset + one analysis run + N transcript segments, 48000 samples / 30 frames apart —
+    seed sequence lifted from tests/test_semantic_sync.py's ``_seed_one_segment`` (the source
+    of truth for the transcript_segments column names). Returns ``(asset, segment_ids)`` in
+    the same order ``repos.get_transcript`` hands them back (ordered by ``start_sample``)."""
+    texts = texts if texts is not None else ["hallo welt", "zweiter satz"]
+    asset = repos.create_asset(
+        db, project_id=project_id, type="video", display_name=display_name,
+        source_path=f"/media/{display_name}.mp4",
+    )
+    if audio_sample_rate is not None:
+        repos.update_asset_probe(
+            db, asset["id"], type="video", duration_frames=None, rate_num=30, rate_den=1,
+            audio_sample_rate=audio_sample_rate, start_timecode=None, width=None, height=None,
+            codec_video=None, codec_audio=None, is_vfr=False, sha256=None,
+        )
+        updated = repos.get_asset(db, asset["id"])
+        assert updated is not None
+        asset = updated
+    run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="test", config={})
+    segment_ids = []
+    for i, text in enumerate(texts):
+        seg_id = repos.insert_segment_with_words(
+            db, asset_id=asset["id"], run_id=run["id"], speaker_id=None,
+            segment={
+                "start_sample": i * 48_000, "end_sample": (i + 1) * 48_000,
+                "start_frame": i * 30, "end_frame": (i + 1) * 30,
+                "text": text, "confidence": 1.0,
+            },
+            words=[],
+        )
+        segment_ids.append(seg_id)
+    return asset, segment_ids
+
+
 def _seed_action(
     db: Database, conversation_id: str, *, session_id: str, job_id: str = "job-x",
     created_utc: str = _NOW,
@@ -634,6 +676,358 @@ def test_revert_without_any_session_asks(tmp_path: Path) -> None:
     )
     assert messages[0]["kind"] == "text"
     assert "Session" in messages[0]["content"]["text"]
+
+
+# --- review_transcript ------------------------------------------------------------------------
+
+
+def test_review_transcript_returns_card_with_segments_and_total(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, _seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    card = messages[0]
+    assert card["kind"] == "action"
+    assert card["content"]["tool"] == "review_transcript"
+    assert card["content"]["refs"] == {"asset_id": asset["id"]}
+    assert card["content"]["outcome"] == "done"
+    payload = card["content"]["payload"]
+    assert payload["confirmed_at"] is None
+    assert payload["total"] == 2
+    assert payload["segments"][0] == {
+        "index": 1, "id": _seg_ids[0], "start_s": 0.0, "text": "hallo welt",
+    }
+    # audio_sample_rate is NULL on this asset (no probe run) -> falls back to 16000.
+    assert payload["segments"][1]["start_s"] == 3.0  # 48000 samples / 16000 Hz
+
+
+def test_review_transcript_uses_real_audio_sample_rate_when_probed(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    _seed_transcript(db, project["id"], display_name="Clip 1", audio_sample_rate=48_000)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+    )
+
+    payload = messages[0]["content"]["payload"]
+    assert payload["segments"][1]["start_s"] == 1.0  # 48000 samples / 48000 Hz
+
+
+def test_review_transcript_without_active_project_asks(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert "kein Projekt" in messages[0]["content"]["text"]
+
+
+def test_review_transcript_unknown_asset_ref_asks_and_lists_names(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    _seed_transcript(db, project["id"], display_name="Clip 1")
+    _seed_transcript(db, project["id"], display_name="Clip 2")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "Clip 9"}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    text = messages[0]["content"]["text"]
+    assert "Clip 1" in text and "Clip 2" in text
+
+
+def test_review_transcript_no_assets_in_project_asks_without_listing(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert "keine Videos" in messages[0]["content"]["text"]
+
+
+def test_review_transcript_over_limit_adds_remainder_text(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    texts = [f"segment {i}" for i in range(105)]
+    _seed_transcript(db, project["id"], display_name="Long Clip", texts=texts)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("review_transcript", {"asset_ref": "Long Clip"}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 2
+    card, extra = messages
+    assert card["kind"] == "action"
+    assert card["content"]["payload"]["total"] == 105
+    assert len(card["content"]["payload"]["segments"]) == 100
+    assert extra["kind"] == "text"
+    assert extra["content"]["text"] == "… und 5 weitere Segmente."
+
+
+# --- correct_transcript ------------------------------------------------------------------------
+
+
+def test_correct_transcript_updates_segment_and_reindexes(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def _fake_reindex(db: Any, asset_id: str, segment_ids: list[str]) -> int:
+        calls.append((asset_id, list(segment_ids)))
+        return len(segment_ids)
+
+    monkeypatch.setattr("laura.chat.executor.reindex_segments", _fake_reindex)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {"asset_ref": "Clip 1", "corrections": [{"segment_index": 1, "text": "Karpathy"}]},
+        ),
+        now_utc=_NOW,
+    )
+
+    assert calls == [(asset["id"], [seg_ids[0]])]
+    seg = repos.get_segment(db, seg_ids[0])
+    assert seg is not None and seg["text"] == "Karpathy"
+
+    assert len(messages) == 2
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == "1 Segment korrigiert."
+    assert messages[1]["kind"] == "action"
+    assert messages[1]["content"]["tool"] == "review_transcript"
+    assert messages[1]["content"]["payload"]["segments"][0]["text"] == "Karpathy"
+
+    audit_events = repos.list_audit_events(db)
+    audit_event = next(e for e in audit_events if e["action"] == "transcript.update")
+    assert audit_event["entity_id"] == seg_ids[0]
+    assert audit_event["principal_kind"] == "local"  # no principal -> system_principal()
+
+
+def test_correct_transcript_with_principal_audits_it(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "laura.chat.executor.reindex_segments", lambda *_a, **_k: 0
+    )
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    _asset, seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+    principal = Principal(kind="key", role="owner", user_id="user-1", org_id="org-1")
+
+    execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {"asset_ref": "Clip 1", "corrections": [{"segment_index": 1, "text": "x"}]},
+        ),
+        now_utc=_NOW, principal=principal,
+    )
+
+    audit_events = repos.list_audit_events(db)
+    audit_event = next(e for e in audit_events if e["action"] == "transcript.update")
+    assert audit_event["entity_id"] == seg_ids[0]
+    assert audit_event["principal_kind"] == "key"
+    assert audit_event["principal_id"] == "user-1"
+
+
+def test_correct_transcript_multiple_corrections_audits_and_reindexes_each(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def _fake_reindex(db: Any, asset_id: str, segment_ids: list[str]) -> int:
+        calls.append((asset_id, list(segment_ids)))
+        return len(segment_ids)
+
+    monkeypatch.setattr("laura.chat.executor.reindex_segments", _fake_reindex)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {
+                "asset_ref": "Clip 1",
+                "corrections": [
+                    {"segment_index": 1, "text": "eins"},
+                    {"segment_index": 2, "text": "zwei"},
+                ],
+            },
+        ),
+        now_utc=_NOW,
+    )
+
+    # Each correction re-indexes its OWN segment id (not a batched call for both) — mirrors
+    # the HTTP PATCH /transcript/segments/{id} endpoint's own sequencing.
+    assert calls == [(asset["id"], [seg_ids[0]]), (asset["id"], [seg_ids[1]])]
+    assert messages[0]["content"]["text"] == "2 Segmente korrigiert."
+    audit_events = [e for e in repos.list_audit_events(db) if e["action"] == "transcript.update"]
+    assert {e["entity_id"] for e in audit_events} == set(seg_ids)
+
+
+def test_correct_transcript_unknown_segment_index_returns_error_with_range_no_writes(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def _fake_reindex(db: Any, asset_id: str, segment_ids: list[str]) -> int:
+        calls.append((asset_id, list(segment_ids)))
+        return len(segment_ids)
+
+    monkeypatch.setattr("laura.chat.executor.reindex_segments", _fake_reindex)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    _asset, seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {"asset_ref": "Clip 1", "corrections": [{"segment_index": 5, "text": "x"}]},
+        ),
+        now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "1–2" in messages[0]["content"]["text"]
+    assert calls == [], "an out-of-range index must never reach reindex_segments"
+    seg = repos.get_segment(db, seg_ids[0])
+    assert seg is not None and seg["text"] == "hallo welt", "no correction may apply on failure"
+    assert repos.list_audit_events(db) == []
+
+
+def test_correct_transcript_unknown_asset_ref_asks_no_card(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    _seed_transcript(db, project["id"], display_name="Clip 1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {"asset_ref": "Nope", "corrections": [{"segment_index": 1, "text": "x"}]},
+        ),
+        now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "Clip 1" in messages[0]["content"]["text"]
+
+
+def test_correct_transcript_without_active_project_asks(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision(
+            "correct_transcript",
+            {"asset_ref": "Clip 1", "corrections": [{"segment_index": 1, "text": "x"}]},
+        ),
+        now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert "kein Projekt" in messages[0]["content"]["text"]
+
+
+# --- confirm_transcript ------------------------------------------------------------------------
+
+
+def test_confirm_transcript_sets_stamp_and_replies_german(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, _seg_ids = _seed_transcript(db, project["id"], display_name="Clip 1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("confirm_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == "Transkript von ‚Clip 1' bestätigt."
+    updated = repos.get_asset(db, asset["id"])
+    assert updated is not None and updated["transcript_confirmed_at"] == _NOW
+
+
+def test_confirm_transcript_unknown_asset_ref_asks_no_card(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("confirm_transcript", {"asset_ref": "Nope"}), now_utc=_NOW,
+    )
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "keine Videos" in messages[0]["content"]["text"]
+
+
+def test_confirm_transcript_without_active_project_asks(tmp_path: Path) -> None:
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("confirm_transcript", {"asset_ref": "Clip 1"}), now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert "kein Projekt" in messages[0]["content"]["text"]
+
+
+# --- approve_script (Task 7's — not implemented here) -------------------------------------------
+
+
+def test_approve_script_falls_back_to_unknown_tool_text_until_task_7(tmp_path: Path) -> None:
+    """approve_script is Task 7's (Gate B script checkpoint). Until that handler lands, the
+    dispatch table has no branch for it, so a decision naming it must fall through to the
+    SAME defensive fallback as a genuinely unknown tool — never raise, never silently no-op
+    without telling the user."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == "Das kann ich (noch) nicht ausführen."
 
 
 # --- defensive: unknown tool + never-raises ---------------------------------------------------
