@@ -1478,3 +1478,41 @@ def test_run_production_tail_failure_sets_failed_status(
     assert "render_production" in result["summary"]
     root = production_orchestrator.board_root_for(db, asset_id, "sess-tail-fail")
     assert Board.open(root).meta().status == "failed"
+
+
+def test_run_production_qa_hard_fail_sets_failed_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fully successful chain whose QA stage hard-fails (LLM outage, etc. — _safe_execute
+    turns any raise into a hard_fail StageOutcome) must not read as a success. Live-class bug:
+    ok=True with the board left neither failed nor complete is the exact dead-run shape
+    Board.set_status's docstring warns about (a run reporting "active" long after it died)."""
+    db, asset_id, config = _seeded_gated_run(tmp_path, "sess-qa-fail")
+
+    def fake_tail(
+        db: Database, board: Board, config: providers.AgentConfig, **kwargs: object
+    ) -> tuple[object, orchestrator.StageOutcome]:
+        from laura.short_creator.production_pipeline import TailOutcome
+
+        return (
+            TailOutcome(True, None, None, "deterministic tail: voice, cutlist, "
+                        "contact_sheet, render_report"),
+            orchestrator.StageOutcome(
+                status="hard_fail", weak=False, summary="LLM outage", team="magentic", stage="A"
+            ),
+        )
+
+    monkeypatch.setattr(production_orchestrator, "run_tail_with_qa", fake_tail)
+
+    def never_team(*a: object, **k: object) -> orchestrator.StageOutcome:
+        raise AssertionError("team must not run on the deterministic path")
+
+    result = production_orchestrator.run_production(
+        db, config, asset_id=asset_id, session_id="sess-qa-fail", task="t",
+        execute=never_team,
+    )
+
+    assert result["ok"] is False
+    assert "qa" in result["summary"].lower()
+    root = production_orchestrator.board_root_for(db, asset_id, "sess-qa-fail")
+    assert Board.open(root).meta().status == "failed"

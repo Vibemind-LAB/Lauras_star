@@ -519,6 +519,10 @@ def deterministic_eligible(
         return False
     script = board.load("script")
     if not isinstance(script, Script):
+        # Defensive type-narrowing, likely unreachable: an approval stamp only exists once
+        # some script was hashed into it (see set_script_approved), and scripts are versioned,
+        # never deleted back to None — but this keeps content_hash() below from being handed
+        # anything but a Script no matter how that invariant is reached.
         return False
     if meta.script_approved_script_hash != content_hash(script):
         return False
@@ -666,20 +670,34 @@ def run_production(
             event_sink=event_sink, expected_scenes=expected_scenes,
         )
         resume_point = board.resume_point(expected_scenes)
+        # A hard-failed QA stage (LLM outage, etc. — _safe_execute turns any exception into a
+        # hard_fail StageOutcome) is a failure of THIS run just as much as a failed chain step:
+        # the chain succeeded but the run as a whole did not finish, and the board must not be
+        # left "active" over it — exactly the dead-run class the board docstring warns about
+        # (`Board.set_status`: only the job result knowing left a session reporting "active"
+        # for 55 minutes after it had actually died).
+        qa_hard_failed = qa_outcome is not None and qa_outcome.status == "hard_fail"
         if not tail.ok:
             board.set_status("failed")
             summary = f"deterministic tail failed at {tail.failed_step}: {tail.reason}"
+            ok = False
+        elif qa_hard_failed:
+            assert qa_outcome is not None  # narrows for mypy; qa_hard_failed already checked
+            board.set_status("failed")
+            summary = tail.summary + f"; qa failed: {qa_outcome.summary}"
+            ok = False
         else:
             if resume_point == "done":
                 board.set_status("complete")
             summary = tail.summary + (
                 f"; qa: {qa_outcome.summary}" if qa_outcome is not None else ""
             )
+            ok = True
         return _completed_result(
             board,
             session_id=session_id,
             restored=restored,
-            status="ok" if tail.ok else "hard_fail",
+            status="ok" if ok else "hard_fail",
             stage="A",
             team="magentic",  # cosmetic result field; cards read summary/status.
             weak=_qa_weak(board),
