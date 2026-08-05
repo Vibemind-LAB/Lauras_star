@@ -9,7 +9,7 @@ import type {
   ProductionBoardStatus,
 } from "../../api";
 import { renderWithQuery } from "../../test-utils";
-import { ActionCard } from "./ActionCard";
+import { ActionCard, narrowReviewTranscriptPayload } from "./ActionCard";
 
 function actionMessage(
   tool: string,
@@ -639,14 +639,18 @@ describe("ActionCard — review_transcript (Gate A)", () => {
     expect(screen.queryByText(/#\d+ · /)).toBeNull();
   });
 
-  it("a segment entry that isn't an object, or is missing fields: degrades per-field, no crash", () => {
+  it("a segment entry that isn't an object, is null, or is missing fields: degrades per-field, no crash", () => {
     const c = client();
     renderWithQuery(
       <ActionCard
         message={reviewTranscriptMessage({
           confirmed_at: null,
-          segments: ["not-an-object", { text: "Nur Text vorhanden, sonst nichts" }],
-          total: 2,
+          // A literal `null` exercises the `raw !== null` half of the row guard specifically:
+          // `typeof null === "object"` is true (the classic JS gotcha), so `typeof raw ===
+          // "object"` alone would let `null` through as `row`, and `row.index` below would throw
+          // — only the `&& raw !== null` half prevents that.
+          segments: ["not-an-object", null, { text: "Nur Text vorhanden, sonst nichts" }],
+          total: 3,
         })}
         client={c}
       />,
@@ -655,35 +659,55 @@ describe("ActionCard — review_transcript (Gate A)", () => {
     expect(screen.getByText("Transkript prüfen")).toBeTruthy();
     // First entry: not an object at all — every field falls back (index 1, empty text).
     expect(screen.getByText(/#1 · 0s ·/)).toBeTruthy();
-    // Second entry: an object, but only `text` is present — the rest fall back, text survives.
-    expect(screen.getByText(/#2 · 0s · Nur Text vorhanden, sonst nichts/)).toBeTruthy();
+    // Second entry: null — same full fallback (index 2, empty text), not a crash.
+    expect(screen.getByText(/#2 · 0s ·/)).toBeTruthy();
+    // Third entry: an object, but only `text` is present — the rest fall back, text survives.
+    expect(screen.getByText(/#3 · 0s · Nur Text vorhanden, sonst nichts/)).toBeTruthy();
   });
 
-  it("total missing: falls back to the shown segment count, no remainder line", () => {
+  // The two `total`-fallback cases below are asserted directly against
+  // `narrowReviewTranscriptPayload` rather than via a rendered card: at the render level,
+  // `total - segments.length` with the `typeof total === "number"` guard removed evaluates to
+  // `NaN - n === NaN`, and `NaN > 0` is false exactly like `0 > 0` — so a render-level assertion
+  // of "no remainder line" holds whether or not the guard exists and can never fail. A direct
+  // call catches the real regression: `total` must equal `segments.length`, not `NaN`.
+
+  it("narrowReviewTranscriptPayload: total missing falls back to segments.length", () => {
+    const result = narrowReviewTranscriptPayload({
+      payload: {
+        confirmed_at: null,
+        segments: [reviewSegment(1, "Eins"), reviewSegment(2, "Zwei")],
+      },
+    });
+
+    expect(result.total).toBe(2);
+    expect(Number.isNaN(result.total)).toBe(false);
+  });
+
+  it("narrowReviewTranscriptPayload: non-number total falls back to segments.length", () => {
+    const result = narrowReviewTranscriptPayload({
+      payload: {
+        confirmed_at: null,
+        segments: [reviewSegment(1, "Eins")],
+        total: "viele",
+      },
+    });
+
+    expect(result.total).toBe(1);
+    expect(Number.isNaN(result.total)).toBe(false);
+  });
+
+  it("a malformed total never produces a false-positive remainder line at render time", () => {
+    // Render-level companion to the two direct tests above: whatever `total` ends up as for a
+    // malformed input, the card must not claim there are more segments than were actually shown.
+    // This does NOT guarantee `total` itself is correct (see the direct tests for that) — a
+    // `NaN` or negative `total` would pass this exact assertion too.
     const c = client();
     renderWithQuery(
       <ActionCard
         message={reviewTranscriptMessage({
           confirmed_at: null,
           segments: [reviewSegment(1, "Eins"), reviewSegment(2, "Zwei")],
-        })}
-        client={c}
-      />,
-    );
-
-    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
-    expect(screen.getByText(/#1 · 1s · Eins/)).toBeTruthy();
-    expect(screen.getByText(/#2 · 2s · Zwei/)).toBeTruthy();
-    expect(screen.queryByText(/weitere Segmente/)).toBeNull();
-  });
-
-  it("total is not a number: falls back to the shown segment count, no remainder line", () => {
-    const c = client();
-    renderWithQuery(
-      <ActionCard
-        message={reviewTranscriptMessage({
-          confirmed_at: null,
-          segments: [reviewSegment(1, "Eins")],
           total: "viele",
         })}
         client={c}
@@ -692,6 +716,7 @@ describe("ActionCard — review_transcript (Gate A)", () => {
 
     expect(screen.getByText("Transkript prüfen")).toBeTruthy();
     expect(screen.getByText(/#1 · 1s · Eins/)).toBeTruthy();
+    expect(screen.getByText(/#2 · 2s · Zwei/)).toBeTruthy();
     expect(screen.queryByText(/weitere Segmente/)).toBeNull();
   });
 });

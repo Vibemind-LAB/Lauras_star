@@ -55,13 +55,17 @@ interface ReviewSegmentRow {
  * total }`. `total` can exceed `segments.length` even below the cap, so the card computes its own
  * remainder line rather than trusting the two to match. Narrowed defensively for the same reason
  * as `narrowActionContent` — `content` is typed `Record<string, unknown>`. */
-interface ReviewTranscriptPayload {
+export interface ReviewTranscriptPayload {
   confirmedAt: string | null;
   segments: ReviewSegmentRow[];
   total: number;
 }
 
-function narrowReviewTranscriptPayload(content: Record<string, unknown>): ReviewTranscriptPayload {
+// Exported (unlike the file's other narrow* helpers) so ActionCard.test.tsx can unit-test its
+// fallback branches directly — a render-level assertion of `total`'s fallback is vacuous
+// (`NaN - n` renders no remainder line the same as `0`, whether or not the `typeof` guard is
+// there at all), so those two cases need a direct call, not a rendered card.
+export function narrowReviewTranscriptPayload(content: Record<string, unknown>): ReviewTranscriptPayload {
   const payload =
     typeof content.payload === "object" && content.payload !== null
       ? (content.payload as Record<string, unknown>)
