@@ -301,13 +301,8 @@ def build_production_team(
             "Install it with: uv sync --extra autoshort"
         ) from exc
 
-    tool_specs = build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
-    tools_by_name = {
-        spec.name: FunctionTool(spec.func, name=spec.name, description=spec.description)
-        for spec in tool_specs
-    }
-    model_client = build_model_client(config, role="agent", stage=stage)
-
+    # Validate agent_names FIRST — fail fast on a misspelled roster name before spending work on
+    # tool_specs/tools_by_name/model_client, which an unknown name would only throw away.
     specs_all = production_agent_specs(board.meta().language)
     if agent_names is not None:
         known = {s.name for s in specs_all}
@@ -315,6 +310,13 @@ def build_production_team(
         if unknown:
             raise ValueError(f"unknown agent name(s): {unknown}")
         specs_all = [s for s in specs_all if s.name in agent_names]
+
+    tool_specs = build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    tools_by_name = {
+        spec.name: FunctionTool(spec.func, name=spec.name, description=spec.description)
+        for spec in tool_specs
+    }
+    model_client = build_model_client(config, role="agent", stage=stage)
 
     # list[Any]: participants wants list[ChatAgent]; AssistantAgent subclasses it, but list is
     # invariant (and ChatAgent is only importable with the extra installed).

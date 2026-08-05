@@ -14,9 +14,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .toolset import ToolSpec
+
+if TYPE_CHECKING:  # annotation only (from __future__ import annotations defers evaluation) —
+    # avoids a real import-time cycle between this module and .orchestrator.
+    from .orchestrator import ExecuteFn, StageOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -154,18 +158,21 @@ def run_tail_with_qa(
     event_sink: Callable[[dict[str, Any]], None] | None,
     expected_scenes: list[int],
     specs: list[ToolSpec] | None = None,
-    qa_execute: Any = None,
-) -> tuple[TailOutcome, Any]:
-    """Chain first, bounded QA second. QA runs only after a fully successful chain and gets
-    exactly one retry via the same ``_safe_execute`` convention (spec decision 3 applies to the
-    stage as a whole: one ``_safe_execute`` call is already exception-safe, a hard_fail QA is
-    reported, not retried into a loop).
+    qa_execute: ExecuteFn | None = None,
+) -> tuple[TailOutcome, StageOutcome | None]:
+    """Chain first, bounded QA second. QA runs only after a fully successful chain, and only
+    once: a single ``_safe_execute`` call, no retry — an exception inside the QA execute becomes
+    a clean ``hard_fail`` ``StageOutcome`` (``_safe_execute``'s own contract) rather than
+    propagating, but a ``hard_fail`` QA outcome is reported to the caller as-is, never retried
+    into a loop. A failed chain never reaches QA at all: the second element of the return tuple
+    is ``None`` in that case.
 
-    ``db``/``board``/``config``/``deps``/``qa_execute`` stay ``Any`` (not ``Database``/``Board``/
-    ``AgentConfig``/``ProductionDeps``/``ExecuteFn``): this is a test seam as much as a real
-    entrypoint — the pipeline tests drive it with ``None`` for everything the injected
-    ``specs``/``qa_execute`` make unnecessary, and a stricter annotation would fail mypy on those
-    calls.
+    ``db``/``board``/``config``/``deps`` stay ``Any`` (not ``Database``/``Board``/``AgentConfig``/
+    ``ProductionDeps``): this is a test seam as much as a real entrypoint — the pipeline tests
+    drive it with ``None`` for everything the injected ``specs``/``qa_execute`` make unnecessary,
+    and a stricter annotation would fail mypy on those calls. ``qa_execute`` and the return type
+    stay precisely typed (``ExecuteFn | None`` / ``tuple[TailOutcome, StageOutcome | None]``)
+    since MP3 consumes this function's contract directly.
     """
     if specs is None:
         from .production_tools import build_production_tool_specs
@@ -192,7 +199,7 @@ def _make_qa_execute(
     asset_id: str,
     deps: Any,
     event_sink: Callable[[dict[str, Any]], None] | None,
-) -> Any:
+) -> ExecuteFn:
     """The real QA ``ExecuteFn``: a one-agent team (``qa_reviewer`` only). Mirrors
     :func:`production_orchestrator._make_default_execute`, narrowed via ``agent_names``."""
     from .production_orchestrator import _make_default_execute
