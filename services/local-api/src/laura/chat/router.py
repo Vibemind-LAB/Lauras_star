@@ -132,15 +132,25 @@ def _compact_message(message: dict[str, Any]) -> str:
 
 
 def compose_context(
-    *, project: dict[str, Any] | None, running_jobs: int, messages: list[dict[str, Any]]
+    *,
+    project: dict[str, Any] | None,
+    running_jobs: int,
+    messages: list[dict[str, Any]],
+    asset_names: list[str] | None = None,
 ) -> str:
-    """Assemble the router's context string: project line, running-jobs line, then the last 20
-    messages compacted to one line each (pure string assembly, no I/O)."""
+    """Assemble the router's context string: project line, video roster, running-jobs line,
+    then the last 20 messages compacted to one line each (pure string assembly, no I/O).
+
+    The roster exists because the router's rules forbid inventing names: without it, an
+    asset_ref the user names ('die Bildschirmaufnahme') is unverifiable and the model asks
+    back instead of routing review_transcript (seen live 2026-08-05)."""
     lines: list[str] = []
     if project is not None:
         name = project.get("name") or "?"
         project_id = project.get("id") or "?"
         lines.append(f"Project: {name} (id={project_id})")
+        if asset_names:
+            lines.append("Videos: " + ", ".join(asset_names[:20]))
     else:
         lines.append("Project: none selected")
     lines.append(f"Running jobs: {running_jobs}")

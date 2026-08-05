@@ -158,9 +158,16 @@ def post_message(
 
     active_project_id = conversation.get("active_project_id")
     project = repos.get_project(db, active_project_id) if active_project_id else None
+    asset_names = (
+        [str(a["display_name"]) for a in repos.list_assets(db, active_project_id)]
+        if project is not None and active_project_id
+        else None
+    )
     running_jobs = _running_jobs_count(db)
     messages = repos.list_conversation_messages(db, conversation_id)
-    context = compose_context(project=project, running_jobs=running_jobs, messages=messages)
+    context = compose_context(
+        project=project, running_jobs=running_jobs, messages=messages, asset_names=asset_names
+    )
 
     config = resolve_from_env()
     runner = getattr(request.app.state, "chat_runner", None)

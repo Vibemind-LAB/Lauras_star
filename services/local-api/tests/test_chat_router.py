@@ -95,6 +95,29 @@ def test_compose_context_compacts_cards_and_caps_at_20() -> None:
     assert "Drive-Test" in ctx
 
 
+def test_compose_context_lists_asset_names() -> None:
+    """Live finding 2026-08-05: without the project's video names in context, the router
+    cannot ground an asset_ref ('Zeig mir das Transkript der Bildschirmaufnahme' → the
+    model asks back instead of routing review_transcript) — its rules forbid inventing
+    names, so the roster must be IN the context."""
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"},
+        running_jobs=0,
+        messages=[],
+        asset_names=["Bildschirmaufnahme 2026-05-21", "n8n Farm"],
+    )
+    assert "Videos: Bildschirmaufnahme 2026-05-21, n8n Farm" in ctx
+
+
+def test_compose_context_omits_videos_line_without_assets() -> None:
+    names: list[str] | None
+    for names in (None, []):
+        ctx = compose_context(
+            project={"name": "P", "id": "p1"}, running_jobs=0, messages=[], asset_names=names
+        )
+        assert "Videos:" not in ctx
+
+
 def test_every_tool_is_reachable() -> None:
     assert frozenset({
         "reply", "create_project", "switch_project", "propose_import",
