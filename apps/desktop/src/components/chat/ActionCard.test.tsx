@@ -49,6 +49,21 @@ function reviewSegment(
   return { index, id: `seg-${index}`, start_s, text };
 }
 
+/** An `action` message with an arbitrary `content` — for exercising malformed/incomplete
+ * payloads `reviewTranscriptMessage` can't express (e.g. `payload` missing entirely, rather than
+ * present-but-empty). */
+function rawActionMessage(content: Record<string, unknown>): ChatMessage {
+  return {
+    id: "m3",
+    conversation_id: "c1",
+    seq: 5,
+    role: "assistant",
+    kind: "action",
+    content,
+    created_at: "2026-01-01T00:00:00Z",
+  };
+}
+
 function job(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
     id: "j1",
@@ -472,6 +487,41 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
     expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
   });
+
+  it("a script_gate without an explicit 'pending' field falls back to enabled && !approved", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    // A backend payload predating (or otherwise missing) the `pending` flag — `narrowPendingScript`
+    // must still recognize this as pending from `enabled && !approved` alone. `ChatMessage.content`
+    // is `Record<string, unknown>` at the API boundary, so an incomplete real-world payload is a
+    // legitimate case to simulate even though the current type requires all three fields.
+    const gate = { enabled: true, approved: false } as unknown as NonNullable<
+      ProductionBoardStatus["script_gate"]
+    >;
+    const getProductionStatus = vi.fn().mockResolvedValue(
+      boardStatus({
+        script_gate: gate,
+        script_lines: [{ chapter: 1, scene_number: 1, text: "Nur eine Zeile" }],
+      }),
+    );
+    const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("📝 Sprechertext wartet auf Freigabe")).toBeTruthy();
+    expect(screen.getByText(/Nur eine Zeile/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
+  });
 });
 
 describe("ActionCard — review_transcript (Gate A)", () => {
@@ -546,6 +596,102 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
+    expect(screen.queryByText(/weitere Segmente/)).toBeNull();
+  });
+
+  // --- malformed/incomplete payloads (defensive narrowing in narrowReviewTranscriptPayload) ---
+  //
+  // `content` is `Record<string, unknown>` at the API boundary — none of these shapes are ruled
+  // out by the type system, only by the narrowing function itself. Each case must render a
+  // degraded-but-safe card (heading still present, no crash), never throw.
+
+  it("payload missing entirely: renders the heading, unconfirmed badge, empty list", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={rawActionMessage({ tool: "review_transcript", refs: {}, outcome: "done" })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText("unbestätigt")).toBeTruthy();
+    expect(screen.queryByText(/#\d+ · /)).toBeNull();
+    expect(screen.queryByText(/weitere Segmente/)).toBeNull();
+    expect(screen.getByText(/Korrigieren per Nachricht/)).toBeTruthy();
+  });
+
+  it("segments is not an array (e.g. a string): renders an empty list, not a crash", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: "oops, not an array",
+          total: 3,
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText("unbestätigt")).toBeTruthy();
+    expect(screen.queryByText(/#\d+ · /)).toBeNull();
+  });
+
+  it("a segment entry that isn't an object, or is missing fields: degrades per-field, no crash", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: ["not-an-object", { text: "Nur Text vorhanden, sonst nichts" }],
+          total: 2,
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    // First entry: not an object at all — every field falls back (index 1, empty text).
+    expect(screen.getByText(/#1 · 0s ·/)).toBeTruthy();
+    // Second entry: an object, but only `text` is present — the rest fall back, text survives.
+    expect(screen.getByText(/#2 · 0s · Nur Text vorhanden, sonst nichts/)).toBeTruthy();
+  });
+
+  it("total missing: falls back to the shown segment count, no remainder line", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: [reviewSegment(1, "Eins"), reviewSegment(2, "Zwei")],
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText(/#1 · 1s · Eins/)).toBeTruthy();
+    expect(screen.getByText(/#2 · 2s · Zwei/)).toBeTruthy();
+    expect(screen.queryByText(/weitere Segmente/)).toBeNull();
+  });
+
+  it("total is not a number: falls back to the shown segment count, no remainder line", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={reviewTranscriptMessage({
+          confirmed_at: null,
+          segments: [reviewSegment(1, "Eins")],
+          total: "viele",
+        })}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText(/#1 · 1s · Eins/)).toBeTruthy();
     expect(screen.queryByText(/weitere Segmente/)).toBeNull();
   });
 });
