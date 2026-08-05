@@ -1456,6 +1456,131 @@ def test_approve_script_http_exception_becomes_honest_text(
     assert messages[0]["content"]["text"] == "session not found"
 
 
+# --- approve_script busy-run guard (I2, 2026-08-05 final review) -------------------------------
+# A double "Script freigeben" while the session's latest production job is still queued/running
+# must never enqueue a SECOND concurrent production.run job against the same board files.
+# _production_job_busy mirrors api/short_creator.py's run_production_revert guard exactly
+# (latest_job_id -> repos.get_job -> status in queued/running).
+
+
+def _seed_job(db: Database, session_id: str, *, status: str = "queued") -> str:
+    """A production.run job attached to *session_id* via latest_job_id, in the given
+    status. Mirrors test_production_revert.py's direct-SQL status override — enqueue()
+    always inserts 'queued', so a non-'queued' target status is set afterwards."""
+    from laura.jobs.runner import enqueue
+
+    job_id = enqueue(db, queue="production", kind="production.run", payload={}, max_attempts=1)
+    repos.set_production_session_job(db, session_id, job_id)
+    if status != "queued":
+        with db.transaction() as conn:
+            conn.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+    return job_id
+
+
+def test_approve_script_busy_run_replies_and_stamps_nothing_on_fresh_approval(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """I2: a busy latest job on the FRESH-approval path (script exists, never approved yet)
+    must reply with the busy text and stamp NOTHING — stamping first would open the gate for
+    the still-running job mid-flight even though no new run starts here."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    calls: list[str] = []
+
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-must-not-happen", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    _seed_job(db, "sess-1", status="queued")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+
+    assert calls == [], "a busy run must never get a second concurrent resume"
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "läuft bereits" in messages[0]["content"]["text"]
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    assert board.meta().script_approved_utc is None
+
+
+def test_approve_script_busy_run_on_unfinished_already_current_board_does_not_resume(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """I2: the already-current-but-unfinished recovery path (a normal double-approve while
+    the deterministic tail is mid-run) must also refuse a concurrent second resume, leaving
+    the existing approval stamp untouched."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import Script, content_hash
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    calls: list[str] = []
+
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-must-not-happen", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    script = board.load("script")
+    assert isinstance(script, Script)
+    board.set_script_approved(_NOW, content_hash(script))
+    _seed_job(db, "sess-1", status="running")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW2,
+    )
+
+    assert calls == [], "a busy run must never get a second concurrent resume"
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "läuft bereits" in messages[0]["content"]["text"]
+    reloaded = Board.open(board_root_for(db, asset_id, "sess-1"))
+    assert reloaded.meta().script_approved_utc == _NOW, "the existing stamp must stay untouched"
+
+
+def test_approve_script_after_job_succeeded_runs_normally(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """I2 positive control: a TERMINAL latest job (succeeded) must not trip the busy guard —
+    only queued/running blocks a new resume."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
+        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_resume", _fake_resume)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    _seed_job(db, "sess-1", status="succeeded")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+
+    assert messages[0]["kind"] == "action"
+    assert messages[0]["content"]["refs"]["job_id"] == "job-42"
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    assert board.meta().script_approved_utc == _NOW
+
+
 # --- defensive: unknown tool + never-raises ---------------------------------------------------
 
 

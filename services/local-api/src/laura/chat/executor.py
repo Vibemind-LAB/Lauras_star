@@ -411,6 +411,24 @@ _SCRIPT_ALREADY_APPROVED_TEXT = "Script war schon freigegeben."
 _NO_SCRIPT_TO_APPROVE_TEXT = (
     "Es gibt noch kein Script zum Freigeben — die Produktion hält von selbst am Gate."
 )
+_RUN_BUSY_TEXT = "Der Lauf läuft bereits — ich melde mich, wenn er fertig ist."
+
+
+def _production_job_busy(db: Database, session: dict[str, Any]) -> bool:
+    """I2 (2026-08-05 final review): the session's latest production job is still
+    queued/running. Mirrors ``api/short_creator.py``'s ``run_production_revert`` guard
+    EXACTLY (same ``latest_job_id`` -> ``repos.get_job`` -> status check) so chat and the
+    revert endpoint agree on what "busy" means.
+
+    Live-class bug this closes: a double "Script freigeben" while the first run was still
+    in flight used to enqueue a SECOND concurrent ``production.run`` job against the same
+    board files — two runs racing each other. ``_handle_approve_script`` calls this BEFORE
+    either the approval stamp or the resume enqueue, on both the fresh-approval and the
+    already-current-but-unfinished-resume paths.
+    """
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    return job is not None and str(job["status"]) in ("queued", "running")
 
 
 def _handle_approve_script(
@@ -496,6 +514,15 @@ def _handle_approve_script(
     )
     if already_current and board.resume_point(_expected_scenes_for(db, asset_id)) == "done":
         return [_append_text(db, conversation_id, _SCRIPT_ALREADY_APPROVED_TEXT, now_utc)]
+
+    # I2: refuse a concurrent second run BEFORE stamping or enqueueing, on BOTH remaining
+    # paths (the already-current-but-unfinished resume above, and a fresh approval below).
+    # Ordering matters: stamping the fresh path FIRST and only then discovering the run is
+    # busy would open the gate for the STILL-RUNNING job mid-flight even though this call
+    # never actually starts a new one — so the busy check runs first, no stamp either way.
+    if _production_job_busy(db, session):
+        return [_append_text(db, conversation_id, _RUN_BUSY_TEXT, now_utc)]
+
     if not already_current:
         board.set_script_approved(now_utc, current_hash)
 
