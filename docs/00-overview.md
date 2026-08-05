@@ -30,9 +30,11 @@ in Qdrant, unbestätigte Transkripte warnen beim Produzieren sichtbar. **Gate B*
 Chat-Sessions vor der Stimmsynthese an (`BoardMeta.script_gate`), bis `approve_script` freigibt;
 die ActionCard zeigt bis dahin „📝 Sprechertext wartet auf Freigabe" statt „▶ ansehen". Nach der
 Freigabe läuft die Produktion als deterministische Werkzeugkette (Voice → Cutlist → Kontaktbogen
-→ Render) plus einer begrenzten QA-Bewertung — reine Tool-Aufrufe, kein Agenten-Team mehr im Weg.
-`approve_script` setzt dafür nur noch einen puren Resume fort; das Team fasst freigegebene
-Scripts nicht mehr an, ein Text-Follow-up nach der Freigabe bewaffnet das Gate dagegen neu.
+→ Render — reine Tool-Aufrufe) plus eine begrenzte Ein-Agent-QA-Bewertung mit reinen
+Lese-/QA-Werkzeugen; das Team, das Skripte umschreiben könnte, ist auf diesem Pfad strukturell
+außen vor. `approve_script` setzt dafür nur noch einen puren Resume fort; das Team fasst
+freigegebene Scripts nicht mehr an, ein Text-Follow-up nach der Freigabe bewaffnet das Gate
+dagegen neu.
 Read-only Second-Brain-Recherche (`search_second_brain`/`read_brain_note`) ist optional über
 `LAURA_SECONDBRAIN_PATH` env-gated. Details: [`agentic-short-creator`](agentic-short-creator.md).
 
