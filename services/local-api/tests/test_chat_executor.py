@@ -586,6 +586,88 @@ def test_follow_up_http_exception_becomes_honest_text(tmp_path: Path, monkeypatc
     assert messages[0]["content"]["text"] == "session not found"
 
 
+# --- follow_up busy-run guard (I1, 2026-08-05 final review) --------------------------------
+# A follow_up sent while the session's latest production job is still queued/running must
+# never enqueue a SECOND concurrent production.run job against the same board — mirrors the
+# approve_script busy guard (_production_job_busy) exactly.
+
+
+def test_follow_up_busy_run_replies_and_enqueues_nothing(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """I1: a queued/running latest job on the session must refuse a follow_up outright — a
+    follow_up mid-tail must never start a concurrent team run on the same board files."""
+    calls: list[str] = []
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-must-not-happen", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    project = _project(db, tmp_path)
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id="sess-1", asset_id=asset["id"], created_utc=_NOW,
+    )
+    from laura.jobs.runner import enqueue
+
+    job_id = enqueue(db, queue="production", kind="production.run", payload={}, max_attempts=1)
+    repos.set_production_session_job(db, "sess-1", job_id)
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("follow_up", {"session_ref": "sess-1", "text": "mach lauter"}),
+        now_utc=_NOW,
+    )
+
+    assert calls == [], "a busy run must never get a second concurrent follow_up"
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "läuft bereits" in messages[0]["content"]["text"]
+
+
+def test_follow_up_after_job_succeeded_enqueues_normally(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """I1 positive control: a TERMINAL latest job (succeeded) must not trip the busy guard —
+    only queued/running blocks a new follow_up."""
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        return {"session_id": session_id, "job_id": "job-9", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    project = _project(db, tmp_path)
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id="sess-1", asset_id=asset["id"], created_utc=_NOW,
+    )
+    from laura.jobs.runner import enqueue
+
+    job_id = enqueue(db, queue="production", kind="production.run", payload={}, max_attempts=1)
+    repos.set_production_session_job(db, "sess-1", job_id)
+    with db.transaction() as conn:
+        conn.execute("UPDATE jobs SET status=? WHERE id=?", ("succeeded", job_id))
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("follow_up", {"session_ref": "sess-1", "text": "mach lauter"}),
+        now_utc=_NOW,
+    )
+
+    assert messages[0]["kind"] == "action"
+    assert messages[0]["content"]["refs"]["job_id"] == "job-9"
+
+
 # --- revert ----------------------------------------------------------------------------------
 
 
@@ -1777,6 +1859,60 @@ def test_discuss_survives_a_corrupted_board_and_keeps_other_context(
     task = captured[0]
     assert "Segment 2: Du kannst Konfix aktuell halten" in task
     assert "Status:" not in task, "the board block must be omitted, not half-built"
+
+
+def test_discuss_default_runner_uses_the_discuss_system_message_not_the_router_prompt(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """C1 (2026-08-05 final review): when no ``discuss_runner`` is injected, ``_handle_discuss``
+    must build its one-shot runner with ``_DISCUSS_SYSTEM`` as the system message — never the
+    router's default "reply with EXACTLY one JSON object" prompt (the live bug: a grounded
+    discuss task run under the router's system message emits raw tool-call JSON as the chat
+    reply). Monkeypatches ``laura.chat.router.build_one_shot_runner`` (the module the local
+    import in ``_handle_discuss`` resolves at call time) to capture the kwarg without touching
+    a real model client."""
+    from laura.chat.executor import _DISCUSS_SYSTEM
+
+    captured: dict[str, Any] = {}
+
+    def fake_build_one_shot_runner(config: Any, *, system_message: str) -> Any:
+        captured["system_message"] = system_message
+
+        def run(task: str) -> str:
+            return "Antwort ohne echten Runner."
+
+        return run
+
+    monkeypatch.setattr(
+        "laura.chat.router.build_one_shot_runner", fake_build_one_shot_runner
+    )
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("discuss", {"text": "warum ist das so?"}), now_utc=_NOW,
+    )
+
+    assert captured.get("system_message") == _DISCUSS_SYSTEM
+    assert messages[0]["content"]["text"] == "Antwort ohne echten Runner."
+
+
+def test_discuss_task_no_longer_carries_the_persona_header(tmp_path: Path) -> None:
+    """C1: the persona text moved to the runner's system message (see
+    ``test_discuss_default_runner_uses_the_discuss_system_message_not_the_router_prompt``) —
+    the task text handed to an injected runner must not start with it anymore."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    captured: list[str] = []
+
+    def runner(task: str) -> str:
+        captured.append(task)
+        return "ok"
+
+    _run_discuss(db, settings, conversation_id, "was kannst du?", runner)
+
+    assert not captured[0].startswith("You are Laura's editor-side voice")
 
 
 # --- defensive: unknown tool + never-raises ---------------------------------------------------

@@ -379,6 +379,31 @@ def _handle_start_overview(
     return [text_msg, action_msg]
 
 
+_RUN_BUSY_TEXT = "Der Lauf läuft bereits — ich melde mich, wenn er fertig ist."
+
+
+def _production_job_busy(db: Database, session: dict[str, Any]) -> bool:
+    """The session's latest production job is still queued/running. Mirrors
+    ``api/short_creator.py``'s ``run_production_revert`` guard EXACTLY (same
+    ``latest_job_id`` -> ``repos.get_job`` -> status check) so chat and the revert endpoint
+    agree on what "busy" means.
+
+    Two call sites, both BEFORE they touch the board or enqueue anything:
+
+    - ``_handle_approve_script`` (I2, 2026-08-05 review): a double "Script freigeben" while
+      the first run was still in flight used to enqueue a SECOND concurrent
+      ``production.run`` job against the same board files — two runs racing each other.
+      Called before either the approval stamp or the resume enqueue, on both the
+      fresh-approval and the already-current-but-unfinished-resume paths.
+    - ``_handle_follow_up`` (I1, 2026-08-05 final review): a follow_up sent mid-tail used to
+      enqueue unconditionally, starting a CONCURRENT team run (workers=3) on the same board
+      and overwriting ``latest_job_id`` — hiding the still-running tail from the UI.
+    """
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    return job is not None and str(job["status"]) in ("queued", "running")
+
+
 def _handle_follow_up(
     db: Database,
     conversation_id: str,
@@ -392,6 +417,14 @@ def _handle_follow_up(
     session_id = _resolve_session_id(messages, session_ref)
     if session_id is None:
         return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+    # I1: refuse a concurrent second run BEFORE enqueueing — see _production_job_busy's
+    # docstring for the concrete failure this closes. A session_id resolved from the thread's
+    # action cards but with no persisted production_session row is left to
+    # run_production_follow_up's own 404, unchanged from before this fix — the busy check only
+    # has an opinion when there is a real session to ask about.
+    session = repos.get_production_session(db, session_id)
+    if session is not None and _production_job_busy(db, session):
+        return [_append_text(db, conversation_id, _RUN_BUSY_TEXT, now_utc)]
     try:
         result = run_production_follow_up(db, session_id, text)
     except HTTPException as exc:
@@ -413,24 +446,6 @@ _SCRIPT_ALREADY_APPROVED_TEXT = "Script war schon freigegeben."
 _NO_SCRIPT_TO_APPROVE_TEXT = (
     "Es gibt noch kein Script zum Freigeben — die Produktion hält von selbst am Gate."
 )
-_RUN_BUSY_TEXT = "Der Lauf läuft bereits — ich melde mich, wenn er fertig ist."
-
-
-def _production_job_busy(db: Database, session: dict[str, Any]) -> bool:
-    """I2 (2026-08-05 final review): the session's latest production job is still
-    queued/running. Mirrors ``api/short_creator.py``'s ``run_production_revert`` guard
-    EXACTLY (same ``latest_job_id`` -> ``repos.get_job`` -> status check) so chat and the
-    revert endpoint agree on what "busy" means.
-
-    Live-class bug this closes: a double "Script freigeben" while the first run was still
-    in flight used to enqueue a SECOND concurrent ``production.run`` job against the same
-    board files — two runs racing each other. ``_handle_approve_script`` calls this BEFORE
-    either the approval stamp or the resume enqueue, on both the fresh-approval and the
-    already-current-but-unfinished-resume paths.
-    """
-    job_id = session.get("latest_job_id")
-    job = repos.get_job(db, str(job_id)) if job_id else None
-    return job is not None and str(job["status"]) in ("queued", "running")
 
 
 def _handle_approve_script(
@@ -756,8 +771,8 @@ _DISCUSS_SYSTEM = (
     "their video project, in the user's language, short and concrete. Use ONLY the "
     "provided context — never invent transcript content, scenes, or status. If the "
     "critique is actionable as a production change, end with EXACTLY one line starting "
-    "with 'Vorschlag: ' containing the concrete follow-up instruction, followed by the "
-    "sentence \"Antworte 'ja', dann setze ich das um — oder beschreib es anders.\" "
+    "with 'Vorschlag: ' containing the concrete follow-up instruction, then on the next "
+    "line the sentence \"Antworte 'ja', dann setze ich das um — oder beschreib es anders.\" "
     "If nothing is actionable, end without a Vorschlag line."
 )
 
@@ -834,16 +849,26 @@ def _board_context_lines(db: Database, asset_id: str, session_id: str) -> list[s
         resume_point = board.resume_point(_expected_scenes_for(db, asset_id))
         script = board.load("script")
         qa_report = board.load("qa_report")
+        # M1 (2026-08-05 final review): the status-shape subscripts live INSIDE this try block
+        # (via .get chains, not bare []) so a status()-shape drift degrades to an omitted board
+        # block like every other read failure here, instead of escaping as an uncaught KeyError.
+        script_gate = board_status.get("script_gate") or {}
+        gate_enabled = bool(script_gate.get("enabled"))
+        gate_approved = bool(script_gate.get("approved"))
+        render_entry = (board_status.get("artifacts") or {}).get("render_report") or {}
+        rendered = render_entry.get("version") is not None
     except Exception:  # noqa: BLE001 — a corrupted board must not take the whole turn down
         logger.warning("discuss board read failed; omitting board context", exc_info=True)
         return []
 
     lines: list[str] = []
-    gate = "approved" if board_status["script_gate"]["approved"] else "pending"
-    rendered = board_status["artifacts"]["render_report"]["version"] is not None
-    lines.append(
-        f"Status: resume_point={resume_point}, gate={gate}, export={'ja' if rendered else 'nein'}"
-    )
+    # M2: the gate= fragment only makes sense for a gated board — an ungated one must not
+    # read "gate=pending" (there is no gate to be pending on).
+    status_parts = [f"resume_point={resume_point}"]
+    if gate_enabled:
+        status_parts.append(f"gate={'approved' if gate_approved else 'pending'}")
+    status_parts.append(f"export={'ja' if rendered else 'nein'}")
+    lines.append("Status: " + ", ".join(status_parts))
     if isinstance(qa_report, QaReport):
         lines.append(f"QA verdict: {qa_report.verdict}")
         for finding in qa_report.findings:
@@ -871,15 +896,20 @@ def _transcript_hit_lines(db: Database, asset_id: str, user_text: str) -> list[s
 def _discuss_context(
     db: Database, messages: list[dict[str, Any]], session_id: str | None, *, user_text: str
 ) -> str:
-    """The task text handed to the discuss runner: :data:`_DISCUSS_SYSTEM` as a header, then a
-    stack of independently-degrading grounding blocks (board status/QA/script lines, transcript
-    hits — both only when *session_id* resolves to a real production session, but NEITHER
-    gated on the other's success), then the last 6 thread messages, then the user's own
-    message. Every block is fault-tolerant on its own: a missing session, a session with no
-    board yet, a corrupted board, no script, or no transcript run each just drop their own
-    block rather than raising — the same "omit, never crash" posture as :func:`execute_decision`
-    itself."""
-    lines: list[str] = [_DISCUSS_SYSTEM]
+    """The task text handed to the discuss runner: a stack of independently-degrading
+    grounding blocks (board status/QA/script lines, transcript hits — both only when
+    *session_id* resolves to a real production session, but NEITHER gated on the other's
+    success), then the last 6 thread messages, then the user's own message.
+
+    :data:`_DISCUSS_SYSTEM` is NOT part of this task text (C1, 2026-08-05 final review): it is
+    the runner's real ``system_message``, passed by :func:`_handle_discuss` — mixing the
+    router's own "reply with EXACTLY one JSON object" system prompt with a persona line
+    embedded in the task body used to make the router runner (the real default) argue with
+    itself over which instructions win. Every block here is fault-tolerant on its own: a
+    missing session, a session with no board yet, a corrupted board, no script, or no
+    transcript run each just drop their own block rather than raising — the same "omit, never
+    crash" posture as :func:`execute_decision` itself."""
+    lines: list[str] = []
 
     if session_id is not None:
         session = repos.get_production_session(db, session_id)
@@ -912,7 +942,11 @@ def _handle_discuss(
         from ..short_creator.providers import resolve_from_env
         from .router import build_one_shot_runner
 
-        runner = build_one_shot_runner(resolve_from_env())
+        # C1 (2026-08-05 final review): discuss must run its OWN system message, never the
+        # router's default "reply with EXACTLY one JSON object" prompt — the router's own
+        # AssistantAgent, driven by a grounded-answer task, used to emit raw tool-call JSON
+        # blobs as live chat replies.
+        runner = build_one_shot_runner(resolve_from_env(), system_message=_DISCUSS_SYSTEM)
     try:
         reply = (runner(task) or "").strip()
     except Exception:  # noqa: BLE001 — a chat turn never fails on the model

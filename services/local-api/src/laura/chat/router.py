@@ -394,9 +394,17 @@ def _fallback() -> RouterDecision:
 # --- the real single-agent runner (autogen-touching) -------------------------------------------
 
 
-def _build_router_agent(config: AgentConfig) -> AssistantAgent:
-    """One tool-less ``AssistantAgent`` that answers the router's task in one shot (lazy
-    autogen import, mirrors :func:`laura.short_creator.scout._build_scout_agent`)."""
+def _build_router_agent(
+    config: AgentConfig, *, system_message: str = _SYSTEM_PROMPT
+) -> AssistantAgent:
+    """One tool-less ``AssistantAgent`` that answers a one-shot task (lazy autogen import,
+    mirrors :func:`laura.short_creator.scout._build_scout_agent`).
+
+    ``system_message`` defaults to the router's own JSON-tool-call prompt (:data:`_SYSTEM_PROMPT`)
+    so every pre-C1 caller keeps its exact behavior; :func:`build_one_shot_runner` overrides it
+    for callers that need a DIFFERENT persona on the same one-shot machinery (the chat/executor.py
+    discuss handler, spec 2026-08-05 final review C1) — a plain grounded-answer task must never
+    run under the router's "reply with EXACTLY one JSON object" instructions."""
     try:
         from autogen_agentchat.agents import AssistantAgent
     except ImportError as exc:
@@ -410,7 +418,7 @@ def _build_router_agent(config: AgentConfig) -> AssistantAgent:
         name="chat_router",
         model_client=model_client,
         description="Routes one chat turn to exactly one tool call.",
-        system_message=_SYSTEM_PROMPT,
+        system_message=system_message,
     )
 
 
@@ -426,15 +434,18 @@ def _last_message_text(result: Any) -> str:
     return ""
 
 
-def _default_runner(config: AgentConfig) -> Callable[[str], str]:
+def _default_runner(
+    config: AgentConfig, *, system_message: str = _SYSTEM_PROMPT
+) -> Callable[[str], str]:
     """The real runner: builds one tool-less ``AssistantAgent`` and runs it with a wall-clock
     cap. Any failure (missing extra, model error, timeout) raises out of ``run`` —
     :func:`run_router` treats every runner exception the same way: straight to the
-    deterministic fallback."""
+    deterministic fallback. ``system_message`` defaults to the router's own prompt so
+    ``run_router``'s own ``runner=None`` path is unchanged."""
 
     def run(task: str) -> str:
         async def _run() -> str:
-            agent = _build_router_agent(config)
+            agent = _build_router_agent(config, system_message=system_message)
             result = await agent.run(task=task)
             return _last_message_text(result)
 
@@ -443,11 +454,23 @@ def _default_runner(config: AgentConfig) -> Callable[[str], str]:
     return run
 
 
-def build_one_shot_runner(config: AgentConfig) -> Callable[[str], str]:
-    """Public facade over the router's one-shot agent runner — the discuss handler
-    (chat/executor.py) runs its grounded answer through the same single-agent,
-    wall-clock-capped machinery instead of growing a second LLM client path."""
-    return _default_runner(config)
+def build_one_shot_runner(
+    config: AgentConfig, *, system_message: str = _SYSTEM_PROMPT
+) -> Callable[[str], str]:
+    """Public facade over the one-shot agent runner — the discuss handler (chat/executor.py)
+    runs its grounded answer through the same single-agent, wall-clock-capped machinery
+    instead of growing a second LLM client path.
+
+    ``system_message`` defaults to the router's own JSON-tool-call prompt so an unqualified
+    call keeps its pre-C1 behavior, but a caller running a DIFFERENT one-shot task (discuss's
+    grounded-answer persona, not a tool router) must pass its own system message — otherwise
+    that task runs under instructions demanding "reply with EXACTLY one JSON object", which is
+    exactly the C1 bug this seam exists to prevent. The returned callable carries the resolved
+    ``system_message`` as a ``.system_message`` attribute so a caller/test can confirm which
+    prompt a given runner was built with without re-deriving it."""
+    runner = _default_runner(config, system_message=system_message)
+    runner.system_message = system_message  # type: ignore[attr-defined]
+    return runner
 
 
 # --- orchestration (pure given the injected/real runner) ---------------------------------------

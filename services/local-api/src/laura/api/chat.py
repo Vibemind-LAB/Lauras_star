@@ -68,18 +68,24 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, s
     outranks the board's own status flag, since a board sitting at "active" with a script
     nobody approved yet is still, from the user's perspective, awaiting-approval.
     """
-    try:
-        from ..chat.executor import _latest_session_id
-        from ..short_creator.board import Board
-        from ..short_creator.production_orchestrator import board_root_for
+    from ..chat.executor import _latest_session_id
+    from ..short_creator.board import Board
+    from ..short_creator.production_orchestrator import board_root_for
 
+    try:
         session_id = _latest_session_id(messages)
         if session_id is None:
             return None
         session = repos.get_production_session(db, session_id)
         if session is None:
             return None
-        board = Board.open(board_root_for(db, str(session["asset_id"]), session_id))
+        # M3 (2026-08-05 final review): a cleaned/never-created board directory is routine —
+        # caught BEFORE the broad except below so it never logs a warning on every turn, unlike
+        # a genuine read failure once the board is actually open.
+        try:
+            board = Board.open(board_root_for(db, str(session["asset_id"]), session_id))
+        except (ValueError, FileNotFoundError):
+            return None
         status_payload = board.status()
         gate = status_payload.get("script_gate") or {}
         job = repos.get_job(db, str(session["latest_job_id"])) if session.get(

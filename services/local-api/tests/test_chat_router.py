@@ -333,3 +333,24 @@ def test_build_one_shot_runner_is_public() -> None:
 
     runner = build_one_shot_runner(_config())
     assert callable(runner)
+
+
+def test_build_one_shot_runner_defaults_to_the_router_system_prompt() -> None:
+    """C1 (2026-08-05 final review): an unqualified call must keep its pre-fix behavior — the
+    router's own JSON-tool-call prompt — so every existing caller (the router itself) is
+    unaffected by the new seam."""
+    from laura.chat.router import _SYSTEM_PROMPT, build_one_shot_runner
+
+    runner = build_one_shot_runner(_config())
+    assert runner.system_message == _SYSTEM_PROMPT  # type: ignore[attr-defined]
+
+
+def test_build_one_shot_runner_threads_a_custom_system_message() -> None:
+    """C1: a caller running a DIFFERENT one-shot task (discuss's grounded-answer persona, not
+    a tool router) must be able to swap the system message — the whole point of the fix is
+    that this no longer defaults to the router's "reply with EXACTLY one JSON object" prompt."""
+    from laura.chat.router import build_one_shot_runner
+
+    custom = "You are a completely different persona."
+    runner = build_one_shot_runner(_config(), system_message=custom)
+    assert runner.system_message == custom  # type: ignore[attr-defined]
