@@ -1710,6 +1710,75 @@ def test_discuss_empty_runner_reply_falls_back(tmp_path: Path) -> None:
     assert "nichts Fundiertes" in messages[0]["content"]["text"]
 
 
+def test_discuss_transcript_grounding_works_without_a_board(tmp_path: Path) -> None:
+    """Review finding (IMPORTANT 1): transcript grounding sources via
+    ``repos.get_production_session -> asset_id`` alone and must run whenever the SESSION
+    resolves, board or no board — it must not be nested inside the board-open branch. A
+    session that resolves to a real asset with transcript segments, but has no board
+    directory on disk at all (never went through ``Board.create``), must still surface the
+    matching segment in the runner's task and answer normally."""
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path, name="No-Board")
+    conversation_id = _conversation(db, project_id=project["id"])
+    asset, _seg_ids = _seed_transcript(
+        db, project["id"], display_name="Clip 1",
+        texts=["intro satz", "Du kannst Konfix aktuell halten, uns weiter und sofort."],
+    )
+    repos.create_production_session(
+        db, session_id="sess-noboard", asset_id=asset["id"], created_utc=_NOW,
+    )
+    _seed_action(db, conversation_id, session_id="sess-noboard")
+    captured: list[str] = []
+
+    def runner(task: str) -> str:
+        captured.append(task)
+        return "Klar, das ergibt Sinn."
+
+    messages = _run_discuss(
+        db, settings, conversation_id, "warum steht Konfix aktuell im transkript?", runner,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["content"]["text"] == "Klar, das ergibt Sinn."
+    task = captured[0]
+    assert "Segment 2: Du kannst Konfix aktuell halten" in task
+
+
+def test_discuss_survives_a_corrupted_board_and_keeps_other_context(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Review finding (IMPORTANT 2): a board that opens fine but raises on ``status()``/
+    ``resume_point()``/``load(...)`` (a ``ValidationError`` on a corrupted artifact — this
+    codebase has hit real board corruption live — or an ``OSError`` on a bad read) must not
+    escape ``_discuss_context`` into ``execute_decision``'s generic catch-all: that would swap
+    discuss's own runner-backed answer for the unrelated "execution failed" text and drop the
+    transcript + thread-tail context along with it. Only the board block must degrade;
+    transcript grounding and the runner call must still go through."""
+    from laura.short_creator.board import Board
+
+    def _broken_status(self: Any) -> dict[str, Any]:
+        raise RuntimeError("corrupted board artifact")
+
+    monkeypatch.setattr(Board, "status", _broken_status)
+    db, settings = _setup(tmp_path)
+    conversation_id = _seed_discuss_session(db, tmp_path)
+    captured: list[str] = []
+
+    def runner(task: str) -> str:
+        captured.append(task)
+        return "Antwort trotz kaputtem Board."
+
+    messages = _run_discuss(
+        db, settings, conversation_id, "warum steht Konfix aktuell im transkript?", runner,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["content"]["text"] == "Antwort trotz kaputtem Board."
+    task = captured[0]
+    assert "Segment 2: Du kannst Konfix aktuell halten" in task
+    assert "Status:" not in task, "the board block must be omitted, not half-built"
+
+
 # --- defensive: unknown tool + never-raises ---------------------------------------------------
 
 

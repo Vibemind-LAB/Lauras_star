@@ -804,61 +804,89 @@ def _matching_segments(
     return [seg for _hits, seg in scored[:limit]]
 
 
+def _board_context_lines(db: Database, asset_id: str, session_id: str) -> list[str]:
+    """Board status/QA/script-line context for *session_id*'s board, or ``[]`` when there is
+    no board yet, or when reading one fails.
+
+    Wrapped in its OWN try/except, separate from the transcript block in
+    :func:`_discuss_context`: a corrupted board (a ``ValidationError`` on a bad artifact — this
+    codebase has hit real board corruption live — or an ``OSError`` on a bad read) must degrade
+    to an empty board block, NOT blow past ``_discuss_context`` into ``execute_decision``'s
+    generic catch-all, which would drop the transcript-grounding and thread-tail blocks along
+    with it and replace the whole turn with the generic execution-failed text instead of
+    discuss's own runner-backed answer.
+
+    One ``status()`` call and one ``load("script")`` call — ``status()`` already reads the
+    script artifact internally to compute its hash, so this does not eliminate the double
+    read, but it does keep this function itself from ever loading the same artifact twice."""
+    from ..api.short_creator import _expected_scenes_for
+    from ..short_creator.board import Board
+    from ..short_creator.board_models import QaReport, Script
+    from ..short_creator.production_orchestrator import board_root_for
+
+    try:
+        board = Board.open(board_root_for(db, asset_id, session_id))
+    except (ValueError, FileNotFoundError):
+        return []  # no board for this session yet — not a failure worth logging
+
+    try:
+        board_status = board.status()
+        resume_point = board.resume_point(_expected_scenes_for(db, asset_id))
+        script = board.load("script")
+        qa_report = board.load("qa_report")
+    except Exception:  # noqa: BLE001 — a corrupted board must not take the whole turn down
+        logger.warning("discuss board read failed; omitting board context", exc_info=True)
+        return []
+
+    lines: list[str] = []
+    gate = "approved" if board_status["script_gate"]["approved"] else "pending"
+    rendered = board_status["artifacts"]["render_report"]["version"] is not None
+    lines.append(
+        f"Status: resume_point={resume_point}, gate={gate}, export={'ja' if rendered else 'nein'}"
+    )
+    if isinstance(qa_report, QaReport):
+        lines.append(f"QA verdict: {qa_report.verdict}")
+        for finding in qa_report.findings:
+            lines.append(f"QA finding: {finding.note[:200]}")
+    if isinstance(script, Script):
+        for line in script.lines:
+            lines.append(f"Kapitel {line.chapter} · Szene {line.scene_number} · {line.text}")
+    return lines
+
+
+def _transcript_hit_lines(db: Database, asset_id: str, user_text: str) -> list[str]:
+    """Transcript grounding for *asset_id* — independent of the board: it sources via
+    ``repos.get_production_session -> asset_id`` alone, so it must run whenever the session
+    resolves to a real asset, board or no board (a session can be mid-production with a
+    transcript long since confirmed but no board directory yet, or a board that just failed to
+    open — neither should silence a transcript hit that is otherwise available)."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return []
+    review_content, _total = _review_transcript_content(db, asset)
+    hits = _matching_segments(user_text, review_content["payload"]["segments"])
+    return [f"Segment {hit['index']}: {hit['text']}" for hit in hits]
+
+
 def _discuss_context(
     db: Database, messages: list[dict[str, Any]], session_id: str | None, *, user_text: str
 ) -> str:
     """The task text handed to the discuss runner: :data:`_DISCUSS_SYSTEM` as a header, then a
-    stack of grounding blocks (board status/QA, script lines, transcript hits — all only when
-    *session_id* resolves to a real, openable board), then the last 6 thread messages, then the
-    user's own message. Every block is fault-tolerant on its own: a missing session, a session
-    with no board yet, no script, or no transcript run each just drop their block rather than
-    raising — the same "omit, never crash" posture as :func:`execute_decision` itself."""
+    stack of independently-degrading grounding blocks (board status/QA/script lines, transcript
+    hits — both only when *session_id* resolves to a real production session, but NEITHER
+    gated on the other's success), then the last 6 thread messages, then the user's own
+    message. Every block is fault-tolerant on its own: a missing session, a session with no
+    board yet, a corrupted board, no script, or no transcript run each just drop their own
+    block rather than raising — the same "omit, never crash" posture as :func:`execute_decision`
+    itself."""
     lines: list[str] = [_DISCUSS_SYSTEM]
 
     if session_id is not None:
         session = repos.get_production_session(db, session_id)
         if session is not None:
             asset_id = str(session["asset_id"])
-
-            from ..api.short_creator import _expected_scenes_for
-            from ..short_creator.board import Board
-            from ..short_creator.board_models import QaReport, Script
-            from ..short_creator.production_orchestrator import board_root_for
-
-            try:
-                board = Board.open(board_root_for(db, asset_id, session_id))
-            except (ValueError, FileNotFoundError):
-                board = None
-
-            if board is not None:
-                board_status = board.status()
-                resume_point = board.resume_point(_expected_scenes_for(db, asset_id))
-                gate = "approved" if board_status["script_gate"]["approved"] else "pending"
-                rendered = board_status["artifacts"]["render_report"]["version"] is not None
-                lines.append(
-                    f"Status: resume_point={resume_point}, gate={gate}, "
-                    f"export={'ja' if rendered else 'nein'}"
-                )
-
-                qa_report = board.load("qa_report")
-                if isinstance(qa_report, QaReport):
-                    lines.append(f"QA verdict: {qa_report.verdict}")
-                    for finding in qa_report.findings:
-                        lines.append(f"QA finding: {finding.note[:200]}")
-
-                script = board.load("script")
-                if isinstance(script, Script):
-                    for line in script.lines:
-                        lines.append(
-                            f"Kapitel {line.chapter} · Szene {line.scene_number} · {line.text}"
-                        )
-
-                asset = repos.get_asset(db, asset_id)
-                if asset is not None:
-                    review_content, _total = _review_transcript_content(db, asset)
-                    hits = _matching_segments(user_text, review_content["payload"]["segments"])
-                    for hit in hits:
-                        lines.append(f"Segment {hit['index']}: {hit['text']}")
+            lines.extend(_board_context_lines(db, asset_id, session_id))
+            lines.extend(_transcript_hit_lines(db, asset_id, user_text))
 
     for message in messages[-6:]:
         lines.append(_compact_message(message))
