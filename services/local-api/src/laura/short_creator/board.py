@@ -464,6 +464,21 @@ class Board:
             meta = self.meta().model_copy(update={"script_approved_utc": approved_utc})
             _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
 
+    def clear_script_approval(self) -> None:
+        """Revert :meth:`set_script_approved` — same atomic meta-write pattern, ``None`` in
+        place of a timestamp.
+
+        The compensating half of the approve_script handler's write-then-enqueue sequence: the
+        approval has to land on the board BEFORE the follow-up run is enqueued (a job that runs
+        before the enqueue call even returns would otherwise read the gate as still pending), so
+        a failure to actually START that follow-up run cannot be fixed by reordering — only by
+        rolling the stamp back once the failure is known. Leaves ``script_gate`` itself
+        untouched, exactly like ``set_script_approved`` does.
+        """
+        with self._lock:
+            meta = self.meta().model_copy(update={"script_approved_utc": None})
+            _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
+
     def resume_point(self, expected_scenes: list[int]) -> str:
         """First missing artifact — where a (re)started session job continues."""
         have = {r.scene_number for r in self.scene_reviews()}

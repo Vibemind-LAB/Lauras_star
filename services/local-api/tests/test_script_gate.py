@@ -19,6 +19,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from laura.chat.executor import execute_decision
+from laura.chat.router import RouterDecision
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
@@ -317,3 +319,61 @@ def test_build_production_task_names_the_script_approval_checkpoint(tmp_path: Pa
     assert "SCRIPT-APPROVAL CHECKPOINT" in task_text
     assert "approve_script" in task_text
     assert "synthesize_script_voice" in task_text
+
+
+# --- executor: approve_script rolls the gate back when the follow-up fails to start --------------
+
+
+def test_approve_script_reverts_the_stamp_when_the_follow_up_run_fails_to_start(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Review finding: ``set_script_approved`` used to persist BEFORE ``run_production_follow_up``
+    was known to succeed. A session race, a config preflight failure, or any bug in that call
+    then left the gate permanently open while the user read an error implying nothing had
+    happened. The approval still has to land on the board before the follow-up run is enqueued
+    (the voice tool reads it at job runtime), so the fix is a compensating rollback via
+    ``Board.clear_script_approval()``, not a reorder — this pins exactly the assertion the
+    review said was missing: the gate is closed again after the failure, not just the error
+    text."""
+    session_id = "sess-1"
+    db, asset_id = _seed_scene(tmp_path)
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset_id, created_utc="2026-08-04T00:00:00Z",
+    )
+    root = production_orchestrator.board_root_for(db, asset_id, session_id)
+    Board.create(
+        root,
+        BoardMeta(
+            session_id=session_id, asset_id=asset_id, created_utc="2026-08-04T00:00:00Z",
+            task="t", target_seconds=20.0, script_gate=True,
+        ),
+    )
+    repos.create_conversation(db, conversation_id="c1", created_utc="2026-08-04T00:00:00Z")
+    repos.append_conversation_message(
+        db, message_id="m-action", conversation_id="c1", role="assistant", kind="action",
+        content={
+            "tool": "start_short", "args": {}, "outcome": "running",
+            "refs": {"session_id": session_id, "job_id": "job-x"},
+        },
+        created_utc="2026-08-04T00:00:00Z",
+    )
+
+    def _fails(db: Database, session_id: str, text: str) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fails)
+
+    decision: RouterDecision = {
+        "tool": "approve_script", "args": {"session_ref": session_id}, "fallback": False,
+    }
+    settings = Settings(workspace_root=tmp_path / "ws-executor", start_runner=False)
+
+    messages = execute_decision(
+        db, settings, conversation_id="c1", decision=decision, now_utc="2026-08-05T10:00:00Z",
+    )
+
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == (
+        "Da ist beim Ausführen etwas schiefgelaufen — magst du es nochmal versuchen?"
+    )
+    assert Board.open(root).meta().script_approved_utc is None

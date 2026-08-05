@@ -426,7 +426,18 @@ def _handle_approve_script(
     'autoshort' extra) to read and flip the gate itself, then enqueues the SAME follow-up run
     ``follow_up`` would (:func:`run_production_follow_up`) so voice/cutlist/contact
     sheet/render actually continue. An already-approved board is a no-op: German text, no new
-    run — approving twice must not burn a second production turn."""
+    run — approving twice must not burn a second production turn.
+
+    The approval stamp must land on the board BEFORE the follow-up run is enqueued (the voice
+    tool reads ``meta.script_approved_utc`` at job runtime, which can start before the enqueue
+    call here even returns), so a failure to start that follow-up run cannot be fixed by
+    reordering the two calls — only by a COMPENSATING rollback once the failure is known
+    (review finding: the stamp used to persist unconditionally, so a session race, a config
+    preflight failure, or any bug in the follow-up call left the gate permanently open while the
+    user read an error implying nothing had happened). Both exception paths below revert via
+    ``board.clear_script_approval()`` before the existing error text goes out — the known
+    ``HTTPException`` case keeps its honest-passthrough text, and anything else re-raises into
+    ``execute_decision``'s own catch-all, unchanged."""
     args = decision["args"]
     session_ref = str(args["session_ref"])
     session_id = _resolve_session_id(messages, session_ref)
@@ -452,7 +463,11 @@ def _handle_approve_script(
     try:
         result = run_production_follow_up(db, session_id, _SCRIPT_APPROVED_FOLLOW_UP_TEXT)
     except HTTPException as exc:
+        board.clear_script_approval()
         return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
+    except Exception:
+        board.clear_script_approval()
+        raise
     action_msg = _append(
         db, conversation_id, role="assistant", kind="action",
         content={
