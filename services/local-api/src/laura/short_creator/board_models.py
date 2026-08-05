@@ -468,3 +468,13 @@ class BoardMeta(BaseModel):
     # wrote, so it read "active" forever — including for 55 minutes after a run had died. A
     # closed set plus ``Board.set_status`` makes it answerable.
     status: BoardStatus = "active"
+    # Gate B (script checkpoint, 2026-08-04): when True, ``synthesize_script_voice`` refuses
+    # deterministically until ``script_approved_utc`` is set — the production pauses right after
+    # the script for the user to approve it in chat (``approve_script``), so voice/cutlist/render
+    # never run against text nobody signed off on. Both fields default so every meta.json written
+    # before this gate existed still loads unchanged. Only ``run_project_auto_short``'s NEW
+    # sessions turn the gate on (auto-overview does not use the production board at all).
+    script_gate: bool = False
+    # Set once, by ``Board.set_script_approved``, when the user approves the script in chat.
+    # ``None`` means "not yet approved" — irrespective of whether the gate is even enabled.
+    script_approved_utc: str | None = None

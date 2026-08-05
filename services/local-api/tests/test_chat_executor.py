@@ -1104,14 +1104,101 @@ def test_confirm_transcript_without_active_project_asks(tmp_path: Path) -> None:
     assert "kein Projekt" in messages[0]["content"]["text"]
 
 
-# --- approve_script (Task 7's — not implemented here) -------------------------------------------
+# --- approve_script (Gate B script checkpoint, Task 7) -------------------------------------------
 
 
-def test_approve_script_falls_back_to_unknown_tool_text_until_task_7(tmp_path: Path) -> None:
-    """approve_script is Task 7's (Gate B script checkpoint). Until that handler lands, the
-    dispatch table has no branch for it, so a decision naming it must fall through to the
-    SAME defensive fallback as a genuinely unknown tool — never raise, never silently no-op
-    without telling the user."""
+def _seed_board(
+    db: Database, tmp_path: Path, *, session_id: str, script_gate: bool = True,
+) -> str:
+    """Project (REAL workspace_root under tmp_path) + asset + production session + a board
+    already created via ``Board.create`` — mirrors ``test_production_api.py``'s
+    ``_seed_session_with_board`` (kept local per this repo's self-contained-test-file
+    convention). Returns ``asset_id``."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import BoardMeta
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+    )
+    root = board_root_for(db, asset["id"], session_id)
+    meta = BoardMeta(
+        session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+        task="t", target_seconds=30.0, script_gate=script_gate,
+    )
+    Board.create(root, meta)
+    return str(asset["id"])
+
+
+def test_approve_script_sets_approved_and_starts_follow_up_run(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    from laura.short_creator.board import Board
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        assert session_id == "sess-1"
+        assert "freigegeben" in text
+        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "action"
+    assert messages[0]["content"]["tool"] == "approve_script"
+    assert messages[0]["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-42"}
+    assert messages[0]["content"]["outcome"] == "running"
+
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    assert board.meta().script_approved_utc == _NOW
+
+
+def test_approve_script_already_approved_says_so_and_starts_no_new_run(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    from laura.short_creator.board import Board
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    calls: list[str] = []
+
+    def _fake_follow_up(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fake_follow_up)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    asset_id = _seed_board(db, tmp_path, session_id="sess-1")
+    Board.open(board_root_for(db, asset_id, "sess-1")).set_script_approved(_NOW)
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW2,
+    )
+
+    assert calls == [], "an already-approved board must never start a second run"
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == "Script war schon freigegeben."
+
+
+def test_approve_script_without_any_session_asks(tmp_path: Path) -> None:
     db, settings = _setup(tmp_path)
     conversation_id = _conversation(db)
 
@@ -1120,7 +1207,27 @@ def test_approve_script_falls_back_to_unknown_tool_text_until_task_7(tmp_path: P
         decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
     )
     assert messages[0]["kind"] == "text"
-    assert messages[0]["content"]["text"] == "Das kann ich (noch) nicht ausführen."
+    assert "Session" in messages[0]["content"]["text"]
+
+
+def test_approve_script_http_exception_becomes_honest_text(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    def _fails(db: Any, session_id: str, text: str) -> dict[str, Any]:
+        raise HTTPException(404, "session not found")
+
+    monkeypatch.setattr("laura.chat.executor.run_production_follow_up", _fails)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_board(db, tmp_path, session_id="sess-1")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == "session not found"
 
 
 # --- defensive: unknown tool + never-raises ---------------------------------------------------

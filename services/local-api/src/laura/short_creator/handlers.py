@@ -102,8 +102,9 @@ def _open_run_log(
 def handle_production_run(
     ctx: JobContext, *, execute: ExecuteFn | None = None, deps: ProductionDeps | None = None
 ) -> dict[str, Any]:
-    """Payload ``{asset_id, session_id, task, target_seconds?, format?, message?}`` → the v2
-    production run's result dict (:func:`production_orchestrator.run_production`), unchanged.
+    """Payload ``{asset_id, session_id, task, target_seconds?, format?, message?, script_gate?}``
+    → the v2 production run's result dict (:func:`production_orchestrator.run_production`),
+    unchanged.
 
     Also writes a coarse two-line NDJSON session run log (a ``meta`` line before the run, a
     ``done`` line after) to ``<workspace>/agent-runs/<session_id>/runs/<UTC>Z.ndjson`` for
@@ -126,6 +127,10 @@ def handle_production_run(
     # Whitespace-only messages must behave like no message (a stripped-blank follow-up is not a
     # real follow-up request).
     message = (payload.get("message") or "").strip() or None
+    # Gate B: only meaningful for a FRESH board (run_production ignores it on a resume/follow-up
+    # whose meta already exists). Absent on every payload enqueued before Gate B existed, and on
+    # every caller that does not opt in — both default to False, unchanged behavior.
+    script_gate = bool(payload.get("script_gate", False))
 
     from .production_orchestrator import run_production
     from .providers import resolve_from_env
@@ -153,6 +158,7 @@ def handle_production_run(
         format=board_format,
         language=language,
         message=message,
+        script_gate=script_gate,
         execute=execute,
         deps=deps,
         # Every team event lands in the session run log, flushed per line — a stalled phase

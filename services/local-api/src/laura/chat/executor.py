@@ -406,6 +406,66 @@ def _handle_follow_up(
     return [action_msg]
 
 
+_SCRIPT_ALREADY_APPROVED_TEXT = "Script war schon freigegeben."
+_SCRIPT_APPROVED_FOLLOW_UP_TEXT = (
+    "Script freigegeben — bitte fortsetzen: Voice, Cutlist, Contact Sheet, Render."
+)
+
+
+def _handle_approve_script(
+    db: Database,
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    decision: RouterDecision,
+    now_utc: str,
+) -> list[dict[str, Any]]:
+    """Gate B: the user approving the script in chat. Resolves ``session_ref`` exactly like
+    ``follow_up``/``revert`` (:func:`_resolve_session_id`), opens the session's board directly
+    (``board_root_for`` + ``Board.open``, imported locally — mirrors every board-touching helper
+    in ``api/short_creator.py``, and keeps this module import-light for callers without the
+    'autoshort' extra) to read and flip the gate itself, then enqueues the SAME follow-up run
+    ``follow_up`` would (:func:`run_production_follow_up`) so voice/cutlist/contact
+    sheet/render actually continue. An already-approved board is a no-op: German text, no new
+    run — approving twice must not burn a second production turn."""
+    args = decision["args"]
+    session_ref = str(args["session_ref"])
+    session_id = _resolve_session_id(messages, session_ref)
+    if session_id is None:
+        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+    asset_id = str(session["asset_id"])
+
+    from ..short_creator.board import Board
+    from ..short_creator.production_orchestrator import board_root_for
+
+    try:
+        board = Board.open(board_root_for(db, asset_id, session_id))
+    except (ValueError, FileNotFoundError):
+        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+
+    if board.meta().script_approved_utc is not None:
+        return [_append_text(db, conversation_id, _SCRIPT_ALREADY_APPROVED_TEXT, now_utc)]
+    board.set_script_approved(now_utc)
+
+    try:
+        result = run_production_follow_up(db, session_id, _SCRIPT_APPROVED_FOLLOW_UP_TEXT)
+    except HTTPException as exc:
+        return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
+    action_msg = _append(
+        db, conversation_id, role="assistant", kind="action",
+        content={
+            "tool": "approve_script",
+            "args": dict(args),
+            "refs": {"session_id": session_id, "job_id": result["job_id"]},
+            "outcome": "running",
+        },
+        now_utc=now_utc,
+    )
+    return [action_msg]
+
+
 def _handle_revert(
     db: Database,
     conversation_id: str,
@@ -649,8 +709,9 @@ def execute_decision(
             return _handle_confirm_transcript(
                 db, active_project_id, conversation_id, decision, now_utc, principal
             )
-        # "approve_script" is Task 7's (Gate B script checkpoint) — deliberately falls through
-        # to the same defensive branch as a truly unknown tool until that handler lands.
+        if tool == "approve_script":
+            messages = repos.list_conversation_messages(db, conversation_id)
+            return _handle_approve_script(db, conversation_id, messages, decision, now_utc)
 
         # Defensive: the router only ever hands out a tool from TOOLS, so this branch should be
         # unreachable — but the thread must never crash on a decision it does not recognize.

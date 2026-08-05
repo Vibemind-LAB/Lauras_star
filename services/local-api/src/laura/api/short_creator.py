@@ -373,6 +373,7 @@ def _create_production_session(
     target_seconds: float,
     format: str,
     language: str,
+    script_gate: bool = False,
 ) -> tuple[str, str]:
     """Create a v2 production session row for *asset_id* and enqueue its ``production.run`` job.
 
@@ -381,25 +382,32 @@ def _create_production_session(
     row is created before the job is enqueued: a session without a job is harmless (visible,
     just never progresses), while a job without a session row would reference an entity that
     doesn't exist. Returns ``(session_id, job_id)``.
+
+    ``script_gate`` (Gate B, opt-in) is only ever added to the job payload when True — a caller
+    that never asks for it (every caller except ``run_project_auto_short``) enqueues the exact
+    payload shape this always had, unchanged.
     """
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
         db, session_id=session_id, asset_id=asset_id, created_utc=created_utc
     )
+    payload: dict[str, Any] = {
+        "asset_id": asset_id,
+        "session_id": session_id,
+        "task": task,
+        "target_seconds": target_seconds,
+        "format": format,
+        "language": language,
+    }
+    if script_gate:
+        payload["script_gate"] = True
     # LLM-driven production runs are expensive + non-idempotent — do not auto-retry.
     job_id = enqueue(
         db,
         queue=queue_for("production.run"),
         kind="production.run",
-        payload={
-            "asset_id": asset_id,
-            "session_id": session_id,
-            "task": task,
-            "target_seconds": target_seconds,
-            "format": format,
-            "language": language,
-        },
+        payload=payload,
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
@@ -562,6 +570,10 @@ def run_project_auto_short(
         target_seconds=target_seconds,
         format=format,
         language=language,
+        # Gate B: a chat-driven short pauses after the script for the user to approve it —
+        # deliberately NOT set on auto-overview (Phase 2 does not use the production board at
+        # all) or on the plain POST /assets/{asset_id}/production endpoint.
+        script_gate=True,
     )
 
     warnings = config_warnings(config)

@@ -1973,8 +1973,20 @@ def build_production_tool_specs(
         run first. On a fresh synthesis, the mp3 plus a word-timings sidecar (used for caption
         burn-in and build_cutlist's zoom timing) are saved as the board's voice artifact.
         Gracefully reports ``ok: False`` without raising when no voice backend is configured or
-        the backend itself fails."""
+        the backend itself fails. Deterministically refuses first of all when Gate B is active
+        and unapproved (script_gate: the user must approve the script in chat — approve_script —
+        before voice, cutlist or render may run); this is enforced HERE, not just in the
+        orchestrator prompt, so a run cannot talk its way past the checkpoint."""
         try:
+            meta = board.meta()
+            if meta.script_gate and meta.script_approved_utc is None:
+                return {
+                    "ok": False,
+                    "reason": (
+                        "script gate: awaiting user approval — the user must approve the "
+                        "script in chat before voice is synthesized"
+                    ),
+                }
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
                 return {

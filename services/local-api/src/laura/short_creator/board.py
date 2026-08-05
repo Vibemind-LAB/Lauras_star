@@ -455,6 +455,15 @@ class Board:
             meta = self.meta().model_copy(update={"status": value})
             _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
 
+    def set_script_approved(self, approved_utc: str) -> None:
+        """Record the user's Gate-B approval on the board itself — same atomic meta-write
+        pattern as :meth:`set_status`. ``synthesize_script_voice`` reads
+        ``meta.script_approved_utc`` to decide whether the gate still blocks voice/render, so
+        this is the one write that lifts it."""
+        with self._lock:
+            meta = self.meta().model_copy(update={"script_approved_utc": approved_utc})
+            _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
+
     def resume_point(self, expected_scenes: list[int]) -> str:
         """First missing artifact — where a (re)started session job continues."""
         have = {r.scene_number for r in self.scene_reviews()}
@@ -480,6 +489,7 @@ class Board:
 
     def status(self) -> dict[str, Any]:
         """Board summary for the session API (versions + presence + whether the work happened)."""
+        meta = self.meta()
         reviews = self.scene_reviews()
         degraded = [r.scene_number for r in reviews if r.degraded]
         script = self.load("script")
@@ -531,8 +541,20 @@ class Board:
                 else:
                     entry["stale"] = _is_stale(cur, current_hash)
             artifacts[name] = entry
-        return {
-            "meta": json.loads(self.meta().model_dump_json()),
+        # Gate B (script checkpoint): whether this board's gate is even on, and — if so — its
+        # current decision state. ``pending`` additionally requires a script to actually review
+        # (a gate enabled before save_script_chapter ever ran has nothing to show yet); when
+        # pending, the lines themselves ride along so a client never needs a second lookup to
+        # render the checkpoint.
+        script_gate = {
+            "enabled": meta.script_gate,
+            "approved": meta.script_approved_utc is not None,
+            "pending": (
+                meta.script_gate and meta.script_approved_utc is None and script is not None
+            ),
+        }
+        result: dict[str, Any] = {
+            "meta": json.loads(meta.model_dump_json()),
             "scene_reviews": {
                 "count": len(reviews),
                 "scenes": [r.scene_number for r in reviews],
@@ -543,4 +565,11 @@ class Board:
                 "degraded_scenes": degraded,
             },
             "artifacts": artifacts,
+            "script_gate": script_gate,
         }
+        if script_gate["pending"] and isinstance(script, Script):
+            result["script_lines"] = [
+                {"chapter": line.chapter, "scene_number": line.scene_number, "text": line.text}
+                for line in script.lines
+            ]
+        return result

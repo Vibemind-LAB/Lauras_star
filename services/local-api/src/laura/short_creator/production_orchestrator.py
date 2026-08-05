@@ -212,6 +212,13 @@ def build_production_task(
         "the run right after save_contact_sheet and report the sheet's tiles instead of "
         "rendering; a later message (e.g. 'render jetzt') resumes at render_production through "
         "the normal resume flow.\n"
+        "   SCRIPT-APPROVAL CHECKPOINT (known pattern, no extra session state): when this "
+        "session's script_gate is enabled and the script is not yet approved, "
+        "synthesize_script_voice refuses deterministically - the tool enforces it, this just "
+        "tells the team so it does not waste a turn fighting it. END the run right after the "
+        "last save_script_chapter call and report the script for the user to review; approval "
+        "happens in chat (approve_script) and resumes the run through the normal follow-up "
+        "flow - never call synthesize_script_voice while the gate is still pending.\n"
         "\n"
         f"6) LANGUAGE + CHARTER: the script MUST be written in {meta.language} - never switch "
         "languages mid-script. Coding-agent charter: if voice_fits "
@@ -472,6 +479,7 @@ def run_production(
     format: Format = "insta",
     language: str = "German",
     message: str | None = None,
+    script_gate: bool = False,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -489,6 +497,13 @@ def run_production(
     on is not a valid restart). Stage A runs first; only a ``hard_fail`` escalates to Stage B
     (both magentic-only - v2 has no GraphFlow fallback). Every stage call goes through
     :func:`orchestrator._safe_execute`, so a raising ``execute`` never propagates out of here.
+
+    ``script_gate`` only matters for a FRESH board (no effect on a resume/follow-up, whose
+    ``BoardMeta`` already exists and is left untouched): it seeds Gate B (the script-approval
+    checkpoint) onto the new session's meta, so ``synthesize_script_voice`` refuses until the
+    user approves the script in chat. Callers opt in per session (currently only
+    ``run_project_auto_short``'s chat-driven sessions do); the default keeps every other
+    caller's fresh boards exactly as before this gate existed.
     """
     if repos.get_asset(db, asset_id) is None:
         return {
@@ -531,6 +546,7 @@ def run_production(
             format=format,
             language=language,
             target_seconds=float(target_seconds),
+            script_gate=script_gate,
         )
         board = Board.create(root, meta)
 
