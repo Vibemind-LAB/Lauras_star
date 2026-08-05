@@ -327,11 +327,22 @@ def _validate(parsed: dict[str, Any]) -> tuple[RouterDecision | None, str | None
     return {"tool": tool, "args": args, "fallback": False}, None
 
 
+def _normalize(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Accept the model's most common shape drift — ``{"<tool>": {...args}}`` instead of
+    ``{"tool": ..., "args": ...}`` (seen live from gpt-4o 2026-08-05, on both attempts of a
+    turn) — by rewriting it before validation. Anything else passes through untouched."""
+    if "tool" not in parsed and len(parsed) == 1:
+        [(key, value)] = parsed.items()
+        if key in TOOLS and isinstance(value, dict):
+            return {"tool": key, "args": value}
+    return parsed
+
+
 def _parse_and_validate(reply: str) -> tuple[RouterDecision | None, str | None]:
     parsed = _parse(reply)
     if parsed is None:
         return None, "no JSON object found in the reply"
-    return _validate(parsed)
+    return _validate(_normalize(parsed))
 
 
 def _fallback() -> RouterDecision:
@@ -431,8 +442,14 @@ def run_router(
         assert error is not None  # decision is None => _parse_and_validate always sets error
         retry_reply = _safe_call(run, _retry_task_text(task, error))
         if retry_reply is not None:
-            decision, _error = _parse_and_validate(retry_reply)
+            decision, retry_error = _parse_and_validate(retry_reply)
             if decision is not None:
                 return decision
+            # Both attempts produced an invalid reply — without this line the turn degrades
+            # to the clarify fallback with zero trace (cost a live-debugging session to find).
+            logger.warning(
+                "chat router reply failed validation twice; falling back (last error: %s)",
+                retry_error,
+            )
 
     return _fallback()

@@ -108,6 +108,43 @@ def test_new_tools_in_toolset() -> None:
         assert t in TOOLS
 
 
+def test_single_key_tool_shape_is_normalized_without_retry() -> None:
+    """gpt-4o live drift (2026-08-05): the model answers {"review_transcript": {...}} instead
+    of {"tool": ..., "args": ...} — in an app thread already carrying clarify history it did
+    so on BOTH attempts, turning every turn into the fallback. Normalize on the first pass."""
+    calls: list[str] = []
+
+    def runner(task: str) -> str:
+        calls.append(task)
+        return json.dumps({"review_transcript": {"asset_ref": "Bildschirmaufnahme"}})
+
+    decision = run_router(_config(), context="", user_text="x", runner=runner)
+    assert len(calls) == 1, "normalized shape must not burn the retry"
+    assert decision == {
+        "tool": "review_transcript",
+        "args": {"asset_ref": "Bildschirmaufnahme"},
+        "fallback": False,
+    }
+
+
+def test_single_key_unknown_tool_is_not_normalized() -> None:
+    replies = iter([
+        json.dumps({"explode": {"x": 1}}),
+        json.dumps({"tool": "reply", "args": {"text": "ok"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "reply" and decision["fallback"] is False
+
+
+def test_single_key_shape_with_bad_args_still_validates() -> None:
+    replies = iter([
+        json.dumps({"review_transcript": {}}),
+        json.dumps({"tool": "review_transcript", "args": {"asset_ref": "a"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "review_transcript" and decision["fallback"] is False
+
+
 def test_review_transcript_requires_asset_ref() -> None:
     replies = iter([
         json.dumps({"tool": "review_transcript", "args": {"asset_ref": ""}}),
