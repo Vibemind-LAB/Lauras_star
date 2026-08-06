@@ -687,8 +687,9 @@ durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
       SHOWS-Zeile je `board.scene_reviews()` als Fallback — alte, gate-lose Sessions
       profitieren vom selben Grounding. `scene_author`-Systemprompt bekommt zwei
       Charter-Zeilen: jede Zeile FÜR ihre Szene schreiben (SCENE FACTS + optional Zitat aus
-      `get_scene_transcript`), Produkt-/Eigennamen vor dem Schreiben mit `brain_search`
-      prüfen, wenn verfügbar (Rowboat-vs-n8n-Fehlerklasse). Zwei neue Tests in
+      `get_scene_transcript`), Produkt-/Eigennamen vor dem Schreiben mit
+      `search_second_brain` prüfen, wenn verfügbar (Rowboat-vs-n8n-Fehlerklasse). Zwei
+      neue Tests in
       `test_production_orchestrator.py`: bestätigte Auswahl → Facts nur für gewählte
       Szenen, keine Auswahl → Reviews-Fallback.
 - [x] **Verifiziert (VS5, dieser Task):** `uv run pytest tests/test_production_orchestrator.py`

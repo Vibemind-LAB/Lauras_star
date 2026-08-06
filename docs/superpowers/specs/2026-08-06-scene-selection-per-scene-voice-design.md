@@ -1,8 +1,6 @@
 # Szenen-Auswahl (Gate S) + Voice pro Szene — Design
 
-Datum: 2026-08-06 · Branch: `feat/generate-ui` · Status: Entwurf zur Review
-
-Status: Umgesetzt 2026-08-06 — Plan 1 docs/superpowers/plans/2026-08-06-gate-s-scene-selection.md, Plan 2 docs/superpowers/plans/2026-08-06-voice-per-scene.md
+Datum: 2026-08-06 · Branch: `feat/generate-ui` · Status: **Umgesetzt 2026-08-06** — Plan 1 docs/superpowers/plans/2026-08-06-gate-s-scene-selection.md, Plan 2 docs/superpowers/plans/2026-08-06-voice-per-scene.md
 
 ## 1. Kontext & Problem
 

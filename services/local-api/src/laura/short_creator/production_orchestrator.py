@@ -190,15 +190,23 @@ def build_production_task(
             "request does not ask to change.\n"
         )
 
+    # Loaded once and reused by both the Gate-S charter block below and the SCENE FACTS block
+    # further down — both need to know whether a CONFIRMED selection exists.
+    selection = board.load("scene_selection")
+    confirmed_selection = (
+        selection
+        if isinstance(selection, SceneSelection) and selection.confirmed_utc is not None
+        else None
+    )
+
     gate_s_lines = ""
     if meta.scene_gate:
-        selection = board.load("scene_selection")
-        if isinstance(selection, SceneSelection) and selection.confirmed_utc is not None:
+        if confirmed_selection is not None:
             # A confirmed pick is final. Steps 1-3 below are propose-then-stop instructions;
             # re-emitting them for a confirmed board invited exactly what production_tools'
             # structural guard now also refuses — a follow-up team turn re-proposing a
             # "better" set and silently clobbering the user's already-confirmed choice.
-            selected = sorted(selection.selected_scene_numbers)
+            selected = sorted(confirmed_selection.selected_scene_numbers)
             gate_s_lines = (
                 f"SCENE SELECTION (confirmed by the user): use ONLY scenes {selected}. "
                 "Do NOT call propose_scene_selection again — the pick is final unless the "
@@ -224,12 +232,11 @@ def build_production_task(
     # board's own scene_reviews are the fallback ground truth (SHOWS only — a review carries no
     # transcript snippet) so old, gate-off sessions get the same grounding as new gated ones.
     facts_lines: list[str] = []
-    selection = board.load("scene_selection")
-    if isinstance(selection, SceneSelection) and selection.confirmed_utc is not None:
+    if confirmed_selection is not None:
         chosen = {
             c.scene_number: c
-            for c in selection.candidates
-            if c.scene_number in set(selection.selected_scene_numbers)
+            for c in confirmed_selection.candidates
+            if c.scene_number in set(confirmed_selection.selected_scene_numbers)
         }
         for number in sorted(chosen):
             cand = chosen[number]
