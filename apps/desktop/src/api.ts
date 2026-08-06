@@ -778,6 +778,33 @@ export interface ProductionJobState {
   stopped_at?: string | null;
 }
 
+/** One proposed scene for the user's Gate-S pick — exact mirror of the backend's
+ * `SceneCandidate` (services/local-api/src/laura/short_creator/board_models.py). */
+export interface SceneCandidate {
+  scene_number: number;
+  src_start_frame: number;
+  src_end_frame_exclusive: number;
+  thumb_frame: number;
+  description: string;
+  transcript_snippet: string;
+  rationale: string;
+  recommended: boolean;
+}
+
+/** Gate S (scene checkpoint): whether the gate is active, whether a pick is still awaited, and
+ * (once a proposal exists on the board) the candidates plus the recommendation/current
+ * selection — mirrors `Board.status()`'s `scene_gate` block (spec 2026-08-06 §4.1/§4.4).
+ * `candidates`/`recommended`/`selected` are only present once a `scene_selection` artifact
+ * exists, same optionality reasoning as `ProductionBoardStatus.script_lines`. */
+export interface SceneGateStatus {
+  enabled: boolean;
+  pending: boolean;
+  confirmed: boolean;
+  candidates?: SceneCandidate[];
+  recommended?: number[];
+  selected?: number[];
+}
+
 /** GET /production/{sessionId} when the board exists: full board status + liveness. */
 export interface ProductionBoardStatus {
   board_ready: true;
@@ -814,6 +841,10 @@ export interface ProductionBoardStatus {
   /** The script's lines for the chat card to render inline, keyed by chapter + scene. Optional
    * for the same reason as `script_gate`: no client call needed, the card's payload carries it. */
   script_lines?: { chapter: number; scene_number: number; text: string }[];
+  /** Gate S (scene checkpoint): whether the gate is active, and — once a proposal exists — the
+   * candidates the user picks from. Optional for the same reason as `script_gate`: older
+   * backends that predate the gate (or gate-off boards) never send it. */
+  scene_gate?: SceneGateStatus;
 }
 
 /** GET /production/{sessionId} before a board exists — queued, or died before building one.
@@ -1011,6 +1042,23 @@ export class LauraClient {
       method: "POST",
       body: JSON.stringify({ artifact, version }),
     });
+  }
+
+  /**
+   * Confirm the user's Gate-S scene pick — the ONLY writer of `confirmed_utc` server-side
+   * (`confirm_scene_selection`, services/local-api/src/laura/api/short_creator.py). Enqueues the
+   * resume run; `job_id` is present on every non-error return (even an idempotent re-confirm
+   * heals a resume that may never have started), `already_current` marks a no-op re-confirm.
+   * POST /production/{sessionId}/scene-selection:confirm {scene_numbers} -> 202
+   */
+  confirmSceneSelection(
+    sessionId: string,
+    sceneNumbers: number[],
+  ): Promise<{ session_id: string; job_id?: string; already_current?: boolean }> {
+    return this.request<{ session_id: string; job_id?: string; already_current?: boolean }>(
+      `/production/${sessionId}/scene-selection:confirm`,
+      { method: "POST", body: JSON.stringify({ scene_numbers: sceneNumbers }) },
+    );
   }
 
   /**

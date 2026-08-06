@@ -11,6 +11,7 @@ import { parseJobError, useJobStatus } from "../../hooks/useJobStatus";
 import { log } from "../../shared/log";
 import { EventLine } from "../ChatPanel";
 import { CardErrorBoundary } from "./CardErrorBoundary";
+import { SceneSelectionCard } from "./SceneSelectionCard";
 
 /** Same cadence as `useProductionSession`'s board/job poll (see hooks/useProductionSession.ts) —
  * kept in step so a chat thread narrating a session feels like the rest of the app, not a
@@ -190,6 +191,21 @@ function narrowPendingScript(status: ProductionStatus | null): ScriptGateLine[] 
   return status.script_lines ?? [];
 }
 
+/** Gate S (scene checkpoint, GS1/GS3-Payload): the candidate proposal plus the asset id its
+ * thumbnails read from, when this session's board has the gate enabled and no pick has been
+ * confirmed yet — `null` when there is nothing to show. Bundled together (rather than reading
+ * `status.meta.asset_id` separately at the call site) so the two can never end up read from two
+ * different `status` snapshots. Gate S runs BEFORE Gate B in the pipeline (scene selection ->
+ * storyline -> script), so its pending check takes priority at the render site below. */
+function narrowPendingSceneGate(
+  status: ProductionStatus | null,
+): { gate: NonNullable<ProductionBoardStatus["scene_gate"]>; assetId: string } | null {
+  if (status === null || !status.board_ready) return null;
+  const gate = status.scene_gate;
+  if (gate === undefined || !gate.pending) return null;
+  return { gate, assetId: status.meta.asset_id };
+}
+
 /** Statuses `useJobStatus` (and the backend jobs runner) consider terminal-non-success:
  * `failed` outright, or `cancelled` — a job someone/something killed never writes its own
  * "done" event line either, so it must finalize the card the same way a `failed` job does
@@ -233,9 +249,14 @@ function ProductionActionCard({
   );
   const [showAll, setShowAll] = useState(false);
   const [status, setStatus] = useState<ProductionStatus | null>(null);
+  // The job this card is currently tracking. Starts as the prop (`refs.job_id`), but a Gate-S
+  // confirm from the embedded `SceneSelectionCard` (see `refreshAfterConfirm` below) can hand it
+  // a NEW job id — the resume the confirm itself enqueued — so the card keeps narrating live
+  // instead of going stale the moment the tile pick is submitted.
+  const [activeJobId, setActiveJobId] = useState<string | null>(jobId);
   // Set once the events reader itself has returned a `done` batch — see the module doc above.
-  // Only meaningful when `jobId` is non-null; the null-jobId path finalizes straight off the
-  // events poll and never reads this.
+  // Only meaningful when `activeJobId` is non-null; the null-jobId path finalizes straight off
+  // the events poll and never reads this.
   const [eventsDone, setEventsDone] = useState(false);
   // The events cursor lives in a ref, not state: it must be read/written synchronously across
   // poll ticks without waiting on a re-render, the same reason useProductionSession keeps its
@@ -250,7 +271,31 @@ function ProductionActionCard({
   // Independent job-status poll (same `useJobStatus` every other job-backed card in this file
   // uses): self-stops once the job reaches a terminal status, and keeps its last known value
   // around afterward (never re-nulled) so the failed-render below still has a reason to show.
-  const { jobStatus } = useJobStatus(client, jobId);
+  const { jobStatus } = useJobStatus(client, activeJobId);
+
+  // Gate S's "refresh callback": re-fetches this session's status after a `SceneSelectionCard`
+  // confirm. Always updates `status` (so `narrowPendingSceneGate` below stops finding a pending
+  // gate and the tile card disappears); additionally resumes live narration if the confirm's
+  // resume run is still queued/running, by pointing the events/job polls at its job id.
+  const refreshAfterConfirm = async (): Promise<void> => {
+    let fresh: ProductionStatus | null = null;
+    try {
+      fresh = await client.getProductionStatus(sessionId);
+    } catch (e) {
+      log.warn("ActionCard: status refresh after scene-selection confirm failed", e);
+      return;
+    }
+    setStatus(fresh);
+    const freshJob = fresh !== null && fresh.board_ready ? fresh.job : null;
+    if (freshJob !== null && (freshJob.status === "queued" || freshJob.status === "running")) {
+      finalizingRef.current = false;
+      cursorRef.current = 0;
+      setEvents([]);
+      setEventsDone(false);
+      setActiveJobId(freshJob.id);
+      setPhase("running");
+    }
+  };
 
   useEffect(() => {
     if (phase !== "running") return;
@@ -267,7 +312,7 @@ function ProductionActionCard({
         cursorRef.current = batch.next;
         setEvents((prev) => [...prev, ...batch.events]);
         if (batch.done) {
-          if (jobId === null) {
+          if (activeJobId === null) {
             window.clearInterval(intervalId);
             let finalStatus: ProductionStatus | null = null;
             try {
@@ -300,13 +345,13 @@ function ProductionActionCard({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [client, sessionId, phase, jobId]);
+  }, [client, sessionId, phase, activeJobId]);
 
   // The job-status backstop: a failure finalizes unconditionally (fixes the dead-job case); a
   // success only finalizes once the events log has ALSO said done (fixes the stale-log case) —
   // a job can flip to "succeeded" before its own run's events poll has caught up.
   useEffect(() => {
-    if (phase !== "running" || jobId === null || jobStatus === null) return;
+    if (phase !== "running" || activeJobId === null || jobStatus === null) return;
     if (JOB_TERMINAL_FAILURE.has(jobStatus.status)) {
       setPhase("failed");
       return;
@@ -325,10 +370,11 @@ function ProductionActionCard({
         setPhase("done");
       })();
     }
-  }, [client, sessionId, jobId, jobStatus, phase, eventsDone]);
+  }, [client, sessionId, activeJobId, jobStatus, phase, eventsDone]);
 
   const shown = showAll ? events : events.slice(-EVENT_PREVIEW_COUNT);
   const result = narrowProductionResult(status);
+  const pendingSceneGate = narrowPendingSceneGate(status);
   const pendingScript = narrowPendingScript(status);
   const failReason = jobStatus !== null ? parseJobError(jobStatus) ?? "unbekannter Fehler" : "unbekannter Fehler";
 
@@ -370,7 +416,15 @@ function ProductionActionCard({
         </div>
       )}
       {phase === "done" &&
-        (pendingScript !== null ? (
+        (pendingSceneGate !== null ? (
+          <SceneSelectionCard
+            gate={pendingSceneGate.gate}
+            assetId={pendingSceneGate.assetId}
+            sessionId={sessionId}
+            client={client}
+            onConfirmed={() => void refreshAfterConfirm()}
+          />
+        ) : pendingScript !== null ? (
           <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1">
             <div className="text-content-strong">📝 Sprechertext wartet auf Freigabe</div>
             {pendingScript.map((line) => (
@@ -439,6 +493,25 @@ function JobActionCard({ client, jobId }: { client: LauraClient; jobId: string }
   );
 }
 
+/**
+ * Gate S's chat path (`select_scenes` — the user picking scenes via a message like "nimm 2 und
+ * 5 statt 4" instead of the card's tiles, `_handle_select_scenes` in
+ * services/local-api/src/laura/chat/executor.py): a simple confirmation line, not the live
+ * event narration `ProductionActionCard` gives `start_short`/`follow_up`/`approve_script` — the
+ * executor already appended the full sentence ("Szenen übernommen: […]. Die Produktion läuft mit
+ * deiner Auswahl weiter." or the idempotent-repeat variant) as its own preceding text message,
+ * so this card only needs to mark whether the resume it kicked off is still going. */
+function SelectScenesLine({ outcome }: { outcome: string }): ReactElement {
+  if (outcome === "running") {
+    return (
+      <div className="animate-pulse text-content-faint" role="status">
+        ⚙ Auswahl wird angewendet …
+      </div>
+    );
+  }
+  return <div className="text-status-ok">✓ Auswahl übernommen</div>;
+}
+
 /** Fallback for a tool this card does not (yet) know how to narrate — never crashes on an
  * unrecognized shape, just shows the raw tool name (or a generic label when even that is
  * missing). */
@@ -461,7 +534,9 @@ export interface ActionCardProps {
  * ({@link ProductionActionCard}); the one-shot job tools (`start_overview`/`import_urls`) show a
  * plain running/done/failed line ({@link JobActionCard}); Gate A's `review_transcript` (also
  * emitted by `correct_transcript`/`confirm_transcript` — the executor hard-codes the same tool
- * name for all three) renders the segment list read-only ({@link ReviewTranscriptCard}).
+ * name for all three) renders the segment list read-only ({@link ReviewTranscriptCard}); Gate S's
+ * chat path `select_scenes` renders a plain confirmation line ({@link SelectScenesLine}) — the
+ * card itself only needs to be recognized, not to fall into {@link UnknownActionLine}.
  */
 export function ActionCard({ message, client, onFocus }: ActionCardProps): ReactElement {
   const { tool, refs, outcome } = narrowActionContent(message.content);
@@ -479,6 +554,10 @@ export function ActionCard({ message, client, onFocus }: ActionCardProps): React
         onFocus={onFocus}
       />
     );
+  }
+
+  if (tool === "select_scenes") {
+    return <SelectScenesLine outcome={outcome} />;
   }
 
   if (tool === "start_overview" || tool === "import_urls") {

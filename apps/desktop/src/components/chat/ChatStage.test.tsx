@@ -611,4 +611,36 @@ describe("ChatStage", () => {
       vi.useRealTimers();
     }
   });
+
+  it("a select_scenes card's default preview derivation also finds the export", async () => {
+    // Same class of finding as approve_script above: select_scenes (Gate S's chat path,
+    // `_handle_select_scenes` in services/local-api/src/laura/chat/executor.py) carries the SAME
+    // {session_id, job_id} refs and must derive the same way, not fall through to {kind: "none"}.
+    // Unlike approve_script/start_short, select_scenes' own card (SelectScenesLine) is a plain
+    // sync line, not a polled ProductionActionCard with its own "▶ ansehen" — so this exercises
+    // the default-derivation effect directly (it recomputes from the newest action message
+    // whenever the thread changes) rather than a manual button click.
+    const action = actionMessage("m1", 1, "select_scenes", { session_id: "s1" }, "running");
+    const done = boardStatus();
+    const c = client({
+      listConversations: vi.fn().mockResolvedValue([summary()]),
+      getConversation: vi.fn().mockResolvedValue({
+        id: "c1",
+        title: "Erster Chat",
+        active_project_id: null,
+        messages: [action],
+      }),
+      getProductionStatus: vi.fn().mockResolvedValue(done),
+    });
+
+    renderWithQuery(<ChatStage client={c} />);
+    fireEvent.click(await screen.findByText("Erster Chat"));
+
+    const video = await waitFor(() => {
+      const el = document.querySelector("video");
+      expect(el).not.toBeNull();
+      return el;
+    });
+    expect(video?.getAttribute("src")).toBe("laura-media://media/export/exp-1");
+  });
 });

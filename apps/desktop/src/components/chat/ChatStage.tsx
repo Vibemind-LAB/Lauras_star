@@ -52,10 +52,17 @@ async function deriveTarget(client: LauraClient, message: ChatMessage): Promise<
     return exportId !== null ? { kind: "export", exportId } : { kind: "none" };
   }
 
-  // approve_script resumes the production and carries the same {session_id, job_id} refs —
-  // it must derive like the other production cards (live finding 2026-08-05: it fell through
-  // to "none", so the finished film's "▶ ansehen" left the preview empty).
-  if (tool === "start_short" || tool === "follow_up" || tool === "approve_script") {
+  // approve_script and select_scenes both resume the production and carry the same
+  // {session_id, job_id} refs — they must derive like the other production cards (live finding
+  // 2026-08-05 for approve_script: it fell through to "none", so the finished film's
+  // "▶ ansehen" left the preview empty; select_scenes' chat path — _handle_select_scenes in
+  // services/local-api/src/laura/chat/executor.py — is the same shape for the same reason).
+  if (
+    tool === "start_short" ||
+    tool === "follow_up" ||
+    tool === "approve_script" ||
+    tool === "select_scenes"
+  ) {
     const sessionId = typeof refs.session_id === "string" ? refs.session_id : null;
     if (sessionId === null) return { kind: "none" };
     try {

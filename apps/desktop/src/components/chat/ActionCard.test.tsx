@@ -117,11 +117,49 @@ function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): Production
   };
 }
 
+/** A pending Gate-S proposal (GS1/GS3-Payload) — one recommended candidate, one not. */
+function sceneGate(
+  overrides: Partial<NonNullable<ProductionBoardStatus["scene_gate"]>> = {},
+): NonNullable<ProductionBoardStatus["scene_gate"]> {
+  return {
+    enabled: true,
+    pending: true,
+    confirmed: false,
+    recommended: [2],
+    candidates: [
+      {
+        scene_number: 2,
+        src_start_frame: 0,
+        src_end_frame_exclusive: 300,
+        thumb_frame: 150,
+        description: "n8n Flow im Bild",
+        transcript_snippet: "wir bauen den flow",
+        rationale: "Hook",
+        recommended: true,
+      },
+      {
+        scene_number: 5,
+        src_start_frame: 300,
+        src_end_frame_exclusive: 600,
+        thumb_frame: 450,
+        description: "Terminal",
+        transcript_snippet: "deploy läuft",
+        rationale: "Beweis",
+        recommended: false,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function client(overrides: Partial<LauraClient> = {}): LauraClient {
   return {
     getProductionEvents: vi.fn(),
     getProductionStatus: vi.fn(),
     getJob: vi.fn(),
+    // Never-resolving promise: SceneSelectionCard's tiles fetch a thumbnail via this on mount,
+    // and jsdom does not implement URL.revokeObjectURL — same pattern as SceneStrip.test.tsx.
+    assetFrameUrl: vi.fn().mockReturnValue(new Promise<string>(() => undefined)),
     ...overrides,
   } as unknown as LauraClient;
 }
@@ -573,6 +611,144 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     expect(screen.getByText("📝 Sprechertext wartet auf Freigabe")).toBeTruthy();
     expect(screen.getByText(/Nur eine Zeile/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
+  });
+});
+
+describe("ActionCard — Gate S (scene checkpoint)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a pending scene_gate shows the tile picker with the recommendation pre-checked, ahead of script_gate/export", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(
+      boardStatus({
+        scene_gate: sceneGate(),
+        // Both a pending script_gate and a finished export are present in the same fixture —
+        // scene selection runs BEFORE the script in the pipeline, so it must win the ternary,
+        // same "priority over the ordinary result row" contract script_gate itself has above.
+        script_gate: { enabled: true, approved: false, pending: true },
+        script_lines: [{ chapter: 1, scene_number: 1, text: "sollte nicht erscheinen" }],
+      }),
+    );
+    const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText(/Szenen-Auswahl/)).toBeTruthy();
+    expect(screen.getByTestId("scene-tile-2").getAttribute("data-selected")).toBe("true");
+    expect(screen.getByTestId("scene-tile-5").getAttribute("data-selected")).toBe("false");
+    expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+    expect(screen.queryByText(/Export:/)).toBeNull();
+  });
+
+  it("confirming a tile pick posts the selection and resumes live narration for the confirm's resumed job", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const pendingStatus = boardStatus({ scene_gate: sceneGate() });
+    const resumedStatus = boardStatus({
+      scene_gate: { enabled: true, pending: false, confirmed: true, selected: [2] },
+      job: {
+        id: "j2",
+        status: "running",
+        attempt: 1,
+        updated_at: "2026-01-01T00:01:00Z",
+        lease_expires_at: null,
+        finished_at: null,
+      },
+    });
+    const getProductionStatus = vi
+      .fn()
+      .mockResolvedValueOnce(pendingStatus) // ProductionActionCard's own on-done fetch
+      .mockResolvedValueOnce(resumedStatus); // refreshAfterConfirm's fetch after the tile confirm
+    // j1 (the original run) has already finished — same "succeeded while the gate is pending"
+    // shape the other test in this block uses. j2 (the confirm's resumed run) is still going,
+    // so the job-status backstop must not finalize it the instant it starts polling.
+    const getJob = vi
+      .fn()
+      .mockImplementation((id: string) =>
+        Promise.resolve(job({ id, status: id === "j1" ? "succeeded" : "running" })),
+      );
+    const confirmSceneSelection = vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j2" });
+    const c = client({ getProductionEvents, getProductionStatus, getJob, confirmSceneSelection });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(screen.getByText(/Szenen-Auswahl/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // The card's own `client` (not the tile card's own confirm-prop default) fielded the POST —
+    // no `confirm` prop was passed at the ActionCard wiring site, so this proves the wiring uses
+    // the real client method, not a test-only override.
+    expect(confirmSceneSelection).toHaveBeenCalledWith("s1", [2]);
+    expect(getProductionStatus).toHaveBeenCalledTimes(2);
+    // The tile picker is gone (scene_gate.pending is now false) and the card resumed narrating
+    // live for the NEW job the confirm's resume enqueued, instead of going stale.
+    expect(screen.queryByText(/Szenen-Auswahl/)).toBeNull();
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+
+    getProductionEvents.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(getProductionEvents).toHaveBeenCalledWith("s1", 0);
+  });
+});
+
+describe("ActionCard — select_scenes (Gate S chat path)", () => {
+  // Regression for the same review finding class as approve_script above: select_scenes'
+  // action card (`_handle_select_scenes` in services/local-api/src/laura/chat/executor.py) must
+  // not fall through to UnknownActionLine's bare tool-name text.
+
+  it("outcome 'running' shows a busy line, not the unknown-action fallback", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("select_scenes", { session_id: "s1", job_id: "j2" }, "running")}
+        client={c}
+      />,
+    );
+    expect(screen.getByText("⚙ Auswahl wird angewendet …")).toBeTruthy();
+    expect(screen.queryByText("select_scenes")).toBeNull();
+  });
+
+  it("outcome 'done' (e.g. an idempotent re-confirm) shows a checkmark line", () => {
+    const c = client();
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("select_scenes", { session_id: "s1" }, "done")}
+        client={c}
+      />,
+    );
+    expect(screen.getByText("✓ Auswahl übernommen")).toBeTruthy();
+    expect(screen.queryByText("select_scenes")).toBeNull();
   });
 });
 
