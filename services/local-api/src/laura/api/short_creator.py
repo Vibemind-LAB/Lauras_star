@@ -374,6 +374,7 @@ def _create_production_session(
     format: str,
     language: str,
     script_gate: bool = False,
+    scene_gate: bool = False,
 ) -> tuple[str, str]:
     """Create a v2 production session row for *asset_id* and enqueue its ``production.run`` job.
 
@@ -383,9 +384,9 @@ def _create_production_session(
     just never progresses), while a job without a session row would reference an entity that
     doesn't exist. Returns ``(session_id, job_id)``.
 
-    ``script_gate`` (Gate B, opt-in) is only ever added to the job payload when True — a caller
-    that never asks for it (every caller except ``run_project_auto_short``) enqueues the exact
-    payload shape this always had, unchanged.
+    ``script_gate`` (Gate B, opt-in) and ``scene_gate`` (Gate S, opt-in) are only ever added to
+    the job payload when True — a caller that never asks for either (every caller except
+    ``run_project_auto_short``) enqueues the exact payload shape this always had, unchanged.
     """
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
@@ -402,6 +403,8 @@ def _create_production_session(
     }
     if script_gate:
         payload["script_gate"] = True
+    if scene_gate:
+        payload["scene_gate"] = True
     # LLM-driven production runs are expensive + non-idempotent — do not auto-retry.
     job_id = enqueue(
         db,
@@ -574,6 +577,10 @@ def run_project_auto_short(
         # deliberately NOT set on auto-overview (Phase 2 does not use the production board at
         # all) or on the plain POST /assets/{asset_id}/production endpoint.
         script_gate=True,
+        # Gate S (spec 2026-08-06): same opt-in as Gate B above, same exclusions — a chat-driven
+        # short pauses after the team proposes scenes for the user to pick before storyline/
+        # script work starts.
+        scene_gate=True,
     )
 
     warnings = config_warnings(config)

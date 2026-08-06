@@ -37,6 +37,7 @@ from .board_models import (
     Format,
     QaReport,
     RenderReport,
+    SceneSelection,
     Script,
     canvas_for,
     content_hash,
@@ -186,6 +187,20 @@ def build_production_task(
             "request does not ask to change.\n"
         )
 
+    gate_s_lines = ""
+    if meta.scene_gate:
+        gate_s_lines = (
+            "SCENE SELECTION GATE (mandatory):\n"
+            "1. Review every expected scene (review_scene) BEFORE proposing.\n"
+            "2. Call propose_scene_selection with 4-8 candidates that fit the task —\n"
+            "   description = what the scene SHOWS, transcript_snippet = what is SAID\n"
+            "   (from get_scene_transcript), rationale = why it belongs in this film.\n"
+            "   Mark your suggested subset recommended.\n"
+            "3. Then STOP. Do not write a storyline or script — save_storyline refuses\n"
+            "   until the user confirmed the selection in chat.\n"
+            "4. After confirmation, use ONLY the selected scenes.\n"
+        )
+
     _, (out_w, out_h) = canvas_for(meta.format)
     return (
         f"1) GOAL: {task}\n"
@@ -201,6 +216,7 @@ def build_production_task(
         f"   Scene reviews: {reviewed}/{len(expected_scenes)} expected scenes reviewed.\n"
         f"{artifact_lines}\n"
         f"   Resume point: {resume_point}\n"
+        f"{gate_s_lines}"
         "   Artifacts already on the board are DONE - do not redo them; continue at the "
         "resume point.\n"
         "\n"
@@ -544,6 +560,7 @@ def run_production(
     language: str = "German",
     message: str | None = None,
     script_gate: bool = False,
+    scene_gate: bool = False,
     execute: ExecuteFn | None = None,
     deps: ProductionDeps | None = None,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -568,6 +585,12 @@ def run_production(
     user approves the script in chat. Callers opt in per session (currently only
     ``run_project_auto_short``'s chat-driven sessions do); the default keeps every other
     caller's fresh boards exactly as before this gate existed.
+
+    ``scene_gate`` is the same opt-in-per-session, fresh-board-only shape as ``script_gate``,
+    for Gate S (spec 2026-08-06): it seeds ``BoardMeta.scene_gate``, so the team must call
+    ``propose_scene_selection`` and stop for the user to pick scenes before ``save_storyline``
+    will accept a storyline. Defaults to False so v1's plain ``/assets/{asset_id}/production``
+    endpoint and auto-overview (which never touches the production board) are unaffected.
     """
     if repos.get_asset(db, asset_id) is None:
         return {
@@ -611,6 +634,7 @@ def run_production(
             language=language,
             target_seconds=float(target_seconds),
             script_gate=script_gate,
+            scene_gate=scene_gate,
         )
         board = Board.create(root, meta)
 
@@ -657,6 +681,30 @@ def run_production(
             summary="board already coherent through qa_report; no team turn needed",
             export_id=_export_id_of(board),
             resume_point="done",
+        )
+
+    # Gate S (spec 2026-08-06): a proposal is on the board and the user has not picked yet.
+    # A team turn now would only run into save_storyline's structural refusal — so a plain
+    # resume parks instead of spending an LLM run. A follow-up MESSAGE still goes through
+    # (the user may be adjusting the proposal in chat via the team).
+    if (
+        message is None
+        and board.meta().scene_gate
+        and isinstance(board.load("scene_selection"), SceneSelection)
+        and board.resume_point(expected_scenes) == "scene_selection"
+    ):
+        return _completed_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            status="ok",
+            stage="A",
+            team="magentic",
+            weak=_qa_weak(board),
+            escalated=False,
+            summary="awaiting user scene selection — pick scenes in chat to continue",
+            export_id=_export_id_of(board),
+            resume_point="scene_selection",
         )
 
     # Spec 2026-08-05 (modular production): a gated session resuming past user approval needs
