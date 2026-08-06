@@ -135,6 +135,54 @@ def as_scene_window(entry: int | SceneWindowRef) -> tuple[int, int]:
     return entry, 0
 
 
+class SceneCandidate(BaseModel):
+    """One proposed scene for the user's Gate-S pick (spec 2026-08-06 §4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_number: int = Field(ge=1)
+    src_start_frame: int = Field(ge=0)
+    src_end_frame_exclusive: int
+    thumb_frame: int = Field(ge=0)  # scene middle; frontend renders it via assetFrameUrl
+    description: str  # VLM view; "(keine Bildanalyse verfügbar)" when degraded
+    transcript_snippet: str = Field(min_length=1)
+    rationale: str
+    recommended: bool = False
+
+    @model_validator(mode="after")
+    def _frames_end_exclusive(self) -> SceneCandidate:
+        if self.src_end_frame_exclusive <= self.src_start_frame:
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        if not (self.src_start_frame <= self.thumb_frame < self.src_end_frame_exclusive):
+            raise ValueError("thumb_frame must lie inside the scene's frame range")
+        return self
+
+
+class SceneSelection(BaseModel):
+    """Gate-S root artifact: the proposal (agent-written) plus the user's confirmed pick
+    (server-written ONLY — no agent tool ever sets ``confirmed_utc``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    candidates: list[SceneCandidate] = Field(min_length=1)
+    selected_scene_numbers: list[int] = Field(default_factory=list)
+    confirmed_utc: str | None = None
+    parents: dict[str, str] = Field(default_factory=dict)  # chain root: stays empty
+
+    @model_validator(mode="after")
+    def _selection_consistent(self) -> SceneSelection:
+        pool = {c.scene_number for c in self.candidates}
+        if len(pool) != len(self.candidates):
+            raise ValueError("duplicate candidate scene_numbers")
+        stray = sorted(set(self.selected_scene_numbers) - pool)
+        if stray:
+            raise ValueError(f"selected scenes not among candidates: {stray}")
+        if self.confirmed_utc is not None and not self.selected_scene_numbers:
+            raise ValueError("a confirmed selection must select at least one scene")
+        return self
+
+
 class Chapter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -151,6 +199,9 @@ class Storyline(BaseModel):
     version: int = Field(default=1, ge=1)
     red_thread: str
     arc: list[Chapter] = Field(min_length=1)
+    # Which parent artifact instances this was built from (Gate-S boards stamp
+    # {"scene_selection": hash}); empty = gate-off or pre-Gate-S board.
+    parents: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("arc")
     @classmethod
@@ -475,6 +526,10 @@ class BoardMeta(BaseModel):
     # before this gate existed still loads unchanged. Only ``run_project_auto_short``'s NEW
     # sessions turn the gate on (auto-overview does not use the production board at all).
     script_gate: bool = False
+    # Gate S (scene selection, 2026-08-06): when True, save_storyline/save_script_chapter
+    # refuse until the user confirmed a scene selection. Default False so every meta.json
+    # written before this gate loads unchanged; only NEW auto-short sessions turn it on.
+    scene_gate: bool = False
     # Set once, by ``Board.set_script_approved``, when the user approves the script in chat.
     # ``None`` means "not yet approved" — irrespective of whether the gate is even enabled.
     script_approved_utc: str | None = None

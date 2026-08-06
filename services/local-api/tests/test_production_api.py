@@ -316,7 +316,8 @@ def test_get_production_status_shape(tmp_path: Path) -> None:
         "degraded_scenes": [],
     }
     assert set(body["artifacts"]) == {
-        "storyline", "script", "voice", "cutlist", "contact_sheet", "render_report", "qa_report",
+        "scene_selection", "storyline", "script", "voice", "cutlist",
+        "contact_sheet", "render_report", "qa_report",
     }
     # Fresh board, no expected scenes resolvable (no rough cut) -> first chain artifact.
     assert body["resume_point"] == "storyline"

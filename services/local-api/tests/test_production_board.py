@@ -70,8 +70,11 @@ def test_scene_reviews_sorted_by_number(tmp_path: Path) -> None:
 
 
 def test_downstream_of() -> None:
+    # scene_reviews sits above the whole chain, including its Gate-S root: a scene review
+    # change potentially invalidates the candidates any scene_selection was built from.
     assert downstream_of("scene_reviews") == (
-        "storyline", "script", "voice", "cutlist", "contact_sheet", "render_report", "qa_report")
+        "scene_selection", "storyline", "script", "voice", "cutlist",
+        "contact_sheet", "render_report", "qa_report")
     assert downstream_of("cutlist") == ("contact_sheet", "render_report", "qa_report")
     assert downstream_of("contact_sheet") == ("render_report", "qa_report")
     assert downstream_of("qa_report") == ()

@@ -108,7 +108,8 @@ def test_revert_artifact_unknown_name_lists_valid_names(tmp_path: Path) -> None:
         "ok": False,
         "reason": (
             "unknown artifact 'nonsense'; valid: "
-            "storyline, script, voice, cutlist, contact_sheet, render_report, qa_report"
+            "scene_selection, storyline, script, voice, cutlist, contact_sheet, "
+            "render_report, qa_report"
         ),
     }
 

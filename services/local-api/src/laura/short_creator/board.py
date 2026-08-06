@@ -36,6 +36,7 @@ from laura.short_creator.board_models import (
     QaReport,
     RenderReport,
     SceneReview,
+    SceneSelection,
     Script,
     Storyline,
     VoiceArtifact,
@@ -88,6 +89,7 @@ def _lock_for(root: Path) -> _BoardLock:
         return lock
 
 _CHAIN: tuple[str, ...] = (
+    "scene_selection",
     "storyline",
     "script",
     "voice",
@@ -149,6 +151,7 @@ def _failed_checks(artifact: BaseModel | None) -> list[str] | None:
 
 
 _SINGLETONS: dict[str, type[BaseModel]] = {
+    "scene_selection": SceneSelection,
     "storyline": Storyline,
     "script": Script,
     "voice": VoiceArtifact,
@@ -416,7 +419,7 @@ class Board:
         """
         with self._lock:
             restored: list[str] = []
-            for name in _CHAIN:
+            for name in self._active_chain():
                 if self.load(name) is not None:
                     continue
                 candidate_version = self._newest_matching_version(name)
@@ -511,6 +514,12 @@ class Board:
             meta = BoardMeta.model_validate(self.meta().model_dump() | {"language": language})
             _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
 
+    def _active_chain(self) -> tuple[str, ...]:
+        """The chain THIS board actually walks: gate-off boards (every board written
+        before Gate S) skip the scene_selection root — otherwise no old board could
+        ever read "done" again and restore_coherent_suffix would stop at link one."""
+        return _CHAIN if self.meta().scene_gate else _CHAIN[1:]
+
     def resume_point(self, expected_scenes: list[int]) -> str:
         """First missing artifact — where a (re)started session job continues."""
         have = {r.scene_number for r in self.scene_reviews()}
@@ -529,7 +538,14 @@ class Board:
         # a re-poll rather than a re-render, and that is a design, not a guard. Until then the
         # failure is at least VISIBLE: status() reports checks_ok and failed_checks.
         with self._lock:
-            for name in _CHAIN:
+            if self.meta().scene_gate:
+                selection = self.load("scene_selection")
+                if not isinstance(selection, SceneSelection) or selection.confirmed_utc is None:
+                    # present-but-unconfirmed parks the run at the gate: the proposal
+                    # exists, the user has not picked yet — a team turn now would only
+                    # run into save_storyline's refusal.
+                    return "scene_selection"
+            for name in self._active_chain():
                 if self.load(name) is None:
                     return name
             return "done"
@@ -608,6 +624,24 @@ class Board:
             "approved": script_approved,
             "pending": meta.script_gate and not script_approved and script is not None,
         }
+        selection = self.load("scene_selection")
+        scene_gate: dict[str, Any] = {
+            "enabled": meta.scene_gate,
+            "pending": (
+                meta.scene_gate
+                and isinstance(selection, SceneSelection)
+                and selection.confirmed_utc is None
+            ),
+            "confirmed": (
+                isinstance(selection, SceneSelection) and selection.confirmed_utc is not None
+            ),
+        }
+        if isinstance(selection, SceneSelection):
+            scene_gate["candidates"] = [c.model_dump() for c in selection.candidates]
+            scene_gate["recommended"] = [
+                c.scene_number for c in selection.candidates if c.recommended
+            ]
+            scene_gate["selected"] = list(selection.selected_scene_numbers)
         result: dict[str, Any] = {
             "meta": json.loads(meta.model_dump_json()),
             "scene_reviews": {
@@ -621,6 +655,7 @@ class Board:
             },
             "artifacts": artifacts,
             "script_gate": script_gate,
+            "scene_gate": scene_gate,
             # A language switch (set_board_language) changes meta.language without touching the
             # script text — the script keeps recording the language it was actually WRITTEN in
             # (stamped at save time). True only once a script exists and the two disagree, so an
