@@ -101,6 +101,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
             tool_names=(
                 "get_reviews",
                 "get_scene_context",
+                "propose_scene_selection",
                 "save_storyline",
                 "get_storyline",
                 "board_status",

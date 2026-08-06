@@ -132,7 +132,9 @@ from .board_models import (
     RenderCheck,
     RenderReport,
     Roi,
+    SceneCandidate,
     SceneReview,
+    SceneSelection,
     Script,
     ScriptLine,
     Storyline,
@@ -671,6 +673,39 @@ def _validation_errors(exc: ValidationError) -> list[str]:
     """Up to 5 ``"loc: msg"`` strings out of a ValidationError — compact enough for the agent
     to read and self-correct on, without dumping pydantic's full error payload."""
     return [f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]]
+
+
+# --- scene selection gate (Gate S, pure) ------------------------------------------------------
+
+
+def scene_selection_block_reason(
+    selection: SceneSelection | None, referenced_scenes: list[int], *, gate_on: bool
+) -> str | None:
+    """Why a storyline/script write must be refused under Gate S — or None to proceed.
+
+    Structural, not prompt (I2 lesson): the contract that only USER-picked scenes may be
+    written lives at the write site.
+    """
+    if not gate_on:
+        return None
+    if not isinstance(selection, SceneSelection):
+        return (
+            "scene selection gate: no proposal on the board yet — call "
+            "propose_scene_selection first; the user then confirms in chat"
+        )
+    if selection.confirmed_utc is None:
+        return (
+            "scene selection gate: awaiting the user's pick — the user must confirm "
+            "the scene selection in chat before storyline or script are written"
+        )
+    allowed = set(selection.selected_scene_numbers)
+    stray = sorted(set(referenced_scenes) - allowed)
+    if stray:
+        return (
+            f"scenes {stray} are outside the user's confirmed selection "
+            f"{sorted(allowed)} — only selected scenes may be used"
+        )
+    return None
 
 
 # --- voice + cutlist (pure) -------------------------------------------------------------------
@@ -1645,6 +1680,59 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def propose_scene_selection(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        """Propose scene candidates for the user's Gate-S pick and save them to the board.
+        Each candidate: {"scene_number", "description", "transcript_snippet", "rationale",
+        "recommended"} — frame range and thumb frame are resolved server-side from the scene
+        itself, so pass only what you judged. At least one candidate must be recommended
+        (the pre-checked suggestion). Saving a new proposal archives the old one and
+        invalidates everything downstream; the run then STOPS and waits for the user."""
+        try:
+            built: list[SceneCandidate] = []
+            for cand in candidates:
+                scene_number = int(cand.get("scene_number", 0))
+                resolved = _resolve_scene(db, asset_id, scene_number)
+                if resolved is None:
+                    return {"ok": False, "reason": f"scene {scene_number} does not exist"}
+                src_start, src_end, _text = resolved
+                built.append(
+                    SceneCandidate(
+                        scene_number=scene_number,
+                        src_start_frame=src_start,
+                        src_end_frame_exclusive=src_end,
+                        thumb_frame=src_start + (src_end - src_start) // 2,
+                        description=str(cand.get("description") or "").strip()
+                        or "(keine Bildanalyse verfügbar)",
+                        transcript_snippet=str(
+                            cand.get("transcript_snippet") or ""
+                        ).strip(),
+                        rationale=str(cand.get("rationale") or "").strip(),
+                        recommended=bool(cand.get("recommended", False)),
+                    )
+                )
+            try:
+                selection = SceneSelection(candidates=built)
+            except ValidationError as exc:
+                return {"ok": False, "errors": _validation_errors(exc)}
+            if not any(c.recommended for c in built):
+                return {
+                    "ok": False,
+                    "reason": "mark at least one candidate recommended — it is the "
+                    "pre-checked suggestion the user confirms with one click",
+                }
+            version = board.save("scene_selection", selection)
+            return {
+                "ok": True,
+                "version": version,
+                "candidates": len(built),
+                "note": (
+                    "proposal saved — STOP now. The user picks scenes in chat; the run "
+                    "resumes automatically after their confirmation."
+                ),
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
         """Validate and save the short's storyline (red thread + chapter arc) to the board.
         Each chapter's ``chapter`` number may be omitted — it is taken from the entry's position
@@ -1684,6 +1772,20 @@ def build_production_tool_specs(
                 )
                 return _with_material_hint(
                     {"ok": False, "reason": detail}, _material_hint(len(chapters))
+                )
+            # Gate S: under an active gate, only scenes the USER confirmed may be written into
+            # the storyline — structural, not a prompt rule (I2 lesson: prompts do not bind).
+            meta = board.meta()
+            selection = board.load("scene_selection")
+            selection = selection if isinstance(selection, SceneSelection) else None
+            block = scene_selection_block_reason(
+                selection, [s for s, _w in refs], gate_on=meta.scene_gate
+            )
+            if block is not None:
+                return {"ok": False, "reason": block}
+            if meta.scene_gate and selection is not None:
+                storyline = storyline.model_copy(
+                    update={"parents": {"scene_selection": _content_hash(selection)}}
                 )
             # A storyline save invalidates the whole chain below — including a script that is
             # still perfectly right. Live finding (run 48d5660a): a re-save changing ONLY
@@ -1893,6 +1995,22 @@ def build_production_tool_specs(
                             "written before the storyline is wiped by the storyline save."
                         ),
                     }
+                # Gate S: the same structural refusal as save_storyline — a script line for a
+                # scene outside the user's confirmed selection must never reach the board.
+                meta_for_gate = board.meta()
+                selection_for_gate = board.load("scene_selection")
+                selection_for_gate = (
+                    selection_for_gate
+                    if isinstance(selection_for_gate, SceneSelection)
+                    else None
+                )
+                block = scene_selection_block_reason(
+                    selection_for_gate,
+                    [int(line.get("scene_number", 0)) for line in lines],
+                    gate_on=meta_for_gate.scene_gate,
+                )
+                if block is not None:
+                    return {"ok": False, "reason": block}
                 try:
                     new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
                 except ValidationError as exc:
@@ -2869,6 +2987,7 @@ def build_production_tool_specs(
         review_scene,
         get_reviews,
         set_board_language,
+        propose_scene_selection,
         save_storyline,
         get_storyline,
         script_budget,

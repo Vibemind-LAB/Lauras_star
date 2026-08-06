@@ -54,7 +54,14 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
         10,
     ),
     "story_architect": (
-        ("get_reviews", "get_scene_context", "save_storyline", "get_storyline", "board_status"),
+        (
+            "get_reviews",
+            "get_scene_context",
+            "propose_scene_selection",
+            "save_storyline",
+            "get_storyline",
+            "board_status",
+        ),
         4,
     ),
     "scene_author": (
