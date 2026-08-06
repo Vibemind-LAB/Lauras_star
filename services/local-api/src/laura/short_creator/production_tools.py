@@ -1615,14 +1615,17 @@ def build_production_tool_specs(
         """Switch the production language (script/voice/captions) for this board.
 
         Call this FIRST when the user asks for another language, then rewrite every
-        chapter via save_script_chapter — it picks the new language up automatically."""
+        chapter via save_script_chapter — it picks the new language up automatically.
+        Validation mirrors the router's letters/spaces/length shape, but is deliberately
+        looser: it accepts any Unicode letter (``str.isalpha()``), not just ASCII, with the
+        same 2-32 character bounds ``BoardMeta.language`` itself enforces."""
         try:
             cleaned = (language or "").strip()
-            if not cleaned or len(cleaned) > 32 or not all(
+            if len(cleaned) < 2 or len(cleaned) > 32 or not all(
                 c.isalpha() or c == " " for c in cleaned
             ):
                 return {"ok": False, "reason": "language must be an English language "
-                                               "name (letters/spaces, max 32 chars)"}
+                                               "name (letters/spaces, 2-32 chars)"}
             previous = board.meta().language
             board.set_language(cleaned)
             return {"ok": True, "previous": previous, "language": cleaned}

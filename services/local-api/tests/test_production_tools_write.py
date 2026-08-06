@@ -1032,3 +1032,25 @@ def test_set_board_language_rejects_garbage_without_writing(tmp_path: Path) -> N
 
     assert out["ok"] is False
     assert board.meta().language == "German"
+
+
+def test_set_board_language_rejects_a_single_character_without_bricking_the_board(
+    tmp_path: Path,
+) -> None:
+    """Review finding: a 1-character language ("A") passed the tool's OLD validation (only
+    checked non-empty and <= 32 chars) but is shorter than ``BoardMeta.language``'s
+    ``min_length=2`` floor. The write used to land anyway (``model_copy`` skips validators),
+    so it read back ``ok: True`` here while quietly bricking every future ``board.meta()`` read
+    on this board — including the next production run. The tool now rejects it directly, and a
+    board.meta() read right after still succeeds cleanly."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="A")
+
+    assert out["ok"] is False
+    assert board.meta().language == "German"
+    # The board must still be readable — the brick this guards against was a corrupt meta.json
+    # that raised on every subsequent load.
+    assert board.meta().language == "German"

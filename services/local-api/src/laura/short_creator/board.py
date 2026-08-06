@@ -497,11 +497,18 @@ class Board:
     def set_language(self, language: str) -> None:
         """Switch the board's script/voice/caption language (user-requested via chat).
 
-        Same locked atomic-meta-write pattern as :meth:`set_script_approved`. Existing
-        artifacts are untouched — the team rewrites the script afterwards, and the
-        content-hash change re-arms the approval gate on its own."""
+        Same locked atomic-meta-write pattern as :meth:`set_script_approved`, with one
+        difference: it goes through :meth:`BoardMeta.model_validate` rather than a bare
+        ``model_copy(update=...)``, because ``model_copy`` skips field validators. A
+        ``language`` shorter than ``BoardMeta``'s ``min_length=2`` floor would otherwise
+        persist silently and only surface on the NEXT ``meta()`` read, by which point the
+        board is already bricked — the salvage path bails on schema-shaped failures, and
+        callers like ``build_production_task`` call ``meta()`` unguarded. Raises
+        :class:`pydantic.ValidationError` instead, so a bad value is refused here rather
+        than written. Existing artifacts are untouched — the team rewrites the script
+        afterwards, and the content-hash change re-arms the approval gate on its own."""
         with self._lock:
-            meta = self.meta().model_copy(update={"language": language})
+            meta = BoardMeta.model_validate(self.meta().model_dump() | {"language": language})
             _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
 
     def resume_point(self, expected_scenes: list[int]) -> str:

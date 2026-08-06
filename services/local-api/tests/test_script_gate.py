@@ -19,6 +19,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
 from laura.chat.executor import execute_decision
 from laura.chat.router import RouterDecision
 from laura.config import Settings
@@ -202,6 +205,21 @@ def test_set_language_updates_meta_atomically(tmp_path: Path) -> None:
     board.set_language("English")
 
     assert board.meta().language == "English"
+
+
+def test_set_language_refuses_a_too_short_value_rather_than_persisting(tmp_path: Path) -> None:
+    """Review finding: ``model_copy(update=...)`` skips field validators, so a ``language``
+    shorter than ``BoardMeta``'s ``min_length=2`` floor used to write straight to meta.json —
+    ok at write time, but the NEXT ``meta()`` read (unguarded in e.g. ``build_production_task``)
+    raised ``ValidationError`` and bricked the board for good (the salvage path only heals
+    trailing-garbage corruption, not a genuine schema violation). ``set_language`` now validates
+    through the model before writing, so a bad value raises here instead of on disk."""
+    board = _board(tmp_path, "a1")
+
+    with pytest.raises(ValidationError):
+        board.set_language("A")
+
+    assert board.meta().language == "German", "the bad write must never have landed"
 
 
 # --- synthesize_script_voice: deterministic gate -------------------------------------------------
