@@ -82,6 +82,20 @@ def test_start_short_language_validation_rejects_garbage() -> None:
     assert decision["args"]["language"] == "English" and decision["fallback"] is False
 
 
+def test_start_short_language_validation_rejects_a_single_character() -> None:
+    """I1: the old floor (``{0,31}`` after the required leading letter) admitted a 1-char
+    language like "E" — below ``BoardMeta.language``'s own ``min_length=2``. The chat path has
+    no HTTP request model to catch it first, so a 1-char value used to sail through validation
+    here and only blow up as an unguarded ``BoardMeta`` ``ValidationError`` mid-background-job
+    (a corpse session). The floor now matches the schema: a retry, not a crash."""
+    replies = iter([
+        json.dumps({"tool": "start_short", "args": {"topic": "t", "language": "E"}}),
+        json.dumps({"tool": "start_short", "args": {"topic": "t", "language": "English"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["args"]["language"] == "English" and decision["fallback"] is False
+
+
 def test_start_overview_accepts_optional_language() -> None:
     reply = json.dumps({
         "tool": "start_overview",
@@ -362,6 +376,7 @@ def test_system_prompt_carries_the_priority_and_proposal_rules() -> None:
     assert "warum steht das im transkript" in _SYSTEM_PROMPT  # negative example verbatim
     assert "Vorschlag:" in _SYSTEM_PROMPT                      # yes-after-proposal rule
     assert "mach Szene 2 kürzer" in _SYSTEM_PROMPT             # adjustment example
+    assert "mach das in english" in _SYSTEM_PROMPT             # language-follow-up example (M3)
 
 
 def test_build_one_shot_runner_is_public() -> None:

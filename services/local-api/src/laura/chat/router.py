@@ -96,7 +96,8 @@ _SYSTEM_PROMPT = (
     "RESULT (video, scenes, cut, captions, wording, transcript quality), prefer discuss or "
     "follow_up over asset tools. Adjustment requests are follow_up on the active session — "
     "examples: 'mach Szene 2 kürzer', 'anderes Intro', 'zeig das volle Bild', 'die Captions "
-    "sind zu klein'. If the user agrees ('ja', 'mach das', 'genau') right after an assistant "
+    "sind zu klein', 'mach das in english'. If the user agrees ('ja', 'mach das', 'genau') "
+    "right after an assistant "
     "message containing a line starting with 'Vorschlag:', choose follow_up with the active "
     "session and use the text AFTER 'Vorschlag:' as the follow-up text — never the bare "
     "'ja'.\n"
@@ -259,7 +260,11 @@ def _validate_optional_target_seconds(args: dict[str, Any]) -> str | None:
 
 _SHORT_FORMATS = frozenset({"insta", "x", "linkedin"})
 
-_LANGUAGE_RE = re.compile(r"^[A-Za-z][A-Za-z ]{0,31}$")
+# Floor is 2 chars (one required leading letter + at least one more), matching BoardMeta's
+# own min_length=2 — a 1-char value ("E") used to pass this regex, sail past the HTTP request
+# model's min_length (bypassed on the chat path), and reach an UNGUARDED BoardMeta(...)
+# construction in the background job, where its ValidationError corpses the whole session.
+_LANGUAGE_RE = re.compile(r"^[A-Za-z][A-Za-z ]{1,31}$")
 
 
 def _validate_optional_language(args: dict[str, Any]) -> str | None:
@@ -268,7 +273,7 @@ def _validate_optional_language(args: dict[str, Any]) -> str | None:
     language = args["language"]
     if not isinstance(language, str) or _LANGUAGE_RE.fullmatch(language) is None:
         return (
-            "language must be an English language name (letters/spaces, max 32 chars), "
+            "language must be an English language name (letters/spaces, 2-32 chars), "
             'e.g. "German" or "English"'
         )
     return None
