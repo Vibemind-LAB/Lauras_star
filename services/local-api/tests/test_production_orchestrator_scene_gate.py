@@ -103,7 +103,7 @@ def _review(scene_number: int = 1) -> SceneReview:
     )
 
 
-def _proposal(scene_number: int = 1) -> SceneSelection:
+def _proposal(scene_number: int = 1, *, confirmed: bool = False) -> SceneSelection:
     return SceneSelection(
         candidates=[
             SceneCandidate(
@@ -117,6 +117,8 @@ def _proposal(scene_number: int = 1) -> SceneSelection:
                 recommended=True,
             )
         ],
+        selected_scene_numbers=[scene_number] if confirmed else [],
+        confirmed_utc="2026-08-06T00:05:00+00:00" if confirmed else None,
     )
 
 
@@ -174,6 +176,53 @@ def test_run_awaiting_selection_never_spawns_team(tmp_path: Path) -> None:
     assert result["complete"] is False
     # the run is a healthy park, not a failure — the board must stay "active"
     assert board.meta().status == "active"
+
+
+def test_run_confirmed_selection_runs_the_team(tmp_path: Path) -> None:
+    """The companion of the awaiting-selection test above: once the SAME proposal is CONFIRMED
+    (``selected_scene_numbers`` set, ``confirmed_utc`` set), the Gate-S early-exit's four-way
+    guard must NOT trigger — ``board.resume_point`` has advanced past ``"scene_selection"`` (to
+    ``"storyline"``), so ``execute`` IS called and the run proceeds normally. A regression that
+    dropped the guard's ``resume_point`` re-check (e.g. checking only ``meta.scene_gate`` and
+    artifact presence) would strand every confirmed gate-on board at the pause forever — this is
+    the test that would catch it, since the earlier test only exercises the unconfirmed case."""
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    board = _make_board(db, asset_id, "sess-scene-gate-confirmed", scene_gate=True)
+    board.save_scene_review(_review(1))
+    board.save("scene_selection", _proposal(confirmed=True))
+    assert board.resume_point([1]) == "storyline"
+
+    calls: list[tuple[str, str]] = []
+
+    def execute(
+        db: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        calls.append((stage, kind))
+        return orchestrator.StageOutcome(
+            status="ok",
+            weak=False,
+            summary="done",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-scene-gate-confirmed",
+        task="demo",
+        target_seconds=60,
+        execute=execute,
+    )
+
+    assert calls == [("A", "magentic")], "a confirmed selection must let the team run"
+    assert result["resume_point"] != "scene_selection"
 
 
 def test_run_awaiting_selection_with_message_still_runs_the_team(tmp_path: Path) -> None:
