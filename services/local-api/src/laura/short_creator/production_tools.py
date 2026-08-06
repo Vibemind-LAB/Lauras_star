@@ -98,6 +98,7 @@ instead of raising, matching every other tool's error contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -139,6 +140,7 @@ from .board_models import (
     ScriptLine,
     Storyline,
     VoiceArtifact,
+    VoiceSegment,
     as_scene_window,
     canvas_for,
     stage_direction_label,
@@ -152,6 +154,13 @@ from .describe import DescribeBackend, resolve_describe_backend
 from .script_match import match_lines_to_scenes
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
 from .voice import VoiceBackend, resolve_voice_backend
+from .voice_concat import (
+    INTER_SCENE_GAP_S,
+    concat_with_gaps,
+    line_offsets,
+    merge_word_timings,
+    probe_duration_s,
+)
 
 # Signature of laura.mcp.tools.tool_render_segments — wired in from Task 6 on.
 logger = logging.getLogger(__name__)
@@ -2260,7 +2269,9 @@ def build_production_tool_specs(
         DIFFERENT version) AFTER approval changes its content_hash while
         ``script_approved_utc`` stays set, so the approval only still counts when the stamped
         hash matches the CURRENT script — otherwise voice would run on text the user never
-        actually signed off on (review finding)."""
+        actually signed off on (review finding). Synthesizes PER LINE with an on-disk line
+        cache (only changed lines hit the TTS API) and constructs the single track + merged
+        sidecar from the clips."""
         try:
             meta = board.meta()
             if meta.script_gate:
@@ -2315,18 +2326,64 @@ def build_production_tool_specs(
             if project is None:
                 return {"ok": False, "reason": "project not found"}
 
-            out_path = Path(str(project["workspace_root"])) / "voiceovers" / f"{new_id()}.mp3"
-            result = backend.synthesize(script_text(ordered_lines), out_path)
-            if not result.get("ok"):
-                return {"ok": False, "reason": str(result.get("reason") or "synthesis failed")}
+            workspace = Path(str(project["workspace_root"]))
+            lines_dir = workspace / "voiceovers" / "lines"
+            gap = INTER_SCENE_GAP_S
 
-            words = _read_words(result.get("timings_path"))
-            voice_s = _as_float(words[-1].get("end_s"), 0.0) if words else None
+            clip_paths: list[Path] = []
+            durations: list[float] = []
+            per_line_words: list[list[dict[str, Any]]] = []
+            metas: list[tuple[int, int, str]] = []  # (scene_number, chapter, line_hash)
+            for line in ordered_lines:
+                lh = hashlib.sha256(line.text.encode("utf-8")).hexdigest()
+                clip = lines_dir / f"{lh}.mp3"
+                timings = Path(str(clip) + ".timings.json")
+                if not clip.is_file():
+                    # ElevenLabs mp3s default to 44.1 kHz, matching concat_with_gaps' hardcoded
+                    # silence sample rate — if a backend ever emits a different rate, resample
+                    # inputs in voice_concat's filter graph instead (see VS1 review note).
+                    synth = backend.synthesize(line.text, clip)
+                    if not synth.get("ok"):
+                        synth = backend.synthesize(line.text, clip)  # exactly one retry
+                    if not synth.get("ok"):
+                        return {
+                            "ok": False,
+                            "reason": (
+                                f"voice synthesis failed for scene {line.scene_number} "
+                                f"(chapter {line.chapter}): "
+                                f"{str(synth.get('reason') or 'synthesis failed')[:120]}"
+                            ),
+                        }
+                clip_paths.append(clip)
+                durations.append(probe_duration_s(clip))
+                per_line_words.append(_read_words(str(timings)) if timings.is_file() else [])
+                metas.append((line.scene_number, line.chapter, lh))
+
+            offsets = line_offsets(durations, gap)
+            out_path = workspace / "voiceovers" / f"{new_id()}.mp3"
+            concat_with_gaps(clip_paths, gap, out_path)
+            merged = merge_word_timings(per_line_words, offsets)
+            timings_path: str | None = None
+            if merged["words"]:
+                timings_path = str(out_path) + ".timings.json"
+                Path(timings_path).write_text(
+                    json.dumps(merged, ensure_ascii=False), encoding="utf-8"
+                )
+            voice_s = probe_duration_s(out_path)
             artifact = VoiceArtifact(
                 script_hash=new_hash,
                 mp3_path=str(out_path),
-                timings_path=result.get("timings_path"),
+                timings_path=timings_path,
                 voice_s=voice_s,
+                segments=[
+                    VoiceSegment(
+                        scene_number=scene, chapter=chap, line_hash=lh,
+                        mp3_path=str(clip), duration_s=dur, offset_s=off,
+                    )
+                    for (scene, chap, lh), clip, dur, off in zip(
+                        metas, clip_paths, durations, offsets, strict=True
+                    )
+                ],
                 parents={
                     "storyline": _content_hash(storyline),
                     "script": _content_hash(script),
@@ -2339,6 +2396,7 @@ def build_production_tool_specs(
                 "version": version,
                 "mp3_path": artifact.mp3_path,
                 "voice_s": voice_s,
+                "lines": len(clip_paths),
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

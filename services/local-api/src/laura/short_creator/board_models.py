@@ -359,6 +359,19 @@ class Script(BaseModel):
     parents: dict[str, str] = Field(default_factory=dict)
 
 
+class VoiceSegment(BaseModel):
+    """One script line's own clip inside the constructed track (spec 2026-08-06 §5.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_number: int = Field(ge=1)
+    chapter: int = Field(ge=1)
+    line_hash: str
+    mp3_path: str
+    duration_s: float = Field(gt=0.0)
+    offset_s: float = Field(ge=0.0)
+
+
 class VoiceArtifact(BaseModel):
     """Synthesis result, cached by script hash (re-voice only on text change)."""
 
@@ -369,6 +382,9 @@ class VoiceArtifact(BaseModel):
     mp3_path: str
     timings_path: str | None = None
     voice_s: float | None = None
+    # Per-line clips in STORYLINE playback order; None = legacy single-call track (every
+    # board written before per-scene voice). build_cutlist sizes segment i to segments[i].
+    segments: list[VoiceSegment] | None = None
     # Which parent artifact instances this was built from: chain name -> content_hash of the
     # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
     parents: dict[str, str] = Field(default_factory=dict)

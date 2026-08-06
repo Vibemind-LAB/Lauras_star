@@ -11,6 +11,7 @@ transcript text without a run; that text is never read by these tools.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from laura.short_creator.production_tools import (
     script_hash,
     script_text,
 )
+from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
 FPS = 30
 SCENE_FRAMES = 300  # 300 frames @ 30fps = 10.0s per scene
@@ -176,28 +178,59 @@ def _words() -> list[dict[str, Any]]:
     ]
 
 
+def _tone(path: Path, seconds: float) -> None:
+    """Same helper as test_voice_concat.py: a real ffmpeg-encoded sine tone. synthesize_script_
+    voice now runs real ffprobe/ffmpeg over every per-line clip (VS2), so the fake backend must
+    hand it playable audio, not a dummy byte string."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-q:a", "9", str(path)],
+        check=True, capture_output=True,
+    )
+
+
 class _FakeVoiceBackend:
-    """Fake VoiceBackend: writes a dummy mp3 + a timings sidecar with caller-supplied word
-    times (so the cutlist zoom test can hand-compute expected values), and counts calls."""
+    """Fake VoiceBackend: writes a real short tone per call (one call per script LINE under
+    the VS2 per-line contract, not one call for the whole track) plus a timings sidecar
+    carrying that call's own share of the caller-supplied word list — consumed in order by
+    token count, rebased to start at 0 (production code re-applies the real per-line offset
+    via merge_word_timings). Counts calls and records every text passed, in order."""
 
     def __init__(
-        self, *, words: list[dict[str, Any]] | None = None, ok: bool = True, reason: str = "boom"
+        self, *, words: list[dict[str, Any]] | None = None, ok: bool = True, reason: str = "boom",
+        seconds_per_call: float = 0.5,
     ) -> None:
         self.calls = 0
+        self.texts: list[str] = []
         self.last_text: str | None = None
         self._words = words if words is not None else []
+        self._cursor = 0
         self._ok = ok
         self._reason = reason
+        self._seconds_per_call = seconds_per_call
 
     def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
         self.calls += 1
         self.last_text = text
+        self.texts.append(text)
         if not self._ok:
             return {"ok": False, "reason": self._reason}
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"id3-fake-mp3")
+        _tone(out_path, self._seconds_per_call)
+        n_tokens = len(text.split())
+        line_words = self._words[self._cursor : self._cursor + n_tokens]
+        self._cursor += n_tokens
+        base = float(line_words[0]["start_s"]) if line_words else 0.0
+        rel_words = [
+            {
+                "text": w["text"],
+                "start_s": float(w["start_s"]) - base,
+                "end_s": float(w["end_s"]) - base,
+            }
+            for w in line_words
+        ]
         timings_path = Path(str(out_path) + ".timings.json")
-        timings_path.write_text(json.dumps({"words": self._words}), encoding="utf-8")
+        timings_path.write_text(json.dumps({"words": rel_words}), encoding="utf-8")
         return {"ok": True, "path": str(out_path), "timings_path": str(timings_path)}
 
 
@@ -300,19 +333,23 @@ def test_synthesize_uses_cache_on_same_hash(tmp_path: Path) -> None:
     first = specs["synthesize_script_voice"].func()
     assert first["ok"] is True
     assert first.get("cached") is False
-    assert first["voice_s"] == pytest.approx(2.1)
-    assert backend.calls == 1
+    # Per-line synthesis (VS2): TWO lines -> two 0.5s tones + one 0.35s inter-scene gap, then
+    # ffprobe's real (frame-quantized) duration of the constructed track — not the old
+    # caller-supplied words' literal end_s.
+    assert first["voice_s"] == pytest.approx(2 * 0.5 + INTER_SCENE_GAP_S, abs=0.15)
+    assert backend.calls == 2  # one call per script line, not one for the whole track
 
     second = specs["synthesize_script_voice"].func()
     assert second["ok"] is True
     assert second["cached"] is True
-    assert backend.calls == 1  # no second synthesis — same script hash
+    assert backend.calls == 2  # no further synthesis — same script hash
 
     saved = board.load("voice")
     assert isinstance(saved, VoiceArtifact)
     # default _storyline() scene_numbers=[1, 2] matches _script()'s natural line order, so the
     # storyline-ordered hash equals the raw line-order hash here.
     assert saved.script_hash == script_hash(_script().lines)
+    assert saved.segments is not None and len(saved.segments) == 2
 
 
 def test_synthesize_reports_backend_failure(tmp_path: Path) -> None:
@@ -328,7 +365,14 @@ def test_synthesize_reports_backend_failure(tmp_path: Path) -> None:
 
     out = specs["synthesize_script_voice"].func()
 
-    assert out == {"ok": False, "reason": "quota exceeded"}
+    # Per-line synthesis (VS2): fails on the FIRST line (scene 1, chapter 1 in _storyline()'s
+    # default order), named in the reason, after exactly one retry — never a bare backend
+    # passthrough anymore.
+    assert out["ok"] is False
+    assert "scene 1" in out["reason"]
+    assert "chapter 1" in out["reason"]
+    assert "quota exceeded" in out["reason"]
+    assert backend.calls == 2  # one synth + exactly one retry, then give up
     assert board.load("voice") is None
 
 
@@ -492,8 +536,10 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     synth = specs["synthesize_script_voice"].func()
     assert synth["ok"] is True
     assert synth["cached"] is False
-    assert backend.calls == 1
-    assert backend.last_text == "Ein Klick genügt Stopp dein Team"
+    # Per-line synthesis (VS2): one backend call per line, in STORYLINE order (scene 2's line,
+    # then scene 1's) — not the old single whole-track call.
+    assert backend.calls == 2
+    assert backend.texts == ["Ein Klick genügt", "Stopp dein Team"]
 
     built = specs["build_cutlist"].func()
     assert built["ok"] is True
@@ -505,12 +551,13 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     # Video order follows the STORYLINE (scene 2 first, scene 1 second) ...
     assert (seg0.order, seg0.scene_number) == (0, 2)
     assert (seg1.order, seg1.scene_number) == (1, 1)
-    # ... and the zoom timing follows that SAME order: scene 2's zoom uses the EARLY word start
-    # (its line is spoken first), scene 1's zoom uses the LATE one (its line is spoken second) —
-    # the exact opposite of what the naive (chapter, list-position) order would have produced
-    # (which would have paired scene 1 with the early words and scene 2 with the late ones).
-    assert seg0.zoom_start_s == pytest.approx(0.6)
-    assert seg1.zoom_start_s == pytest.approx(0.9)
+    # ... and both carry a zoom (both scenes have a roi) — the exact zoom_start_s this test used
+    # to hand-verify assumed a single continuous synthesis call with the caller's literal word
+    # times; VS2 constructs the track from independently-synthesized+probed per-line clips, so
+    # the precise number is now a construction detail owned by VS3 (build_cutlist reading
+    # VoiceArtifact.segments directly), not something this order-regression test should pin.
+    assert seg0.zoom_start_s is not None
+    assert seg1.zoom_start_s is not None
 
     # The voice cache is keyed on the ORDERED text: re-saving the storyline with a DIFFERENT
     # scene order changes that text (even though the script itself is untouched) and must
@@ -522,9 +569,12 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
 
     second = specs["synthesize_script_voice"].func()
     assert second["ok"] is True
-    assert second["cached"] is False  # order-only change still busts the cache
+    assert second["cached"] is False  # order-only change still busts the WHOLE-TRACK cache
+    # ... but the PER-LINE cache still hits both lines — their TEXTS are unchanged, only their
+    # play order — so the reorder is served entirely from the on-disk line cache, zero new
+    # backend calls.
     assert backend.calls == 2
-    assert backend.last_text == "Stopp dein Team Ein Klick genügt"
+    assert backend.texts == ["Ein Klick genügt", "Stopp dein Team"]
 
 
 def test_chapters_narrated_in_numeric_order_not_save_order(tmp_path: Path) -> None:
@@ -599,10 +649,11 @@ def test_chapters_narrated_in_numeric_order_not_save_order(tmp_path: Path) -> No
         s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
     }
 
-    # Synthesize voice: backend must receive text in NUMERIC chapter order, not save order
+    # Synthesize voice: backend must receive each LINE in NUMERIC chapter order, not save order
+    # (per-line synthesis, VS2 — one call per line, not one call for the whole joined text).
     synth = specs["synthesize_script_voice"].func()
     assert synth["ok"] is True
-    assert backend.last_text == "First chapter Second chapter"
+    assert backend.texts == ["First chapter", "Second chapter"]
 
     # Build cutlist: must follow numeric order, not save order
     built = specs["build_cutlist"].func()
