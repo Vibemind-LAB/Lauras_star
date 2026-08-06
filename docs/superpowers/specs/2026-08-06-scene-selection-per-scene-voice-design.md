@@ -194,6 +194,12 @@ class VoiceSegment(BaseModel):
   `duration_s` ohne Gap — so ist Video-Summe == Audio-Summe und `-shortest` schneidet
   nichts ab (ein Tail hinter dem letzten Clip würde vom Mux wieder entfernt).
   Startframes im Quellmaterial wie bisher aus `best_window`/Storyline-Window.
+  Das LETZTE Segment trägt zusätzlich einen kleinen Puffer (0.3s, geklemmt auf das
+  Szenenende) — `-shortest` kürzt die Auslieferung beim Mux ohnehin auf die (kürzere)
+  Sprachspur, die ausgelieferte Länge entspricht also exakt der Sprachlänge; der Puffer
+  schützt nur das letzte Wort vor einer Proben-/Rundungs-Differenz zwischen der
+  gemessenen Audiolänge (inkl. Container-Padding) und der frame-gerundeten Videolänge,
+  die `voice_fits` sonst deterministisch scheitern lassen könnte.
 - Die Kapitel-Fenster-Arithmetik (`chapter_audio_windows`, `_scale_chapter_durations`)
   wird auf diesem Pfad **nicht** durchlaufen; sie bleibt für Legacy-Boards
   (`segments=None`) unverändert bestehen.

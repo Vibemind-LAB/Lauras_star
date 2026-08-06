@@ -39,6 +39,7 @@ from laura.short_creator.board_models import (
     ScriptLine,
     Storyline,
     VoiceArtifact,
+    VoiceSegment,
 )
 from laura.short_creator.production_tools import (
     _MAX_RENDER_CYCLES,
@@ -402,6 +403,64 @@ def test_render_production_voice_fit_check_fails(tmp_path: Path) -> None:
     assert isinstance(report, RenderReport)
     assert report.voice_s == pytest.approx(100.0)
     assert any(c.name == "voice_fits" and not c.ok for c in report.checks)
+
+
+def test_render_production_voice_fit_wider_tolerance_for_segments_voice(tmp_path: Path) -> None:
+    """C2: a per-line (segments) voice needs the wider 0.15s tolerance — its probed voice_s
+    carries container/LAME padding the exact frame-rounded video does not, and build_cutlist's
+    own last-segment cushion is intentional headroom, not error. A 0.12s gap (beyond the
+    legacy 0.05s tolerance, inside the 0.15s segments one) must PASS on a segments board — a
+    board-only, hand-built cutlist/voice pair isolates the tolerance itself rather than
+    routing through the full per-line synthesis + build_cutlist machinery."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline(scene_numbers=[1], target_seconds=4.0))
+    board.save(
+        "script",
+        Script(language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Ein Satz")]),
+    )
+    # Chain order matters: board.save("voice", ...) invalidates everything DOWNSTREAM of
+    # voice (which includes cutlist) — voice must be saved BEFORE cutlist, or the cutlist
+    # save below would immediately wipe itself again.
+    # video_s = (90 - 0) / 30fps = 3.0s; voice_s = 3.12s -> a 0.12s gap.
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash="h",
+            mp3_path=str(tmp_path / "voice.mp3"),
+            timings_path=None,
+            voice_s=3.12,
+            segments=[
+                VoiceSegment(
+                    scene_number=1,
+                    chapter=1,
+                    line_hash="lh",
+                    mp3_path=str(tmp_path / "line.mp3"),
+                    duration_s=3.12,
+                    offset_s=0.0,
+                )
+            ],
+        ),
+    )
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[
+                CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=90)
+            ],
+            script_hash="h",
+        ),
+    )
+    fake = _FakeRenderSegments(status="ready")
+    deps = ProductionDeps(render_segments=fake)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+
+    out = specs["render_production"].func()
+
+    checks_by_name = {c["name"]: c for c in out["checks"]}
+    assert checks_by_name["voice_fits"]["ok"] is True, checks_by_name["voice_fits"]
 
 
 def test_render_production_requires_cutlist(tmp_path: Path) -> None:

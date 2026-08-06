@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -25,6 +26,7 @@ from laura.short_creator.production_tools import (
     ProductionDeps,
     build_production_tool_specs,
 )
+from laura.short_creator.voice import VoiceBackend
 from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
 FPS = 30
@@ -43,12 +45,26 @@ def _tone(path: Path, seconds: float) -> None:
 
 
 class CountingBackend:
-    """Fake VoiceBackend: writes a real ffmpeg tone per call so durations are probeable."""
+    """Fake VoiceBackend: writes a real ffmpeg tone per call so durations are probeable.
 
-    def __init__(self, seconds_per_call: float = 0.6, fail_texts: set[str] | None = None):
+    ``voice_id``/``model`` default to "" (matching the real backend's own attribute names) —
+    every existing test in this file leaves them unset, so the per-line cache key (I2: text +
+    voice identity) folds to the same "" for both, i.e. behaves exactly as before this fix.
+    """
+
+    def __init__(
+        self,
+        seconds_per_call: float = 0.6,
+        fail_texts: set[str] | None = None,
+        *,
+        voice_id: str = "",
+        model: str = "",
+    ):
         self.calls: list[str] = []
         self.seconds = seconds_per_call
         self.fail_texts = fail_texts or set()
+        self.voice_id = voice_id
+        self.model = model
 
     def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
         self.calls.append(text)
@@ -60,6 +76,19 @@ class CountingBackend:
         timings.write_text(json.dumps({"words": [
             {"text": text.split()[0], "start_s": 0.0, "end_s": 0.3}]}), encoding="utf-8")
         return {"ok": True, "path": str(out_path), "timings_path": str(timings)}
+
+
+class RaisingBackend:
+    """Fake VoiceBackend whose synthesize() RAISES instead of returning ok:False — exercises
+    the per-line loop's own exception boundary (I1b), distinct from the ok:False retry path
+    ``test_line_failure_is_named_and_retried_once`` already covers."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
+        self.calls.append(text)
+        raise ConnectionError("network exploded")
 
 
 def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
@@ -153,7 +182,7 @@ def _script() -> Script:
     )
 
 
-def _setup(tmp_path: Path, backend: CountingBackend) -> dict[str, Any]:
+def _setup(tmp_path: Path, backend: VoiceBackend) -> dict[str, Any]:
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
     board.save("storyline", _storyline())
@@ -229,3 +258,101 @@ def test_line_failure_is_named_and_retried_once(tmp_path: Path) -> None:
     assert "chapter 2" in result["reason"]
     assert backend.calls.count("kaputt") == 2  # exactly one retry
     assert board.load("voice") is None
+
+
+def test_truncated_cache_is_evicted_and_resynthesized(tmp_path: Path) -> None:
+    """I1a: a killed writer (or any partial write) can leave a truncated mp3 sitting AT a
+    line's cache path. Without eviction that ONE corrupt file fails the line PERMANENTLY on
+    every future run; synthesize_script_voice instead detects it (ffprobe raises RuntimeError),
+    evicts it and its sidecar, and re-synthesizes the line once (its one retry)."""
+    backend = CountingBackend()
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    deps = ProductionDeps(voice_backend=backend)
+    specs = {
+        s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
+    }
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    project = repos.get_project(db, str(asset["project_id"]))
+    assert project is not None
+    lines_dir = Path(str(project["workspace_root"])) / "voiceovers" / "lines"
+    lines_dir.mkdir(parents=True, exist_ok=True)
+    # Same cache-key formula as synthesize_script_voice's per-line loop (text|voice_id|model);
+    # CountingBackend's default voice_id/model are both "".
+    garbage_hash = hashlib.sha256(b"Stopp dein Team||").hexdigest()
+    garbage_clip = lines_dir / f"{garbage_hash}.mp3"
+    garbage_clip.write_bytes(b"not a real mp3 at all")
+
+    result = specs["synthesize_script_voice"].func()
+
+    assert result["ok"] is True, result
+    assert backend.calls.count("Stopp dein Team") == 1  # evicted once, resynthesized once
+    assert garbage_clip.read_bytes() != b"not a real mp3 at all"  # real audio now on disk
+
+
+def test_backend_exception_is_named_scene_and_chapter(tmp_path: Path) -> None:
+    """I1b: an exception raised OUT of the backend (not just an ok:False reply) must still name
+    its scene and chapter (spec §6's failure contract). Before this fix it bubbled straight to
+    synthesize_script_voice's own OUTER exception boundary, which reports only a bare
+    str(exc) — no scene, no chapter."""
+    backend = RaisingBackend()
+    ctx = _setup(tmp_path, backend)
+    tools, board = ctx["specs"], ctx["board"]
+
+    result = tools["synthesize_script_voice"].func()
+
+    assert result["ok"] is False
+    assert "scene 1" in result["reason"]
+    assert "chapter 1" in result["reason"]
+    assert board.load("voice") is None
+
+
+def test_line_hash_includes_voice_identity(tmp_path: Path) -> None:
+    """I2 (spec §5.1: hash over line text + voice settings): the SAME text synthesized under
+    two DIFFERENT voice_ids must land at two DIFFERENT cache paths — otherwise switching
+    ElevenLabs voices would silently keep serving the OLD voice's cached audio for text that
+    never changed. Two boards share the SAME underlying project (-> same lines_dir)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+
+    def _build(board_dir: str, backend: CountingBackend) -> dict[str, Any]:
+        board = Board.create(
+            tmp_path / board_dir,
+            BoardMeta(
+                session_id=board_dir,
+                asset_id=asset_id,
+                created_utc="2026-08-06T00:00:00Z",
+                task="overview short",
+                target_seconds=20.0,
+            ),
+        )
+        board.save("storyline", _storyline())
+        board.save("script", _script())
+        specs = {
+            s.name: s
+            for s in build_production_tool_specs(
+                db, board, asset_id=asset_id, deps=ProductionDeps(voice_backend=backend)
+            )
+        }
+        return {"board": board, "specs": specs}
+
+    backend_a = CountingBackend(voice_id="voice-a")
+    ctx_a = _build("board_a", backend_a)
+    result_a = ctx_a["specs"]["synthesize_script_voice"].func()
+    assert result_a["ok"] is True, result_a
+
+    backend_b = CountingBackend(voice_id="voice-b")
+    ctx_b = _build("board_b", backend_b)
+    result_b = ctx_b["specs"]["synthesize_script_voice"].func()
+    assert result_b["ok"] is True, result_b
+
+    voice_a = ctx_a["board"].load("voice")
+    voice_b = ctx_b["board"].load("voice")
+    assert isinstance(voice_a, VoiceArtifact) and isinstance(voice_b, VoiceArtifact)
+    assert voice_a.segments is not None and voice_b.segments is not None
+    # Same text ("Stopp dein Team"), DIFFERENT voice_id -> different cache paths.
+    assert voice_a.segments[0].mp3_path != voice_b.segments[0].mp3_path
+    # backend_b actually did the work — it did not silently reuse backend_a's cached clip.
+    assert "Stopp dein Team" in backend_b.calls

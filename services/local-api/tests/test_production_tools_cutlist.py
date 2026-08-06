@@ -994,7 +994,14 @@ def test_build_cutlist_uses_referenced_window(tmp_path: Path) -> None:
 
 
 def test_build_cutlist_same_scene_twice_with_different_windows(tmp_path: Path) -> None:
-    """One chapter plays scene 1 twice — window 0 (plain int entry) then window 1 — as two
+    """LEGACY path only (voice.segments is None, seeded via ``_save_voice`` below) — storyline
+    saved straight to the board, bypassing ``save_storyline``. C1 made the TOOL refuse a
+    within-chapter scene reuse at write time (see test_production_tools_write.py::
+    test_save_storyline_rejects_within_chapter_scene_reuse); a hand-built board can still reach
+    this legacy sizing path directly, and it stays byte-identical here as defense-in-depth
+    coverage for boards/writers that bypass the tool.
+
+    One chapter plays scene 1 twice — window 0 (plain int entry) then window 1 — as two
     separate segments, each cut from its own window's offset."""
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)

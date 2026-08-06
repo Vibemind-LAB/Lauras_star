@@ -240,7 +240,11 @@ def _save_voice_with_segments(
 
 def test_segments_sized_to_their_clips(tmp_path: Path) -> None:
     """The core VS3 contract: segment i's length == segments[i].duration_s + gap, except the
-    LAST segment which gets no gap — video total matches audio total (offsets construction)."""
+    LAST segment which gets no gap but DOES get the small C2 cushion (0.3s, clamped to the
+    scene's own capacity — 10.0s here, so no clamp fires) — video total matches audio total
+    PLUS that cushion (offsets construction). ``-shortest`` at mux time trims delivery back to
+    the (shorter) voice, so the cushion never lengthens the film; see render_production's
+    voice_fits check and its wider per-line tolerance."""
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
     board.save("storyline", _storyline())
@@ -257,10 +261,37 @@ def test_segments_sized_to_their_clips(tmp_path: Path) -> None:
 
     d0 = (seg0.end_frame_exclusive - seg0.start_frame) / FPS
     d1 = (seg1.end_frame_exclusive - seg1.start_frame) / FPS
+    cushion = 0.3  # _LAST_SEGMENT_CUSHION_S
     assert d0 == pytest.approx(1.2 + INTER_SCENE_GAP_S, abs=1 / FPS)
-    assert d1 == pytest.approx(0.8, abs=1 / FPS)  # last segment: no gap
-    # sync invariant: video total == audio total (offsets construction, n-1 gaps)
-    assert d0 + d1 == pytest.approx(1.2 + INTER_SCENE_GAP_S + 0.8, abs=2 / FPS)
+    assert d1 == pytest.approx(0.8 + cushion, abs=1 / FPS)  # last segment: no gap, + cushion
+    # sync invariant: video total == audio total + the last-segment cushion (n-1 gaps)
+    assert d0 + d1 == pytest.approx(1.2 + INTER_SCENE_GAP_S + 0.8 + cushion, abs=2 / FPS)
+
+
+def test_last_segment_cushion_clamps_to_scene_capacity(tmp_path: Path) -> None:
+    """C2's clamp: the cushion must never push the last segment past its OWN scene's
+    src_end. Scene 2's capacity here is 10.0s and its clip alone already speaks 9.9s — the
+    plain 0.3s cushion would want 10.2s, past the scene's source range, so it must clamp to
+    the scene's own capacity (10.0s) instead of overrunning it."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())
+    board.save("script", _script())
+    _save_voice_with_segments(board, tmp_path, [1.2, 9.9])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is True, out
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+    assert seg1.scene_number == 2
+    # scene 2's SOURCE range is [SCENE_FRAMES, 2*SCENE_FRAMES) = [300, 600) — the clamped
+    # segment must never reach past its own src_end.
+    assert seg1.end_frame_exclusive <= 2 * SCENE_FRAMES
+    d1 = (seg1.end_frame_exclusive - seg1.start_frame) / FPS
+    assert d1 == pytest.approx(10.0, abs=1 / FPS)  # clamped to the scene's own capacity
 
 
 def test_segment_count_drift_rejected(tmp_path: Path) -> None:
@@ -342,7 +373,14 @@ def test_clip_longer_than_scene_rejected_with_scene_name(tmp_path: Path) -> None
 
 
 def test_window_reuse_with_one_line_rejected_naming_scene_and_window(tmp_path: Path) -> None:
-    """A chapter references ONE scene through TWO different review windows, but the script (and
+    """DEFENSE IN DEPTH for a HAND-BUILT board (``board.save`` straight to the board, bypassing
+    ``save_storyline``): C1 made ``save_storyline`` itself refuse a within-chapter scene reuse
+    at WRITE time (see test_production_tools_write.py::
+    test_save_storyline_rejects_within_chapter_scene_reuse) — the normal pipeline can no longer
+    produce the storyline this test hand-builds. This code path stays as the last-resort guard
+    for a board written before that fix, or any other writer that skips the tool.
+
+    A chapter references ONE scene through TWO different review windows, but the script (and
     therefore the voice) has only ONE line for that scene — ``lines_in_storyline_order`` collapses
     a scene repeated WITHIN one chapter to its first occurrence, so the voice has exactly one clip
     for it. The first window entry claims that clip; the second finds nothing of its own and must
@@ -425,12 +463,13 @@ def test_two_lines_same_scene_merge_into_one_segment(tmp_path: Path) -> None:
 
     d0 = (seg0.end_frame_exclusive - seg0.start_frame) / FPS
     d1 = (seg1.end_frame_exclusive - seg1.start_frame) / FPS
+    cushion = 0.3  # _LAST_SEGMENT_CUSHION_S (C2), clamped to scene 2's 10.0s capacity — no clamp
     # scene 1's segment = both its clips (1.0 + 0.5) + ONE inner gap between them + ONE trailing
     # gap to scene 2's entry.
     assert d0 == pytest.approx(1.0 + 0.5 + 2 * INTER_SCENE_GAP_S, abs=1 / FPS)
-    assert d1 == pytest.approx(0.8, abs=1 / FPS)  # last entry: no trailing gap
-    # sync invariant: video total == audio total (3 clips -> n-1 = 2 gaps total, VS1's rule).
-    total_audio = 1.0 + 0.5 + 0.8 + 2 * INTER_SCENE_GAP_S
+    assert d1 == pytest.approx(0.8 + cushion, abs=1 / FPS)  # last entry: no trailing gap, +cushion
+    # sync invariant: video total == audio total + the last-segment cushion (n-1 = 2 gaps total).
+    total_audio = 1.0 + 0.5 + 0.8 + 2 * INTER_SCENE_GAP_S + cushion
     assert d0 + d1 == pytest.approx(total_audio, abs=2 / FPS)
 
 

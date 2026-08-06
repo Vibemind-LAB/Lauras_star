@@ -106,6 +106,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -233,6 +234,20 @@ def _roi_rule(*, src_w: int, src_h: int, out_w: int, out_h: int) -> str:
 
 _RENDER_POLL_INTERVAL_S = 2.0
 _VOICE_FIT_TOLERANCE_S = 0.05
+# voice_fits on a per-line (segments) board needs more slack than the legacy path: the check
+# compares a PROBED voice duration (container/LAME padding included) against an exact
+# frame-rounded video length, and build_cutlist's own last-segment cushion (below) is itself a
+# few hundredths of a second of intentional headroom, not error — 0.05s left no margin for
+# either and made voice_fits fail deterministically on an otherwise-correct render.
+_SEGMENTS_VOICE_FIT_TOLERANCE_S = 0.15
+# The LAST cutlist segment (per-line/segments path only) gets this much EXTRA picture beyond
+# what its own clip(s) measure, clamped to the scene's own capacity. ``-shortest`` at mux time
+# always trims the delivered file to the (shorter) voice track, so the extra picture never
+# lengthens the film — it only protects the last word's tail from a probe/round-trip mismatch
+# (the probed voice duration includes container padding an exact frame-rounded video does not)
+# that would otherwise make voice_fits fail on an otherwise-correct cut. See build_cutlist's
+# per-scene-voice branch and the spec's §5.2 note.
+_LAST_SEGMENT_CUSHION_S = 0.3
 # A hard cap on real renders per production — the net for a loop that keeps revising for a
 # reason the budget fix cannot remove (a QA verdict, the model second-guessing itself). One
 # render plus one revise round is the charter; past that, render_production ships the last cut
@@ -1797,12 +1812,13 @@ def build_production_tool_specs(
         Each chapter's ``chapter`` number may be omitted — it is taken from the entry's position
         in the list, so pass the chapters in arc order.
         A scene_numbers entry is a plain scene number (= that review's primary window 0) or
-        {"scene": N, "window": K} to play review window K (0-based, see get_reviews); the
-        same scene may appear several times with DIFFERENT windows, the same (scene, window)
-        pair only once. Every referenced scene must already have a review on the board and
-        every referenced window must exist in that review — rejected with exactly the
-        scenes/refs to fix so the agent reviews or corrects them first. A malformed chapter
-        is rejected with field-level validation errors instead of raising."""
+        {"scene": N, "window": K} to play review window K (0-based, see get_reviews); a scene
+        may be reused only in a DIFFERENT chapter — where it gets its own narration line —
+        never twice within the SAME chapter (any window combination), and the same
+        (scene, window) pair never twice anywhere. Every referenced scene must already have a
+        review on the board and every referenced window must exist in that review — rejected
+        with exactly the scenes/refs to fix so the agent reviews or corrects them first. A
+        malformed chapter is rejected with field-level validation errors instead of raising."""
         try:
             try:
                 storyline = Storyline(
@@ -1813,6 +1829,37 @@ def build_production_tool_specs(
                 return _with_material_hint(
                     {"ok": False, "errors": _validation_errors(exc)}, _material_hint(len(chapters))
                 )
+            # Per-scene voice binds every storyline ENTRY to its own narration line
+            # (save_script_chapter writes one ScriptLine per (chapter, scene_number)) — a
+            # second entry for the same scene in the SAME chapter, even via a different
+            # window, has no line of its own to speak and build_cutlist can only refuse it
+            # ("no own narration line") once the whole pipeline has already run past
+            # save_storyline. That remedy the old prompt pointed to ("write it once for the
+            # chapter") is unreachable: a chapter has exactly one ScriptLine slot per scene.
+            # Reject here instead, where the fix (a different chapter, or one window) is free.
+            within_chapter_reuse = sorted(
+                {
+                    (chapter.chapter, scene)
+                    for chapter in storyline.arc
+                    for scene, count in Counter(
+                        as_scene_window(entry)[0] for entry in chapter.scene_numbers
+                    ).items()
+                    if count > 1
+                }
+            )
+            if within_chapter_reuse:
+                detail = "; ".join(f"chapter {ch}: scene {s}" for ch, s in within_chapter_reuse)
+                return {
+                    "ok": False,
+                    "reason": (
+                        f"same scene reused within one chapter ({detail}) — per-scene voice "
+                        "binds every storyline entry to its own narration line, so a scene can "
+                        "be reused only in a DIFFERENT chapter (where it gets its own script "
+                        "line), never twice within the SAME chapter even via different "
+                        "windows. Keep one window per chapter for this scene, or move the "
+                        "reuse to a later chapter."
+                    ),
+                }
             refs = [
                 as_scene_window(entry)
                 for chapter in storyline.arc
@@ -2399,32 +2446,62 @@ def build_production_tool_specs(
             lines_dir = workspace / "voiceovers" / "lines"
             gap = INTER_SCENE_GAP_S
 
+            def _line_failure(line: ScriptLine, reason: object) -> dict[str, Any]:
+                """Spec §6's failure contract (scene AND chapter named), also on the
+                exception path — the tool's own OUTER boundary can only report a bare
+                ``str(exc)``, which is how a corrupt cache file used to fail anonymously."""
+                return {
+                    "ok": False,
+                    "reason": (
+                        f"voice synthesis failed for scene {line.scene_number} "
+                        f"(chapter {line.chapter}): "
+                        f"{str(reason or 'synthesis failed')[:120]}"
+                    ),
+                }
+
             clip_paths: list[Path] = []
             durations: list[float] = []
             per_line_words: list[list[dict[str, Any]]] = []
             metas: list[tuple[int, int, str]] = []  # (scene_number, chapter, line_hash)
             for line in ordered_lines:
-                lh = hashlib.sha256(line.text.encode("utf-8")).hexdigest()
+                # I2: the cache key folds in the backend's voice identity, not just the text —
+                # otherwise a voice/model switch would silently keep serving a DIFFERENT
+                # voice's audio for unchanged text.
+                lh = hashlib.sha256(
+                    f"{line.text}|{getattr(backend, 'voice_id', '')}|"
+                    f"{getattr(backend, 'model', '')}".encode()
+                ).hexdigest()
                 clip = lines_dir / f"{lh}.mp3"
                 timings = Path(str(clip) + ".timings.json")
-                if not clip.is_file():
-                    # ElevenLabs mp3s default to 44.1 kHz, matching concat_with_gaps' hardcoded
-                    # silence sample rate — if a backend ever emits a different rate, resample
-                    # inputs in voice_concat's filter graph instead (see VS1 review note).
-                    synth = backend.synthesize(line.text, clip)
-                    if not synth.get("ok"):
-                        synth = backend.synthesize(line.text, clip)  # exactly one retry
-                    if not synth.get("ok"):
-                        return {
-                            "ok": False,
-                            "reason": (
-                                f"voice synthesis failed for scene {line.scene_number} "
-                                f"(chapter {line.chapter}): "
-                                f"{str(synth.get('reason') or 'synthesis failed')[:120]}"
-                            ),
-                        }
+                try:
+                    duration: float | None = None
+                    if clip.is_file():
+                        try:
+                            duration = probe_duration_s(clip)
+                        except RuntimeError:
+                            # A killed writer (or any partial write) can leave a truncated
+                            # clip sitting AT the cache path — without eviction that one
+                            # corrupt file fails this line PERMANENTLY, every future run.
+                            # Evict it and its sidecar and fall through to a fresh
+                            # synthesis below: this IS the line's one retry.
+                            clip.unlink(missing_ok=True)
+                            timings.unlink(missing_ok=True)
+                    if duration is None:
+                        # ElevenLabs mp3s default to 44.1 kHz, matching concat_with_gaps'
+                        # hardcoded silence sample rate — if a backend ever emits a different
+                        # rate, resample inputs in voice_concat's filter graph instead (see
+                        # VS1 review note).
+                        synth = backend.synthesize(line.text, clip)
+                        if not synth.get("ok"):
+                            synth = backend.synthesize(line.text, clip)  # exactly one retry
+                        if not synth.get("ok"):
+                            return _line_failure(line, synth.get("reason"))
+                        duration = probe_duration_s(clip)
+                except Exception as exc:  # any remaining probe/synth failure still names
+                    # its scene+chapter here — the tool's outer boundary can no longer do it
+                    return _line_failure(line, exc)
                 clip_paths.append(clip)
-                durations.append(probe_duration_s(clip))
+                durations.append(duration)
                 per_line_words.append(_read_words(str(timings)) if timings.is_file() else [])
                 metas.append((line.scene_number, line.chapter, lh))
 
@@ -2475,25 +2552,41 @@ def build_production_tool_specs(
         one CutSegment per scene entry in arc order (chapter, then that chapter's
         scene_numbers order). An entry that references a review window ({"scene": N,
         "window": K}) is cut from THAT window — its offset is the segment start, its roi
-        the zoom region (falling back to the review-level roi); the segment's LENGTH comes
-        from the chapter's time budget / audio window, never from the window's duration —
-        so the same scene can appear several times with different windows. Segment
-        lengths are COUPLED TO THE VOICE so picture chapters stay in sync with the one
-        continuous voice track: each chapter's audio window (from the word-timings sidecar;
-        boundaries midway between adjacent chapters' words, the last chapter running to voice
-        end + a short tail) is distributed over its segments proportionally to their
-        per-scene chapter budget — 2s floor per segment, each segment starting at
-        its window's offset and stretching past the window's duration_s if needed, but never
-        past its scene's end. A chapter the sidecar doesn't cover (or a missing sidecar)
-        falls back to the plain target_seconds budget. An optional zoom-in is timed to when
-        the scene's script line is actually spoken (word starts, offset ahead by
-        transition_lead_s so the zoom lands just before the word lands, not on it).
-        zoom is the FRAMING LEVER: "auto" (default) keeps each segment's window/review roi
-        and the spoken-word zoom timing; zoom="off" drops EVERY roi and zoom_start_s
-        regardless of the storyline's window references, so the render shows the full frame
-        (blur-filled) — when the user asks for the full picture / no tight zoom, call
-        build_cutlist(zoom="off") directly; the storyline does NOT need to be re-saved for a
-        framing change. Any other zoom value is rejected. Requires
+        the zoom region (falling back to the review-level roi).
+
+        SEGMENT LENGTH depends on which voice is on the board. The NORMAL case since VS2 is a
+        per-line voice (VoiceArtifact.segments is set): each storyline entry's length is its
+        OWN voice clip(s) duration — paired by (chapter, scene_number) IDENTITY, not position —
+        plus the inter-scene gap between multiple lines merged into one entry, plus a trailing
+        gap to the next entry (dropped for the entry holding the globally LAST voice clip,
+        which instead gets a small cushion — clamped to the scene's own capacity — so
+        render_production's voice_fits check has room against probe/rounding drift). That path
+        refuses loudly instead of silently misaligning: "no own narration line" when an entry's
+        (chapter, scene_number) key has no clip of its own (a repeat reference within one
+        chapter, or a scene the script never wrote a line for), a scene-capacity refusal when
+        the line(s) speak more than the scene holds, and a leftover-clips refusal when the
+        voice still carries a clip for a (chapter, scene_number) the CURRENT storyline no
+        longer references at all.
+
+        The LEGACY case (an older per-track voice with segments=None) instead sizes segments
+        from the chapter's time budget / audio window, never from the window's duration — so
+        the same scene can appear several times with different windows. Segment lengths are
+        COUPLED TO THE VOICE so picture chapters stay in sync with the one continuous voice
+        track: each chapter's audio window (from the word-timings sidecar; boundaries midway
+        between adjacent chapters' words, the last chapter running to voice end + a short tail)
+        is distributed over its segments proportionally to their per-scene chapter budget — 2s
+        floor per segment, each segment starting at its window's offset and stretching past the
+        window's duration_s if needed, but never past its scene's end. A chapter the sidecar
+        doesn't cover (or a missing sidecar) falls back to the plain target_seconds budget.
+
+        An optional zoom-in is timed to when the scene's script line is actually spoken (word
+        starts, offset ahead by transition_lead_s so the zoom lands just before the word lands,
+        not on it). zoom is the FRAMING LEVER: "auto" (default) keeps each segment's
+        window/review roi and the spoken-word zoom timing; zoom="off" drops EVERY roi and
+        zoom_start_s regardless of the storyline's window references, so the render shows the
+        full frame (blur-filled) — when the user asks for the full picture / no tight zoom,
+        call build_cutlist(zoom="off") directly; the storyline does NOT need to be re-saved for
+        a framing change. Any other zoom value is rejected. Requires
         save_storyline, save_script_chapter and synthesize_script_voice to have all run first
         — reports which one is missing instead of raising, and rejects a storyline window
         reference the scene's review does not have (fix the storyline or re-review)."""
@@ -2686,6 +2779,14 @@ def build_production_tool_specs(
                                     "synthesize_script_voice"
                                 ),
                             }
+                        if contains_last_clip:
+                            # The globally LAST voice segment's picture: give it a small
+                            # cushion beyond what it measures, clamped to the scene's own
+                            # capacity so this can never push the segment past its scene's
+                            # src_end. ``-shortest`` always trims delivery to the (shorter)
+                            # voice, so this never lengthens the film — it only protects the
+                            # probe-vs-frame-rounding gap voice_fits checks against.
+                            want = min(want + _LAST_SEGMENT_CUSHION_S, capacity)
                         durations.append(want)
                 else:
                     audio_window = audio_windows.get(chapter.chapter)
@@ -2903,12 +3004,17 @@ def build_production_tool_specs(
         so a failing render stays inspectable.
 
         CODING-AGENT CHARTER: if voice_fits comes back False, do NOT shorten or cut the voice —
-        build_cutlist already sizes segments to the voice's chapter audio windows, so a
-        shortfall means the scene material ran out (segments hit their scene-end caps) or the
-        voice has no timings sidecar. Re-run build_cutlist and render again; if it still fails,
-        the chapters need more/longer scenes (a storyline decision — report it), or, in the
-        sidecar-less fallback, a longer per-chapter time budget. The voice is the script the
-        team already agreed on; the video must fit it.
+        it is the script the team already agreed on; the video must fit it. A shortfall means
+        the scene material ran out (segments hit their scene-end caps) or the voice has no
+        timings sidecar. On a per-line (segments) board — the normal case since VS2 —
+        build_cutlist is a PURE, deterministic derivation of the same storyline/script/voice:
+        re-running it with nothing upstream changed reproduces the byte-identical cutlist, so
+        looping build_cutlist and render_production again wastes a render cycle for nothing.
+        Report the shortfall honestly instead, naming which chapter's scenes ran out of
+        material, so the Story Architect can give it more/longer scenes — that is a storyline
+        decision, not one a re-render fixes. Only on the legacy sidecar-less fallback
+        (voice.segments is None) can a longer per-chapter time budget or a fresh
+        synthesize_script_voice run actually change what build_cutlist derives.
         """
         try:
             cutlist = board.load("cutlist")
@@ -3034,8 +3140,17 @@ def build_production_tool_specs(
             if export_ready and export_path:
                 measure = d.probe_duration if d.probe_duration is not None else _probe_duration
                 delivered_s = measure(str(export_path))
+            # A per-line (segments) voice needs the wider tolerance: build_cutlist's own
+            # last-segment cushion is a belt-and-braces corner (a scene with no room left to
+            # give it) and the probed voice duration includes container padding an exact
+            # frame-rounded video length does not.
+            voice_fit_tolerance = (
+                _SEGMENTS_VOICE_FIT_TOLERANCE_S
+                if voice.segments is not None
+                else _VOICE_FIT_TOLERANCE_S
+            )
             voice_fits = voice.voice_s is None or (
-                video_s + _VOICE_FIT_TOLERANCE_S >= voice.voice_s
+                video_s + voice_fit_tolerance >= voice.voice_s
             )
             has_voice_timings = bool(voice.timings_path)
             voice_note = (

@@ -243,6 +243,38 @@ def test_save_storyline_rejects_unreviewed_scenes(tmp_path: Path) -> None:
 
 
 def test_save_storyline_accepts_window_refs(tmp_path: Path) -> None:
+    """A scene's window refs are a per-CHAPTER concept: per-scene voice binds every storyline
+    entry to its own narration line, so reusing scene 1's window 1 is legal only in a
+    DIFFERENT chapter, where it gets its own line — never within the SAME chapter (see
+    test_save_storyline_rejects_within_chapter_scene_reuse for that refusal)."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1]),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[{"scene": 1, "window": 1}]),
+        ],
+    )
+
+    assert out["ok"] is True
+    assert out["version"] == 1
+    got = specs["get_storyline"].func()
+    arc = got["storyline"]["arc"]
+    assert arc[0]["scene_numbers"] == [1]
+    assert arc[1]["scene_numbers"] == [{"scene": 1, "window": 1}]
+
+
+def test_save_storyline_rejects_within_chapter_scene_reuse(tmp_path: Path) -> None:
+    """C1: per-scene voice binds every storyline entry to its own narration line —
+    save_script_chapter writes exactly one ScriptLine per (chapter, scene_number), so a SECOND
+    entry for the same scene in the SAME chapter (even via a different window) has no line of
+    its own to speak. The old remedy ("write it once for the chapter") was unreachable; reject
+    at WRITE time instead, before any review/script/voice work is spent on it, with the
+    actionable fix named (a different chapter, or one window)."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _review(board, 1, n_windows=2)
@@ -253,10 +285,39 @@ def test_save_storyline_accepts_window_refs(tmp_path: Path) -> None:
         chapters=[_chapter(scene_numbers=[1, {"scene": 1, "window": 1}])],
     )
 
-    assert out["ok"] is True
-    assert out["version"] == 1
-    got = specs["get_storyline"].func()
-    assert got["storyline"]["arc"][0]["scene_numbers"] == [1, {"scene": 1, "window": 1}]
+    assert out["ok"] is False
+    assert "reason" in out
+    assert "chapter 1" in out["reason"] and "scene 1" in out["reason"]
+    assert board.load("storyline") is None
+
+
+def test_save_storyline_rejects_within_chapter_scene_reuse_across_multiple_chapters(
+    tmp_path: Path,
+) -> None:
+    """The rejection names EVERY offending (chapter, scene) pair, not just the first, so a
+    multi-chapter arc with more than one bad chapter is fixed in one round-trip. Each chapter
+    uses its OWN pair of windows (0+1 vs 2+3) so the pre-existing global (scene, window)
+    uniqueness validator never fires first — this is purely a within-chapter violation."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=4)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1, {"scene": 1, "window": 1}]),
+            _chapter(
+                chapter=2,
+                role="payoff_cta",
+                scene_numbers=[{"scene": 1, "window": 2}, {"scene": 1, "window": 3}],
+            ),
+        ],
+    )
+
+    assert out["ok"] is False
+    assert "chapter 1" in out["reason"] and "chapter 2" in out["reason"]
+    assert board.load("storyline") is None
 
 
 def test_save_storyline_rejects_out_of_range_window(tmp_path: Path) -> None:
