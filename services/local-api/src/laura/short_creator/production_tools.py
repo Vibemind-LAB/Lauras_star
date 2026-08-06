@@ -1618,7 +1618,8 @@ def build_production_tool_specs(
         chapter via save_script_chapter — it picks the new language up automatically.
         Validation mirrors the router's letters/spaces/length shape, but is deliberately
         looser: it accepts any Unicode letter (``str.isalpha()``), not just ASCII, with the
-        same 2-32 character bounds ``BoardMeta.language`` itself enforces."""
+        same 2-char floor ``BoardMeta.language`` enforces (the 32-char ceiling is the
+        tool's own, tighter than the model's 40)."""
         try:
             cleaned = (language or "").strip()
             if len(cleaned) < 2 or len(cleaned) > 32 or not all(

@@ -605,3 +605,43 @@ Weitermachen ein.
   startet, Karte zeigt „⚙ läuft"; Fertig-Karte zeigt die Hinweiszeile) — App-Neustart mit
   detachtem Backend nötig, siehe
   `.superpowers/sdd/2026-08-05-follow-up-experience/task-FE4-report.md`.
+
+## Sprache folgt dem Input  `[x]`  (Spec + Plan 2026-08-05)
+Die Sprache des produzierten Videos folgt der Sprache der Anweisung statt fix Deutsch zu
+sein: eine explizite Nennung wie „auf Englisch" gewinnt bei der ersten Produktion, und ein
+Follow-up wie „mach das in english" wechselt die Sprache eines bereits bestehenden Videos
+nachträglich.
+- [x] **SP1 — Router `language`-Argument + Erkennungsregel** — `_LANGUAGE_RE`/
+      `_validate_optional_language` (mirrors `_validate_optional_target_seconds`) in
+      `start_short`/`start_overview`; neue Regel im System-Prompt: explizite
+      Sprachnennung in der Anweisung gewinnt, sonst Standard Deutsch
+- [x] **SP2 — Executor reicht `language` durch** — `_handle_start_short`/
+      `_handle_start_overview` lesen `language` aus den Router-Argumenten
+      (`.strip() or _DEFAULT_LANGUAGE` gegen Whitespace-Only) und reichen sie an
+      `run_project_auto_short`/`run_project_auto_overview` durch statt sie fix auf
+      Deutsch zu hart-kodieren
+- [x] **SP3 — `set_board_language`-Tool + Charter-Regel** — `Board.set_language()`
+      (volle Schema-Validierung via `model_validate`, kein `model_copy`-Bypass mehr;
+      Fix-Runde schloss eine 1-Zeichen-Board-Brick-Lücke); neues Tool in
+      `build_production_tool_specs`, `scene_author` bekommt es als erstes Tool plus eine
+      LANGUAGE-SWITCH-Systemnachricht („zuerst das Tool rufen, dann jedes Kapitel neu
+      schreiben"); Charter-Satz in `build_production_task` Abschnitt 6
+- [x] **SP4 — Volle Gates + Doku + Prüfliste** — Doku-Satz in `docs/00-overview.md`,
+      dieser todo.md-Block, plus ein Docstring-Fix in `production_tools.py`
+      (`set_board_language` behauptete dieselben 2-32-Zeichen-Grenzen wie `BoardMeta`,
+      tatsächlich teilen sie nur die 2-Zeichen-Untergrenze — die 32er-Obergrenze ist
+      enger als das Modell-Feld mit 40)
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2644 passed, 7
+      skipped, 627.55s; bare `uv run mypy` clean (520 Dateien); `uv run ruff check src
+      tests` clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 499 Tests grün;
+      `pnpm typecheck` clean (keine Frontend-Änderung in diesem Arc — der grüne Lauf
+      beweist genau das).
+- **Exit:** ✓ Produktions-Sprache folgt der Anweisung statt fix Deutsch zu sein, ein
+  Sprachwechsel-Follow-up bewaffnet das Skript neu über `set_board_language`; volle
+  Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter Chat-Durchlauf in der
+  laufenden App (a: „build me a 45s short about X" → englisches Script an der
+  Gate-Karte; b: Follow-up „mach das in english" auf ein deutsches Video → Team ruft
+  `set_board_language` sichtbar im Ledger, Script wird englisch, Gate re-armed, nach
+  Freigabe englische Voice; c: deutscher Auftrag bleibt deutsch als Regressionsfall) —
+  App-Neustart mit detachtem Backend nötig, siehe
+  `.superpowers/sdd/2026-08-05-language-follows-input/task-SP4-report.md`.

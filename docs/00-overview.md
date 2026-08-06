@@ -38,6 +38,9 @@ dagegen neu.
 Fragen und Kritik zu einer aktiven Session beantwortet Laura gegrundet über `discuss` und
 schlägt, wenn umsetzbar, die Änderung als `Vorschlag:` vor; ein „ja" setzt sie als
 Follow-up-Lauf um.
+Die Sprache des produzierten Videos folgt der Sprache der Anweisung — eine explizite Nennung
+wie „auf Englisch" gewinnt —, und ein Follow-up wie „mach das in english" wechselt die Sprache
+eines bereits bestehenden Videos nachträglich.
 Read-only Second-Brain-Recherche (`search_second_brain`/`read_brain_note`) ist optional über
 `LAURA_SECONDBRAIN_PATH` env-gated. Details: [`agentic-short-creator`](agentic-short-creator.md).
 
