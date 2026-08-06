@@ -168,9 +168,9 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "- Every line is written FOR its scene: it must match what the scene SHOWS "
                 "(SCENE FACTS) and may quote what is SAID there (get_scene_transcript). Never "
                 "narrate things the scene does not show. "
-                "- Before writing product or proper names, verify them with brain_search when "
-                "the tool is available — the vault knows the real names (Rowboat vs n8n class "
-                "of mistakes)."
+                "- Before writing product or proper names, verify them with search_second_brain "
+                "when the tool is available — the vault knows the real names (Rowboat vs n8n "
+                "class of mistakes)."
             ),
             tool_names=(
                 "set_board_language",
