@@ -164,7 +164,13 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "something the frames actually show. Write to "
                 "the budget ONCE — the voice gets synthesized and measured after you; "
                 "correcting from that measurement is the coding_agent's job, not yours. Do not "
-                "re-save the script to chase a length."
+                "re-save the script to chase a length. "
+                "- Every line is written FOR its scene: it must match what the scene SHOWS "
+                "(SCENE FACTS) and may quote what is SAID there (get_scene_transcript). Never "
+                "narrate things the scene does not show. "
+                "- Before writing product or proper names, verify them with brain_search when "
+                "the tool is available — the vault knows the real names (Rowboat vs n8n class "
+                "of mistakes)."
             ),
             tool_names=(
                 "set_board_language",

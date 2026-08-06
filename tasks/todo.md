@@ -645,3 +645,63 @@ nachträglich.
   Freigabe englische Voice; c: deutscher Auftrag bleibt deutsch als Regressionsfall) —
   App-Neustart mit detachtem Backend nötig, siehe
   `.superpowers/sdd/2026-08-05-language-follows-input/task-SP4-report.md`.
+
+## Szenen-Auswahl (Gate S) + Voice pro Szene  `[x]`  (Spec + Plan 1 + Plan 2 2026-08-06)
+Der User sieht und bestätigt vor dem Script, welche Szenen ins Video kommen (Gate S,
+`docs/superpowers/plans/2026-08-06-gate-s-scene-selection.md`), und jede Skriptzeile
+bekommt danach ihre EIGENE Voice-Synthese über GENAU der Szene, die sie beschreibt
+(Voice pro Szene, `docs/superpowers/plans/2026-08-06-voice-per-scene.md`) — behebt „Bild
+≠ Ton" (der User sah n8n im Bild, während über Rowboat gesprochen wurde), weil bisher eine
+durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
+- [x] **GS1 — SceneSelection-Modelle + Gate-abhängige Ketten-Wurzel** — `SceneCandidate`/
+      `SceneSelection` in `board_models.py` (Kandidat = SHOWS/SAYS/Begründung,
+      `confirmed_utc` nur serverseitig gesetzt), `scene_selection` als neue Ketten-Wurzel
+      wenn `BoardMeta.scene_gate` an ist.
+- [x] **GS2 — `propose_scene_selection` + strukturelle Guards** — Team-Tool schreibt den
+      Vorschlag; `save_storyline` verweigert strukturell, solange kein bestätigter
+      `scene_selection` vorliegt.
+- [x] **GS3 — Orchestrator-Pause + Charter + `scene_gate` für neue Sessions** —
+      `run_production` pausiert ohne Team-Turn, solange ein Vorschlag unbestätigt auf dem
+      Board liegt; `build_production_task` trägt die SCENE-SELECTION-GATE-Charter
+      (Vorschlag-dann-Stopp bzw. „use ONLY scenes […]" nach Bestätigung).
+- [x] **GS4 — Confirm-Service + Endpoint + `select_scenes`-Chat-Pfad** —
+      `confirm_scene_selection` (Service + Endpoint) plus Router-Tool `select_scenes`, mit
+      dem der User die Auswahl direkt im Chat bestätigt.
+- [x] **GS5 — api.ts + `SceneSelectionCard` + volle Gates** — Desktop-Vertrag +
+      Kandidaten-Karte im ChatPanel zum Auswählen/Bestätigen.
+- [x] **VS1 — `voice_concat`: Konstruktion der Gesamtspur** — pure Funktion + ffmpeg-Pfad,
+      `INTER_SCENE_GAP_S = 0.35` als einzige Pausenkonstante zwischen Zeilen-Clips.
+- [x] **VS2 — `VoiceSegment` + Synthese pro Zeile mit Zeilen-Cache** — jede Skriptzeile
+      bekommt ihren eigenen ElevenLabs-Aufruf statt einer Kapitel-Sammelspur; Cache
+      verhindert unnötige Re-Synthese unveränderter Zeilen.
+- [x] **VS3 — `build_cutlist`: Segment = Clip-Länge** — Video-Segmente folgen jetzt der
+      Zeilen-Voice-Dauer statt einer Kapitel-Pauschale, Sync-Invariante (Video == Audio,
+      `-shortest` schneidet nichts ab) bleibt erhalten.
+- [x] **VS4 — Kapazitäts-Guard pro Zeile beim Script-Schreiben** — `script_budget`/
+      `save_script_chapter` warnen pro Zeile, wenn die zugeordnete Szene die Sprechzeit
+      nicht trägt (`capacity_warning`), bevor synthetisiert wird.
+- [x] **VS5 — Grounding + Secondbrain-Charter + volle Gates + Doku** —
+      `build_production_task` trägt jetzt einen SCENE-FACTS-Block direkt nach dem
+      SOURCE-MATERIAL-Abschnitt: bei bestätigter `SceneSelection` eine SHOWS+SAYS-Zeile
+      je GEWÄHLTER Szene aus deren Kandidat, sonst (kein Gate / keine Bestätigung) eine
+      SHOWS-Zeile je `board.scene_reviews()` als Fallback — alte, gate-lose Sessions
+      profitieren vom selben Grounding. `scene_author`-Systemprompt bekommt zwei
+      Charter-Zeilen: jede Zeile FÜR ihre Szene schreiben (SCENE FACTS + optional Zitat aus
+      `get_scene_transcript`), Produkt-/Eigennamen vor dem Schreiben mit `brain_search`
+      prüfen, wenn verfügbar (Rowboat-vs-n8n-Fehlerklasse). Zwei neue Tests in
+      `test_production_orchestrator.py`: bestätigte Auswahl → Facts nur für gewählte
+      Szenen, keine Auswahl → Reviews-Fallback.
+- [x] **Verifiziert (VS5, dieser Task):** `uv run pytest tests/test_production_orchestrator.py`
+      — 46 passed; `uv run pytest tests/test_production_agents.py` — 10 passed; bare
+      `uv run mypy` clean; `uv run ruff check .` clean. Voller Backend-Suite-Lauf sowie die
+      Desktop-Gates (`pnpm typecheck && pnpm test && pnpm build`) sind Sache des
+      Controller-Reviews am Ende des gesamten Arcs (siehe Task-Brief), hier bewusst nicht
+      erneut mitgelaufen.
+- **Exit:** ✓ Gate S + Voice pro Szene komplett: die Szenenwahl passiert VOR dem Script und
+  mit Bestätigung des Users, jede Zeile bekommt ihre eigene Voice über die richtige Szene,
+  und der Task-Text plus die Charter grounden das Schreiben selbst in genau diesen
+  Szenen-Fakten. **Manuell zu prüfen:** voller Lauf mit Gate S (Auswahl → Script →
+  Freigabe → Film, hörbar prüfen dass jede Szene über IHRE Zeile läuft), Hook-Follow-up
+  (nur eine Zeile neu synthetisiert), Sprachwechsel-Follow-up (alle Zeilen neu, Film
+  konsistent), Alt-Session-Resume (Legacy-Ein-Spur-Pfad unverändert) — siehe
+  `.superpowers/sdd/2026-08-06-voice-per-scene/task-VS5-report.md`.

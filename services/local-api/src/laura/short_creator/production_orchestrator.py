@@ -138,7 +138,10 @@ def build_production_task(
        so the team can name a concrete ``(name, version)`` pair back to ``revert_artifact``;
     4. the SOURCE MATERIAL ground truth: per-scene transcript excerpts
        (:func:`_source_material_section`) plus the grounding rule — a script claim not
-       supported by the transcript or the scene's review is invented;
+       supported by the transcript or the scene's review is invented — followed by a SCENE
+       FACTS block naming exactly what each scene SHOWS and SAYS: for a confirmed Gate-S pick,
+       one line per SELECTED scene from its candidate (description + transcript_snippet);
+       otherwise (no confirmed selection) one SHOWS-only line per the board's scene_reviews;
     5. the mandatory stage order (reviews -> storyline -> script -> voice+cutlist ->
        contact sheet -> render -> qa) plus the contact-sheet checkpoint as a known pattern:
        stopping at the Kontaktbogen or rendering later is steered purely by follow-up
@@ -214,6 +217,36 @@ def build_production_task(
                 "4. After confirmation, use ONLY the selected scenes.\n"
             )
 
+    # SCENE FACTS (VS5, 2026-08-06-voice-per-scene): a confirmed Gate-S pick names exactly what
+    # each SELECTED scene SHOWS (candidate.description) and SAYS (candidate.transcript_snippet)
+    # — scene_author must write every line FOR its scene, not free-floating marketing copy. When
+    # there is no confirmed selection (Gate S off, or a proposal still sits unconfirmed), the
+    # board's own scene_reviews are the fallback ground truth (SHOWS only — a review carries no
+    # transcript snippet) so old, gate-off sessions get the same grounding as new gated ones.
+    facts_lines: list[str] = []
+    selection = board.load("scene_selection")
+    if isinstance(selection, SceneSelection) and selection.confirmed_utc is not None:
+        chosen = {
+            c.scene_number: c
+            for c in selection.candidates
+            if c.scene_number in set(selection.selected_scene_numbers)
+        }
+        for number in sorted(chosen):
+            cand = chosen[number]
+            facts_lines.append(
+                f"- scene {number}: SHOWS {cand.description} | SAYS "
+                f"\"{cand.transcript_snippet}\""
+            )
+    else:
+        for review in board.scene_reviews():
+            facts_lines.append(f"- scene {review.scene_number}: SHOWS {review.description}")
+    facts_block = ""
+    if facts_lines:
+        facts_block = (
+            "SCENE FACTS (write every script line ABOUT its scene — what it shows and "
+            "says; no free-floating marketing copy):\n" + "\n".join(facts_lines) + "\n"
+        )
+
     _, (out_w, out_h) = canvas_for(meta.format)
     return (
         f"1) GOAL: {task}\n"
@@ -239,6 +272,7 @@ def build_production_task(
         "written; no generic marketing copy. scene_author reads a scene's full text via "
         "get_scene_transcript(scene_number).\n"
         f"{_source_material_section(db, asset_id)}\n"
+        f"{facts_block}"
         "\n"
         "5) MANDATORY ORDER: reviews -> storyline -> script -> voice+cutlist -> contact sheet "
         "(save_contact_sheet: ALWAYS right after build_cutlist and BEFORE render_production, "

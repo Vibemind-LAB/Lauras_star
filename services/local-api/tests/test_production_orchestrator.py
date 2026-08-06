@@ -30,7 +30,9 @@ from laura.short_creator.board_models import (
     BoardMeta,
     Chapter,
     RenderReport,
+    SceneCandidate,
     SceneReview,
+    SceneSelection,
     Script,
     ScriptLine,
     Storyline,
@@ -336,6 +338,88 @@ def test_task_text_excerpts_are_capped_per_scene(tmp_path: Path) -> None:
 
     assert long_text not in task, "the full text belongs to get_scene_transcript, not the task"
     assert long_text[:300] in task
+
+
+def test_task_carries_scene_facts_for_selected_scenes(tmp_path: Path) -> None:
+    """VS5 (voice-per-scene, Plan 2): once Gate S's pick is confirmed, the task carries a SCENE
+    FACTS block — SHOWS (candidate description) + SAYS (candidate transcript_snippet) — for
+    every SELECTED scene only, so scene_author writes each line FOR its scene instead of
+    free-floating marketing copy. Candidate scene 1 is proposed but NOT selected — its facts
+    must not leak onto the task."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess1")
+    meta = BoardMeta(
+        session_id="sess1",
+        asset_id=asset_id,
+        created_utc="2026-08-06T00:00:00+00:00",
+        task="overview short",
+        target_seconds=20.0,
+        scene_gate=True,
+    )
+    board = Board.create(root, meta)
+    board.save(
+        "scene_selection",
+        SceneSelection(
+            candidates=[
+                SceneCandidate(
+                    scene_number=1,
+                    src_start_frame=0,
+                    src_end_frame_exclusive=SCENE_FRAMES,
+                    thumb_frame=SCENE_FRAMES // 2,
+                    description="Startbildschirm",
+                    transcript_snippet="hallo welt",
+                    rationale="opener, not chosen",
+                ),
+                SceneCandidate(
+                    scene_number=2,
+                    src_start_frame=0,
+                    src_end_frame_exclusive=SCENE_FRAMES,
+                    thumb_frame=SCENE_FRAMES // 2,
+                    description="n8n Flow im Bild",
+                    transcript_snippet="wir bauen den flow",
+                    rationale="core feature",
+                    recommended=True,
+                ),
+            ],
+            selected_scene_numbers=[2],
+            confirmed_utc="2026-08-06T00:05:00+00:00",
+        ),
+    )
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="overview short", target_seconds=20
+    )
+
+    assert "SCENE FACTS" in task
+    assert "n8n Flow im Bild" in task and "wir bauen den flow" in task
+    assert "Startbildschirm" not in task  # scene 1 proposed but not selected
+
+
+def test_task_carries_scene_facts_from_reviews_without_confirmed_selection(
+    tmp_path: Path,
+) -> None:
+    """Companion: no confirmed SceneSelection on the board (gate off entirely, or gate on but
+    nothing proposed/confirmed yet) falls back to the board's scene_reviews for the SCENE FACTS
+    block — SHOWS only, since a plain review carries no transcript_snippet. Old, gate-off
+    sessions benefit from the same grounding the confirmed-selection branch gives new ones."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess1")
+    meta = BoardMeta(
+        session_id="sess1",
+        asset_id=asset_id,
+        created_utc="2026-08-06T00:00:00+00:00",
+        task="overview short",
+        target_seconds=20.0,
+    )
+    board = Board.create(root, meta)
+    board.save_scene_review(_review(1))
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="overview short", target_seconds=20
+    )
+
+    assert "SCENE FACTS" in task
+    assert "scene 1: SHOWS dashboard" in task
 
 
 # --- run_production -----------------------------------------------------------------------
