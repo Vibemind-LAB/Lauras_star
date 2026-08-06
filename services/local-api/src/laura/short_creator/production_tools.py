@@ -2072,6 +2072,44 @@ def build_production_tool_specs(
                 # The board decides the language, not a hard-coded "de": two English runs wrote
                 # English text tagged "de" because this line ignored the board.
                 language = board.meta().language
+                # A chapter can only be as long as its scenes (see the capacity_warning below) —
+                # but VS2/VS3 went further and bound each storyline LINE's video segment to its
+                # OWN scene's clip length, so a line that grossly outspeaks its own scene now
+                # fails at CUTLIST time, once redistribution is expensive. Caught here instead,
+                # at the write, where moving words to another scene still costs nothing. Several
+                # NEW lines for the SAME scene in one call each add speech to that one scene, so
+                # this sums THIS CALL's estimated seconds per scene_number before comparing
+                # against capacity — three lines each under cap can still overflow together, and
+                # that is exactly the overflow the per-line version would miss. The 1.15 factor
+                # plus a 0.5s floor gives the +/-20% estimate headroom before hard-blocking;
+                # narrower misses stay a capacity_warning below, not a refusal.
+                asset_row = repos.get_asset(db, asset_id)
+                fps = _fps(db, asset_row) if asset_row is not None else 30.0
+                scene_word_totals: dict[int, int] = {}
+                for line in new_lines:
+                    scene_word_totals[line.scene_number] = scene_word_totals.get(
+                        line.scene_number, 0
+                    ) + len(line.text.split())
+                for scene_number, scene_words in scene_word_totals.items():
+                    resolved_scene = _resolve_scene(db, asset_id, scene_number)
+                    if resolved_scene is None:
+                        continue  # unknown scene: the storyline guard owns that failure
+                    src_start, src_end, _scene_text = resolved_scene
+                    scene_capacity_s = (src_end - src_start) / fps
+                    if scene_capacity_s <= 0.0:
+                        continue  # unresolved/zero-length scene: not this guard's false alarm
+                    scene_est_s = estimate_voice_seconds(scene_words, language)
+                    if scene_est_s > scene_capacity_s * 1.15 + 0.5:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                f"scene {scene_number}: this call's line(s) would speak "
+                                f"~{scene_est_s:.1f}s but the scene only holds "
+                                f"{scene_capacity_s:.1f}s — shorten the text or split it "
+                                "across more scenes; per-scene voice binds each line's video "
+                                "segment to its own clip length"
+                            ),
+                        }
                 # The under-budget gate (_BUDGET_GATE_*), computed from the SAME material as
                 # script_budget so the number in this message and the number the author was told
                 # to write to can never diverge. Live 2026-08-04: 45-60s targets shipped as

@@ -550,7 +550,9 @@ def test_save_script_chapter_rejects_spoken_stage_directions(tmp_path: Path) -> 
 
 
 def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: Path) -> None:
-    """The rule catches labels, not punctuation — spoken prose keeps its colons."""
+    """The rule catches labels, not punctuation — spoken prose keeps its colons. Kept short
+    (under VS4's per-scene capacity reject threshold for this fixture's 5.0s scene) so this
+    stays a pure colon-detection test."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _seed_storyline(board)
@@ -561,7 +563,7 @@ def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: 
         lines=[
             {
                 "scene_number": 1,
-                "text": "It writes down why it wants each one: filesystem, memory, reasoning.",
+                "text": "It writes down why: filesystem, memory, reasoning.",
             }
         ],
     )
@@ -894,6 +896,11 @@ def test_a_growing_save_carries_no_warning(tmp_path: Path) -> None:
 # narration ended with no picture to carry them: video 146.8s vs voice 173.1s, voice_fits
 # FAIL. The per-chapter table existed in script_budget; the author read the total.
 # The overflow now speaks at the moment of the save, where it can still be fixed cheaply.
+#
+# VS4 hardened the GROSS version of exactly this overflow into a hard reject at the per-scene
+# level (see test_line_grossly_over_scene_capacity_rejected below) — so this test's word count
+# stays deliberately in the narrow band that still overflows the chapter (warns) without
+# tripping that harder per-line/per-scene reject (whose threshold is scene_s * 1.15 + 0.5).
 
 
 def test_a_chapter_overflowing_its_scenes_is_warned_at_save_time(tmp_path: Path) -> None:
@@ -903,9 +910,10 @@ def test_a_chapter_overflowing_its_scenes_is_warned_at_save_time(tmp_path: Path)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
     specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
 
-    # 5s of scene capacity; 40 German words are ~23s of voice.
+    # 5.0s of scene capacity; 10 German words are ~5.8s of voice — over the capacity+0.5s warn
+    # threshold (5.5s) but under VS4's harder capacity*1.15+0.5 reject threshold (6.25s).
     out = specs["save_script_chapter"].func(
-        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 40)}]
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 10)}]
     )
 
     assert out["ok"] is True, "reporting, not blocking — shortening is the author's move"
@@ -926,6 +934,76 @@ def test_a_chapter_inside_its_capacity_gets_no_capacity_warning(tmp_path: Path) 
 
     assert out["ok"] is True
     assert "capacity_warning" not in out
+
+
+# --- VS4: a line that grossly outspeaks its OWN scene is rejected at save time -------------
+# VS2/VS3 bound each storyline line's video segment to its own scene's clip length — a line
+# that speaks longer than its scene holds now fails at CUTLIST time. VS4 moves that failure
+# forward: save_script_chapter refuses a line (or a call's lines together, see the sum test
+# below) whose estimated speech grossly exceeds ITS scene's capacity, where redistribution is
+# still cheap. Distinct from the chapter-sum capacity_warning above (which fires later, at
+# save time too, but only WARNS and looks at the whole chapter, not one scene).
+
+
+def test_line_grossly_over_scene_capacity_rejected(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # scene 1 is 5.0s long (SCENE_FRAMES @ 30fps)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    # 5.0s of scene capacity; 60 German words are ~34.8s of voice — grossly over the
+    # capacity*1.15+0.5 = 6.25s reject threshold.
+    result = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 60)}]
+    )
+
+    assert result["ok"] is False
+    assert "scene 1" in result["reason"] and "5.0" in result["reason"]
+    assert board.load("script") is None, "a rejected save must not reach the board"
+
+
+def test_line_slightly_over_capacity_still_saves_with_warning(tmp_path: Path) -> None:
+    """The same narrow band as test_a_chapter_overflowing_its_scenes_is_warned_at_save_time:
+    over the capacity+0.5s warn threshold (5.5s) but under VS4's capacity*1.15+0.5 reject
+    threshold (6.25s) — proving VS4 only hard-rejects the GROSS case, not every overflow."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    result = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 10)}]
+    )
+
+    assert result["ok"] is True
+    assert "capacity_warning" in result
+
+
+def test_two_new_lines_for_the_same_scene_sum_before_the_capacity_check(tmp_path: Path) -> None:
+    """The nuance beyond the brief's single-line example: multiple NEW lines for the SAME
+    scene in one call each add speech to that one scene. Two lines of 8 words each (~4.64s
+    apiece — comfortably under the 5.0s scene capacity on their own) sum to 16 words (~9.3s),
+    which blows past the 6.25s reject threshold TOGETHER — exactly the overflow VS3 would
+    otherwise only catch later, at CUTLIST time."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    result = specs["save_script_chapter"].func(
+        chapter=1,
+        lines=[
+            {"scene_number": 1, "text": " ".join(["wort"] * 8)},
+            {"scene_number": 1, "text": " ".join(["wort"] * 8)},
+        ],
+    )
+
+    assert result["ok"] is False
+    assert "scene 1" in result["reason"] and "5.0" in result["reason"]
+    assert board.load("script") is None
 
 
 # --- QA judges a render, so QA needs a render — the order-guard pattern, last link ---------
