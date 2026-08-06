@@ -2467,6 +2467,25 @@ def build_production_tool_specs(
                         "the narration agree"
                     ),
                 }
+            # VS3: a voice with per-line segments (VS2) sizes each cutlist segment to its OWN
+            # clip instead of proportionally scaling the chapter's audio window (the legacy
+            # path below, kept byte-identical for segments=None — every board voiced before
+            # per-scene synthesis). Count drift (a script/storyline edit that changed how many
+            # scene entries the arc references, without a re-run of synthesize_script_voice)
+            # must refuse HERE, before any per-chapter resolution, or the order-coupled slicing
+            # below would silently pair the wrong clip with the wrong scene.
+            voice_segments = voice.segments  # None = legacy single-track board
+            if voice_segments is not None:
+                expected = sum(len(c.scene_numbers) for c in storyline.arc)
+                if len(voice_segments) != expected:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            f"voice has {len(voice_segments)} line clips but the storyline "
+                            f"references {expected} scene entries — run "
+                            "synthesize_script_voice again so voice and cut agree"
+                        ),
+                    }
             words = _read_words(voice.timings_path)
             line_map = line_starts(ordered_lines, words)
             audio_windows = chapter_audio_windows(ordered_lines, words)
@@ -2536,13 +2555,43 @@ def build_production_tool_specs(
                     # start back for exactly that case, as before).
                     stretch_caps.append(segment_capacity_seconds(window, scene_duration_s))
 
-                audio_window = audio_windows.get(chapter.chapter)
-                if audio_window is not None:
-                    durations = _scale_chapter_durations(
-                        base_durations, stretch_caps, audio_window[1] - audio_window[0]
-                    )
+                if voice_segments is not None:
+                    # Order-coupling invariant: `order` is only INCREMENTED in the second loop
+                    # below, so at this point (top of the chapter, before that loop runs) it
+                    # equals the total number of segments every PREVIOUS chapter's second loop
+                    # has already emitted — i.e. exactly how many of voice_segments (built in
+                    # this SAME arc-then-scene_numbers order by
+                    # _lines_in_storyline_order/synthesize_script_voice) have already been
+                    # consumed. The slice below is therefore exactly THIS chapter's own clips,
+                    # scene-for-scene aligned with resolved_scenes.
+                    seg_slice = voice_segments[order : order + len(resolved_scenes)]
+                    durations = []
+                    for idx, ((scene_number, src_start, src_end, _w, _r), seg) in enumerate(
+                        zip(resolved_scenes, seg_slice, strict=True)
+                    ):
+                        is_last = order + idx == len(voice_segments) - 1
+                        want = seg.duration_s + (0.0 if is_last else INTER_SCENE_GAP_S)
+                        capacity = (src_end - src_start) / fps
+                        if want > capacity + 1e-6:
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"the line for scene {scene_number} speaks "
+                                    f"{seg.duration_s:.1f}s but the scene only holds "
+                                    f"{capacity:.1f}s — shorten that line "
+                                    "(save_script_chapter), then re-run "
+                                    "synthesize_script_voice"
+                                ),
+                            }
+                        durations.append(want)
                 else:
-                    durations = base_durations
+                    audio_window = audio_windows.get(chapter.chapter)
+                    if audio_window is not None:
+                        durations = _scale_chapter_durations(
+                            base_durations, stretch_caps, audio_window[1] - audio_window[0]
+                        )
+                    else:
+                        durations = base_durations
 
                 for scene_info, seg_dur_s in zip(resolved_scenes, durations, strict=True):
                     scene_number, src_start, src_end, window, roi = scene_info
