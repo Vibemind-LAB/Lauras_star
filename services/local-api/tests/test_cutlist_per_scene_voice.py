@@ -17,7 +17,9 @@ itself rejects the same (scene, window) pair twice anywhere in the arc).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -177,6 +179,7 @@ def _save_voice_with_segments(
     durations: list[float],
     *,
     n_lines: int | None = None,
+    words: list[dict[str, Any]] | None = None,
 ) -> VoiceArtifact:
     """Seed the board's voice artifact with PER-LINE segments (VS2 contract), one
     ``VoiceSegment`` per entry in ``durations``, walked in the SAME storyline-ordered iteration
@@ -189,6 +192,11 @@ def _save_voice_with_segments(
     of ``lines_in_storyline_order``'s lines get a segment; the ``script_hash`` stamp always
     covers the REAL ordered lines, so the earlier voice/script agreement check still passes and
     the NEW count-drift guard is the one that fires.
+
+    ``words`` optionally writes a real timings sidecar (same shape as
+    ``test_production_tools_cutlist.py``'s ``_save_voice`` helper) so ``build_cutlist``'s
+    ``line_starts``-derived zoom timing has something to read — needed only by the zoom-anchor
+    regression test; every other test here leaves ``timings_path=None`` (no zoom scheduled).
     """
     script = board.load("script")
     storyline = board.load("storyline")
@@ -214,10 +222,16 @@ def _save_voice_with_segments(
         )
         offset += dur + INTER_SCENE_GAP_S
 
+    timings_path: str | None = None
+    if words is not None:
+        wp = tmp_path / "voice.mp3.timings.json"
+        wp.write_text(json.dumps({"words": words}), encoding="utf-8")
+        timings_path = str(wp)
+
     artifact = VoiceArtifact(
         script_hash=script_hash(lines),
         mp3_path=str(tmp_path / "voice.mp3"),
-        timings_path=None,
+        timings_path=timings_path,
         segments=segments,
     )
     board.save("voice", artifact)
@@ -418,6 +432,76 @@ def test_two_lines_same_scene_merge_into_one_segment(tmp_path: Path) -> None:
     # sync invariant: video total == audio total (3 clips -> n-1 = 2 gaps total, VS1's rule).
     total_audio = 1.0 + 0.5 + 0.8 + 2 * INTER_SCENE_GAP_S
     assert d0 + d1 == pytest.approx(total_audio, abs=2 / FPS)
+
+
+def test_merged_scene_zoom_anchors_to_first_lines_start(tmp_path: Path) -> None:
+    """Regression (review round 2): ``line_starts`` must keep the FIRST line's word start for a
+    ``(chapter, scene_number)`` key shared by multiple lines (the same two-line-merge shape as
+    ``test_two_lines_same_scene_merge_into_one_segment``, here WITH a review roi so a zoom is
+    actually scheduled, and real word timings). An unconditional last-write-wins ``line_starts``
+    would anchor the zoom to the SECOND line's spoken moment instead of where the scene's
+    narration actually begins — here that bug would push the candidate outside the
+    ``candidate < actual_dur_s - 0.7`` window and drop the zoom entirely, an even more visible
+    symptom than a merely-wrong timestamp."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(
+        board,
+        1,
+        best_window=BestWindow(offset_s=0.0, duration_s=2.0),
+        roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
+    )
+    board.save(
+        "storyline",
+        _storyline(
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1, 2], target_seconds=4.0
+                )
+            ]
+        ),
+    )
+    board.save(
+        "script",
+        _script(
+            lines=[
+                ScriptLine(chapter=1, scene_number=1, text="Erster Satz"),
+                ScriptLine(chapter=1, scene_number=1, text="Zweiter Satz"),
+                ScriptLine(chapter=1, scene_number=2, text="Andere Szene"),
+            ]
+        ),
+    )
+    # Word starts for the 6 whitespace tokens of "Erster Satz Zweiter Satz Andere Szene": the
+    # FIRST line ("Erster Satz") starts at 0.0s, the SECOND ("Zweiter Satz") at 1.55s — chosen so
+    # a buggy last-write-wins line_starts (anchoring to 1.55s) pushes the zoom candidate to 1.95s,
+    # outside this segment's `candidate < actual_dur_s - 0.7` window (actual_dur_s == 2.2s here),
+    # dropping the zoom to None — a difference no float tolerance could paper over.
+    _save_voice_with_segments(
+        board,
+        tmp_path,
+        [1.0, 0.5, 0.8],
+        words=[
+            {"text": "Erster", "start_s": 0.0, "end_s": 0.3},
+            {"text": "Satz", "start_s": 0.3, "end_s": 0.6},
+            {"text": "Zweiter", "start_s": 1.55, "end_s": 1.85},
+            {"text": "Satz", "start_s": 1.85, "end_s": 2.1},
+            {"text": "Andere", "start_s": 2.4, "end_s": 2.7},
+            {"text": "Szene", "start_s": 2.7, "end_s": 3.0},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is True, out
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0 = cutlist.segments[0]
+    assert seg0.scene_number == 1
+    assert seg0.zoom_start_s is not None
+    # video_start_s is 0.0 for the first segment; transition_lead_s defaults to 0.4 -> zoom =
+    # max(0.0, line_start - 0.0 + 0.4). The FIRST line's start (0.0) gives 0.4.
+    assert seg0.zoom_start_s == pytest.approx(0.4, abs=1 / FPS)
 
 
 def test_unresolved_scene_rejected_in_per_scene_path(tmp_path: Path) -> None:

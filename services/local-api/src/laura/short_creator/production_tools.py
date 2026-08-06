@@ -833,7 +833,7 @@ script_hash = _script_hash
 def line_starts(
     lines: list[ScriptLine], words: list[dict[str, Any]]
 ) -> dict[tuple[int, int], float]:
-    """Each line's ``(chapter, scene_number)`` mapped to its first word's ``start_s``.
+    """Each line's ``(chapter, scene_number)`` mapped to its FIRST word's ``start_s``.
 
     ``words`` (a voice backend's timings sidecar) are assumed to be the whitespace tokens of
     exactly :func:`script_text` of these SAME ``lines``, in the SAME order — so each line
@@ -841,13 +841,20 @@ def line_starts(
     forward in that order. A line is absent from the result if the word stream runs out before
     reaching it (e.g. a sidecar shorter than the script) — callers treat a missing entry as "no
     known start" (skip the zoom for that line).
+
+    Two lines can share a ``(chapter, scene_number)`` key (a scene spoken by multiple lines,
+    identity-paired into one cutlist segment by VS3) — the FIRST line's start wins, never a
+    later one's: the only consumer anchors a zoom to when the scene's narration BEGINS, and a
+    later write here would silently point it at a later sub-line's moment instead (or drop the
+    zoom entirely, if the later time falls too close to the segment's end).
     """
     out: dict[tuple[int, int], float] = {}
     idx = 0
     for line in lines:
         n_tokens = len(line.text.split())
-        if n_tokens and idx < len(words):
-            out[(line.chapter, line.scene_number)] = _as_float(words[idx].get("start_s"), 0.0)
+        key = (line.chapter, line.scene_number)
+        if n_tokens and idx < len(words) and key not in out:
+            out[key] = _as_float(words[idx].get("start_s"), 0.0)
         idx += n_tokens
     return out
 
