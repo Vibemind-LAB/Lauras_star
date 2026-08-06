@@ -20,7 +20,9 @@ from laura.short_creator.board_models import (
     SceneCandidate,
     SceneReview,
     SceneSelection,
+    Script,
     Storyline,
+    content_hash,
 )
 from laura.short_creator.production_tools import (
     build_production_tool_specs,
@@ -282,3 +284,45 @@ def test_save_script_chapter_rejects_unselected_scene(tmp_path: Path) -> None:
     assert out["ok"] is False
     assert "outside" in out["reason"]
     assert board.load("script") is None
+
+
+# --- review finding: the carry-over branch was untested under an active Gate S ---------------
+# test_production_tools_write.py's carry-over tests (test_a_carried_over_script_and_voice_are_
+# not_reported_stale et al.) never set scene_gate=True, so they never exercised save_storyline's
+# "same chapter structure -> carry script/voice over" branch together with the parents stamp
+# this task adds. The stamp happens BEFORE old_storyline/old_script are loaded and BEFORE the
+# save, so the carry-over's own re-stamp (`new_storyline = board.load("storyline")` ->
+# `new_hash = _content_hash(new_storyline)`) must reload the GATE-STAMPED storyline, not a copy
+# that dropped the scene_selection parent — this is exactly what that reload path could get
+# wrong without a dedicated test.
+
+
+def test_carry_over_re_stamps_the_gate_stamped_storyline_parent(tmp_path: Path) -> None:
+    """Gate-S variant of the carry-over re-stamp test: propose+confirm a selection, save a
+    storyline + script, then re-save the storyline with the SAME chapter structure but a
+    different target. The carried-over script's parents["storyline"] must equal the content
+    hash of the freshly RELOADED storyline (which itself must still carry its own
+    parents["scene_selection"]) — not the pre-save copy, and not one that lost the stamp."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    _propose_and_confirm(board, specs, scene_number=1)
+    specs["save_storyline"].func(red_thread="v1", chapters=[_chapter(scene_numbers=[1])])
+    specs["save_script_chapter"].func(chapter=1, lines=[{"scene_number": 1, "text": "a line"}])
+
+    out = specs["save_storyline"].func(
+        red_thread="reworded entirely",
+        chapters=[{**_chapter(scene_numbers=[1]), "target_seconds": 9.0}],
+    )
+
+    assert out["ok"] is True, out
+    assert out["carried_over"] == ["script"]
+    storyline = board.load("storyline")
+    assert isinstance(storyline, Storyline)
+    assert "scene_selection" in storyline.parents, "the re-saved storyline keeps its root parent"
+    script = board.load("script")
+    assert isinstance(script, Script)
+    assert script.parents["storyline"] == content_hash(storyline), (
+        "the carried-over script must record the RELOADED (gate-stamped) storyline's hash"
+    )
