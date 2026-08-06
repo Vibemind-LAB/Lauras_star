@@ -373,6 +373,65 @@ def test_start_short_http_exception_becomes_honest_text(
     assert messages[0]["content"]["text"] == "no material found for topic"
 
 
+def test_start_short_threads_language_to_the_service(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _capturing_auto_short(
+        db: Any, project_id: str, *, topic: str, target_seconds: int, format: str,
+        language: str,
+    ) -> dict[str, Any]:
+        captured["language"] = language
+        return {
+            "session_id": "sess-1", "job_id": "job-1", "asset_id": "asset-1",
+            "scene_numbers": [1], "rationale": "r", "fallback": False, "ranking": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("laura.chat.executor.run_project_auto_short", _capturing_auto_short)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+
+    execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("start_short", {"topic": "Katzen", "language": "English"}),
+        now_utc=_NOW,
+    )
+
+    assert captured["language"] == "English"
+
+
+def test_start_short_defaults_language_to_german(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _capturing_auto_short(
+        db: Any, project_id: str, *, topic: str, target_seconds: int, format: str,
+        language: str,
+    ) -> dict[str, Any]:
+        captured["language"] = language
+        return {
+            "session_id": "sess-1", "job_id": "job-1", "asset_id": "asset-1",
+            "scene_numbers": [1], "rationale": "r", "fallback": False, "ranking": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("laura.chat.executor.run_project_auto_short", _capturing_auto_short)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+
+    execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("start_short", {"topic": "Katzen"}), now_utc=_NOW,
+    )
+
+    assert captured["language"] == "German"
+
+
 # --- start_overview --------------------------------------------------------------------------
 
 
@@ -443,6 +502,35 @@ def test_start_overview_http_exception_becomes_honest_text(
         decision=_decision("start_overview", {"topic": "Katzen"}), now_utc=_NOW,
     )
     assert messages[0]["content"]["text"] == "no usable windows for topic"
+
+
+def test_start_overview_threads_language_to_the_service(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _capturing_auto_overview(
+        db: Any, project_id: str, *, topic: str, target_seconds: int, language: str,
+    ) -> dict[str, Any]:
+        captured["language"] = language
+        return {
+            "sequence_id": "seq-1", "source_timeline_id": "tl-1", "clips": [], "rationale": "r",
+            "fallback": False, "ranking": [], "warnings": [], "export_id": "exp-1",
+            "job_id": "job-2",
+        }
+
+    monkeypatch.setattr("laura.chat.executor.run_project_auto_overview", _capturing_auto_overview)
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    conversation_id = _conversation(db, project_id=project["id"])
+
+    execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("start_overview", {"topic": "Katzen", "language": "Spanish"}),
+        now_utc=_NOW,
+    )
+
+    assert captured["language"] == "Spanish"
 
 
 # --- follow_up -------------------------------------------------------------------------------

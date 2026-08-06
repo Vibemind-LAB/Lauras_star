@@ -321,10 +321,11 @@ def _handle_start_short(
     topic = str(args["topic"])
     target_seconds = int(_optional(args, "target_seconds", _DEFAULT_SHORT_TARGET_SECONDS))
     fmt = _optional(args, "format", _DEFAULT_FORMAT)
+    language = str(_optional(args, "language", _DEFAULT_LANGUAGE)).strip() or _DEFAULT_LANGUAGE
     try:
         result = run_project_auto_short(
             db, active_project_id, topic=topic, target_seconds=target_seconds, format=fmt,
-            language=_DEFAULT_LANGUAGE,
+            language=language,
         )
     except HTTPException as exc:
         return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
@@ -354,10 +355,11 @@ def _handle_start_overview(
     args = decision["args"]
     topic = str(args["topic"])
     target_seconds = int(_optional(args, "target_seconds", _DEFAULT_OVERVIEW_TARGET_SECONDS))
+    language = str(_optional(args, "language", _DEFAULT_LANGUAGE)).strip() or _DEFAULT_LANGUAGE
     try:
         result = run_project_auto_overview(
             db, active_project_id, topic=topic, target_seconds=target_seconds,
-            language=_DEFAULT_LANGUAGE,
+            language=language,
         )
     except HTTPException as exc:
         return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
