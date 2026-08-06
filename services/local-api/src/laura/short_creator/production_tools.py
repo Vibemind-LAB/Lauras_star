@@ -2468,24 +2468,23 @@ def build_production_tool_specs(
                     ),
                 }
             # VS3: a voice with per-line segments (VS2) sizes each cutlist segment to its OWN
-            # clip instead of proportionally scaling the chapter's audio window (the legacy
+            # clip(s) instead of proportionally scaling the chapter's audio window (the legacy
             # path below, kept byte-identical for segments=None — every board voiced before
-            # per-scene synthesis). Count drift (a script/storyline edit that changed how many
-            # scene entries the arc references, without a re-run of synthesize_script_voice)
-            # must refuse HERE, before any per-chapter resolution, or the order-coupled slicing
-            # below would silently pair the wrong clip with the wrong scene.
+            # per-scene synthesis). Pairing is by IDENTITY, not position: each storyline entry's
+            # (chapter, scene_number) key is looked up in a one-time grouping of voice_segments
+            # by that same key (clips of one key are consecutive in the constructed track by
+            # construction — synthesize_script_voice walks the identical
+            # _lines_in_storyline_order grouping). A key is POPPED from the group on first use,
+            # so a chapter that references one scene twice (two review windows, one line) finds
+            # nothing the second time — a hard, actionable refusal instead of a silent
+            # zero-duration segment that would drift every later scene. Any group left unpopped
+            # after the whole arc is walked is a line the storyline no longer references at all
+            # (checked once, after the loop below).
             voice_segments = voice.segments  # None = legacy single-track board
+            clips_by_key: dict[tuple[int, int], list[VoiceSegment]] = {}
             if voice_segments is not None:
-                expected = sum(len(c.scene_numbers) for c in storyline.arc)
-                if len(voice_segments) != expected:
-                    return {
-                        "ok": False,
-                        "reason": (
-                            f"voice has {len(voice_segments)} line clips but the storyline "
-                            f"references {expected} scene entries — run "
-                            "synthesize_script_voice again so voice and cut agree"
-                        ),
-                    }
+                for seg in voice_segments:
+                    clips_by_key.setdefault((seg.chapter, seg.scene_number), []).append(seg)
             words = _read_words(voice.timings_path)
             line_map = line_starts(ordered_lines, words)
             audio_windows = chapter_audio_windows(ordered_lines, words)
@@ -2500,12 +2499,28 @@ def build_production_tool_specs(
                 # their base durations, so the chapter's audio window can be distributed over
                 # them BEFORE any segment is cut.
                 resolved_scenes: list[tuple[int, int, int, BestWindow, Roi | None]] = []
+                # Parallel to resolved_scenes — only needed for the per-scene-voice path's
+                # window-naming refusals below, kept separate rather than widening the
+                # resolved_scenes tuple everywhere (including the legacy path's consumers).
+                window_idxs: list[int] = []
                 base_durations: list[float] = []
                 stretch_caps: list[float] = []
                 for entry in chapter.scene_numbers:
                     scene_number, window_idx = as_scene_window(entry)
                     resolved = _resolve_scene(db, asset_id, scene_number)
                     if resolved is None:
+                        if voice_segments is not None:
+                            # The legacy path's silent skip would desync the identity pairing
+                            # below (a scene the voice HAS a clip for would simply never be
+                            # matched, and its clip would misreport as "no longer referenced").
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"scene {scene_number} is referenced by the storyline but "
+                                    "does not exist in this asset's rough cut — fix the "
+                                    "storyline (save_storyline)"
+                                ),
+                            }
                         continue
                     src_start, src_end, _text = resolved
                     scene_duration_s = (src_end - src_start) / fps
@@ -2542,6 +2557,7 @@ def build_production_tool_specs(
                         roi = None
 
                     resolved_scenes.append((scene_number, src_start, src_end, window, roi))
+                    window_idxs.append(window_idx)
                     base_durations.append(
                         _segment_duration_s(
                             target_seconds=chapter.target_seconds,
@@ -2556,29 +2572,47 @@ def build_production_tool_specs(
                     stretch_caps.append(segment_capacity_seconds(window, scene_duration_s))
 
                 if voice_segments is not None:
-                    # Order-coupling invariant: `order` is only INCREMENTED in the second loop
-                    # below, so at this point (top of the chapter, before that loop runs) it
-                    # equals the total number of segments every PREVIOUS chapter's second loop
-                    # has already emitted — i.e. exactly how many of voice_segments (built in
-                    # this SAME arc-then-scene_numbers order by
-                    # _lines_in_storyline_order/synthesize_script_voice) have already been
-                    # consumed. The slice below is therefore exactly THIS chapter's own clips,
-                    # scene-for-scene aligned with resolved_scenes.
-                    seg_slice = voice_segments[order : order + len(resolved_scenes)]
                     durations = []
-                    for idx, ((scene_number, src_start, src_end, _w, _r), seg) in enumerate(
-                        zip(resolved_scenes, seg_slice, strict=True)
+                    for idx, (scene_number, src_start, src_end, _w, _r) in enumerate(
+                        resolved_scenes
                     ):
-                        is_last = order + idx == len(voice_segments) - 1
-                        want = seg.duration_s + (0.0 if is_last else INTER_SCENE_GAP_S)
+                        window_idx = window_idxs[idx]
+                        group = clips_by_key.pop((chapter.chapter, scene_number), None)
+                        if group is None:
+                            # Either a repeat reference to a (chapter, scene) key another
+                            # entry in this arc already consumed (a scene reused via a second
+                            # review window, with only ONE script line — see the precompute
+                            # comment above), or a scene with no script line at all. Both are
+                            # the SAME author-facing problem: this storyline entry has no line
+                            # of its own to speak.
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"per-scene voice: storyline entry scene {scene_number} "
+                                    f"(window {window_idx}) has no own narration line — every "
+                                    "entry needs its own line; drop the repeated window or "
+                                    "give the scene a line (save_script_chapter), then re-run "
+                                    "synthesize_script_voice"
+                                ),
+                            }
+                        # This entry's own clip(s), consecutive in the constructed track (VS1's
+                        # concat_with_gaps): the group's own inner gaps (k-1 of them) plus one
+                        # trailing gap to the NEXT entry's clip — except when this group holds
+                        # the single, globally LAST voice segment, matching VS1/VS2's
+                        # n-1-gaps-total, no-trailing-gap construction exactly.
+                        contains_last_clip = group[-1] is voice_segments[-1]
+                        inner_gaps = (len(group) - 1) * INTER_SCENE_GAP_S
+                        trailing_gap = 0.0 if contains_last_clip else INTER_SCENE_GAP_S
+                        total_spoken = sum(seg.duration_s for seg in group)
+                        want = total_spoken + inner_gaps + trailing_gap
                         capacity = (src_end - src_start) / fps
                         if want > capacity + 1e-6:
                             return {
                                 "ok": False,
                                 "reason": (
-                                    f"the line for scene {scene_number} speaks "
-                                    f"{seg.duration_s:.1f}s but the scene only holds "
-                                    f"{capacity:.1f}s — shorten that line "
+                                    f"the line(s) for scene {scene_number} speak "
+                                    f"{total_spoken:.1f}s but the scene only holds "
+                                    f"{capacity:.1f}s — shorten the line(s) "
                                     "(save_script_chapter), then re-run "
                                     "synthesize_script_voice"
                                 ),
@@ -2620,6 +2654,20 @@ def build_production_tool_specs(
                     )
                     video_start_s += actual_dur_s
                     order += 1
+
+            if voice_segments is not None and clips_by_key:
+                # Every entry the storyline still references popped its own group above — what
+                # is left is a line the CURRENT storyline no longer references at all (a scene
+                # dropped from the arc after the voice was synthesized; lines_in_storyline_order
+                # never drops a line from the voice itself, so it is still sitting in
+                # voice_segments with nothing left to claim it).
+                return {
+                    "ok": False,
+                    "reason": (
+                        "voice has clips for lines the storyline no longer references — "
+                        "re-run synthesize_script_voice"
+                    ),
+                }
 
             if not segments:
                 return {"ok": False, "reason": "no scenes resolved from the storyline"}

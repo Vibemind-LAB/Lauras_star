@@ -26,9 +26,13 @@ from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
 from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
+    BestWindow,
     BoardMeta,
     Chapter,
     Cutlist,
+    Roi,
+    SceneReview,
+    SceneWindowRef,
     Script,
     ScriptLine,
     Storyline,
@@ -107,6 +111,35 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
         target_seconds=20.0,
     )
     return Board.create(tmp_path / "board", meta)
+
+
+def _review(
+    board: Board,
+    scene_number: int,
+    *,
+    best_window: BestWindow | None = None,
+    roi: Roi | None = None,
+    windows: list[BestWindow] | None = None,
+) -> None:
+    """Write a minimal valid SceneReview straight to the board (same shape as
+    ``test_production_tools_cutlist.py``'s ``_review`` — only needed here for the window-reuse
+    test, which requires a scene with >=2 windows to get PAST the window-resolution guards
+    before the identity-pairing guard under test can fire)."""
+    board.save_scene_review(
+        SceneReview(
+            scene_number=scene_number,
+            src_start_frame=(scene_number - 1) * SCENE_FRAMES,
+            src_end_frame_exclusive=scene_number * SCENE_FRAMES,
+            description="d",
+            whats_happening="h",
+            hook_score=5,
+            best_window=best_window
+            if best_window is not None
+            else BestWindow(offset_s=0.0, duration_s=2.0),
+            windows=windows if windows is not None else [],
+            roi=roi,
+        )
+    )
 
 
 def _storyline(*, arc: list[Chapter] | None = None) -> Storyline:
@@ -218,10 +251,14 @@ def test_segments_sized_to_their_clips(tmp_path: Path) -> None:
 
 def test_segment_count_drift_rejected(tmp_path: Path) -> None:
     """Storyline references THREE distinct (chapter, scene) entries but the voice on the board
-    only carries two line clips — a stale voice (script edited/re-ordered without a re-run of
-    synthesize_script_voice) must refuse loudly, naming the fix, not silently misalign. The
-    guard fires purely on COUNT, before any per-chapter window resolution, so all three entries
-    use plain (reviewless) scene numbers rather than exercising the window machinery."""
+    only carries two line clips — a stale voice (script edited without a re-run of
+    synthesize_script_voice) must refuse loudly, naming the fix, not silently misalign.
+
+    Identity-pairing (the controller's design correction over the original positional-slice
+    design) means this manifests as the per-entry "no own narration line" refusal for the
+    specific entry missing its clip (scene 3 here), not a separate count check — there is no
+    upfront raw-count guard anymore. All three entries use plain (reviewless) scene numbers so
+    the window machinery never has a chance to fire first."""
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
     board.save(
@@ -262,6 +299,7 @@ def test_segment_count_drift_rejected(tmp_path: Path) -> None:
     out = specs["build_cutlist"].func()
 
     assert out["ok"] is False
+    assert "scene 3" in out["reason"]  # the specific entry with no clip of its own
     assert "synthesize_script_voice" in out["reason"]
     assert board.load("cutlist") is None
 
@@ -283,6 +321,165 @@ def test_clip_longer_than_scene_rejected_with_scene_name(tmp_path: Path) -> None
 
     assert out["ok"] is False
     assert "scene 1" in out["reason"]
+    assert board.load("cutlist") is None
+
+
+# --- identity pairing (controller design correction over the original positional slice) ---------
+
+
+def test_window_reuse_with_one_line_rejected_naming_scene_and_window(tmp_path: Path) -> None:
+    """A chapter references ONE scene through TWO different review windows, but the script (and
+    therefore the voice) has only ONE line for that scene — ``lines_in_storyline_order`` collapses
+    a scene repeated WITHIN one chapter to its first occurrence, so the voice has exactly one clip
+    for it. The first window entry claims that clip; the second finds nothing of its own and must
+    refuse naming BOTH the scene and the WINDOW (not the generic leftover/count wording — a caller
+    fixing this needs to know it's window 1 specifically that has no line, not that the whole
+    voice is stale)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    w0 = BestWindow(offset_s=0.0, duration_s=2.0)
+    w1 = BestWindow(offset_s=5.0, duration_s=2.0)
+    _review(board, 1, best_window=w0, windows=[w0, w1])
+    board.save(
+        "storyline",
+        _storyline(
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="m",
+                    scene_numbers=[1, SceneWindowRef(scene=1, window=1)],
+                    target_seconds=4.0,
+                )
+            ]
+        ),
+    )
+    board.save(
+        "script", _script(lines=[ScriptLine(chapter=1, scene_number=1, text="Nur eine Zeile")])
+    )
+    _save_voice_with_segments(board, tmp_path, [1.0])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is False
+    assert "scene 1" in out["reason"]
+    assert "window 1" in out["reason"]
+    assert "has no own narration line" in out["reason"]
+    assert "no longer references" not in out["reason"]  # distinct from the leftover refusal
+    assert board.load("cutlist") is None
+
+
+def test_two_lines_same_scene_merge_into_one_segment(tmp_path: Path) -> None:
+    """A scene spoken by TWO script lines (same chapter + scene_number — e.g. a beat split into
+    two sentences): both clips are consecutive in the constructed track and pair to the SAME
+    storyline entry, landing in ONE cutlist segment sized to their sum plus the ONE inner gap
+    between them (+ the usual trailing gap to the next entry, since this scene is not last) — the
+    reason identity-pairing groups by key instead of a 1:1 positional slice."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save(
+        "storyline",
+        _storyline(
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1, 2], target_seconds=4.0
+                )
+            ]
+        ),
+    )
+    board.save(
+        "script",
+        _script(
+            lines=[
+                ScriptLine(chapter=1, scene_number=1, text="Erster Satz"),
+                ScriptLine(chapter=1, scene_number=1, text="Zweiter Satz"),
+                ScriptLine(chapter=1, scene_number=2, text="Andere Szene"),
+            ]
+        ),
+    )
+    _save_voice_with_segments(board, tmp_path, [1.0, 0.5, 0.8])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is True, out
+    assert out["segments"] == 2  # one cutlist segment per STORYLINE entry, not per script line
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+
+    d0 = (seg0.end_frame_exclusive - seg0.start_frame) / FPS
+    d1 = (seg1.end_frame_exclusive - seg1.start_frame) / FPS
+    # scene 1's segment = both its clips (1.0 + 0.5) + ONE inner gap between them + ONE trailing
+    # gap to scene 2's entry.
+    assert d0 == pytest.approx(1.0 + 0.5 + 2 * INTER_SCENE_GAP_S, abs=1 / FPS)
+    assert d1 == pytest.approx(0.8, abs=1 / FPS)  # last entry: no trailing gap
+    # sync invariant: video total == audio total (3 clips -> n-1 = 2 gaps total, VS1's rule).
+    total_audio = 1.0 + 0.5 + 0.8 + 2 * INTER_SCENE_GAP_S
+    assert d0 + d1 == pytest.approx(total_audio, abs=2 / FPS)
+
+
+def test_unresolved_scene_rejected_in_per_scene_path(tmp_path: Path) -> None:
+    """A storyline entry referencing a scene number that does not exist in this asset's rough cut
+    (an error state ``save_storyline``'s own tool-level checks would normally catch — this
+    fixture bypasses it, same pattern as
+    ``test_build_cutlist_rejects_out_of_range_window_ref``) must refuse naming the scene. The
+    legacy path silently ``continue``s past an unresolved scene; the per-scene-voice path cannot,
+    because that silent skip would desync the identity pairing — the voice's own clip for the
+    missing scene would surface as a misleading "no longer referenced" leftover instead of
+    pointing at the real problem."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save(
+        "storyline",
+        _storyline(
+            arc=[
+                Chapter(chapter=1, role="hook", message="m", scene_numbers=[99], target_seconds=2.0)
+            ]
+        ),
+    )
+    board.save(
+        "script", _script(lines=[ScriptLine(chapter=1, scene_number=99, text="Geisterszene")])
+    )
+    _save_voice_with_segments(board, tmp_path, [1.0])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is False
+    assert "scene 99" in out["reason"]
+    assert board.load("cutlist") is None
+
+
+def test_leftover_unconsumed_clips_after_storyline_drops_a_scene(tmp_path: Path) -> None:
+    """The script still carries a line for a scene NO chapter's storyline references anymore
+    (``lines_in_storyline_order`` never drops such a line — the voice must contain every line the
+    author wrote, per its own docstring) — after the whole arc is walked, that clip's group is
+    still sitting in ``clips_by_key``, unconsumed. Must refuse instead of silently building a cut
+    that is short one scene's worth of narration (or, worse, one whose voice mp3 runs longer than
+    the picture it was cut to)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("storyline", _storyline())  # default: chapter 1, scene_numbers=[1, 2]
+    board.save(
+        "script",
+        _script(
+            lines=[
+                ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team"),
+                ScriptLine(chapter=1, scene_number=2, text="Ein Klick genuegt"),
+                # storyline never references scene 3 in any chapter's scene_numbers.
+                ScriptLine(chapter=1, scene_number=3, text="Verwaiste Zeile"),
+            ]
+        ),
+    )
+    _save_voice_with_segments(board, tmp_path, [1.2, 0.8, 0.5])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func()
+
+    assert out["ok"] is False
+    assert "no longer references" in out["reason"]
     assert board.load("cutlist") is None
 
 
