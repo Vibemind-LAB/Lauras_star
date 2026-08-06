@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -64,10 +65,10 @@ _SYSTEM_PROMPT = (
     '- switch_project: {"ref": str} — switch to an existing project, by name or id.\n'
     '- propose_import: {"urls": [str, ...]} — propose importing one or more media URLs (each '
     "must start with 'http'). Never invent URLs the user did not give you.\n"
-    '- start_short: {"topic": str, "target_seconds"?: int, "format"?: "insta"|"x"|"linkedin"} '
-    "— start building a short about a topic.\n"
-    '- start_overview: {"topic": str, "target_seconds"?: int} — start building an overview '
-    "sequence about a topic.\n"
+    '- start_short: {"topic": str, "target_seconds"?: int, "format"?: "insta"|"x"|"linkedin", '
+    '"language"?: str} — start building a short about a topic.\n'
+    '- start_overview: {"topic": str, "target_seconds"?: int, "language"?: str} — start '
+    "building an overview sequence about a topic.\n"
     '- follow_up: {"session_ref": str, "text": str} — send a follow-up instruction to an '
     "existing production session.\n"
     '- revert: {"session_ref": str, "artifact": str, "version": int} — revert a session\'s '
@@ -98,7 +99,13 @@ _SYSTEM_PROMPT = (
     "sind zu klein'. If the user agrees ('ja', 'mach das', 'genau') right after an assistant "
     "message containing a line starting with 'Vorschlag:', choose follow_up with the active "
     "session and use the text AFTER 'Vorschlag:' as the follow-up text — never the bare "
-    "'ja'."
+    "'ja'.\n"
+    ' Set "language" on start_short/start_overview to the language of the user\'s instruction '
+    '(an English language name: "German", "English", "Spanish", ...); if the instruction '
+    "explicitly names a target language ('auf Englisch', 'in english'), that explicit mention "
+    "wins. Examples: 'bau mir einen Short über X' -> {\"language\": \"German\"}; 'build me a "
+    'short about X\' -> {"language": "English"}; \'bau mir einen Short über X auf Englisch\' -> '
+    '{"language": "English"}.'
 )
 
 
@@ -252,6 +259,20 @@ def _validate_optional_target_seconds(args: dict[str, Any]) -> str | None:
 
 _SHORT_FORMATS = frozenset({"insta", "x", "linkedin"})
 
+_LANGUAGE_RE = re.compile(r"^[A-Za-z][A-Za-z ]{0,31}$")
+
+
+def _validate_optional_language(args: dict[str, Any]) -> str | None:
+    if "language" not in args:
+        return None
+    language = args["language"]
+    if not isinstance(language, str) or _LANGUAGE_RE.fullmatch(language) is None:
+        return (
+            "language must be an English language name (letters/spaces, max 32 chars), "
+            'e.g. "German" or "English"'
+        )
+    return None
+
 
 def _validate_correction_item(item: Any) -> str | None:
     """One ``corrections[]`` entry: ``segment_index`` (int >= 1, not bool — mirrors
@@ -300,13 +321,19 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
             return error
         if "format" in args and args["format"] not in _SHORT_FORMATS:
             return f"format must be one of {sorted(_SHORT_FORMATS)}"
+        error = _validate_optional_language(args)
+        if error is not None:
+            return error
         return None
 
     if tool == "start_overview":
         error = _require_str(args, "topic")
         if error is not None:
             return error
-        return _validate_optional_target_seconds(args)
+        error = _validate_optional_target_seconds(args)
+        if error is not None:
+            return error
+        return _validate_optional_language(args)
 
     if tool == "follow_up":
         error = _require_str(args, "session_ref")

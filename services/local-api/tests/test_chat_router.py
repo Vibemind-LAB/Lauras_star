@@ -63,6 +63,42 @@ def test_missing_required_arg_is_a_validation_error() -> None:
     assert decision["tool"] == "propose_import" and decision["fallback"] is False
 
 
+def test_start_short_accepts_optional_language() -> None:
+    reply = json.dumps({
+        "tool": "start_short",
+        "args": {"topic": "VibeMind", "language": "English"},
+    })
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: reply)
+    assert decision["args"]["language"] == "English" and decision["fallback"] is False
+
+
+def test_start_short_language_validation_rejects_garbage() -> None:
+    replies = iter([
+        json.dumps({"tool": "start_short",
+                    "args": {"topic": "t", "language": "en-US_123!"}}),
+        json.dumps({"tool": "start_short", "args": {"topic": "t", "language": "English"}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["args"]["language"] == "English" and decision["fallback"] is False
+
+
+def test_start_overview_accepts_optional_language() -> None:
+    reply = json.dumps({
+        "tool": "start_overview",
+        "args": {"topic": "VibeMind", "language": "Spanish"},
+    })
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: reply)
+    assert decision["args"]["language"] == "Spanish" and decision["fallback"] is False
+
+
+def test_system_prompt_carries_the_language_rule() -> None:
+    from laura.chat.router import _SYSTEM_PROMPT
+
+    assert "language of the user's instruction" in _SYSTEM_PROMPT
+    assert "auf Englisch" in _SYSTEM_PROMPT   # explicit-mention example verbatim
+    assert '"language": "English"' in _SYSTEM_PROMPT
+
+
 def test_runner_exception_goes_straight_to_fallback() -> None:
     calls: list[str] = []
 
