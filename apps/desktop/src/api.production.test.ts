@@ -40,6 +40,7 @@ const status: ProductionStatus = {
   },
   scene_reviews: { count: 2, scenes: [1, 2], degraded_count: 0, degraded_scenes: [] },
   artifacts: {
+    scene_selection: { version: null, archived_versions: [] },
     storyline: { version: 1, archived_versions: [] },
     script: { version: 1, archived_versions: [] },
     voice: { version: null, archived_versions: [] },

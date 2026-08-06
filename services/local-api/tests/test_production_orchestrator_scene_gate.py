@@ -345,3 +345,57 @@ def test_run_gate_on_with_no_proposal_yet_still_runs_the_team(tmp_path: Path) ->
     )
 
     assert calls, "a gate-on board with no proposal yet must run the team (phase 1 proposes)"
+
+
+# --- final-review finding 1: build_production_task's charter must not repeat the propose-then-
+# stop steps once the board carries a CONFIRMED selection (that invited a follow-up run to call
+# propose_scene_selection again and clobber the user's pick) --------------------------------
+
+
+def test_build_production_task_confirmed_selection_forbids_reproposal(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _make_board(db, asset_id, "sess-scene-gate-task-confirmed", scene_gate=True)
+    board.save_scene_review(_review(1))
+    board.save("scene_selection", _proposal(1, confirmed=True))
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=60
+    )
+
+    assert "use ONLY scenes [1]" in task
+    assert "Do NOT call propose_scene_selection again" in task
+    assert "SCENE SELECTION GATE (mandatory)" not in task
+    assert "Call propose_scene_selection with 4-8 candidates" not in task
+    assert "Then STOP. Do not write a storyline or script" not in task
+
+
+def test_build_production_task_pending_selection_keeps_mandatory_steps(tmp_path: Path) -> None:
+    """Companion: an unconfirmed proposal still gets the full propose-then-stop charter — only
+    a CONFIRMED selection swaps it out."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _make_board(db, asset_id, "sess-scene-gate-task-pending", scene_gate=True)
+    board.save_scene_review(_review(1))
+    board.save("scene_selection", _proposal(1, confirmed=False))
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=60
+    )
+
+    assert "Call propose_scene_selection with 4-8 candidates" in task
+    assert "Then STOP. Do not write a storyline or script" in task
+    assert "use ONLY scenes" not in task
+
+
+def test_build_production_task_no_proposal_yet_keeps_mandatory_steps(tmp_path: Path) -> None:
+    """Same companion, for the case where no proposal exists on the board at all yet."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _make_board(db, asset_id, "sess-scene-gate-task-none", scene_gate=True)
+    board.save_scene_review(_review(1))
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="demo", target_seconds=60
+    )
+
+    assert "Call propose_scene_selection with 4-8 candidates" in task
+    assert "Then STOP. Do not write a storyline or script" in task
+    assert "use ONLY scenes" not in task

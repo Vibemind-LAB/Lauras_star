@@ -1686,8 +1686,27 @@ def build_production_tool_specs(
         "recommended"} — frame range and thumb frame are resolved server-side from the scene
         itself, so pass only what you judged. At least one candidate must be recommended
         (the pre-checked suggestion). Saving a new proposal archives the old one and
-        invalidates everything downstream; the run then STOPS and waits for the user."""
+        invalidates everything downstream; the run then STOPS and waits for the user.
+        Refuses on a gate-off board (nothing reads this artifact there) and once the user
+        has already confirmed a pick — a confirmed selection is final; the user changes it
+        via the confirm endpoint/chat, never via a new proposal from this tool."""
         try:
+            if not board.meta().scene_gate:
+                return {
+                    "ok": False,
+                    "reason": "scene selection gate is not enabled for this session",
+                }
+            existing = board.load("scene_selection")
+            if isinstance(existing, SceneSelection) and existing.confirmed_utc is not None:
+                return {
+                    "ok": False,
+                    "reason": (
+                        "the user already confirmed scenes "
+                        f"{sorted(existing.selected_scene_numbers)} — that pick is final; "
+                        "changing it happens through the user's confirm (chat), not a new "
+                        "proposal from this tool"
+                    ),
+                }
             built: list[SceneCandidate] = []
             for cand in candidates:
                 scene_number = int(cand.get("scene_number", 0))

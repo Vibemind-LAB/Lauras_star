@@ -17,6 +17,7 @@ from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BestWindow,
     BoardMeta,
+    Chapter,
     SceneCandidate,
     SceneReview,
     SceneSelection,
@@ -151,6 +152,20 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
         scene_gate=True,
     )
     return Board.create(tmp_path / "board", meta)
+
+
+def _board_gate_off(tmp_path: Path, asset_id: str) -> Board:
+    """Same fixture shape as ``_board``, but ``scene_gate=False`` — the state every board built
+    before Gate S existed, and any new session that never turns the gate on, is in."""
+    meta = BoardMeta(
+        session_id="s1",
+        asset_id=asset_id,
+        created_utc="2026-08-06T00:00:00Z",
+        task="overview short",
+        target_seconds=20.0,
+        scene_gate=False,
+    )
+    return Board.create(tmp_path / "board-gate-off", meta)
 
 
 def _review(board: Board, scene_number: int, *, n_windows: int = 1) -> None:
@@ -326,3 +341,84 @@ def test_carry_over_re_stamps_the_gate_stamped_storyline_parent(tmp_path: Path) 
     assert script.parents["storyline"] == content_hash(storyline), (
         "the carried-over script must record the RELOADED (gate-stamped) storyline's hash"
     )
+
+
+# --- final-review findings: propose_scene_selection structural refusals -----------------------
+
+
+def test_propose_scene_selection_refuses_once_confirmed(tmp_path: Path) -> None:
+    """Finding 1: once the user has confirmed a pick, propose_scene_selection must refuse
+    rather than silently clobbering it — this is the I2-style structural guard (prompts do not
+    bind): even a follow-up team run must not be able to overwrite a confirmed selection with a
+    fresh proposal. Changing the pick happens through the user's confirm (chat), never through
+    this tool."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    _propose_and_confirm(board, specs, scene_number=1)
+    confirmed = board.load("scene_selection")
+    assert isinstance(confirmed, SceneSelection)
+
+    result = specs["propose_scene_selection"].func(
+        candidates=[
+            {
+                "scene_number": 1,
+                "description": "a different read",
+                "transcript_snippet": "a different read",
+                "rationale": "a different read",
+                "recommended": True,
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert "confirmed" in result["reason"] and "final" in result["reason"]
+    after = board.load("scene_selection")
+    assert isinstance(after, SceneSelection)
+    assert after.version == confirmed.version, "no new version was written"
+    assert after.confirmed_utc == confirmed.confirmed_utc
+    assert after.selected_scene_numbers == confirmed.selected_scene_numbers
+    assert after.candidates == confirmed.candidates
+
+
+def test_propose_scene_selection_refuses_on_gate_off_board(tmp_path: Path) -> None:
+    """Finding 2: on a gate-off board nothing ever reads the scene_selection artifact —
+    build_production_task never emits the propose charter and scene_selection_block_reason is a
+    no-op when ``gate_on=False`` — so a stray propose_scene_selection call would both save an
+    inert artifact AND, via ``Board.save``'s downstream invalidation, wipe an already-finished
+    storyline/script/voice. The tool refuses before touching the board at all."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board_gate_off(tmp_path, asset_id)
+    _review(board, 1)
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="m",
+            arc=[
+                Chapter(
+                    chapter=1, role="hook", message="m", scene_numbers=[1], target_seconds=3.0
+                )
+            ],
+        ),
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    result = specs["propose_scene_selection"].func(
+        candidates=[
+            {
+                "scene_number": 1,
+                "description": "d",
+                "transcript_snippet": "t",
+                "rationale": "r",
+                "recommended": True,
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert "not enabled" in result["reason"]
+    assert board.load("scene_selection") is None
+    storyline = board.load("storyline")
+    assert isinstance(storyline, Storyline)
+    assert storyline.version == 1, "downstream invalidation must not have run"

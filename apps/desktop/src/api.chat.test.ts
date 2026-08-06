@@ -233,6 +233,7 @@ describe("getProductionStatus (script gate contracts)", () => {
       },
       scene_reviews: { count: 1, scenes: [1], degraded_count: 0, degraded_scenes: [] },
       artifacts: {
+        scene_selection: { version: null, archived_versions: [] },
         storyline: { version: 1, archived_versions: [] },
         script: { version: 1, archived_versions: [] },
         voice: { version: null, archived_versions: [] },
@@ -277,6 +278,7 @@ describe("getProductionStatus (script gate contracts)", () => {
       },
       scene_reviews: { count: 1, scenes: [1], degraded_count: 0, degraded_scenes: [] },
       artifacts: {
+        scene_selection: { version: null, archived_versions: [] },
         storyline: { version: 1, archived_versions: [] },
         script: { version: 1, archived_versions: [] },
         voice: { version: null, archived_versions: [] },

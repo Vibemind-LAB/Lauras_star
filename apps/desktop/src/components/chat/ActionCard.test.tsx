@@ -104,6 +104,7 @@ function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): Production
     },
     scene_reviews: { count: 0, scenes: [], degraded_count: 0, degraded_scenes: [] },
     artifacts: {
+      scene_selection: { version: null, archived_versions: [] },
       storyline: { version: 1, archived_versions: [] },
       script: { version: 1, archived_versions: [] },
       voice: { version: 1, archived_versions: [] },

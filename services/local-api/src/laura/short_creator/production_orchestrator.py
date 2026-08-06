@@ -189,17 +189,30 @@ def build_production_task(
 
     gate_s_lines = ""
     if meta.scene_gate:
-        gate_s_lines = (
-            "SCENE SELECTION GATE (mandatory):\n"
-            "1. Review every expected scene (review_scene) BEFORE proposing.\n"
-            "2. Call propose_scene_selection with 4-8 candidates that fit the task —\n"
-            "   description = what the scene SHOWS, transcript_snippet = what is SAID\n"
-            "   (from get_scene_transcript), rationale = why it belongs in this film.\n"
-            "   Mark your suggested subset recommended.\n"
-            "3. Then STOP. Do not write a storyline or script — save_storyline refuses\n"
-            "   until the user confirmed the selection in chat.\n"
-            "4. After confirmation, use ONLY the selected scenes.\n"
-        )
+        selection = board.load("scene_selection")
+        if isinstance(selection, SceneSelection) and selection.confirmed_utc is not None:
+            # A confirmed pick is final. Steps 1-3 below are propose-then-stop instructions;
+            # re-emitting them for a confirmed board invited exactly what production_tools'
+            # structural guard now also refuses — a follow-up team turn re-proposing a
+            # "better" set and silently clobbering the user's already-confirmed choice.
+            selected = sorted(selection.selected_scene_numbers)
+            gate_s_lines = (
+                f"SCENE SELECTION (confirmed by the user): use ONLY scenes {selected}. "
+                "Do NOT call propose_scene_selection again — the pick is final unless the "
+                "user asks to change it.\n"
+            )
+        else:
+            gate_s_lines = (
+                "SCENE SELECTION GATE (mandatory):\n"
+                "1. Review every expected scene (review_scene) BEFORE proposing.\n"
+                "2. Call propose_scene_selection with 4-8 candidates that fit the task —\n"
+                "   description = what the scene SHOWS, transcript_snippet = what is SAID\n"
+                "   (from get_scene_transcript), rationale = why it belongs in this film.\n"
+                "   Mark your suggested subset recommended.\n"
+                "3. Then STOP. Do not write a storyline or script — save_storyline refuses\n"
+                "   until the user confirmed the selection in chat.\n"
+                "4. After confirmation, use ONLY the selected scenes.\n"
+            )
 
     _, (out_w, out_h) = canvas_for(meta.format)
     return (

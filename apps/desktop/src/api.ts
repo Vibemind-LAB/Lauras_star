@@ -825,6 +825,7 @@ export interface ProductionBoardStatus {
     degraded_scenes: number[];
   };
   artifacts: Record<
+    | "scene_selection"
     | "storyline"
     | "script"
     | "voice"
