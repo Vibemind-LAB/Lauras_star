@@ -885,6 +885,11 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
 # script and was optimistic: natural agent prose, with names and numbers and pauses, runs
 # slower. German is slower still because its compounds are long words.
 _SECONDS_PER_WORD: dict[str, float] = {"German": 0.58, "English": 0.41}
+# ISO-ish short codes agents actually pass ("mach das in english" → the team sent "en" live,
+# 2026-08-05). ``_SECONDS_PER_WORD`` and ``BoardMeta.language`` speak full English names, so a
+# raw code silently falls back to the German rate. Matched case-insensitively; anything not in
+# this map passes through unchanged.
+_LANGUAGE_ALIASES: dict[str, str] = {"en": "English", "de": "German"}
 _DEFAULT_LANGUAGE = "German"
 _VOICE_RATE_TOLERANCE = 0.20
 
@@ -1667,6 +1672,10 @@ def build_production_tool_specs(
 
         Call this FIRST when the user asks for another language, then rewrite every
         chapter via save_script_chapter — it picks the new language up automatically.
+        Short codes normalize to the full English name before anything else ("en" ->
+        "English", "de" -> "German", case-insensitive; other values pass through
+        unchanged) — ``_SECONDS_PER_WORD`` only knows full names, so a raw "en" on the
+        board would silently price every chapter at the German speaking rate.
         Validation mirrors the router's letters/spaces/length shape, but is deliberately
         looser: it accepts any Unicode letter (``str.isalpha()``), not just ASCII, with the
         same 2-char floor ``BoardMeta.language`` enforces (the 32-char ceiling is the
@@ -1679,10 +1688,17 @@ def build_production_tool_specs(
         "mach das in english" would silently no-op on a script nobody rewrote, and the
         stale meta would poison the NEXT follow-up too. ``Board.status()``'s
         ``language_mismatch`` flag stays True until a chapter is re-saved in the new
-        language. The return shape is unchanged by this — the re-arm is a side effect,
-        not a new field."""
+        language.
+
+        The success result carries a ``note`` restating the new-language order: the
+        production task prompt is built at run START and keeps saying e.g. "the script
+        MUST be written in German" after a mid-run switch — live 2026-08-05 the team
+        switched to English correctly and then rewrote every chapter in German anyway,
+        because the stale prompt outweighed the meta. A fresh tool RESULT outranks stale
+        prompt text, so the instruction rides along here."""
         try:
             cleaned = (language or "").strip()
+            cleaned = _LANGUAGE_ALIASES.get(cleaned.lower(), cleaned)
             if len(cleaned) < 2 or len(cleaned) > 32 or not all(
                 c.isalpha() or c == " " for c in cleaned
             ):
@@ -1692,7 +1708,15 @@ def build_production_tool_specs(
             board.set_language(cleaned)
             if cleaned != previous and isinstance(board.load("script"), Script):
                 board.clear_script_approval()
-            return {"ok": True, "previous": previous, "language": cleaned}
+            return {
+                "ok": True,
+                "previous": previous,
+                "language": cleaned,
+                "note": (
+                    f"Language switched. Write ALL chapter text in {cleaned} from now "
+                    "on, regardless of earlier language instructions in this run."
+                ),
+            }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 

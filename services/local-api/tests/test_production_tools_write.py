@@ -32,7 +32,7 @@ from laura.short_creator.board_models import (
     VoiceArtifact,
     content_hash,
 )
-from laura.short_creator.production_tools import build_production_tool_specs
+from laura.short_creator.production_tools import build_production_tool_specs, seconds_per_word
 
 FPS = 30
 SCENE_FRAMES = 150  # 150 frames @ 30fps = 5.0s
@@ -1091,6 +1091,18 @@ def test_save_qa_report_stamps_the_render_parent(tmp_path: Path) -> None:
 # --- set_board_language ("Sprache folgt dem Input", follow-up case, SP3) -------------------
 
 
+def _switch_note(language: str) -> str:
+    """The fresh-instruction note a successful switch returns. The production task prompt is
+    built at run START and keeps saying e.g. "the script MUST be written in German" after a
+    mid-run switch — tool RESULTS outrank that stale prompt text, so the result itself must
+    carry the new-language order (live finding 2026-08-05: chapters were rewritten in German
+    right after a correct switch to English)."""
+    return (
+        f"Language switched. Write ALL chapter text in {language} from now on, "
+        "regardless of earlier language instructions in this run."
+    )
+
+
 def test_set_board_language_switches_and_reports_previous(tmp_path: Path) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)  # BoardMeta default language is "German"
@@ -1098,7 +1110,67 @@ def test_set_board_language_switches_and_reports_previous(tmp_path: Path) -> Non
 
     out = specs["set_board_language"].func(language="English")
 
-    assert out == {"ok": True, "previous": "German", "language": "English"}
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
+    assert board.meta().language == "English"
+
+
+def test_set_board_language_normalizes_the_short_code_en_to_english(tmp_path: Path) -> None:
+    """Live 2026-08-05: the team passed "en". ``_SECONDS_PER_WORD`` only knows full English
+    names, so the board carried ``language="en"`` and every voice estimate fell back to the
+    slower German rate — chapters landed ~30% under budget. Short codes normalize to the full
+    name BEFORE validation, and the note names the normalized language, not the raw input."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="en")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
+    assert board.meta().language == "English"
+    # The whole point of normalizing: the meta value must hit the measured English TTS rate,
+    # not fall through to the German default.
+    assert seconds_per_word(board.meta().language) == seconds_per_word("English")
+
+
+def test_set_board_language_normalizes_the_short_code_de_to_german(tmp_path: Path) -> None:
+    """"de" maps to "German" — on a default-German board that makes it a same-language call
+    (previous == language), which doubles as proof the raw code never reaches the meta."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="de")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "German",
+        "note": _switch_note("German"),
+    }
+    assert board.meta().language == "German"
+
+
+def test_set_board_language_short_code_matching_ignores_case(tmp_path: Path) -> None:
+    """Agents also emit "EN"/"En"; the alias lookup is case-insensitive. Anything that is not
+    a known short code still passes through unchanged (covered by the full-name tests)."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="EN")
+
+    assert out["ok"] is True
+    assert out["language"] == "English"
     assert board.meta().language == "English"
 
 
@@ -1155,7 +1227,12 @@ def test_set_board_language_with_a_script_clears_the_approval_and_marks_mismatch
 
     out = specs["set_board_language"].func(language="English")
 
-    assert out == {"ok": True, "previous": "German", "language": "English"}
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
     assert board.meta().script_approved_utc is None
     assert board.meta().script_approved_script_hash is None
     assert board.status()["language_mismatch"] is True
@@ -1180,7 +1257,12 @@ def test_set_board_language_without_a_script_has_no_approval_to_clear(tmp_path: 
 
     out = specs["set_board_language"].func(language="English")
 
-    assert out == {"ok": True, "previous": "German", "language": "English"}
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
     assert board.meta().script_approved_utc is None
     assert board.status()["language_mismatch"] is False
 
@@ -1201,6 +1283,11 @@ def test_set_board_language_same_language_leaves_the_approval_untouched(tmp_path
 
     out = specs["set_board_language"].func(language="German")
 
-    assert out == {"ok": True, "previous": "German", "language": "German"}
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "German",
+        "note": _switch_note("German"),
+    }
     assert board.meta().script_approved_utc == "2026-08-05T10:00:00Z"
     assert board.meta().script_approved_script_hash == approved_hash
