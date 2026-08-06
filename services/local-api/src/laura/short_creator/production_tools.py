@@ -1611,6 +1611,24 @@ def build_production_tool_specs(
             "valid) or have review_scene propose more windows for a long scene first."
         )
 
+    def set_board_language(language: str) -> dict[str, Any]:
+        """Switch the production language (script/voice/captions) for this board.
+
+        Call this FIRST when the user asks for another language, then rewrite every
+        chapter via save_script_chapter — it picks the new language up automatically."""
+        try:
+            cleaned = (language or "").strip()
+            if not cleaned or len(cleaned) > 32 or not all(
+                c.isalpha() or c == " " for c in cleaned
+            ):
+                return {"ok": False, "reason": "language must be an English language "
+                                               "name (letters/spaces, max 32 chars)"}
+            previous = board.meta().language
+            board.set_language(cleaned)
+            return {"ok": True, "previous": previous, "language": cleaned}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
         """Validate and save the short's storyline (red thread + chapter arc) to the board.
         Each chapter's ``chapter`` number may be omitted — it is taken from the entry's position
@@ -2834,6 +2852,7 @@ def build_production_tool_specs(
         get_scene_transcript,
         review_scene,
         get_reviews,
+        set_board_language,
         save_storyline,
         get_storyline,
         script_budget,

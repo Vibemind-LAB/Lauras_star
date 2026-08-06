@@ -111,7 +111,11 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
             name="scene_author",
             description="Writes the spoken script line by line from the storyline's scenes.",
             system_message=(
-                "You are the Scene Author. First call get_storyline to see the arc and its "
+                "You are the Scene Author. LANGUAGE SWITCH: if the user's message asks for "
+                "another language (e.g. 'mach das auf englisch'), call set_board_language "
+                "FIRST, then rewrite every chapter of the script in that language before doing "
+                "anything else — never leave some chapters in the old language. "
+                "First call get_storyline to see the arc and its "
                 "chapters, then script_budget — it tells you how many words the whole script "
                 "may spend AND how many each chapter may spend in per_chapter; never guess a "
                 "length or count seconds yourself. Spend the PER-CHAPTER numbers, not just the "
@@ -162,6 +166,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "re-save the script to chase a length."
             ),
             tool_names=(
+                "set_board_language",
                 "get_storyline",
                 "script_budget",
                 "get_reviews",

@@ -192,6 +192,18 @@ def test_clear_script_approval_clears_both_the_timestamp_and_the_hash(tmp_path: 
     assert board.meta().script_approved_script_hash is None
 
 
+# --- Board.set_language ("Sprache folgt dem Input", follow-up case, SP3) -------------------------
+
+
+def test_set_language_updates_meta_atomically(tmp_path: Path) -> None:
+    board = _board(tmp_path, "a1")
+    assert board.meta().language == "German"  # BoardMeta's default
+
+    board.set_language("English")
+
+    assert board.meta().language == "English"
+
+
 # --- synthesize_script_voice: deterministic gate -------------------------------------------------
 
 

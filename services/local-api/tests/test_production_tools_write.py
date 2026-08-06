@@ -1007,3 +1007,28 @@ def test_save_qa_report_stamps_the_render_parent(tmp_path: Path) -> None:
     qa = board.load("qa_report")
     assert isinstance(qa, QaReport)
     assert qa.parents == {"render_report": content_hash(render)}
+
+
+# --- set_board_language ("Sprache folgt dem Input", follow-up case, SP3) -------------------
+
+
+def test_set_board_language_switches_and_reports_previous(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)  # BoardMeta default language is "German"
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="English")
+
+    assert out == {"ok": True, "previous": "German", "language": "English"}
+    assert board.meta().language == "English"
+
+
+def test_set_board_language_rejects_garbage_without_writing(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="  ")
+
+    assert out["ok"] is False
+    assert board.meta().language == "German"

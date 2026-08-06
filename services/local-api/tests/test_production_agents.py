@@ -62,7 +62,11 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
         # count instead of guessing a length (a guessed one burned a run on 34 saves).
         # get_scene_transcript is the grounding source (live 2026-08-04: without it the
         # scripts were marketing copy — the writer had no way to quote what is SAID).
+        # set_board_language leads too — "Sprache folgt dem Input" (SP3): a follow-up
+        # language switch is called FIRST, before any chapter is rewritten in the new
+        # language.
         (
+            "set_board_language",
             "get_storyline",
             "script_budget",
             "get_reviews",

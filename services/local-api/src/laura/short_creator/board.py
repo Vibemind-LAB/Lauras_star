@@ -494,6 +494,16 @@ class Board:
             )
             _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
 
+    def set_language(self, language: str) -> None:
+        """Switch the board's script/voice/caption language (user-requested via chat).
+
+        Same locked atomic-meta-write pattern as :meth:`set_script_approved`. Existing
+        artifacts are untouched — the team rewrites the script afterwards, and the
+        content-hash change re-arms the approval gate on its own."""
+        with self._lock:
+            meta = self.meta().model_copy(update={"language": language})
+            _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
+
     def resume_point(self, expected_scenes: list[int]) -> str:
         """First missing artifact — where a (re)started session job continues."""
         have = {r.scene_number for r in self.scene_reviews()}

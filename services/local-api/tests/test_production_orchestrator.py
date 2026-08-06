@@ -206,6 +206,28 @@ def test_task_text_contains_contract_and_resume(tmp_path: Path) -> None:
     assert "Resume point: script" in resumed
 
 
+def test_task_text_carries_the_language_switch_rule(tmp_path: Path) -> None:
+    """"Sprache folgt dem Input" (SP3): the team must know that a follow-up asking for another
+    language is a set_board_language call FIRST, then every chapter rewritten in it — never a
+    partial switch that leaves some chapters in the old language."""
+    db, asset_id = _seed_scene(tmp_path)
+    root = production_orchestrator.board_root_for(db, asset_id, "sess1")
+    meta = BoardMeta(
+        session_id="sess1",
+        asset_id=asset_id,
+        created_utc="2026-07-13T00:00:00+00:00",
+        task="overview short",
+        target_seconds=20.0,
+    )
+    board = Board.create(root, meta)
+
+    task = production_orchestrator.build_production_task(
+        db, board, asset_id=asset_id, task="overview short", target_seconds=20
+    )
+
+    assert "set_board_language" in task
+
+
 def test_task_text_follow_up_block_only_with_message(tmp_path: Path) -> None:
     """The USER FOLLOW-UP REQUEST section (+ its revert/re-save/never-redo instructions) only
     appears when ``message`` is passed; the board-status block also grows an ``[archived: ...]``
