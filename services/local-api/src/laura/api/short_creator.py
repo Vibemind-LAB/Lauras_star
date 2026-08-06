@@ -26,7 +26,7 @@ from ..jobs.runner import enqueue
 
 # Pure-pydantic leaf: safe at runtime even without the optional 'autoshort' extra, unlike
 # short_creator.board below.
-from ..short_creator.board_models import Format
+from ..short_creator.board_models import Format, SceneSelection
 
 # discovery/scout import nothing from autogen at module load either (Tasks 1-2 of the
 # auto-short arc) — safe here too. run_scout is imported at module level (rather than inside
@@ -96,6 +96,10 @@ class ProductionMessageRequest(BaseModel):
 class ProductionRevertRequest(BaseModel):
     artifact: str
     version: int
+
+
+class SceneSelectionConfirmRequest(BaseModel):
+    scene_numbers: list[int]
 
 
 def _db(request: Request) -> Database:
@@ -946,6 +950,84 @@ def run_production_resume(db: Database, session_id: str) -> dict[str, Any]:
     deterministic post-gate tail instead of a full agent-team turn.
     """
     return _enqueue_production_run(db, session_id, None)
+
+
+def _utc_now_iso() -> str:
+    """Current UTC time, ISO-8601 seconds precision — this module's existing
+    ``datetime.now(UTC).isoformat(timespec="seconds")`` idiom (see session creation above)
+    wrapped for :func:`confirm_scene_selection`'s one call site."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def confirm_scene_selection(
+    db: Database, session_id: str, scene_numbers: list[int]
+) -> dict[str, Any]:
+    """Server-side Gate-S confirmation (spec 2026-08-06 §4.4): stamps the user's pick on
+    the scene_selection artifact and enqueues the resume run. The ONLY writer of
+    ``confirmed_utc`` — chat and HTTP both land here.
+
+    The busy check mirrors :func:`run_production_revert`'s own inline guard exactly (same
+    ``latest_job_id`` -> ``repos.get_job`` -> status check) rather than importing
+    ``chat.executor``'s ``_production_job_busy`` — that module imports FROM this one, so the
+    reverse import would be circular; this is the one true service-side precedent for "is the
+    session's latest job still alive".
+    """
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    if not board.meta().scene_gate:
+        raise HTTPException(status.HTTP_409_CONFLICT, "scene gate is not enabled")
+    selection = board.load("scene_selection")
+    if not isinstance(selection, SceneSelection):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "no scene proposal on the board yet"
+        )
+    picked = sorted(set(int(n) for n in scene_numbers))
+    if not picked:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "pick at least one scene")
+    pool = {c.scene_number for c in selection.candidates}
+    stray = sorted(set(picked) - pool)
+    if stray:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"scenes {stray} are not among the proposed candidates",
+        )
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    if job is not None and str(job["status"]) in ("queued", "running"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "a production run is in progress — wait for it before changing the selection",
+        )
+    if selection.confirmed_utc is not None and selection.selected_scene_numbers == picked:
+        # Idempotent re-confirm: a fresh timestamp would bump the version and wipe a
+        # perfectly valid storyline downstream for nothing (Board.save's own no-op guard
+        # compares content EXCLUDING only "version" — confirmed_utc would still differ on
+        # every call, so this short-circuit has to happen here, before the save).
+        return {"session_id": session_id, "already_current": True}
+    confirm_result = {"session_id": session_id, "selected": picked}
+    board.save(
+        "scene_selection",
+        selection.model_copy(
+            update={"selected_scene_numbers": picked, "confirmed_utc": _utc_now_iso()}
+        ),
+    )
+    return {**confirm_result, **run_production_resume(db, session_id)}
+
+
+@router.post(
+    "/production/{session_id}/scene-selection:confirm",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def confirm_scene_selection_endpoint(
+    session_id: str,
+    body: SceneSelectionConfirmRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Confirm the user's Gate-S scene pick. See :func:`confirm_scene_selection`."""
+    return confirm_scene_selection(_db(request), session_id, body.scene_numbers)
 
 
 @router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)

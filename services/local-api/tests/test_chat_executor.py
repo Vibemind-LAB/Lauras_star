@@ -1751,6 +1751,205 @@ def test_approve_script_after_job_succeeded_runs_normally(
     assert board.meta().script_approved_utc == _NOW
 
 
+# --- select_scenes (Gate S scene-pick checkpoint, Task GS4) ------------------------------------
+# confirm_scene_selection (api/short_creator.py) is the ONLY writer of confirmed_utc; this
+# handler just resolves the session (no session_ref arg — the router only ever emits this tool
+# with an open proposal in context) and turns the service's outcome into a text + card pair,
+# mirroring approve_script's exact honest-passthrough error handling.
+
+
+def _seed_scene_gate_board(
+    db: Database, tmp_path: Path, *, session_id: str, confirmed: bool = False,
+) -> str:
+    """Project + asset + production session + a scene_gate=True board with a proposed
+    scene_selection (candidates 1-5; 2/4/5 recommended). Mirrors ``_seed_board``'s own
+    self-contained-test-file convention. Returns ``asset_id``."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import BoardMeta, SceneCandidate, SceneSelection
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+    )
+    root = board_root_for(db, asset["id"], session_id)
+    meta = BoardMeta(
+        session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+        task="t", target_seconds=30.0, scene_gate=True,
+    )
+    board = Board.create(root, meta)
+    board.save(
+        "scene_selection",
+        SceneSelection(
+            candidates=[
+                SceneCandidate(
+                    scene_number=n, src_start_frame=0, src_end_frame_exclusive=100,
+                    thumb_frame=50, description="d", transcript_snippet="t",
+                    rationale="r", recommended=n in (2, 4, 5),
+                )
+                for n in (1, 2, 3, 4, 5)
+            ],
+            selected_scene_numbers=[2, 4] if confirmed else [],
+            confirmed_utc=_NOW if confirmed else None,
+        ),
+    )
+    return str(asset["id"])
+
+
+def test_select_scenes_happy_path_confirms_and_cards(tmp_path: Path, monkeypatch: Any) -> None:
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
+        return {"session_id": session_id, "job_id": "job-42", "warnings": []}
+
+    # confirm_scene_selection (api/short_creator.py) calls run_production_resume as a bare
+    # module-local name, one level below the executor — patching laura.chat.executor's own
+    # imported copy (like approve_script's tests do) would not reach it.
+    monkeypatch.setattr("laura.api.short_creator.run_production_resume", _fake_resume)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_scene_gate_board(db, tmp_path, session_id="sess-1")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("select_scenes", {"scene_numbers": [2, 5]}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 2
+    assert messages[0]["kind"] == "text"
+    assert "Szenen übernommen" in messages[0]["content"]["text"]
+    assert "[2, 5]" in messages[0]["content"]["text"]
+    assert messages[1]["kind"] == "action"
+    assert messages[1]["content"]["tool"] == "select_scenes"
+    assert messages[1]["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-42"}
+    assert messages[1]["content"]["outcome"] == "running"
+
+
+def test_select_scenes_already_current_reports_unchanged_without_a_second_resume(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
+        calls.append(session_id)
+        return {"session_id": session_id, "job_id": "job-must-not-happen", "warnings": []}
+
+    monkeypatch.setattr("laura.api.short_creator.run_production_resume", _fake_resume)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_scene_gate_board(db, tmp_path, session_id="sess-1", confirmed=True)
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("select_scenes", {"scene_numbers": [2, 4]}), now_utc=_NOW,
+    )
+
+    assert calls == [], "an already-current re-confirm must not enqueue a second resume"
+    assert messages[0]["kind"] == "text"
+    assert "unverändert" in messages[0]["content"]["text"]
+    assert messages[1]["kind"] == "action"
+    assert messages[1]["content"]["outcome"] == "done"
+    assert "job_id" not in messages[1]["content"]["refs"]
+
+
+def test_select_scenes_stray_scene_error_lands_in_the_card(tmp_path: Path) -> None:
+    """A 422 from confirm_scene_selection (scene not among the proposed candidates) becomes
+    the honest-passthrough text — same handling as every other service-backed handler."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_scene_gate_board(db, tmp_path, session_id="sess-1")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("select_scenes", {"scene_numbers": [99]}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "99" in messages[0]["content"]["text"]
+
+
+def test_select_scenes_busy_run_replies_with_error_text(tmp_path: Path) -> None:
+    """The busy guard lives server-side in confirm_scene_selection (not duplicated here) —
+    its 409 detail passes through as the card text, same as every other HTTPException path."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_scene_gate_board(db, tmp_path, session_id="sess-1")
+    _seed_job(db, "sess-1", status="running")
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("select_scenes", {"scene_numbers": [2, 5]}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "production run is in progress" in messages[0]["content"]["text"]
+
+
+def test_select_scenes_without_an_open_proposal_fails_gracefully(tmp_path: Path) -> None:
+    """No action card anywhere in the thread -> no session to resolve -> the same graceful
+    'no session' text every other session-resolving handler in this module falls back to,
+    rather than a crash or a generic error."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("select_scenes", {"scene_numbers": [2]}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "Session" in messages[0]["content"]["text"]
+
+
+def test_select_scenes_no_proposal_on_board_yet_fails_gracefully(tmp_path: Path) -> None:
+    """The gate is on but the team never wrote a scene_selection artifact — the service's own
+    409 ("no scene proposal on the board yet") passes through as a clear, specific card."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import BoardMeta
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id="sess-1", asset_id=asset["id"], created_utc=_NOW,
+    )
+    Board.create(
+        board_root_for(db, asset["id"], "sess-1"),
+        BoardMeta(
+            session_id="sess-1", asset_id=asset["id"], created_utc=_NOW,
+            task="t", target_seconds=30.0, scene_gate=True,
+        ),
+    )
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("select_scenes", {"scene_numbers": [2]}), now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["kind"] == "text"
+    assert "no scene proposal" in messages[0]["content"]["text"]
+
+
 # --- discuss (FE2: grounded discuss handler with injectable one-shot runner) -------------------
 
 

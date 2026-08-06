@@ -196,12 +196,39 @@ def test_compose_context_places_session_line_after_project_when_no_videos() -> N
     assert lines[project_idx + 1] == "Active production session: s1 (running)"
 
 
+def test_compose_context_appends_scene_gate_line_when_pending() -> None:
+    """GS4: an open Gate-S proposal on the active session renders one more line right after
+    the session line — the "select_scenes" system-prompt rule keys off this exact text."""
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"}, running_jobs=0, messages=[],
+        active_session={
+            "id": "s1", "state": "in-progress",
+            "scene_gate": {"recommended": [2, 4, 5], "candidates": [1, 2, 3, 4, 5]},
+        },
+    )
+    lines = ctx.splitlines()
+    session_idx = next(
+        i for i, line in enumerate(lines) if line.startswith("Active production session:")
+    )
+    assert lines[session_idx + 1] == (
+        "Szenen-Vorschlag offen: empfohlen [2, 4, 5] von Kandidaten [1, 2, 3, 4, 5]"
+    )
+
+
+def test_compose_context_omits_scene_gate_line_when_absent() -> None:
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"}, running_jobs=0, messages=[],
+        active_session={"id": "s1", "state": "in-progress"},
+    )
+    assert "Szenen-Vorschlag offen" not in ctx
+
+
 def test_every_tool_is_reachable() -> None:
     assert frozenset({
         "reply", "create_project", "switch_project", "propose_import",
         "start_short", "start_overview", "follow_up", "revert",
         "review_transcript", "correct_transcript", "confirm_transcript", "approve_script",
-        "discuss",
+        "select_scenes", "discuss",
     }) == TOOLS
 
 
@@ -338,6 +365,48 @@ def test_approve_script_requires_session_ref() -> None:
     ])
     decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
     assert decision["tool"] == "approve_script" and decision["fallback"] is False
+
+
+def test_select_scenes_requires_nonempty_int_list() -> None:
+    replies = iter([
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": []}}),
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": [2, 5]}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision == {
+        "tool": "select_scenes", "args": {"scene_numbers": [2, 5]}, "fallback": False,
+    }
+
+
+def test_select_scenes_rejects_non_list() -> None:
+    replies = iter([
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": "2"}}),
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": [2]}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "select_scenes" and decision["fallback"] is False
+
+
+def test_select_scenes_rejects_bool_and_zero() -> None:
+    replies = iter([
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": [True]}}),
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": [0]}}),
+        json.dumps({"tool": "select_scenes", "args": {"scene_numbers": [2]}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    # only one retry is granted; the third (valid) reply is never reached, so the router
+    # falls back — this proves both the bool-as-int and the zero scene_number were rejected.
+    assert decision["tool"] == "reply" and decision["fallback"] is True
+
+
+def test_system_prompt_carries_the_select_scenes_rule() -> None:
+    """The rule text + both examples must appear verbatim (spec 2026-08-06 task GS4)."""
+    from laura.chat.router import _SYSTEM_PROMPT
+
+    assert "select_scenes" in _SYSTEM_PROMPT
+    assert "Szenen-Vorschlag offen" in _SYSTEM_PROMPT
+    assert '"nimm 2 und 5 statt 4" -> [2, 5]' in _SYSTEM_PROMPT
+    assert '"passt so" / "nimm deine Auswahl" ' in _SYSTEM_PROMPT
 
 
 def test_discuss_is_a_known_tool_with_text_arg() -> None:

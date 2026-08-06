@@ -44,6 +44,7 @@ TOOLS: frozenset[str] = frozenset(
         "correct_transcript",
         "confirm_transcript",
         "approve_script",
+        "select_scenes",
         "discuss",
     }
 )
@@ -83,6 +84,11 @@ _SYSTEM_PROMPT = (
     "unlocking downstream steps. Example: 'Transkript passt'.\n"
     '- approve_script: {"session_ref": str} — approve the generated script so production can '
     "proceed. Example: 'Script freigeben'.\n"
+    "- select_scenes: der User wählt Szenen für den Szenen-Vorschlag (Gate S). Nur wenn der "
+    'Kontext eine Zeile "Szenen-Vorschlag offen" zeigt. args.scene_numbers ist die KOMPLETTE '
+    "gewünschte Auswahl. Relativ-Anweisungen gegen die Empfehlung auflösen: bei Empfehlung "
+    '[2, 4, 5] heißt "nimm 2 und 5 statt 4" -> [2, 5]; "passt so" / "nimm deine Auswahl" '
+    "-> die Empfehlung unverändert.\n"
     '- discuss: {"text": str} — answer a question, critique, or comment about the result or '
     "process; pass the user's message verbatim as text. Choose this whenever the user is "
     "ASKING or COMPLAINING about the video, its scenes, its wording, or the transcript "
@@ -160,7 +166,7 @@ def compose_context(
     running_jobs: int,
     messages: list[dict[str, Any]],
     asset_names: list[str] | None = None,
-    active_session: dict[str, str] | None = None,
+    active_session: dict[str, Any] | None = None,
 ) -> str:
     """Assemble the router's context string: project line, video roster, active-session line,
     running-jobs line, then the last 20 messages compacted to one line each (pure string
@@ -173,7 +179,14 @@ def compose_context(
     ``active_session`` (FE3) grounds follow_up/discuss on the session the thread is actually
     working, instead of the router having to reconstruct it by re-reading compacted action
     cards: ``{"id": ..., "state": ...}`` renders as one line right after the Videos line (or
-    right after the Project line when no Videos line was rendered), ``None`` omits it."""
+    right after the Project line when no Videos line was rendered), ``None`` omits it.
+
+    An optional ``active_session["scene_gate"]`` (``{"recommended": [...], "candidates": [...]}``
+    — GS4) appends one more line right after the session line, naming the open Gate-S proposal
+    so the "select_scenes" rule above has something to key off of; the caller (``api/chat.py``'s
+    ``_active_session``) only ever sets it while the gate is actually pending, so its mere
+    presence here is the whole condition — this function stays a pure string assembler with no
+    I/O of its own."""
     lines: list[str] = []
     if project is not None:
         name = project.get("name") or "?"
@@ -188,6 +201,13 @@ def compose_context(
             f"Active production session: {active_session['id']} "
             f"({active_session['state']})"
         )
+        scene_gate = active_session.get("scene_gate")
+        if isinstance(scene_gate, dict):
+            recommended = scene_gate.get("recommended") or []
+            candidates = scene_gate.get("candidates") or []
+            lines.append(
+                f"Szenen-Vorschlag offen: empfohlen {recommended} von Kandidaten {candidates}"
+            )
     lines.append(f"Running jobs: {running_jobs}")
     lines.append("")
     lines.append("Recent conversation (oldest first):")
@@ -374,6 +394,16 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
 
     if tool == "approve_script":
         return _require_str(args, "session_ref")
+
+    if tool == "select_scenes":
+        numbers = args.get("scene_numbers")
+        if not isinstance(numbers, list) or not numbers:
+            return "select_scenes.scene_numbers is missing, not a list, or empty"
+        if not all(
+            isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers
+        ):
+            return "select_scenes.scene_numbers must all be integers >= 1"
+        return None
 
     if tool == "discuss":
         return _require_str(args, "text")

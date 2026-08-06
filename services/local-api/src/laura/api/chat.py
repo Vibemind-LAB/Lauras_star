@@ -58,7 +58,7 @@ def _running_jobs_count(db: Database) -> int:
         return int(row["n"])
 
 
-def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, str] | None:
+def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The router-context 'Active production session' line's payload — best-effort, never
     raises: a session referenced by the thread's last action card but whose board can't be
     read (asset gone, board never created) simply yields no line rather than a 500 (spec FE3).
@@ -67,6 +67,13 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, s
     board's own state (it's the freshest signal); otherwise the script gate's pending decision
     outranks the board's own status flag, since a board sitting at "active" with a script
     nobody approved yet is still, from the user's perspective, awaiting-approval.
+
+    ``scene_gate`` (GS4) is only added while the board's Gate-S proposal is actually pending
+    (``status["scene_gate"]["pending"]``) — its mere presence is what tells
+    :func:`laura.chat.router.compose_context` to render the "Szenen-Vorschlag offen" line the
+    ``select_scenes`` router rule keys off of. ``candidates`` is reduced to bare scene numbers
+    (not the full candidate payload) — the router only ever needs to name/validate scenes, and
+    the fuller card content already reaches the client through ``board.status()`` directly.
     """
     from ..chat.executor import _latest_session_id
     from ..short_creator.board import Board
@@ -102,7 +109,16 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, s
             state = "done+export"
         else:
             state = "in-progress"
-        return {"id": session_id, "state": state}
+        result: dict[str, Any] = {"id": session_id, "state": state}
+        scene_gate = status_payload.get("scene_gate") or {}
+        if scene_gate.get("pending"):
+            result["scene_gate"] = {
+                "recommended": list(scene_gate.get("recommended") or []),
+                "candidates": [
+                    int(c["scene_number"]) for c in scene_gate.get("candidates") or []
+                ],
+            }
+        return result
     except Exception:  # noqa: BLE001 — the line is best-effort, the turn always runs
         logger.warning("active-session context line skipped", exc_info=True)
         return None

@@ -31,6 +31,7 @@ from ..api.assets import _enqueue_url_fetch, _expand_playlist_urls
 # Imported BY NAME (not `from ..api import short_creator`) so tests can monkeypatch
 # `laura.chat.executor.<name>` without touching the real service functions.
 from ..api.short_creator import (
+    confirm_scene_selection,
     run_production_follow_up,
     run_production_resume,
     run_production_revert,
@@ -568,6 +569,62 @@ def _handle_approve_script(
     return [action_msg]
 
 
+def _handle_select_scenes(
+    db: Database,
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    decision: RouterDecision,
+    now_utc: str,
+) -> list[dict[str, Any]]:
+    """Gate S: the user picking scenes in chat. The router tool carries no ``session_ref``
+    (the proposal is inherently the active session's — the router only ever emits this tool
+    when the context's "Szenen-Vorschlag offen" line names one), so the session resolves the
+    same way an unqualified 'ja' agreement does elsewhere in this module
+    (:func:`_resolve_session_id` with an empty ref -> the thread's newest action).
+
+    Every actual guardrail — gate enabled, a proposal on the board, the busy check, stray/empty
+    scene rejection, idempotent re-confirm — lives server-side in
+    :func:`confirm_scene_selection` (the ONLY writer of ``confirmed_utc``); this handler just
+    resolves the session, calls it, and turns the outcome into a text + card pair, mirroring
+    ``_handle_approve_script``'s exact honest-passthrough error handling (an ``HTTPException``
+    from the service — no session, gate off, no proposal yet, a stray/empty pick, or a busy
+    run — becomes the service's own message via :func:`_detail_reason`, so a call with no open
+    proposal fails with a clear, specific card rather than a generic one)."""
+    args = decision["args"]
+    numbers = [int(n) for n in args.get("scene_numbers", [])]
+    session_id = _resolve_session_id(messages, "")
+    if session_id is None:
+        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+
+    try:
+        out = confirm_scene_selection(db, session_id, numbers)
+    except HTTPException as exc:
+        return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
+
+    already_current = bool(out.get("already_current"))
+    picked = out.get("selected") or numbers
+    text = (
+        f"Auswahl unverändert ({picked}) — nichts zu tun."
+        if already_current
+        else f"Szenen übernommen: {picked}. Die Produktion läuft mit deiner Auswahl weiter."
+    )
+    text_msg = _append_text(db, conversation_id, text, now_utc)
+    refs: dict[str, Any] = {"session_id": session_id}
+    if "job_id" in out:
+        refs["job_id"] = out["job_id"]
+    action_msg = _append(
+        db, conversation_id, role="assistant", kind="action",
+        content={
+            "tool": "select_scenes",
+            "args": dict(args),
+            "refs": refs,
+            "outcome": "done" if already_current else "running",
+        },
+        now_utc=now_utc,
+    )
+    return [text_msg, action_msg]
+
+
 def _handle_revert(
     db: Database,
     conversation_id: str,
@@ -1039,6 +1096,9 @@ def execute_decision(
         if tool == "approve_script":
             messages = repos.list_conversation_messages(db, conversation_id)
             return _handle_approve_script(db, conversation_id, messages, decision, now_utc)
+        if tool == "select_scenes":
+            messages = repos.list_conversation_messages(db, conversation_id)
+            return _handle_select_scenes(db, conversation_id, messages, decision, now_utc)
         if tool == "discuss":
             messages = repos.list_conversation_messages(db, conversation_id)
             return _handle_discuss(
