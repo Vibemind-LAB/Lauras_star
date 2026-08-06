@@ -1830,14 +1830,19 @@ def test_select_scenes_happy_path_confirms_and_cards(tmp_path: Path, monkeypatch
     assert messages[1]["content"]["outcome"] == "running"
 
 
-def test_select_scenes_already_current_reports_unchanged_without_a_second_resume(
+def test_select_scenes_already_current_heals_a_resume_without_a_board_write(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
+    """Controller decision (2026-08-06): no rollback machinery — the already_current branch
+    HEALS a resume that may never have actually started (a prior confirm's stamp landed, then
+    run_production_resume raised) by calling it again itself; no board write happens either
+    way, so this is still a genuine no-op from the artifact's point of view, just not from the
+    job queue's."""
     calls: list[str] = []
 
     def _fake_resume(db: Any, session_id: str) -> dict[str, Any]:
         calls.append(session_id)
-        return {"session_id": session_id, "job_id": "job-must-not-happen", "warnings": []}
+        return {"session_id": session_id, "job_id": "job-heal", "warnings": []}
 
     monkeypatch.setattr("laura.api.short_creator.run_production_resume", _fake_resume)
     db, settings = _setup(tmp_path)
@@ -1850,12 +1855,12 @@ def test_select_scenes_already_current_reports_unchanged_without_a_second_resume
         decision=_decision("select_scenes", {"scene_numbers": [2, 4]}), now_utc=_NOW,
     )
 
-    assert calls == [], "an already-current re-confirm must not enqueue a second resume"
+    assert calls == ["sess-1"], "already_current still heals exactly one resume call"
     assert messages[0]["kind"] == "text"
     assert "unverändert" in messages[0]["content"]["text"]
     assert messages[1]["kind"] == "action"
-    assert messages[1]["content"]["outcome"] == "done"
-    assert "job_id" not in messages[1]["content"]["refs"]
+    assert messages[1]["content"]["outcome"] == "running"
+    assert messages[1]["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-heal"}
 
 
 def test_select_scenes_stray_scene_error_lands_in_the_card(tmp_path: Path) -> None:

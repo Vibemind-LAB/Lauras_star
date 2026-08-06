@@ -166,7 +166,16 @@ def test_confirm_rejects_empty(tmp_path: Path) -> None:
     assert exc.value.status_code == 422
 
 
-def test_reconfirm_same_set_is_noop(tmp_path: Path, monkeypatch: Any) -> None:
+def test_reconfirm_same_set_is_noop_but_heals_a_resume(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """No board write on re-confirm (version untouched — a real second write would bump it
+    and invalidate the whole downstream chain for nothing), but the already_current branch
+    still calls run_production_resume to HEAL a resume that may never have actually started
+    (e.g. a prior confirm's stamp landed, then run_production_resume raised) — the busy guard
+    above already proved no job is in flight, so a second call here is safe: cheap no-op on a
+    finished board, real healing on a still-parked one (controller decision, 2026-08-06 — no
+    rollback machinery, heal forward instead)."""
     calls = _fake_resume(monkeypatch)
     db = _db(tmp_path)
     asset_id = _seed(db, tmp_path)
@@ -178,8 +187,9 @@ def test_reconfirm_same_set_is_noop(tmp_path: Path, monkeypatch: Any) -> None:
     out = confirm_scene_selection(db, "sess-1", [2])
 
     assert out.get("already_current") is True
+    assert out["job_id"] == "job-42", "the heal call's job_id must reach the caller"
     assert board.load("scene_selection").version == v1  # type: ignore[union-attr]
-    assert calls == ["sess-1"], "a no-op re-confirm must not enqueue a second resume"
+    assert calls == ["sess-1", "sess-1"], "the second call is the healing resume, not a skip"
 
 
 def test_confirm_busy_returns_409(tmp_path: Path, monkeypatch: Any) -> None:

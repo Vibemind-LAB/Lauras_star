@@ -1004,8 +1004,23 @@ def confirm_scene_selection(
         # Idempotent re-confirm: a fresh timestamp would bump the version and wipe a
         # perfectly valid storyline downstream for nothing (Board.save's own no-op guard
         # compares content EXCLUDING only "version" — confirmed_utc would still differ on
-        # every call, so this short-circuit has to happen here, before the save).
-        return {"session_id": session_id, "already_current": True}
+        # every call, so this short-circuit has to happen here, before the save) — this branch
+        # NEVER writes to the board, so the version never moves either way.
+        #
+        # It still HEALS a resume that never actually started: if a PRIOR confirm's stamp
+        # landed but run_production_resume then raised (a transient 503, say), every later
+        # re-confirm with the same picks used to hit this branch and return without ever
+        # retrying the resume — the session got stuck confirmed-but-parked forever. The busy
+        # guard above already proved no job is in flight, so calling run_production_resume
+        # again here is safe: on a FINISHED board it hits deterministic_eligible's own
+        # done-short-circuit (cheap no-op), on a still-parked one it is exactly the healing
+        # this needs. No rollback machinery — heal forward instead, same "heals synchronously"
+        # philosophy as run_production_revert (controller decision, 2026-08-06).
+        return {
+            "session_id": session_id,
+            "already_current": True,
+            **run_production_resume(db, session_id),
+        }
     confirm_result = {"session_id": session_id, "selected": picked}
     board.save(
         "scene_selection",

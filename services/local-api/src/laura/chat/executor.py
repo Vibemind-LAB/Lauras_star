@@ -610,6 +610,9 @@ def _handle_select_scenes(
     )
     text_msg = _append_text(db, conversation_id, text, now_utc)
     refs: dict[str, Any] = {"session_id": session_id}
+    # A no-op re-confirm still gets a job_id: confirm_scene_selection's already_current branch
+    # HEALS a resume that may never have actually started (controller decision, 2026-08-06), so
+    # "job_id" is present on every non-error return here, not just a fresh confirm.
     if "job_id" in out:
         refs["job_id"] = out["job_id"]
     action_msg = _append(
@@ -618,7 +621,7 @@ def _handle_select_scenes(
             "tool": "select_scenes",
             "args": dict(args),
             "refs": refs,
-            "outcome": "done" if already_current else "running",
+            "outcome": "running" if "job_id" in out else "done",
         },
         now_utc=now_utc,
     )
