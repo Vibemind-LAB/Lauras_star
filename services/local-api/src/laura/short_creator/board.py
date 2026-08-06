@@ -621,6 +621,15 @@ class Board:
             },
             "artifacts": artifacts,
             "script_gate": script_gate,
+            # A language switch (set_board_language) changes meta.language without touching the
+            # script text — the script keeps recording the language it was actually WRITTEN in
+            # (stamped at save time). True only once a script exists and the two disagree, so an
+            # English board written before any switch, or a board with no script yet, both read
+            # False. This is the one reader of Script.language outside the save path — it makes
+            # the "switched but never rewrote a chapter" seam observable instead of silent.
+            "language_mismatch": (
+                isinstance(script, Script) and script.language != meta.language
+            ),
         }
         if script_gate["pending"] and isinstance(script, Script):
             result["script_lines"] = [

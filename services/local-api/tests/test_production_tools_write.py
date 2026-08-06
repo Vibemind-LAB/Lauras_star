@@ -30,6 +30,7 @@ from laura.short_creator.board_models import (
     ScriptLine,
     Storyline,
     VoiceArtifact,
+    content_hash,
 )
 from laura.short_creator.production_tools import build_production_tool_specs
 
@@ -1054,3 +1055,74 @@ def test_set_board_language_rejects_a_single_character_without_bricking_the_boar
     # The board must still be readable — the brick this guards against was a corrupt meta.json
     # that raised on every subsequent load.
     assert board.meta().language == "German"
+
+
+def test_set_board_language_with_a_script_clears_the_approval_and_marks_mismatch(
+    tmp_path: Path,
+) -> None:
+    """I2: a language switch without a rewrite must not leave the OLD-language script reading
+    as approved-current. When a script is already on the board, switching to a DIFFERENT
+    language re-arms Gate B (``board.clear_script_approval()``) — the return shape itself gains
+    nothing, but the approval stamp is gone and ``Board.status()`` surfaces the drift as
+    ``language_mismatch`` until a chapter is actually re-saved in the new language."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    original_script = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt.")],
+    )
+    board.save("script", original_script)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(original_script))
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="English")
+
+    assert out == {"ok": True, "previous": "German", "language": "English"}
+    assert board.meta().script_approved_utc is None
+    assert board.meta().script_approved_script_hash is None
+    assert board.status()["language_mismatch"] is True
+
+    # Re-saving the chapter in the new language clears the mismatch again.
+    board.save(
+        "script",
+        Script(
+            language="English",
+            lines=[ScriptLine(chapter=1, scene_number=1, text="Hello world.")],
+        ),
+    )
+    assert board.status()["language_mismatch"] is False
+
+
+def test_set_board_language_without_a_script_has_no_approval_to_clear(tmp_path: Path) -> None:
+    """A fresh board (nothing written yet) has no script and thus nothing Gate B could be
+    guarding — the switch must not touch clear_script_approval at all, let alone crash."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)  # no script saved
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="English")
+
+    assert out == {"ok": True, "previous": "German", "language": "English"}
+    assert board.meta().script_approved_utc is None
+    assert board.status()["language_mismatch"] is False
+
+
+def test_set_board_language_same_language_leaves_the_approval_untouched(tmp_path: Path) -> None:
+    """A same-language 'switch' (idempotent from the board's point of view) must not clear an
+    existing approval — nothing about the script's language actually changed."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    original_script = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt.")],
+    )
+    board.save("script", original_script)
+    approved_hash = content_hash(original_script)
+    board.set_script_approved("2026-08-05T10:00:00Z", approved_hash)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="German")
+
+    assert out == {"ok": True, "previous": "German", "language": "German"}
+    assert board.meta().script_approved_utc == "2026-08-05T10:00:00Z"
+    assert board.meta().script_approved_script_hash == approved_hash

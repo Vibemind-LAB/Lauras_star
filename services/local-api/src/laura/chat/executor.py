@@ -859,6 +859,8 @@ def _board_context_lines(db: Database, asset_id: str, session_id: str) -> list[s
         gate_approved = bool(script_gate.get("approved"))
         render_entry = (board_status.get("artifacts") or {}).get("render_report") or {}
         rendered = render_entry.get("version") is not None
+        language_mismatch = bool(board_status.get("language_mismatch"))
+        board_language = str((board_status.get("meta") or {}).get("language") or "?")
     except Exception:  # noqa: BLE001 — a corrupted board must not take the whole turn down
         logger.warning("discuss board read failed; omitting board context", exc_info=True)
         return []
@@ -871,6 +873,11 @@ def _board_context_lines(db: Database, asset_id: str, session_id: str) -> list[s
         status_parts.append(f"gate={'approved' if gate_approved else 'pending'}")
     status_parts.append(f"export={'ja' if rendered else 'nein'}")
     lines.append("Status: " + ", ".join(status_parts))
+    # I2: a set_board_language switch without a rewrite leaves the script's own recorded
+    # language behind the board's — surfaced ONLY while it disagrees, so an ordinary
+    # (unswitched) board never grows this line.
+    if language_mismatch and isinstance(script, Script):
+        lines.append(f"Sprache: script={script.language}, board={board_language} (mismatch)")
     if isinstance(qa_report, QaReport):
         lines.append(f"QA verdict: {qa_report.verdict}")
         for finding in qa_report.findings:

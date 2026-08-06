@@ -445,6 +445,52 @@ def test_status_script_gate_revert_to_a_different_version_re_arms_the_gate(
     assert status["script_gate"]["pending"] is True
 
 
+# --- Board.status(): language_mismatch ("Sprache folgt dem Input", I2b) --------------------------
+
+
+def test_status_language_mismatch_false_without_a_script(tmp_path: Path) -> None:
+    """Nothing to disagree with yet — a fresh board never reports a mismatch."""
+    board = _board(tmp_path, "a1")
+
+    assert board.status()["language_mismatch"] is False
+
+
+def test_status_language_mismatch_false_when_script_matches_the_board(tmp_path: Path) -> None:
+    board = _board(tmp_path, "a1")  # BoardMeta default language is German
+    board.save("script", _script())  # _script() is language="German"
+
+    assert board.status()["language_mismatch"] is False
+
+
+def test_status_language_mismatch_true_after_a_switch_without_a_rewrite(tmp_path: Path) -> None:
+    """The seam ``Script.language`` exists to close: ``set_language`` moves the board's own
+    language forward, but the script text (and its recorded language) is untouched until
+    someone actually rewrites a chapter. That gap must be visible on status(), not silent."""
+    board = _board(tmp_path, "a1")
+    board.save("script", _script())  # language="German"
+
+    board.set_language("English")
+
+    assert board.status()["language_mismatch"] is True
+
+
+def test_status_language_mismatch_clears_once_the_script_is_rewritten(tmp_path: Path) -> None:
+    board = _board(tmp_path, "a1")
+    board.save("script", _script())  # language="German"
+    board.set_language("English")
+    assert board.status()["language_mismatch"] is True
+
+    board.save(
+        "script",
+        Script(
+            language="English",
+            lines=[ScriptLine(chapter=1, scene_number=1, text="Hello world.")],
+        ),
+    )
+
+    assert board.status()["language_mismatch"] is False
+
+
 # --- run_production: seeding the gate onto a FRESH board -----------------------------------------
 
 

@@ -1619,7 +1619,17 @@ def build_production_tool_specs(
         Validation mirrors the router's letters/spaces/length shape, but is deliberately
         looser: it accepts any Unicode letter (``str.isalpha()``), not just ASCII, with the
         same 2-char floor ``BoardMeta.language`` enforces (the 32-char ceiling is the
-        tool's own, tighter than the model's 40)."""
+        tool's own, tighter than the model's 40).
+
+        A switch AWAY from the previous language (with a script already on the board)
+        also re-arms Gate B via ``board.clear_script_approval()``: the script text itself
+        is untouched by this call, so leaving the old approval standing would let an
+        unrewritten, wrong-language script keep reading as approved-current — the user's
+        "mach das in english" would silently no-op on a script nobody rewrote, and the
+        stale meta would poison the NEXT follow-up too. ``Board.status()``'s
+        ``language_mismatch`` flag stays True until a chapter is re-saved in the new
+        language. The return shape is unchanged by this — the re-arm is a side effect,
+        not a new field."""
         try:
             cleaned = (language or "").strip()
             if len(cleaned) < 2 or len(cleaned) > 32 or not all(
@@ -1629,6 +1639,8 @@ def build_production_tool_specs(
                                                "name (letters/spaces, 2-32 chars)"}
             previous = board.meta().language
             board.set_language(cleaned)
+            if cleaned != previous and isinstance(board.load("script"), Script):
+                board.clear_script_approval()
             return {"ok": True, "previous": previous, "language": cleaned}
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}

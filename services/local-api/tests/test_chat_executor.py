@@ -1829,6 +1829,53 @@ def test_discuss_answers_via_injected_runner_with_grounded_context(tmp_path: Pat
     assert "resume_point" in task or "Status" in task  # board summary present
 
 
+def test_discuss_omits_language_line_when_script_and_board_agree(tmp_path: Path) -> None:
+    """I2b, negative case: ``_seed_discuss_session``'s board carries a German script on a
+    German (default) board — no mismatch, so the grounding must stay silent about language."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _seed_discuss_session(db, tmp_path)
+    captured: list[str] = []
+
+    def runner(task: str) -> str:
+        captured.append(task)
+        return "Alles gut."
+
+    messages = _run_discuss(db, settings, conversation_id, "wie läufts?", runner)
+
+    assert len(messages) == 1
+    assert "Sprache:" not in captured[0]
+
+
+def test_discuss_shows_language_mismatch_line_when_board_language_diverges_from_script(
+    tmp_path: Path,
+) -> None:
+    """I2b: after a language switch without a rewrite (what ``set_board_language`` does when
+    the team stops short of rewriting every chapter), the NEXT discuss turn must not silently
+    ground itself on stale text — ``Board.status()``'s ``language_mismatch`` threads into the
+    task as a 'Sprache: ...' line naming both the script's and the board's current language."""
+    from laura.short_creator.board import Board
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    db, settings = _setup(tmp_path)
+    conversation_id = _seed_discuss_session(db, tmp_path)
+    session = repos.get_production_session(db, "sess-1")
+    assert session is not None
+    asset_id = str(session["asset_id"])
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    board.set_language("English")  # script stays German — mismatch by construction
+
+    captured: list[str] = []
+
+    def runner(task: str) -> str:
+        captured.append(task)
+        return "Alles gut."
+
+    messages = _run_discuss(db, settings, conversation_id, "wie läufts?", runner)
+
+    assert len(messages) == 1
+    assert "Sprache: script=German, board=English (mismatch)" in captured[0]
+
+
 def test_discuss_matches_segments_by_bigram_and_by_explicit_number() -> None:
     from laura.chat.executor import _matching_segments
 
