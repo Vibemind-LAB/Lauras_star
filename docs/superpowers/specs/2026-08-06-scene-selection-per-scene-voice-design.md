@@ -124,10 +124,10 @@ class SceneSelection(BaseModel):
 
 ### 4.4 API + Router
 
-- `GET`-Bedarf: `ProductionStatus` (api/short_creator.py) bekommt
-  `scene_gate: {pending: bool, asset_id: str, candidates: [...], selected: [...]}` —
-  das Frontend liest alles aus dem Status (die `asset_id` braucht die Karte für
-  `assetFrameUrl`), kein eigener Fetch.
+- `GET`-Bedarf: `Board.status()` (und damit `ProductionStatus`) bekommt
+  `scene_gate: {enabled, pending, confirmed, candidates?, recommended?, selected?}` —
+  das Frontend liest alles aus dem Status; die `asset_id` für `assetFrameUrl` kommt aus
+  dem vorhandenen `status.meta.asset_id`, kein eigener Fetch.
 - **Confirm-Endpoint**: `POST /production/{session_id}/scene-selection:confirm` mit
   `{"scene_numbers": [int, ...]}`. Validierung: nicht leer, Teilmenge der Kandidaten,
   Gate offen. Schreibt `selected_scene_numbers` + `confirmed_utc` atomar (Board-Lock),
@@ -190,8 +190,10 @@ class VoiceSegment(BaseModel):
 `build_cutlist` (production_tools.py:2209) bekommt einen Segment-Pfad:
 
 - Wenn `voice.segments` vorhanden: Segment i (bereits heute 1:1 Szenen-Eintrag) dauert
-  exakt `segments[i].duration_s + INTER_SCENE_GAP_S` (letztes Segment: `+ tail_s` statt
-  Gap). Startframes im Quellmaterial wie bisher aus `best_window`/Storyline-Window.
+  exakt `segments[i].duration_s + INTER_SCENE_GAP_S`; das LETZTE Segment exakt
+  `duration_s` ohne Gap — so ist Video-Summe == Audio-Summe und `-shortest` schneidet
+  nichts ab (ein Tail hinter dem letzten Clip würde vom Mux wieder entfernt).
+  Startframes im Quellmaterial wie bisher aus `best_window`/Storyline-Window.
 - Die Kapitel-Fenster-Arithmetik (`chapter_audio_windows`, `_scale_chapter_durations`)
   wird auf diesem Pfad **nicht** durchlaufen; sie bleibt für Legacy-Boards
   (`segments=None`) unverändert bestehen.
