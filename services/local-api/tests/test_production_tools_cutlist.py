@@ -518,7 +518,14 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
 
     # Word timings as a real TTS backend would produce them for the CORRECTLY (storyline-)
     # ordered text "Ein Klick genügt Stopp dein Team" (scene 2's line, then scene 1's line).
+    # seconds_per_call is bumped to 2.0s (default 0.5s): the picture segments here are fixed at
+    # a 2.0s floor (target_seconds/n_scenes, unrelated to voice pacing pre-VS3), and
+    # zoom_start_s clamps to 0.0 when a line's real offset falls short of the ACCUMULATED
+    # picture time before it — at the default duration scene 1's candidate goes negative and
+    # both segments' zooms collapse indistinguishably to the floor. A longer per-line clip keeps
+    # both candidates positive so the order-discrimination below is real, not a clamp artifact.
     backend = _FakeVoiceBackend(
+        seconds_per_call=2.0,
         words=[
             {"text": "Ein", "start_s": 0.2, "end_s": 0.45},
             {"text": "Klick", "start_s": 0.5, "end_s": 0.75},
@@ -551,13 +558,16 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     # Video order follows the STORYLINE (scene 2 first, scene 1 second) ...
     assert (seg0.order, seg0.scene_number) == (0, 2)
     assert (seg1.order, seg1.scene_number) == (1, 1)
-    # ... and both carry a zoom (both scenes have a roi) — the exact zoom_start_s this test used
-    # to hand-verify assumed a single continuous synthesis call with the caller's literal word
-    # times; VS2 constructs the track from independently-synthesized+probed per-line clips, so
-    # the precise number is now a construction detail owned by VS3 (build_cutlist reading
-    # VoiceArtifact.segments directly), not something this order-regression test should pin.
+    # ... and both carry a zoom (both scenes have a roi). The exact zoom_start_s values this test
+    # used to hand-verify assumed a single continuous synthesis call with the caller's literal
+    # word times; VS2 constructs the track from independently-synthesized+REAL-ffprobe-measured
+    # per-line clips, so those literals no longer reproduce (the precise number is a construction
+    # detail VS3 owns, wiring build_cutlist to VoiceArtifact.segments directly). The ORDER
+    # discrimination this test exists for still has to hold, though: scene 2's line plays FIRST
+    # in the constructed track, so its zoom must land before scene 1's.
     assert seg0.zoom_start_s is not None
     assert seg1.zoom_start_s is not None
+    assert seg0.zoom_start_s < seg1.zoom_start_s
 
     # The voice cache is keyed on the ORDERED text: re-saving the storyline with a DIFFERENT
     # scene order changes that text (even though the script itself is untouched) and must

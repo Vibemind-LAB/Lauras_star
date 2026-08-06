@@ -8,11 +8,14 @@ instances they were built from (spec 2026-07-20-provenance-chain-design.md §1).
 
 from __future__ import annotations
 
+import json
+
 from laura.short_creator.board_models import (
     QaReport,
     Script,
     ScriptLine,
     VoiceArtifact,
+    VoiceSegment,
     content_hash,
 )
 
@@ -59,3 +62,55 @@ def test_parents_roundtrip() -> None:
     again = QaReport.model_validate_json(qa.model_dump_json())
 
     assert again.parents == {"render_report": "abc123"}
+
+
+# --- VoiceArtifact.segments: back-compat serialization (VS2 review finding) --------------------
+
+
+def test_voice_artifact_without_segments_omits_the_key() -> None:
+    """``segments`` defaults to None (every board written before per-scene voice). A dumped
+    artifact must not carry a ``"segments": null`` key, or every pre-VS2 board's content_hash
+    shifts the moment this field was added."""
+    voice = VoiceArtifact(script_hash="h", mp3_path="voiceovers/aaa.mp3")
+
+    dumped = json.loads(voice.model_dump_json())
+
+    assert "segments" not in dumped
+
+
+def test_content_hash_of_legacy_json_matches_a_freshly_built_twin() -> None:
+    """A VoiceArtifact validated from a pre-VS2-shaped JSON dict (no ``segments`` key at all)
+    must hash identically to the same-fielded artifact built today (which now HAS a ``segments``
+    attribute, just unset) — otherwise every existing board's downstream ``parents["voice"]``
+    stamp reads stale and restore_coherent_suffix refuses old, healthy archives."""
+    legacy_json = {
+        "version": 1,
+        "script_hash": "h",
+        "mp3_path": "voiceovers/aaa.mp3",
+        "timings_path": None,
+        "voice_s": 1.2,
+        "parents": {},
+    }
+    legacy = VoiceArtifact.model_validate(legacy_json)
+    today = VoiceArtifact(script_hash="h", mp3_path="voiceovers/aaa.mp3", voice_s=1.2)
+
+    assert content_hash(legacy) == content_hash(today)
+
+
+def test_voice_artifact_with_segments_roundtrips_and_hashes_differently() -> None:
+    """An artifact WITH per-line segments keeps them through a dump/validate round-trip (the
+    key is only dropped when segments is None) and hashes DIFFERENTLY from its segments=None
+    twin — the per-line data is real content, not incidental."""
+    segment = VoiceSegment(
+        scene_number=1, chapter=1, line_hash="lh", mp3_path="voiceovers/lines/lh.mp3",
+        duration_s=1.2, offset_s=0.0,
+    )
+    with_segments = VoiceArtifact(
+        script_hash="h", mp3_path="voiceovers/aaa.mp3", segments=[segment]
+    )
+    without_segments = VoiceArtifact(script_hash="h", mp3_path="voiceovers/aaa.mp3")
+
+    round_tripped = VoiceArtifact.model_validate_json(with_segments.model_dump_json())
+
+    assert round_tripped.segments == [segment]
+    assert content_hash(with_segments) != content_hash(without_segments)

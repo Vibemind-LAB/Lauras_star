@@ -12,9 +12,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 # Platform format presets: (vertical, (out_w, out_h)). "x" is the native 16:9 pass-through.
 # The canvas belongs to the format, and the format belongs to the production — a screen
@@ -388,6 +396,23 @@ class VoiceArtifact(BaseModel):
     # Which parent artifact instances this was built from: chain name -> content_hash of the
     # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
     parents: dict[str, str] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _omit_null_segments(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Drop a null ``segments`` key so every pre-VS2 board (and any artifact built without
+        per-line clips) serializes byte-identically to before this field existed.
+
+        ``content_hash`` hashes ``model_dump(mode="json", exclude={"version"})`` — without this,
+        adding ``segments`` would change that JSON (a new ``"segments": null`` key) for EVERY
+        artifact, including every legacy one already on disk, so every existing board's
+        downstream ``parents["voice"]`` stamp would read stale and ``restore_coherent_suffix``
+        would refuse otherwise-healthy old archives. An artifact WITH segments still serializes
+        them (and therefore still hashes differently from its ``segments=None`` twin).
+        """
+        data: dict[str, Any] = handler(self)
+        if data.get("segments") is None:
+            data.pop("segments", None)
+        return data
 
 
 class CutSegment(BaseModel):
