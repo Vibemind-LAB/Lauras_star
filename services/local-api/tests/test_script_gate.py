@@ -104,6 +104,7 @@ def _board(tmp_path: Path, asset_id: str, *, script_gate: bool = False) -> Board
         session_id="s1",
         asset_id=asset_id,
         created_utc="2026-08-04T00:00:00Z",
+        language="German",
         task="overview short",
         target_seconds=20.0,
         script_gate=script_gate,
@@ -128,7 +129,7 @@ def _script() -> Script:
 def test_board_meta_defaults_gate_off_and_unapproved() -> None:
     meta = BoardMeta(
         session_id="s1", asset_id="a1", created_utc="2026-08-04T00:00:00Z",
-        task="t", target_seconds=20.0,
+        task="t", target_seconds=20.0, language="German",
     )
     assert meta.script_gate is False
     assert meta.script_approved_utc is None
@@ -137,7 +138,7 @@ def test_board_meta_defaults_gate_off_and_unapproved() -> None:
 def test_board_meta_roundtrips_explicit_gate_fields() -> None:
     meta = BoardMeta(
         session_id="s1", asset_id="a1", created_utc="2026-08-04T00:00:00Z",
-        task="t", target_seconds=20.0,
+        task="t", target_seconds=20.0, language="German",
         script_gate=True, script_approved_utc="2026-08-05T10:00:00Z",
     )
     reloaded = BoardMeta.model_validate_json(meta.model_dump_json())

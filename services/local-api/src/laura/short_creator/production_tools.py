@@ -905,7 +905,8 @@ _SECONDS_PER_WORD: dict[str, float] = {"German": 0.58, "English": 0.41}
 # raw code silently falls back to the German rate. Matched case-insensitively; anything not in
 # this map passes through unchanged.
 _LANGUAGE_ALIASES: dict[str, str] = {"en": "English", "de": "German"}
-_DEFAULT_LANGUAGE = "German"
+# User decision 2026-08-07: every production defaults to English; German only on explicit ask.
+_DEFAULT_LANGUAGE = "English"
 _VOICE_RATE_TOLERANCE = 0.20
 
 

@@ -107,12 +107,12 @@ _SYSTEM_PROMPT = (
     "message containing a line starting with 'Vorschlag:', choose follow_up with the active "
     "session and use the text AFTER 'Vorschlag:' as the follow-up text — never the bare "
     "'ja'.\n"
-    ' Set "language" on start_short/start_overview to the language of the user\'s instruction '
-    '(an English language name: "German", "English", "Spanish", ...); if the instruction '
-    "explicitly names a target language ('auf Englisch', 'in english'), that explicit mention "
-    "wins. Examples: 'bau mir einen Short über X' -> {\"language\": \"German\"}; 'build me a "
-    'short about X\' -> {"language": "English"}; \'bau mir einen Short über X auf Englisch\' -> '
-    '{"language": "English"}.'
+    ' Set "language" on start_short/start_overview to "English" by DEFAULT — every video is '
+    "English regardless of the language the instruction itself is written in. ONLY an explicit "
+    "target-language mention ('auf Deutsch', 'in Spanish') overrides it (as an English language "
+    'name: "German", "Spanish", ...). Examples: \'bau mir einen Short über X\' -> '
+    '{"language": "English"}; \'build me a short about X\' -> {"language": "English"}; '
+    '\'bau mir einen Short über X auf Deutsch\' -> {"language": "German"}.'
 )
 
 

@@ -108,9 +108,9 @@ def test_start_overview_accepts_optional_language() -> None:
 def test_system_prompt_carries_the_language_rule() -> None:
     from laura.chat.router import _SYSTEM_PROMPT
 
-    assert "language of the user's instruction" in _SYSTEM_PROMPT
-    assert "auf Englisch" in _SYSTEM_PROMPT   # explicit-mention example verbatim
-    assert '"language": "English"' in _SYSTEM_PROMPT
+    assert '"English" by DEFAULT' in _SYSTEM_PROMPT
+    assert "auf Deutsch" in _SYSTEM_PROMPT   # explicit-mention example verbatim
+    assert '"language": "German"' in _SYSTEM_PROMPT  # the override example survives
 
 
 def test_runner_exception_goes_straight_to_fallback() -> None:

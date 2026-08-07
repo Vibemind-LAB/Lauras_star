@@ -403,7 +403,7 @@ def test_start_short_threads_language_to_the_service(
     assert captured["language"] == "English"
 
 
-def test_start_short_defaults_language_to_german(
+def test_start_short_defaults_language_to_english(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -429,7 +429,7 @@ def test_start_short_defaults_language_to_german(
         decision=_decision("start_short", {"topic": "Katzen"}), now_utc=_NOW,
     )
 
-    assert captured["language"] == "German"
+    assert captured["language"] == "English"
 
 
 # --- start_overview --------------------------------------------------------------------------
@@ -1983,7 +1983,7 @@ def _seed_discuss_session(
     root = board_root_for(db, asset["id"], session_id)
     meta = BoardMeta(
         session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
-        task="t", target_seconds=30.0, script_gate=True,
+        task="t", target_seconds=30.0, script_gate=True, language="German",
     )
     board = Board.create(root, meta)
     board.save(
@@ -2034,8 +2034,8 @@ def test_discuss_answers_via_injected_runner_with_grounded_context(tmp_path: Pat
 
 
 def test_discuss_omits_language_line_when_script_and_board_agree(tmp_path: Path) -> None:
-    """I2b, negative case: ``_seed_discuss_session``'s board carries a German script on a
-    German (default) board — no mismatch, so the grounding must stay silent about language."""
+    """I2b, negative case: ``_seed_discuss_session``'s board carries a German script on an
+    explicitly German board — no mismatch, so the grounding must stay silent about language."""
     db, settings = _setup(tmp_path)
     conversation_id = _seed_discuss_session(db, tmp_path)
     captured: list[str] = []

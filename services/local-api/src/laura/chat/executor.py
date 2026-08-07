@@ -63,7 +63,7 @@ _EXECUTION_FAILED_TEXT = (
 _DEFAULT_SHORT_TARGET_SECONDS = 60
 _DEFAULT_OVERVIEW_TARGET_SECONDS = 180
 _DEFAULT_FORMAT = "insta"
-_DEFAULT_LANGUAGE = "German"
+_DEFAULT_LANGUAGE = "English"
 
 # review_transcript caps its card at the first 100 segments (payload.total still carries the
 # real count) — a transcript with thousands of segments must never blow up the message JSON.

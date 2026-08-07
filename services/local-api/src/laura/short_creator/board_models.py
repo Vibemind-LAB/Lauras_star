@@ -551,10 +551,10 @@ class BoardMeta(BaseModel):
     task: str
     format: Format = "insta"
     # The spoken/caption language, named as the script should be written ("German", "English").
-    # German is the default because that is what this workspace ships; a submission with an
-    # international jury asks for English, and a task string cannot argue a system prompt out
-    # of a hard-coded language.
-    language: str = Field(default="German", min_length=2, max_length=40)
+    # English is the default (user decision 2026-08-07: every video ships English; German only
+    # on explicit ask) — a task string cannot argue a system prompt out of a hard-coded
+    # language, so the default lives here.
+    language: str = Field(default="English", min_length=2, max_length=40)
     target_seconds: float = Field(gt=0.0)
     # A lifecycle value, not free text. It was a bare ``str`` that only ``Board.create`` ever
     # wrote, so it read "active" forever — including for 55 minutes after a run had died. A

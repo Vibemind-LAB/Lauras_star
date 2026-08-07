@@ -106,6 +106,7 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
         session_id="s1",
         asset_id=asset_id,
         created_utc="2026-07-13T00:00:00Z",
+        language="German",
         task="overview short",
         target_seconds=20.0,
     )
