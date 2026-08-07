@@ -365,7 +365,7 @@ def test_build_production_task_confirmed_selection_forbids_reproposal(tmp_path: 
     assert "use ONLY scenes [1]" in task
     assert "Do NOT call propose_scene_selection again" in task
     assert "SCENE SELECTION GATE (mandatory)" not in task
-    assert "Call propose_scene_selection with 4-8 candidates" not in task
+    assert "Call propose_scene_selection with EVERY reviewed scene" not in task
     assert "Then STOP. Do not write a storyline or script" not in task
 
 
@@ -381,7 +381,7 @@ def test_build_production_task_pending_selection_keeps_mandatory_steps(tmp_path:
         db, board, asset_id=asset_id, task="demo", target_seconds=60
     )
 
-    assert "Call propose_scene_selection with 4-8 candidates" in task
+    assert "Call propose_scene_selection with EVERY reviewed scene" in task
     assert "Then STOP. Do not write a storyline or script" in task
     assert "use ONLY scenes" not in task
 
@@ -396,6 +396,6 @@ def test_build_production_task_no_proposal_yet_keeps_mandatory_steps(tmp_path: P
         db, board, asset_id=asset_id, task="demo", target_seconds=60
     )
 
-    assert "Call propose_scene_selection with 4-8 candidates" in task
+    assert "Call propose_scene_selection with EVERY reviewed scene" in task
     assert "Then STOP. Do not write a storyline or script" in task
     assert "use ONLY scenes" not in task

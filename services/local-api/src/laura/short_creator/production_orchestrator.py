@@ -216,10 +216,11 @@ def build_production_task(
             gate_s_lines = (
                 "SCENE SELECTION GATE (mandatory):\n"
                 "1. Review every expected scene (review_scene) BEFORE proposing.\n"
-                "2. Call propose_scene_selection with 4-8 candidates that fit the task —\n"
+                "2. Call propose_scene_selection with EVERY reviewed scene as a candidate\n"
+                "   (the user picks from the full deck, never a pre-filtered one) —\n"
                 "   description = what the scene SHOWS, transcript_snippet = what is SAID\n"
                 "   (from get_scene_transcript), rationale = why it belongs in this film.\n"
-                "   Mark your suggested subset recommended.\n"
+                "   Mark the subset that best fits the task recommended.\n"
                 "3. Then STOP. Do not write a storyline or script — save_storyline refuses\n"
                 "   until the user confirmed the selection in chat.\n"
                 "4. After confirmation, use ONLY the selected scenes.\n"
