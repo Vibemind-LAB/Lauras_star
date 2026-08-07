@@ -63,7 +63,15 @@ _SYSTEM_PROMPT = (
     '- reply: {"text": str} — say something back without taking an action. Use this whenever '
     "you are unsure what the user wants, instead of guessing.\n"
     '- create_project: {"name": str} — start a new project.\n'
-    '- switch_project: {"ref": str} — switch to an existing project, by name or id.\n'
+    '- switch_project: {"ref": str} — switch to an existing project, by name or id. The '
+    'context\'s "Projekte:" line lists every known project (the active one marked with "*"); '
+    "when the user's message loosely names one of them — case-insensitive, substring or "
+    "word-level, e.g. 'aus Drive Vibemind', 'im Vibemind projekt', 'switch to drive vibemind' "
+    "all matching a listed 'Drive VibeMind' — choose switch_project with the EXACT listed name "
+    "as ref. NEVER treat a name that matches a listed project as a Google-Drive link or URL "
+    "request, even if it contains the word 'Drive' — a listed project name always wins over "
+    "propose_import. Example: Projekte contains 'Drive VibeMind' and the user says 'aus Drive "
+    'Vibemind\' -> {"tool": "switch_project", "args": {"ref": "Drive VibeMind"}}.\n'
     '- propose_import: {"urls": [str, ...]} — propose importing one or more media URLs (each '
     "must start with 'http'). Never invent URLs the user did not give you.\n"
     '- start_short: {"topic": str, "target_seconds"?: int, "format"?: "insta"|"x"|"linkedin", '
@@ -160,6 +168,30 @@ def _compact_message(message: dict[str, Any]) -> str:
     return f"{role}: {kind}"
 
 
+_MAX_PROJECTS_LISTED = 15
+
+
+def _projects_line(
+    all_projects: list[dict[str, Any]], active_project: dict[str, Any] | None
+) -> str:
+    """The 'Projekte:' roster line: every known project's name, ``*``-marked when it is the
+    conversation's currently active one, capped at :data:`_MAX_PROJECTS_LISTED`.
+
+    Exists so a loosely mentioned project name ('aus Drive Vibemind') is verifiable against a
+    real roster instead of the model guessing — the same rationale as the Videos line below, but
+    for projects, and rendered whether or not a project is bound yet (live incident 2026-08-07:
+    a fresh, unbound conversation had NO roster to check a mentioned project name against, so
+    'aus Drive Vibemind' was misread as a Google-Drive URL request)."""
+    active_id = active_project.get("id") if active_project is not None else None
+    names = []
+    for p in all_projects[:_MAX_PROJECTS_LISTED]:
+        name = str(p.get("name") or "?")
+        if active_id is not None and p.get("id") == active_id:
+            name = f"{name}*"
+        names.append(name)
+    return "Projekte: " + " | ".join(names)
+
+
 def compose_context(
     *,
     project: dict[str, Any] | None,
@@ -167,14 +199,19 @@ def compose_context(
     messages: list[dict[str, Any]],
     asset_names: list[str] | None = None,
     active_session: dict[str, Any] | None = None,
+    all_projects: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Assemble the router's context string: project line, video roster, active-session line,
-    running-jobs line, then the last 20 messages compacted to one line each (pure string
-    assembly, no I/O).
+    """Assemble the router's context string: project line, project roster, video roster,
+    active-session line, running-jobs line, then the last 20 messages compacted to one line
+    each (pure string assembly, no I/O).
 
-    The roster exists because the router's rules forbid inventing names: without it, an
+    The video roster exists because the router's rules forbid inventing names: without it, an
     asset_ref the user names ('die Bildschirmaufnahme') is unverifiable and the model asks
-    back instead of routing review_transcript (seen live 2026-08-05).
+    back instead of routing review_transcript (seen live 2026-08-05). ``all_projects`` (when
+    given) renders one more line right after the Project line via :func:`_projects_line` — the
+    SAME rationale, one level up: a loosely mentioned project name needs a real roster to
+    resolve against, and this line is rendered even when no project is bound yet (unlike the
+    Videos line, which needs an active project to enumerate against).
 
     ``active_session`` (FE3) grounds follow_up/discuss on the session the thread is actually
     working, instead of the router having to reconstruct it by re-reading compacted action
@@ -192,10 +229,12 @@ def compose_context(
         name = project.get("name") or "?"
         project_id = project.get("id") or "?"
         lines.append(f"Project: {name} (id={project_id})")
-        if asset_names:
-            lines.append("Videos: " + ", ".join(asset_names[:20]))
     else:
         lines.append("Project: none selected")
+    if all_projects:
+        lines.append(_projects_line(all_projects, project))
+    if project is not None and asset_names:
+        lines.append("Videos: " + ", ".join(asset_names[:20]))
     if active_session is not None:
         lines.append(
             f"Active production session: {active_session['id']} "

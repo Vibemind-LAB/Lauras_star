@@ -545,7 +545,9 @@ export function App(): ReactElement {
         )}
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {stage === "chat" && client && <ChatStage client={client} />}
+          {stage === "chat" && client && (
+            <ChatStage client={client} projectId={selectedProjectId} />
+          )}
 
           {stage === "download" && (client ? (
             <DownloadView

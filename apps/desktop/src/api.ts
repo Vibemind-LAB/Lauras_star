@@ -1783,9 +1783,17 @@ export class LauraClient {
 
   // --- Chat (conversations) --------------------------------------------------------------------
 
-  /** Start a new empty conversation. POST /conversations -> 200 { id }. */
-  createConversation(): Promise<{ id: string }> {
-    return this.request<{ id: string }>("/conversations", { method: "POST" });
+  /** Start a new conversation, optionally pre-bound to a project (the UI-selected project at
+   *  creation time, so a fresh chat inherits the top bar's selection instead of starting
+   *  unbound until an explicit "Wechsle zum Projekt X" chat message — live incident
+   *  2026-08-07). POST /conversations {project_id?} -> 200 { id }. */
+  createConversation(projectId?: string): Promise<{ id: string }> {
+    const body: Record<string, unknown> = {};
+    if (projectId !== undefined) body.project_id = projectId;
+    return this.request<{ id: string }>("/conversations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   /** The conversation sidebar list, newest-touched first (backend-ordered). */

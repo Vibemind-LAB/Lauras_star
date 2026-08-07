@@ -113,6 +113,18 @@ def test_system_prompt_carries_the_language_rule() -> None:
     assert '"language": "German"' in _SYSTEM_PROMPT  # the override example survives
 
 
+def test_system_prompt_carries_the_loose_project_mention_rule() -> None:
+    """Live incident 2026-08-07: 'aus Drive Vibemind' was misread as a Google-Drive URL
+    request instead of switch_project, because the prompt had no guidance for a loosely
+    mentioned project name against the (now-added) 'Projekte:' roster line."""
+    from laura.chat.router import _SYSTEM_PROMPT
+
+    assert '"Projekte:"' in _SYSTEM_PROMPT
+    assert "aus Drive Vibemind" in _SYSTEM_PROMPT
+    assert "Google-Drive" in _SYSTEM_PROMPT
+    assert '{"tool": "switch_project", "args": {"ref": "Drive VibeMind"}}' in _SYSTEM_PROMPT
+
+
 def test_runner_exception_goes_straight_to_fallback() -> None:
     calls: list[str] = []
 
@@ -221,6 +233,48 @@ def test_compose_context_omits_scene_gate_line_when_absent() -> None:
         active_session={"id": "s1", "state": "in-progress"},
     )
     assert "Szenen-Vorschlag offen" not in ctx
+
+
+def test_compose_context_lists_all_projects_marking_the_active_one() -> None:
+    """Live incident 2026-08-07: the router had no roster of existing projects, so a loosely
+    mentioned project name ('aus Drive Vibemind') couldn't be verified and was misread as a
+    Google-Drive URL request. The roster must name every project and mark the active one."""
+    ctx = compose_context(
+        project={"name": "Drive VibeMind", "id": "p1"}, running_jobs=0, messages=[],
+        all_projects=[
+            {"id": "p1", "name": "Drive VibeMind"},
+            {"id": "p2", "name": "LiveTest TalkingHead"},
+            {"id": "p3", "name": "LiveTest Shorts"},
+        ],
+    )
+    assert "Projekte: Drive VibeMind* | LiveTest TalkingHead | LiveTest Shorts" in ctx
+
+
+def test_compose_context_lists_projects_even_without_an_active_project() -> None:
+    """The exact live-incident shape: a fresh conversation has NO bound project yet (the
+    top-bar selection is client-only), but the roster must still be present so a loosely
+    mentioned project name is resolvable on the very first turn."""
+    ctx = compose_context(
+        project=None, running_jobs=0, messages=[],
+        all_projects=[{"id": "p1", "name": "Drive VibeMind"}],
+    )
+    assert "Projekte: Drive VibeMind" in ctx
+    assert "Drive VibeMind*" not in ctx  # nothing is active yet
+
+
+def test_compose_context_omits_projects_line_when_none_given() -> None:
+    ctx = compose_context(project={"name": "P", "id": "p1"}, running_jobs=0, messages=[])
+    assert "Projekte:" not in ctx
+
+
+def test_compose_context_caps_projects_line_at_15() -> None:
+    all_projects = [{"id": f"p{i}", "name": f"Project {i}"} for i in range(20)]
+    ctx = compose_context(
+        project=None, running_jobs=0, messages=[], all_projects=all_projects,
+    )
+    line = next(line for line in ctx.splitlines() if line.startswith("Projekte:"))
+    assert line.count("|") == 14  # 15 names -> 14 separators
+    assert "Project 14" in line and "Project 15" not in line
 
 
 def test_every_tool_is_reachable() -> None:

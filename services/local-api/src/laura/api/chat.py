@@ -36,6 +36,15 @@ class ChatMessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class ConversationCreateIn(BaseModel):
+    """Optional POST /conversations body: binds the new conversation to a project up front
+    (Task 1, live incident 2026-08-07) instead of leaving it unbound until an explicit
+    'Wechsle zum Projekt X' chat message. ``project_id`` is optional so every caller that omits
+    the body (or sends none) keeps today's exact behavior."""
+
+    project_id: str | None = None
+
+
 class ApprovalDecisionIn(BaseModel):
     decision: Literal["approve", "reject"]
 
@@ -158,11 +167,21 @@ def _append_user_message(
 def create_conversation(
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+    body: ConversationCreateIn | None = None,
 ) -> dict[str, Any]:
+    """Create a conversation, optionally pre-bound to a project (Task 1: the UI-selected
+    project's id, so a fresh chat inherits the top bar's selection instead of starting
+    unbound). ``project_id`` present but unknown -> 404 BEFORE the conversation is created (no
+    orphan row left behind). No body / no key -> exactly today's behavior (unbound)."""
+    db = _db(request)
+    project_id = body.project_id if body is not None else None
+    if project_id is not None and repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+
     conversation_id = new_id()
-    repos.create_conversation(
-        _db(request), conversation_id=conversation_id, created_utc=utcnow_iso()
-    )
+    repos.create_conversation(db, conversation_id=conversation_id, created_utc=utcnow_iso())
+    if project_id is not None:
+        repos.set_conversation_project(db, conversation_id, project_id)
     return {"id": conversation_id}
 
 
@@ -235,9 +254,10 @@ def post_message(
     running_jobs = _running_jobs_count(db)
     messages = repos.list_conversation_messages(db, conversation_id)
     active_session = _active_session(db, messages)
+    all_projects = repos.list_projects(db)
     context = compose_context(
         project=project, running_jobs=running_jobs, messages=messages,
-        asset_names=asset_names, active_session=active_session,
+        asset_names=asset_names, active_session=active_session, all_projects=all_projects,
     )
 
     config = resolve_from_env()

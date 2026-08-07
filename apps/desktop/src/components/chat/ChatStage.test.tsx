@@ -160,6 +160,29 @@ describe("ChatStage", () => {
     await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("new1"));
   });
 
+  it(`"Neuer Chat" binds the new conversation to the UI-selected project`, async () => {
+    /* Live incident 2026-08-07: a fresh chat started while a project was selected in the top
+     * bar came out unbound (the top-bar selection is client-only), so a production brief typed
+     * right away had no project to resolve against. */
+    const c = client({
+      listConversations: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([summary({ id: "new1", title: "" })]),
+      createConversation: vi.fn().mockResolvedValue({ id: "new1" }),
+      getConversation: vi
+        .fn()
+        .mockResolvedValue({ id: "new1", title: "", active_project_id: "p1", messages: [] }),
+    });
+
+    renderWithQuery(<ChatStage client={c} projectId="p1" />);
+    await waitFor(() => expect(c.listConversations).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Neuer Chat" }));
+
+    await waitFor(() => expect(c.createConversation).toHaveBeenCalledWith("p1"));
+  });
+
   it("sending a message renders the returned turn", async () => {
     const c = client({
       listConversations: vi.fn().mockResolvedValue([summary()]),

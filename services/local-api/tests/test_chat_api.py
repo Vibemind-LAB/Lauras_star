@@ -67,6 +67,42 @@ def test_crud_roundtrip(tmp_path: Path) -> None:
     assert client.get(f"/conversations/{conversation_id}", headers=_H).status_code == 404
 
 
+def test_create_conversation_with_project_id_binds_active_project(tmp_path: Path) -> None:
+    """Task 1 (live incident 2026-08-07): a fresh conversation must be able to inherit the
+    UI-selected project up front instead of starting unbound until an explicit
+    'Wechsle zum Projekt X' chat message."""
+    client, db, _settings = _app(tmp_path)
+    project = _project(db, tmp_path, name="Drive VibeMind")
+
+    created = client.post("/conversations", json={"project_id": project["id"]}, headers=_H)
+    assert created.status_code in (200, 202)
+    conversation_id = created.json()["id"]
+
+    got = client.get(f"/conversations/{conversation_id}", headers=_H).json()
+    assert got["active_project_id"] == project["id"]
+
+
+def test_create_conversation_with_unknown_project_id_404s(tmp_path: Path) -> None:
+    client, _db, _settings = _app(tmp_path)
+
+    created = client.post("/conversations", json={"project_id": "nope"}, headers=_H)
+    assert created.status_code == 404
+    # no orphan conversation row left behind by the failed create
+    assert client.get("/conversations", headers=_H).json() == []
+
+
+def test_create_conversation_without_body_stays_unbound(tmp_path: Path) -> None:
+    """No body / no key -> exactly today's behavior (unbound)."""
+    client, _db, _settings = _app(tmp_path)
+
+    created = client.post("/conversations", headers=_H)
+    assert created.status_code in (200, 202)
+    conversation_id = created.json()["id"]
+
+    got = client.get(f"/conversations/{conversation_id}", headers=_H).json()
+    assert got["active_project_id"] is None
+
+
 def test_get_unknown_conversation_404(tmp_path: Path) -> None:
     client, _db, _settings = _app(tmp_path)
     assert client.get("/conversations/nope", headers=_H).status_code == 404
