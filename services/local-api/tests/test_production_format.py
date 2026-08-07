@@ -128,8 +128,8 @@ def test_unknown_source_dimensions_keep_the_cropping_rule() -> None:
 # of a hard-coded language, and a hackathon jury reads English.
 
 
-def test_german_stays_the_default_so_nothing_regresses() -> None:
-    assert _meta("insta").language == "German"
+def test_english_is_the_default_language() -> None:
+    assert _meta("insta").language == "English"
     spec = next(s for s in production_agent_specs() if s.name == "scene_author")
     assert "German" in spec.system_message
 

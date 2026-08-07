@@ -29,9 +29,9 @@ def test_english_is_measurably_faster() -> None:
     assert seconds_per_word("English") < seconds_per_word("German") * 0.8
 
 
-def test_an_unmeasured_language_falls_back_to_german() -> None:
+def test_an_unmeasured_language_falls_back_to_english() -> None:
     """Guessing a rate for a language nobody measured is worse than the shipped default."""
-    assert seconds_per_word("Klingon") == seconds_per_word("German")
+    assert seconds_per_word("Klingon") == seconds_per_word("English")
 
 
 def test_the_english_budget_is_the_measured_one() -> None:
@@ -51,6 +51,6 @@ def test_both_budget_directions_agree() -> None:
         assert estimate_voice_seconds(words, language) == pytest.approx(120.0, abs=1.0)
 
 
-def test_the_language_argument_defaults_to_german_so_old_callers_are_unchanged() -> None:
-    assert word_budget_for(174.0) == word_budget_for(174.0, "German")
-    assert estimate_voice_seconds(100) == estimate_voice_seconds(100, "German")
+def test_the_language_argument_defaults_to_english() -> None:
+    assert word_budget_for(174.0) == word_budget_for(174.0, "English")
+    assert estimate_voice_seconds(100) == estimate_voice_seconds(100, "English")
