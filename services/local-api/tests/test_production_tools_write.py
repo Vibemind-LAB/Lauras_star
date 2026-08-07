@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
@@ -28,8 +30,9 @@ from laura.short_creator.board_models import (
     ScriptLine,
     Storyline,
     VoiceArtifact,
+    content_hash,
 )
-from laura.short_creator.production_tools import build_production_tool_specs
+from laura.short_creator.production_tools import build_production_tool_specs, seconds_per_word
 
 FPS = 30
 SCENE_FRAMES = 150  # 150 frames @ 30fps = 5.0s
@@ -103,6 +106,7 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
         session_id="s1",
         asset_id=asset_id,
         created_utc="2026-07-13T00:00:00Z",
+        language="German",
         task="overview short",
         target_seconds=20.0,
     )
@@ -162,10 +166,49 @@ def test_save_storyline_happy_and_versioned(tmp_path: Path) -> None:
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
 
     first = specs["save_storyline"].func(red_thread="stop scrolling", chapters=[_chapter()])
-    assert first == {"ok": True, "version": 1}
+    assert first["ok"] is True
+    assert first["version"] == 1
 
     second = specs["save_storyline"].func(red_thread="stop scrolling v2", chapters=[_chapter()])
-    assert second == {"ok": True, "version": 2}
+    assert second["ok"] is True
+    assert second["version"] == 2
+
+
+def test_save_storyline_reports_plan_coverage_and_warns_when_short(tmp_path: Path) -> None:
+    """Live 2026-08-02: a 60s short was planned as an arc summing to 40s, and the plan itself
+    was never weighed against the length it was for. A film cannot come out longer than its
+    plan, so the shortfall is decided here — before a word of script is written — yet
+    save_storyline only ever answered 'ok'. The budget the plan is measured against is the
+    SAME usable length script_budget uses (the smaller of target and material): planning less
+    than the footage can carry is a mistake, planning less than a target the footage cannot
+    reach is not."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    _review(board, 2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    short = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[{**_chapter(chapter=1), "target_seconds": 0.5}],
+    )
+
+    assert short["ok"] is True
+    assert short["planned_seconds"] == pytest.approx(0.5)
+    usable = short["usable_seconds"]
+    assert usable > 0.5, "the fixture must have room the plan leaves unused"
+    assert short["coverage_pct"] == pytest.approx(round(0.5 / usable * 100.0, 1))
+    assert "plan_warning" in short
+    assert f"{usable:.1f}s" in short["plan_warning"], "name the length that was left unplanned"
+
+    full = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[{**_chapter(chapter=1), "target_seconds": usable}],
+    )
+
+    assert full["ok"] is True
+    assert full["coverage_pct"] == pytest.approx(100.0)
+    assert "plan_warning" not in full
 
 
 def test_save_storyline_rejects_invalid_role(tmp_path: Path) -> None:
@@ -201,6 +244,38 @@ def test_save_storyline_rejects_unreviewed_scenes(tmp_path: Path) -> None:
 
 
 def test_save_storyline_accepts_window_refs(tmp_path: Path) -> None:
+    """A scene's window refs are a per-CHAPTER concept: per-scene voice binds every storyline
+    entry to its own narration line, so reusing scene 1's window 1 is legal only in a
+    DIFFERENT chapter, where it gets its own line — never within the SAME chapter (see
+    test_save_storyline_rejects_within_chapter_scene_reuse for that refusal)."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1]),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[{"scene": 1, "window": 1}]),
+        ],
+    )
+
+    assert out["ok"] is True
+    assert out["version"] == 1
+    got = specs["get_storyline"].func()
+    arc = got["storyline"]["arc"]
+    assert arc[0]["scene_numbers"] == [1]
+    assert arc[1]["scene_numbers"] == [{"scene": 1, "window": 1}]
+
+
+def test_save_storyline_rejects_within_chapter_scene_reuse(tmp_path: Path) -> None:
+    """C1: per-scene voice binds every storyline entry to its own narration line —
+    save_script_chapter writes exactly one ScriptLine per (chapter, scene_number), so a SECOND
+    entry for the same scene in the SAME chapter (even via a different window) has no line of
+    its own to speak. The old remedy ("write it once for the chapter") was unreachable; reject
+    at WRITE time instead, before any review/script/voice work is spent on it, with the
+    actionable fix named (a different chapter, or one window)."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _review(board, 1, n_windows=2)
@@ -211,9 +286,39 @@ def test_save_storyline_accepts_window_refs(tmp_path: Path) -> None:
         chapters=[_chapter(scene_numbers=[1, {"scene": 1, "window": 1}])],
     )
 
-    assert out == {"ok": True, "version": 1}
-    got = specs["get_storyline"].func()
-    assert got["storyline"]["arc"][0]["scene_numbers"] == [1, {"scene": 1, "window": 1}]
+    assert out["ok"] is False
+    assert "reason" in out
+    assert "chapter 1" in out["reason"] and "scene 1" in out["reason"]
+    assert board.load("storyline") is None
+
+
+def test_save_storyline_rejects_within_chapter_scene_reuse_across_multiple_chapters(
+    tmp_path: Path,
+) -> None:
+    """The rejection names EVERY offending (chapter, scene) pair, not just the first, so a
+    multi-chapter arc with more than one bad chapter is fixed in one round-trip. Each chapter
+    uses its OWN pair of windows (0+1 vs 2+3) so the pre-existing global (scene, window)
+    uniqueness validator never fires first — this is purely a within-chapter violation."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=4)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1, {"scene": 1, "window": 1}]),
+            _chapter(
+                chapter=2,
+                role="payoff_cta",
+                scene_numbers=[{"scene": 1, "window": 2}, {"scene": 1, "window": 3}],
+            ),
+        ],
+    )
+
+    assert out["ok"] is False
+    assert "chapter 1" in out["reason"] and "chapter 2" in out["reason"]
+    assert board.load("storyline") is None
 
 
 def test_save_storyline_rejects_out_of_range_window(tmp_path: Path) -> None:
@@ -245,6 +350,144 @@ def test_save_storyline_rejects_duplicate_scene_window(tmp_path: Path) -> None:
     assert any("scene 1 window 0" in err for err in out["errors"])
     assert any(err.startswith("arc") for err in out["errors"])
     assert board.load("storyline") is None
+
+
+def test_a_rejected_storyline_is_told_how_much_material_it_actually_has(
+    tmp_path: Path,
+) -> None:
+    """Live 2026-08-02 (Drive-Test): an uncut screen recording is ONE scene, its review
+    proposed ONE window, and the architect was told to build the four-chapter arc. Four
+    chapters need four distinct (scene, window) refs; there was one. It spent 269 turns
+    alternating between 'window 1 is referenced but scene 1 has 1' and 'window 0 is referenced
+    more than once', and the run ended with no film.
+
+    The schema never demanded four chapters — ``arc`` is ``min_length=1``. Only the prompt did.
+    So the rejection has to carry the arithmetic: how many distinct refs exist, and that fewer
+    chapters is the legal way out. An error that only says what is forbidden leaves the caller
+    guessing what is allowed."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # exactly one window
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1]),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[1]),
+        ],
+    )
+
+    assert out["ok"] is False
+    hint = out.get("material_hint", "")
+    assert "1" in hint, "say how many distinct scene/window refs the reviews actually offer"
+    assert "fewer chapters" in hint.lower()
+
+
+def test_a_chapter_without_its_number_takes_it_from_its_position(tmp_path: Path) -> None:
+    """Live 2026-08-02 (Drive-Test): ``chapter: Field required`` came back 42, 53 and 22 times
+    across three runs — by a wide margin the most repeated failure in the whole pipeline. The
+    required field is called ``chapter`` and sits inside a list called ``chapters``: the author
+    reads ``chapters: [{...}]``, takes the object to BE the chapter, and never supplies the
+    number. It is not guessing wrong, it is guessing the only reading the shape suggests.
+
+    The list is ordered and the arc is a sequence, so its position IS the number in every
+    legitimate case. Filling it in costs nothing and removes the loop."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            {
+                "role": "hook",
+                "message": "stop scrolling",
+                "scene_numbers": [1],
+                "target_seconds": 3.0,
+            },
+            {
+                "role": "payoff_cta",
+                "message": "one click",
+                "scene_numbers": [{"scene": 1, "window": 1}],
+                "target_seconds": 3.0,
+            },
+        ],
+    )
+
+    assert out["ok"] is True, out
+    storyline = board.load("storyline")
+    assert isinstance(storyline, Storyline)
+    assert [c.chapter for c in storyline.arc] == [1, 2]
+
+
+def test_an_explicit_chapter_number_is_never_overwritten(tmp_path: Path) -> None:
+    """Filling in a MISSING number must not renumber an author who knows what it wants."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=4, scene_numbers=[1]),
+            _chapter(chapter=7, role="payoff_cta", scene_numbers=[{"scene": 1, "window": 1}]),
+        ],
+    )
+
+    assert out["ok"] is True, out
+    storyline = board.load("storyline")
+    assert isinstance(storyline, Storyline)
+    assert [c.chapter for c in storyline.arc] == [4, 7]
+
+
+def test_a_malformed_chapter_entry_still_reports_validation_errors(tmp_path: Path) -> None:
+    """Filling in the number must not swallow the rejection of a garbage entry."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(red_thread="rt", chapters=["not a chapter"])
+
+    assert out["ok"] is False
+    assert "errors" in out or "reason" in out
+    assert board.load("storyline") is None
+
+
+def test_a_single_window_scene_can_carry_a_one_chapter_arc(tmp_path: Path) -> None:
+    """The way out has to actually work: one scene, one window, one chapter — accepted."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt", chapters=[_chapter(chapter=1, scene_numbers=[1])]
+    )
+
+    assert out["ok"] is True, out
+    assert board.load("storyline") is not None
+
+
+def test_a_storyline_that_fits_gets_no_material_hint(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1, n_windows=2)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["save_storyline"].func(
+        red_thread="rt",
+        chapters=[
+            _chapter(chapter=1, scene_numbers=[1]),
+            _chapter(chapter=2, role="payoff_cta", scene_numbers=[{"scene": 1, "window": 1}]),
+        ],
+    )
+
+    assert out["ok"] is True, out
+    assert "material_hint" not in out
 
 
 def test_save_script_chapter_merges_per_chapter(tmp_path: Path) -> None:
@@ -369,7 +612,9 @@ def test_save_script_chapter_rejects_spoken_stage_directions(tmp_path: Path) -> 
 
 
 def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: Path) -> None:
-    """The rule catches labels, not punctuation — spoken prose keeps its colons."""
+    """The rule catches labels, not punctuation — spoken prose keeps its colons. Kept short
+    (under VS4's per-scene capacity reject threshold for this fixture's 5.0s scene) so this
+    stays a pure colon-detection test."""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _seed_storyline(board)
@@ -380,7 +625,7 @@ def test_save_script_chapter_accepts_narration_with_an_ordinary_colon(tmp_path: 
         lines=[
             {
                 "scene_number": 1,
-                "text": "It writes down why it wants each one: filesystem, memory, reasoning.",
+                "text": "It writes down why: filesystem, memory, reasoning.",
             }
         ],
     )
@@ -583,7 +828,9 @@ def test_a_structural_storyline_change_still_invalidates_and_says_what_was_lost(
 
 
 def test_the_first_storyline_save_keeps_its_bare_response(tmp_path: Path) -> None:
-    """No prior script, nothing carried, nothing lost — no noise in the reply."""
+    """No prior script, nothing carried, nothing lost — no carry-over noise in the reply. (The
+    plan-coverage report is not carry-over noise: it is what this save is being judged on, and
+    it rides on every save.)"""
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _review(board, 1)
@@ -591,7 +838,10 @@ def test_the_first_storyline_save_keeps_its_bare_response(tmp_path: Path) -> Non
 
     out = specs["save_storyline"].func(red_thread="v1", chapters=[_chapter()])
 
-    assert out == {"ok": True, "version": 1}
+    assert out["ok"] is True
+    assert out["version"] == 1
+    assert "carried_over" not in out
+    assert "note" not in out
 
 
 def test_window_notation_and_plain_scene_numbers_compare_as_the_same_structure(
@@ -634,7 +884,10 @@ def test_an_identical_storyline_resave_stays_a_complete_noop(tmp_path: Path) -> 
 
     out = specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
 
-    assert out == {"ok": True, "version": 1}, "identical content — same version, no ceremony"
+    assert out["ok"] is True, "identical content — same version, no ceremony"
+    assert out["version"] == 1
+    assert "carried_over" not in out
+    assert "note" not in out
     assert board.load("cutlist") is not None, "the no-op must stay a no-op"
 
 
@@ -705,6 +958,11 @@ def test_a_growing_save_carries_no_warning(tmp_path: Path) -> None:
 # narration ended with no picture to carry them: video 146.8s vs voice 173.1s, voice_fits
 # FAIL. The per-chapter table existed in script_budget; the author read the total.
 # The overflow now speaks at the moment of the save, where it can still be fixed cheaply.
+#
+# VS4 hardened the GROSS version of exactly this overflow into a hard reject at the per-scene
+# level (see test_line_grossly_over_scene_capacity_rejected below) — so this test's word count
+# stays deliberately in the narrow band that still overflows the chapter (warns) without
+# tripping that harder per-line/per-scene reject (whose threshold is scene_s * 1.15 + 0.5).
 
 
 def test_a_chapter_overflowing_its_scenes_is_warned_at_save_time(tmp_path: Path) -> None:
@@ -714,9 +972,10 @@ def test_a_chapter_overflowing_its_scenes_is_warned_at_save_time(tmp_path: Path)
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
     specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
 
-    # 5s of scene capacity; 40 German words are ~23s of voice.
+    # 5.0s of scene capacity; 10 German words are ~5.8s of voice — over the capacity+0.5s warn
+    # threshold (5.5s) but under VS4's harder capacity*1.15+0.5 reject threshold (6.25s).
     out = specs["save_script_chapter"].func(
-        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 40)}]
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 10)}]
     )
 
     assert out["ok"] is True, "reporting, not blocking — shortening is the author's move"
@@ -737,6 +996,76 @@ def test_a_chapter_inside_its_capacity_gets_no_capacity_warning(tmp_path: Path) 
 
     assert out["ok"] is True
     assert "capacity_warning" not in out
+
+
+# --- VS4: a line that grossly outspeaks its OWN scene is rejected at save time -------------
+# VS2/VS3 bound each storyline line's video segment to its own scene's clip length — a line
+# that speaks longer than its scene holds now fails at CUTLIST time. VS4 moves that failure
+# forward: save_script_chapter refuses a line (or a call's lines together, see the sum test
+# below) whose estimated speech grossly exceeds ITS scene's capacity, where redistribution is
+# still cheap. Distinct from the chapter-sum capacity_warning above (which fires later, at
+# save time too, but only WARNS and looks at the whole chapter, not one scene).
+
+
+def test_line_grossly_over_scene_capacity_rejected(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)  # scene 1 is 5.0s long (SCENE_FRAMES @ 30fps)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    # 5.0s of scene capacity; 60 German words are ~34.8s of voice — grossly over the
+    # capacity*1.15+0.5 = 6.25s reject threshold.
+    result = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 60)}]
+    )
+
+    assert result["ok"] is False
+    assert "scene 1" in result["reason"] and "5.0" in result["reason"]
+    assert board.load("script") is None, "a rejected save must not reach the board"
+
+
+def test_line_slightly_over_capacity_still_saves_with_warning(tmp_path: Path) -> None:
+    """The same narrow band as test_a_chapter_overflowing_its_scenes_is_warned_at_save_time:
+    over the capacity+0.5s warn threshold (5.5s) but under VS4's capacity*1.15+0.5 reject
+    threshold (6.25s) — proving VS4 only hard-rejects the GROSS case, not every overflow."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    result = specs["save_script_chapter"].func(
+        chapter=1, lines=[{"scene_number": 1, "text": " ".join(["wort"] * 10)}]
+    )
+
+    assert result["ok"] is True
+    assert "capacity_warning" in result
+
+
+def test_two_new_lines_for_the_same_scene_sum_before_the_capacity_check(tmp_path: Path) -> None:
+    """The nuance beyond the brief's single-line example: multiple NEW lines for the SAME
+    scene in one call each add speech to that one scene. Two lines of 8 words each (~4.64s
+    apiece — comfortably under the 5.0s scene capacity on their own) sum to 16 words (~9.3s),
+    which blows past the 6.25s reject threshold TOGETHER — exactly the overflow VS3 would
+    otherwise only catch later, at CUTLIST time."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(board, 1)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+    specs["save_storyline"].func(red_thread="r", chapters=[_chapter()])
+
+    result = specs["save_script_chapter"].func(
+        chapter=1,
+        lines=[
+            {"scene_number": 1, "text": " ".join(["wort"] * 8)},
+            {"scene_number": 1, "text": " ".join(["wort"] * 8)},
+        ],
+    )
+
+    assert result["ok"] is False
+    assert "scene 1" in result["reason"] and "5.0" in result["reason"]
+    assert board.load("script") is None
 
 
 # --- QA judges a render, so QA needs a render — the order-guard pattern, last link ---------
@@ -819,3 +1148,208 @@ def test_save_qa_report_stamps_the_render_parent(tmp_path: Path) -> None:
     qa = board.load("qa_report")
     assert isinstance(qa, QaReport)
     assert qa.parents == {"render_report": content_hash(render)}
+
+
+# --- set_board_language ("Sprache folgt dem Input", follow-up case, SP3) -------------------
+
+
+def _switch_note(language: str) -> str:
+    """The fresh-instruction note a successful switch returns. The production task prompt is
+    built at run START and keeps saying e.g. "the script MUST be written in German" after a
+    mid-run switch — tool RESULTS outrank that stale prompt text, so the result itself must
+    carry the new-language order (live finding 2026-08-05: chapters were rewritten in German
+    right after a correct switch to English)."""
+    return (
+        f"Language switched. Write ALL chapter text in {language} from now on, "
+        "regardless of earlier language instructions in this run."
+    )
+
+
+def test_set_board_language_switches_and_reports_previous(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)  # BoardMeta default language is "German"
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="English")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
+    assert board.meta().language == "English"
+
+
+def test_set_board_language_normalizes_the_short_code_en_to_english(tmp_path: Path) -> None:
+    """Live 2026-08-05: the team passed "en". ``_SECONDS_PER_WORD`` only knows full English
+    names, so the board carried ``language="en"`` and every voice estimate fell back to the
+    slower German rate — chapters landed ~30% under budget. Short codes normalize to the full
+    name BEFORE validation, and the note names the normalized language, not the raw input."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="en")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
+    assert board.meta().language == "English"
+    # The whole point of normalizing: the meta value must hit the measured English TTS rate,
+    # not fall through to the German default.
+    assert seconds_per_word(board.meta().language) == seconds_per_word("English")
+
+
+def test_set_board_language_normalizes_the_short_code_de_to_german(tmp_path: Path) -> None:
+    """"de" maps to "German" — on a default-German board that makes it a same-language call
+    (previous == language), which doubles as proof the raw code never reaches the meta."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="de")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "German",
+        "note": _switch_note("German"),
+    }
+    assert board.meta().language == "German"
+
+
+def test_set_board_language_short_code_matching_ignores_case(tmp_path: Path) -> None:
+    """Agents also emit "EN"/"En"; the alias lookup is case-insensitive. Anything that is not
+    a known short code still passes through unchanged (covered by the full-name tests)."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="EN")
+
+    assert out["ok"] is True
+    assert out["language"] == "English"
+    assert board.meta().language == "English"
+
+
+def test_set_board_language_rejects_garbage_without_writing(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="  ")
+
+    assert out["ok"] is False
+    assert board.meta().language == "German"
+
+
+def test_set_board_language_rejects_a_single_character_without_bricking_the_board(
+    tmp_path: Path,
+) -> None:
+    """Review finding: a 1-character language ("A") passed the tool's OLD validation (only
+    checked non-empty and <= 32 chars) but is shorter than ``BoardMeta.language``'s
+    ``min_length=2`` floor. The write used to land anyway (``model_copy`` skips validators),
+    so it read back ``ok: True`` here while quietly bricking every future ``board.meta()`` read
+    on this board — including the next production run. The tool now rejects it directly, and a
+    board.meta() read right after still succeeds cleanly."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="A")
+
+    assert out["ok"] is False
+    assert board.meta().language == "German"
+    # The board must still be readable — the brick this guards against was a corrupt meta.json
+    # that raised on every subsequent load.
+    assert board.meta().language == "German"
+
+
+def test_set_board_language_with_a_script_clears_the_approval_and_marks_mismatch(
+    tmp_path: Path,
+) -> None:
+    """I2: a language switch without a rewrite must not leave the OLD-language script reading
+    as approved-current. When a script is already on the board, switching to a DIFFERENT
+    language re-arms Gate B (``board.clear_script_approval()``) — the return shape itself gains
+    nothing, but the approval stamp is gone and ``Board.status()`` surfaces the drift as
+    ``language_mismatch`` until a chapter is actually re-saved in the new language."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    original_script = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt.")],
+    )
+    board.save("script", original_script)
+    board.set_script_approved("2026-08-05T10:00:00Z", content_hash(original_script))
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="English")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
+    assert board.meta().script_approved_utc is None
+    assert board.meta().script_approved_script_hash is None
+    assert board.status()["language_mismatch"] is True
+
+    # Re-saving the chapter in the new language clears the mismatch again.
+    board.save(
+        "script",
+        Script(
+            language="English",
+            lines=[ScriptLine(chapter=1, scene_number=1, text="Hello world.")],
+        ),
+    )
+    assert board.status()["language_mismatch"] is False
+
+
+def test_set_board_language_without_a_script_has_no_approval_to_clear(tmp_path: Path) -> None:
+    """A fresh board (nothing written yet) has no script and thus nothing Gate B could be
+    guarding — the switch must not touch clear_script_approval at all, let alone crash."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)  # no script saved
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="English")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "English",
+        "note": _switch_note("English"),
+    }
+    assert board.meta().script_approved_utc is None
+    assert board.status()["language_mismatch"] is False
+
+
+def test_set_board_language_same_language_leaves_the_approval_untouched(tmp_path: Path) -> None:
+    """A same-language 'switch' (idempotent from the board's point of view) must not clear an
+    existing approval — nothing about the script's language actually changed."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    original_script = Script(
+        language="German",
+        lines=[ScriptLine(chapter=1, scene_number=1, text="Hallo Welt.")],
+    )
+    board.save("script", original_script)
+    approved_hash = content_hash(original_script)
+    board.set_script_approved("2026-08-05T10:00:00Z", approved_hash)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["set_board_language"].func(language="German")
+
+    assert out == {
+        "ok": True,
+        "previous": "German",
+        "language": "German",
+        "note": _switch_note("German"),
+    }
+    assert board.meta().script_approved_utc == "2026-08-05T10:00:00Z"
+    assert board.meta().script_approved_script_hash == approved_hash

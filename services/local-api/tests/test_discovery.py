@@ -97,6 +97,66 @@ def test_lexical_ranking_maps_hits_to_scenes_and_ranks_assets(
     assert out["skipped"] == []
 
 
+def test_lexical_fallback_matches_a_natural_language_topic_word_by_word(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Live 2026-08-02 (Drive-Test): the topic 'Wie die Desktop-Automatisierung per
+    Sprachbefehl funktioniert' found NOTHING on a fresh workspace, though a transcript said
+    'hier sieht man eine Dostop Automatisierung, die über Sprache gesteuert werden soll'.
+    ``search_transcript`` is ``LIKE '%<the whole topic>%'`` — a phrase match. With Qdrant down
+    (the default on a machine that never started it) that phrase match IS the discovery, and
+    the UI asks the user for a sentence. So the lexical path has to take the topic apart:
+    match on the individual words, and rank by how many DISTINCT words a segment hit."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    strong = _seed_asset_with_scenes(
+        db, project["id"], "strong.mp4",
+        segments=[(10, 60, "hier sieht man eine Automatisierung ueber Sprache gesteuert"),
+                  (320, 380, "so viel zur Automatisierung")],
+    )
+    weak = _seed_asset_with_scenes(
+        db, project["id"], "weak.mp4",
+        segments=[(10, 60, "wir sprechen hier ueber ganz andere Themen"),
+                  (320, 380, "eine kurze Bemerkung zur Sprache")],
+    )
+
+    out = discovery.search_material(
+        db, project["id"], "Wie die Automatisierung per Sprache funktioniert"
+    )
+
+    assert out["source"] == "lexical"
+    assert [r["asset_id"] for r in out["ranking"]] == [strong, weak], (
+        "two matched words must outrank one"
+    )
+
+
+def test_a_topic_of_only_common_words_still_falls_back_to_the_whole_phrase(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Splitting must not turn every topic into a match for 'die'. Words too short or too
+    common carry no signal and are dropped; if that leaves nothing, the raw topic is searched
+    as before rather than matching everything."""
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    _seed_asset_with_scenes(
+        db, project["id"], "a.mp4",
+        segments=[(10, 60, "die und der und das"), (320, 380, "und noch mehr fuellwoerter")],
+    )
+
+    out = discovery.search_material(db, project["id"], "die und der")
+
+    assert out["source"] == "lexical"
+    # Word-by-word, "und" alone would drag in BOTH segments. Falling back to the whole phrase
+    # keeps the old, narrow behaviour: only the segment that literally contains it.
+    assert [h["scene_number"] for h in out["ranking"][0]["scene_hits"]] == [1]
+
+
 def test_asset_without_rough_cut_is_skipped_not_created(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

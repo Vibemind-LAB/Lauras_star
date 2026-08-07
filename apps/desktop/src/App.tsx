@@ -13,7 +13,7 @@ import {
   type UrlImportOptions,
 } from "./api";
 import { AssembleView } from "./components/AssembleView";
-import { ChatPanel } from "./components/ChatPanel";
+import { ChatStage } from "./components/chat/ChatStage";
 import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ExportView } from "./components/ExportView";
@@ -60,7 +60,14 @@ const FPS_PRESETS: readonly FpsPreset[] = [
   { label: "60", num: 60, den: 1, drop: false },
 ];
 
-export const EXPECTED_SCHEMA_VERSION = 32;
+// Must track the newest migration in services/local-api/src/laura/db/migrations/ — live
+// 2026-08-03 this sat at 32 while the backend had long been at 33 (0033_production_session_job),
+// so every CURRENT pairing showed an amber "Frontend veraltet" badge. The lag is invisible in
+// tests (they pin relative mismatches, not the absolute number), so it only ever shows live.
+// Bumped to 34 the same day for 0034_chat_conversations (chat-first arc, CH1) — same class of
+// bug, same fix: keep this pinned to the newest migration file whenever one lands.
+// 35: 0035_transcript_confirm (Transkript-Gates) — caught live again 2026-08-05, same class.
+export const EXPECTED_SCHEMA_VERSION = 35;
 
 function fpsLabel(p: Project): string {
   const fps = Math.round((p.sequence_rate_num / p.sequence_rate_den) * 1000) / 1000;
@@ -68,7 +75,7 @@ function fpsLabel(p: Project): string {
 }
 
 export function App(): ReactElement {
-  const [stage, setStage] = useState<Stage>("import");
+  const [stage, setStage] = useState<Stage>("chat");
   const [mediaCollapsed, setMediaCollapsed] = useState(false);
 
   const [client, setClient] = useState<LauraClient | null>(null);
@@ -538,6 +545,8 @@ export function App(): ReactElement {
         )}
 
         <div className="flex min-h-0 flex-1 flex-col">
+          {stage === "chat" && client && <ChatStage client={client} />}
+
           {stage === "download" && (client ? (
             <DownloadView
               client={client}
@@ -882,6 +891,7 @@ export function App(): ReactElement {
             <ShortsView
               client={client}
               asset={detailAsset}
+              projectId={selectedProjectId}
               seek={seek}
               currentFrame={currentFrame}
               onSeek={seekToFrame}
@@ -910,23 +920,6 @@ export function App(): ReactElement {
               </div>
             ))}
         </div>
-
-        {client && (
-          <ChatPanel
-            client={client}
-            assetId={selectedAssetId}
-            onEvent={(event) => {
-              // Live app-fill: when the agents produce an artifact (or finish), refresh the
-              // asset list + the selected video's rough cut so the views update alongside the chat.
-              if (event.type === "artifact" || event.type === "done") {
-                if (selectedProjectId) {
-                  void loadAssets(client, selectedProjectId).catch((e) => setError(String(e)));
-                }
-                reloadRoughCut();
-              }
-            }}
-          />
-        )}
       </div>
     </div>
   );
@@ -953,7 +946,11 @@ function AssetImportRow({
 }
 
 export function HealthBadge({ health, offline }: { health: Health | null; offline: boolean }): ReactElement {
-  if (offline) return <Badge color="red" text="Service offline" />;
+  // A fetched health is PROOF of a connection and always beats the offline flag. The flag is
+  // set once when the preload bridge is missing at mount and nothing ever clears it — live
+  // 2026-08-03 the badge read "Service offline" while the same panel listed projects from the
+  // very service it declared dead (HMR preserves the stale flag into a connected session).
+  if (offline && !health) return <Badge color="red" text="Service offline" />;
   if (!health) return <Badge color="amber" text="verbinde…" />;
   if (health.schema_version < EXPECTED_SCHEMA_VERSION) {
     return (

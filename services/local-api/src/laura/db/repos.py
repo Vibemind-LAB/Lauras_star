@@ -2497,3 +2497,171 @@ def list_production_sessions(db: Database, asset_id: str) -> list[dict[str, Any]
             (asset_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# --- conversations (chat-first, spec 2026-08-03) -----------------------------
+
+
+def create_conversation(db: Database, *, conversation_id: str, created_utc: str) -> None:
+    """Create a conversation record. conversation_id must be unique (PK)."""
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, title, active_project_id, created_at, updated_at) "
+            "VALUES (?, '', NULL, ?, ?)",
+            (conversation_id, created_utc, created_utc),
+        )
+
+
+def list_conversations(db: Database) -> list[dict[str, Any]]:
+    """List all conversations, newest updated first."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM conversations ORDER BY updated_at DESC, id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_conversation(db: Database, conversation_id: str) -> dict[str, Any] | None:
+    """Get a conversation by id, or None if not found."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def delete_conversation(db: Database, conversation_id: str) -> None:
+    """Delete a conversation and its messages.
+
+    Messages are deleted explicitly rather than relying solely on the
+    ``ON DELETE CASCADE`` foreign key, so this stays correct even if a
+    connection somewhere forgets to enable ``PRAGMA foreign_keys``.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM conversation_messages WHERE conversation_id=?", (conversation_id,)
+        )
+        conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+
+
+def set_conversation_title(db: Database, conversation_id: str, title: str) -> None:
+    """Set a conversation's title (e.g. derived from its first message)."""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE conversations SET title=? WHERE id=?", (title, conversation_id)
+        )
+
+
+def set_conversation_project(
+    db: Database, conversation_id: str, project_id: str | None
+) -> None:
+    """Set (or clear) the project a conversation currently stands on."""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE conversations SET active_project_id=? WHERE id=?",
+            (project_id, conversation_id),
+        )
+
+
+def touch_conversation(db: Database, conversation_id: str, updated_utc: str) -> None:
+    """Bump updated_at so the conversation resurfaces at the top of the list."""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (updated_utc, conversation_id),
+        )
+
+
+def append_conversation_message(
+    db: Database,
+    *,
+    message_id: str,
+    conversation_id: str,
+    role: str,
+    kind: str,
+    content: dict[str, Any],
+    created_utc: str,
+) -> int:
+    """Append a message to a conversation's thread. Returns the assigned seq.
+
+    seq is computed as MAX(seq)+1 inside the same transaction as the INSERT, so
+    it stays gapless and per-conversation (the thread is rebuilt from it after
+    restarts).
+
+    immediate=True: this transaction reads (MAX(seq)) before it writes. A deferred
+    BEGIN would take a read snapshot at the SELECT, and if any other connection (the
+    job runner) commits before the INSERT, the write upgrade fails SQLITE_BUSY_SNAPSHOT
+    without ever consulting busy_timeout. Starting as a writer makes contention wait
+    on busy_timeout instead of killing the chat turn.
+    """
+    with db.transaction(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM conversation_messages "
+            "WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        seq = int(row["next_seq"])
+        conn.execute(
+            "INSERT INTO conversation_messages "
+            "(id, conversation_id, seq, role, kind, content_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message_id, conversation_id, seq, role, kind, json.dumps(content), created_utc),
+        )
+        return seq
+
+
+def list_conversation_messages(db: Database, conversation_id: str) -> list[dict[str, Any]]:
+    """List a conversation's messages in seq order, content_json parsed into content."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY seq",
+            (conversation_id,),
+        ).fetchall()
+        messages: list[dict[str, Any]] = []
+        for row in rows:
+            msg = dict(row)
+            msg["content"] = json.loads(msg.pop("content_json"))
+            messages.append(msg)
+        return messages
+
+
+def get_conversation_message(db: Database, message_id: str) -> dict[str, Any] | None:
+    """Get a single message by id, content_json parsed into content, or None."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversation_messages WHERE id=?", (message_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        msg = dict(row)
+        msg["content"] = json.loads(msg.pop("content_json"))
+        return msg
+
+
+def update_conversation_message_content(
+    db: Database, message_id: str, content: dict[str, Any]
+) -> None:
+    """Replace a message's content_json (e.g. an approval_request's status/result)."""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE conversation_messages SET content_json=? WHERE id=?",
+            (json.dumps(content), message_id),
+        )
+
+
+# --- Transcript confirmation (Transkript-Gates Task 1) -----------------------------------------
+
+
+def set_transcript_confirmed_at(
+    db: Database, asset_id: str, confirmed_utc: str | None
+) -> None:
+    """Set (or clear) the timestamp when a user confirmed the transcript is correct.
+
+    confirmed_utc: ISO 8601 UTC timestamp (e.g. "2026-08-04T12:00:00+00:00"), or None to
+    clear the confirmation.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE media_assets SET transcript_confirmed_at=? WHERE id=?",
+            (confirmed_utc, asset_id),
+        )

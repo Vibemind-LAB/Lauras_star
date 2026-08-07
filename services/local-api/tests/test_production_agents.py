@@ -54,19 +54,38 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
         10,
     ),
     "story_architect": (
-        ("get_reviews", "get_scene_context", "save_storyline", "get_storyline", "board_status"),
+        (
+            "get_reviews",
+            "get_scene_context",
+            "propose_scene_selection",
+            "save_storyline",
+            "get_storyline",
+            "board_status",
+        ),
         4,
     ),
     "scene_author": (
         # script_budget leads the writing tools on purpose: the author asks for the word
         # count instead of guessing a length (a guessed one burned a run on 34 saves).
+        # get_scene_transcript is the grounding source (live 2026-08-04: without it the
+        # scripts were marketing copy — the writer had no way to quote what is SAID).
+        # set_board_language leads too — "Sprache folgt dem Input" (SP3): a follow-up
+        # language switch is called FIRST, before any chapter is rewritten in the new
+        # language.
         (
+            "set_board_language",
             "get_storyline",
             "script_budget",
             "get_reviews",
             "get_scene_context",
+            "get_scene_transcript",
             "save_script_chapter",
             "get_script",
+            # Task 10 (Transkript-Gates): named unconditionally in production_agents.py —
+            # env-gated absence from build_production_tool_specs is handled by silent
+            # tool_names filtering in build_production_team, not by gating this tuple.
+            "search_second_brain",
+            "read_brain_note",
         ),
         6,
     ),
@@ -76,6 +95,11 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
             "get_storyline",
             "get_script",
             "get_reviews",
+            # Task 9 (Transkript-Gates): the deterministic line->scene check the
+            # orchestrator's SCRIPT-APPROVAL CHECKPOINT sentence tells the team to call
+            # FIRST after every script (re-)approval, before synthesize_script_voice spends
+            # any work on a possibly misaligned storyline.
+            "suggest_scenes_for_script",
             "synthesize_script_voice",
             "build_cutlist",
             "save_contact_sheet",
@@ -174,10 +198,18 @@ def _board(tmp_path: Path, asset_id: str) -> Board:
 # --- pure roster tests -----------------------------------------------------------------------
 
 
-def test_roster_shape_and_tool_names_resolve(tmp_path: Path) -> None:
+def test_roster_shape_and_tool_names_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     deps = ProductionDeps()
+    # Every NAMED tool must resolve to a real spec — including scene_author's
+    # search_second_brain/read_brain_note, which only build when a vault is configured
+    # (Task 10, Transkript-Gates). A vault-less run is covered separately: see
+    # tests/test_brain_tools.py::test_tools_absent_from_specs_without_env.
+    (tmp_path / "vault").mkdir()
+    monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(tmp_path / "vault"))
 
     specs = production_agents.production_agent_specs()
 
@@ -221,6 +253,11 @@ def test_prompts_carry_contracts() -> None:
     assert "review_scene" in by_name["vision_reviewer"].system_message
     assert "viral arc" in by_name["story_architect"].system_message.lower()
     assert "german" in by_name["scene_author"].system_message.lower()
+    # The grounding rule (live 2026-08-04): every line is sourced from the scene's transcript
+    # or review — the prompt must name the transcript tool and forbid invented claims.
+    assert "get_scene_transcript" in by_name["scene_author"].system_message
+    assert "transcript" in by_name["scene_author"].system_message.lower()
+    assert "invent" in by_name["scene_author"].system_message.lower()
     assert "never cut the voice" in by_name["coding_agent"].system_message.lower()
     assert "save_contact_sheet" in by_name["coding_agent"].system_message
     assert "ship or revise" in by_name["qa_reviewer"].system_message.lower()
@@ -234,6 +271,18 @@ def test_prompts_carry_contracts() -> None:
     # pre-authorization of a shorter film must stay uncontradicted.
     assert "target_ratio" in by_name["qa_reviewer"].system_message
     assert "charter" in by_name["qa_reviewer"].system_message.lower()
+
+
+def test_coding_agent_knows_the_zoom_off_lever() -> None:
+    """Live finding 2026-08-04: 'zeig das volle Bild, kein enger Zoom' was not executable —
+    the team kept rebuilding the cutlist from the unchanged storyline because nothing told it
+    the framing lever is build_cutlist's own zoom parameter, not a storyline re-save."""
+    by_name = {s.name: s for s in production_agents.production_agent_specs()}
+    msg = by_name["coding_agent"].system_message
+
+    assert 'zoom="off"' in msg
+    assert "full frame" in msg.lower()
+    assert "storyline" in msg  # ... does NOT need a re-save for a framing change
 
 
 # --- build_production_team ---------------------------------------------------------------------
@@ -331,6 +380,11 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id)
     _install_fake_autogen(monkeypatch)
+    # A configured vault so scene_author's search_second_brain/read_brain_note (Task 10,
+    # Transkript-Gates) actually resolve to tools here too — see
+    # test_roster_shape_and_tool_names_resolve for why this is required.
+    (tmp_path / "vault").mkdir()
+    monkeypatch.setenv("LAURA_SECONDBRAIN_PATH", str(tmp_path / "vault"))
 
     team = production_agents.build_production_team(
         db, board, providers.resolve_from_env({}), asset_id=asset_id
@@ -355,3 +409,40 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert len({id(a.model_client) for a in participants}) == 1
     # The orchestrator gets its own client instance (role="orchestrator"), distinct from agents'.
     assert team._model_client is not by_name["vision_reviewer"].model_client
+
+
+def test_agent_names_filter_builds_a_qa_only_team(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """agent_names=('qa_reviewer',) yields exactly one participant whose tools are the
+    QA whitelist — the structural guarantee that the post-gate QA stage cannot write."""
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _install_fake_autogen(monkeypatch)
+
+    team = production_agents.build_production_team(
+        db, board, providers.resolve_from_env({}), asset_id=asset_id,
+        agent_names=("qa_reviewer",),
+    )
+
+    # list[Any]: same access + reason as test_build_team_constructs's `participants`.
+    participants: list[Any] = team._participants  # noqa: SLF001
+    [agent] = participants
+    assert agent.name == "qa_reviewer"
+    assert tuple(sorted(t.name for t in agent.tools)) == (
+        "board_status", "get_script", "get_storyline", "review_export", "save_qa_report",
+    )
+
+
+def test_agent_names_filter_unknown_name_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _install_fake_autogen(monkeypatch)
+
+    with pytest.raises(ValueError, match="unknown agent"):
+        production_agents.build_production_team(
+            db, board, providers.resolve_from_env({}), asset_id=asset_id,
+            agent_names=("nope",),
+        )

@@ -42,15 +42,30 @@ def _app(tmp_path: Path) -> tuple[TestClient, SqliteDatabase]:
 
 
 def _seed_asset_with_scenes(
-    db: Database, project_id: str, name: str, *, segments: list[tuple[int, int, str]]
+    db: Database,
+    project_id: str,
+    name: str,
+    *,
+    segments: list[tuple[int, int, str]],
+    media_dir: Path | None = None,
 ) -> str:
     """Asset + succeeded analysis run with *segments* (start_frame, end_frame, text) + a
     rough-cut timeline with one 1:1 clip over [0, 600) and two scenes [0,300)/[300,600).
 
     Mirrors test_discovery.py's / test_scout.py's helper of the same name.
+
+    ``media_dir`` (when given) is where the asset's source file is actually CREATED — needed
+    since ``create_project_auto_short`` now drops assets whose source has vanished before it
+    builds anything (mirrors test_auto_overview_endpoint.py's helper of the same name). Leave
+    it ``None`` (the default, unchanged for every pre-existing caller) to seed a dead source on
+    purpose.
     """
+    source = str(media_dir / name) if media_dir is not None else f"/tmp/{name}"
+    if media_dir is not None:
+        media_dir.mkdir(parents=True, exist_ok=True)
+        (media_dir / name).write_bytes(b"")
     asset = repos.create_asset(
-        db, project_id=project_id, type="video", display_name=name, source_path=f"/tmp/{name}"
+        db, project_id=project_id, type="video", display_name=name, source_path=source
     )
     run = repos.create_analysis_run(db, asset_id=asset["id"], pipeline_version="t", config={})
     repos.start_analysis_run(db, run["id"])
@@ -83,15 +98,25 @@ def _seed_asset_with_scenes(
     return str(asset["id"])
 
 
-def _seed_project_with_material(db: Database) -> tuple[str, str]:
+def _seed_project_with_material(
+    db: Database, *, media_dir: Path | None = None
+) -> tuple[str, str]:
     """Project + one asset whose transcript matches the topic "mission" used throughout below.
-    Returns ``(project_id, asset_id)``."""
+    Returns ``(project_id, asset_id)``.
+
+    ``media_dir`` (when given) is threaded straight through to :func:`_seed_asset_with_scenes`
+    so the asset's source file really exists — every asset this system produces is imported
+    from a real file, so a test exercising the "happy path" must seed one, now that
+    ``create_project_auto_short`` drops assets whose source has vanished. Left ``None`` (the
+    default) for callers that intentionally do not care (or want the dead-source shape).
+    """
     project = repos.create_project(
         db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
     )
     asset_id = _seed_asset_with_scenes(
         db, project["id"], "strong.mp4",
         segments=[(10, 60, "the agent farm plans the mission")],
+        media_dir=media_dir,
     )
     return str(project["id"]), asset_id
 
@@ -111,6 +136,12 @@ def _no_session_rows(db: Database) -> bool:
     return bool(count == 0)
 
 
+def _no_job_rows(db: Database) -> bool:
+    with db.connection() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    return bool(count == 0)
+
+
 # --- (a) happy path -------------------------------------------------------------------------
 
 
@@ -118,7 +149,7 @@ def test_happy_path_creates_session_on_the_scouted_asset(tmp_path: Path, monkeyp
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)  # force lexical, deterministic
     client, db = _app(tmp_path)
-    project_id, asset_id = _seed_project_with_material(db)
+    project_id, asset_id = _seed_project_with_material(db, media_dir=tmp_path)
     decision = _fixed_decision(asset_id)
     monkeypatch.setattr("laura.api.short_creator.run_scout", lambda *_a, **_kw: decision)
 
@@ -157,7 +188,7 @@ def test_fallback_decision_is_visible_in_the_response(tmp_path: Path, monkeypatc
     monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
     monkeypatch.setattr(discovery, "get_index", lambda: None)
     client, db = _app(tmp_path)
-    project_id, asset_id = _seed_project_with_material(db)
+    project_id, asset_id = _seed_project_with_material(db, media_dir=tmp_path)
     decision = _fixed_decision(asset_id, fallback=True)
     monkeypatch.setattr("laura.api.short_creator.run_scout", lambda *_a, **_kw: decision)
 
@@ -238,3 +269,83 @@ def test_preflight_503_refuses_before_scout_or_session(tmp_path: Path, monkeypat
     assert r.status_code == 503, r.text
     assert "LAURA_AGENT_API_KEY" in r.text
     assert _no_session_rows(db), "the refusal must be before the board and the job"
+
+
+# --- (g) assets whose source file is gone (live finding 2026-08-01) -------------------------
+
+
+def test_auto_short_drops_an_asset_whose_source_file_is_missing(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Live 2026-08-01: a repair restored two assets to the search index and they now rank
+    first for agent topics — while their source files are gone (imported from a temp directory
+    that was since cleaned; their proxies survive, but the renderer resolves the SOURCE).
+    Mirrors test_auto_overview_endpoint.py's sibling test for the overview route: the scout
+    must never see, let alone pick, an asset it cannot render."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)  # force lexical, deterministic
+    client, db = _app(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    alive = _seed_asset_with_scenes(
+        db, project["id"], "alive.mp4",
+        segments=[(10, 60, "the agent farm plans the mission")],
+        media_dir=tmp_path / "media",
+    )
+    # No media_dir -> the source path was never created: exactly the live shape.
+    dead = _seed_asset_with_scenes(
+        db, project["id"], "dead.mp4",
+        segments=[(10, 60, "the mission handoff is executed")],
+    )
+    decision = _fixed_decision(alive)
+    seen: dict[str, Any] = {}
+
+    def _capture(*_args: Any, **kwargs: Any) -> ScoutDecision:
+        seen["material"] = kwargs["material"]
+        return decision
+
+    monkeypatch.setattr("laura.api.short_creator.run_scout", _capture)
+
+    r = client.post(f"/projects/{project['id']}/auto-short", json={"topic": "mission"}, headers=_H)
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    # The scout never even saw the dead asset — it cannot pick what it cannot render.
+    assert {e["asset_id"] for e in seen["material"]["ranking"]} == {alive}
+    assert any("dead.mp4" in w and "source" in w for w in body["warnings"]), body["warnings"]
+    # The response's own ranking is the same filtered one the scout chose from.
+    assert {e["asset_id"] for e in body["ranking"]} == {alive}
+    assert dead not in [e["asset_id"] for e in body["ranking"]]
+
+
+def test_auto_short_422_when_every_source_is_missing(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Every matching asset's source file is gone: nothing can be produced, so nothing is —
+    same corpse rule test_no_material_returns_422_before_any_session_is_created already proves
+    for "nothing matched", now for "matched but unusable"."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    client, db = _app(tmp_path)
+    project = repos.create_project(
+        db, name="p", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/p"
+    )
+    _seed_asset_with_scenes(
+        db, project["id"], "gone.mp4",
+        segments=[(10, 60, "the agent farm plans the mission")],
+    )
+
+    def _boom(*_a: Any, **_kw: Any) -> ScoutDecision:
+        raise AssertionError("the scout must never run when every source is missing")
+
+    monkeypatch.setattr("laura.api.short_creator.run_scout", _boom)
+
+    r = client.post(f"/projects/{project['id']}/auto-short", json={"topic": "mission"}, headers=_H)
+
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["reason"] == "no usable material: every matching video's source file is missing"
+    assert detail["missing_sources"] == ["gone.mp4"]
+    assert _no_session_rows(db), "a 422 on missing sources must not leave a corpse session"
+    assert _no_job_rows(db), "a 422 on missing sources must not leave a corpse job"

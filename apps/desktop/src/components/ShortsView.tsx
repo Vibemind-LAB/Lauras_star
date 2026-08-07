@@ -5,6 +5,7 @@ import { useJobStatus } from "../hooks/useJobStatus";
 import { useShortsCandidates } from "../hooks/useShortsCandidates";
 import { log } from "../shared/log";
 import { framesToTimecode } from "../shared/timecode";
+import { AutoOverviewPanel } from "./AutoOverviewPanel";
 import { Player } from "./Player";
 
 function rateNum(asset: Asset): number {
@@ -118,6 +119,7 @@ function ShortsCandidateRow({
 export function ShortsView({
   client,
   asset,
+  projectId = null,
   seek,
   currentFrame,
   onSeek,
@@ -125,6 +127,8 @@ export function ShortsView({
 }: {
   client: LauraClient;
   asset: Asset | null;
+  /** Enables the project-wide Auto-Übersicht entry; without it the panel stays hidden. */
+  projectId?: string | null;
   seek: { frame: number } | null;
   currentFrame: number;
   onSeek: (frame: number) => void;
@@ -171,8 +175,11 @@ export function ShortsView({
 
   if (!asset) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-        Wähle ein Asset (in Import), um Shorts zu analysieren.
+      <div className="flex min-h-0 flex-1 flex-col p-2">
+        <AutoOverviewPanel client={client} projectId={projectId} />
+        <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
+          Wähle ein Asset (in Import), um Shorts zu analysieren.
+        </div>
       </div>
     );
   }
@@ -188,6 +195,9 @@ export function ShortsView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <div className="px-2 pt-2">
+        <AutoOverviewPanel client={client} projectId={projectId} />
+      </div>
       {/* Player */}
       <div className="flex min-h-0 flex-1 bg-surface-2/20 p-2">
         <Player asset={asset} seekTo={seek} onFrame={onFrame} />

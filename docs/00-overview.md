@@ -20,6 +20,30 @@ Zeitbasis + transcript-first Editing + belastbarer Interchange.
 3. **Kanonisches Timeline-/Interchange-Modell** — OpenTimelineIO als Source of Truth.
 4. **AI-Analyse-Stack** — Shot Detection, ASR, Forced Alignment, Speaker Diarization, semantische Suche.
 
+## Chat-first Bedienung & Transkript-Gates
+
+Primärer Bedienweg ist der Chat: Freitext-Nachrichten steuern Analyse, Kurzvideo-Produktion und
+Second-Brain-Recherche über typisierte Tools. Zwei Gates schützen die Produktionskette: **Gate A**
+bestätigt Transkripte im Chat (`review_transcript`/`correct_transcript`/`confirm_transcript`,
+dahinter `POST /assets/{id}/transcript:confirm`); jede Segment-Korrektur reindiziert automatisch
+in Qdrant, unbestätigte Transkripte warnen beim Produzieren sichtbar. **Gate B** hält neue
+Chat-Sessions vor der Stimmsynthese an (`BoardMeta.script_gate`), bis `approve_script` freigibt;
+die ActionCard zeigt bis dahin „📝 Sprechertext wartet auf Freigabe" statt „▶ ansehen". Nach der
+Freigabe läuft die Produktion als deterministische Werkzeugkette (Voice → Cutlist → Kontaktbogen
+→ Render — reine Tool-Aufrufe) plus eine begrenzte Ein-Agent-QA-Bewertung mit reinen
+Lese-/QA-Werkzeugen; das Team, das Skripte umschreiben könnte, ist auf diesem Pfad strukturell
+außen vor. `approve_script` setzt dafür nur noch einen puren Resume fort; das Team fasst
+freigegebene Scripts nicht mehr an, ein Text-Follow-up nach der Freigabe bewaffnet das Gate
+dagegen neu.
+Fragen und Kritik zu einer aktiven Session beantwortet Laura gegrundet über `discuss` und
+schlägt, wenn umsetzbar, die Änderung als `Vorschlag:` vor; ein „ja" setzt sie als
+Follow-up-Lauf um.
+Die Sprache des produzierten Videos folgt der Sprache der Anweisung — eine explizite Nennung
+wie „auf Englisch" gewinnt —, und ein Follow-up wie „mach das in english" wechselt die Sprache
+eines bereits bestehenden Videos nachträglich.
+Read-only Second-Brain-Recherche (`search_second_brain`/`read_brain_note`) ist optional über
+`LAURA_SECONDBRAIN_PATH` env-gated. Details: [`agentic-short-creator`](agentic-short-creator.md).
+
 ## Größte Risiken (wo die Zeit wirklich draufgeht)
 
 Laut Report **nicht** STT/Shot-Detection, sondern:

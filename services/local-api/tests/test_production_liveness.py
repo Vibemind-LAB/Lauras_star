@@ -148,6 +148,92 @@ def test_a_job_with_no_result_reports_no_restored_artifacts(
     assert body["job"]["restored"] == []
 
 
+def test_a_succeeded_job_that_produced_no_film_says_so(tmp_path: Path, monkeypatch: Any) -> None:
+    """Live 2026-08-02 (Drive-Test): two runs ended with ``export_id: null`` and half a board,
+    and both jobs read ``succeeded`` — the job status only ever meant "the handler did not
+    raise". ``run_production``'s own result already distinguishes the two (``complete`` is
+    ``resume_point == "done"``, and its docstring says outright that ``ok`` does not mean a
+    video exists); the status endpoint just never looked. Without this a user sees "fertig"
+    over an empty board — the same lie the render report told about its length."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+    session_id = _start(client, asset_id)
+    job_id = _latest_job_id(db, session_id)
+
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE jobs SET status='succeeded', result_json=?, updated_at=?, finished_at=? "
+            "WHERE id=?",
+            (
+                json.dumps(
+                    {
+                        "ok": True,
+                        "complete": False,
+                        "weak": True,
+                        "export_id": None,
+                        "resume_point": "storyline",
+                        "restored": [],
+                    }
+                ),
+                "2026-08-02T20:29:00+00:00",
+                "2026-08-02T20:29:00+00:00",
+                job_id,
+            ),
+        )
+
+    job = client.get(f"/production/{session_id}", headers=_H).json()["job"]
+
+    assert job["status"] == "succeeded", "the JOB ran fine — that part was never the lie"
+    assert job["complete"] is False
+    assert job["export_id"] is None
+    assert job["stopped_at"] == "storyline", "name the link the chain never got past"
+
+
+def test_a_finished_run_reports_complete_with_its_export(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+    session_id = _start(client, asset_id)
+    job_id = _latest_job_id(db, session_id)
+
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE jobs SET status='succeeded', result_json=? WHERE id=?",
+            (
+                json.dumps(
+                    {"ok": True, "complete": True, "export_id": "exp-1", "resume_point": "done"}
+                ),
+                job_id,
+            ),
+        )
+
+    job = client.get(f"/production/{session_id}", headers=_H).json()["job"]
+
+    assert job["complete"] is True
+    assert job["export_id"] == "exp-1"
+    assert job["stopped_at"] is None, "a finished run stopped nowhere"
+
+
+def test_a_job_with_no_result_reports_an_unknown_outcome(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Queued or still running: nothing is known yet. ``complete`` must be None — not False,
+    which would read as "it ran and produced nothing"."""
+    monkeypatch.setattr("laura.api.short_creator._autoshort_available", lambda: True)
+    client, db = _app(tmp_path)
+    asset_id = _seed_asset(db)
+    session_id = _start(client, asset_id)
+
+    job = client.get(f"/production/{session_id}", headers=_H).json()["job"]
+
+    assert job["complete"] is None
+    assert job["export_id"] is None
+    assert job["stopped_at"] is None
+
+
 def test_a_follow_up_message_becomes_the_session_s_current_job(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

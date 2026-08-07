@@ -509,3 +509,200 @@ das Board. `POST /projects/{pid}/auto-overview`.
       `laura-qdrant`-Container auf 127.0.0.1:6333)
 - [ ] UI-Einstieg und ein Umschalter zwischen mehreren Sequenzen — eigener Zyklus
 - [ ] Erzählstimme über die Montage — eigener Zyklus (v1 nutzt den Originalton)
+
+## Transkript-Gates (Gate A + Gate B im Chat)  `[x]`  (Spec + Plan 2026-08-04)
+Zwei Gates gegen stille Fehlstände in der Chat-Produktionskette: Transkripte müssen vor
+dem Produzieren bestätigt sein, Skripte müssen vor der Stimmsynthese freigegeben sein.
+- [x] **Gate A — Transkript-Bestätigung** — Migration `0035` (Confirm-Stempel), Chat-Tools
+      `review_transcript`/`correct_transcript`/`confirm_transcript`, `POST
+      /assets/{id}/transcript:confirm`, Segment-PATCH stößt automatisch Qdrant-Reindex an;
+      Produktions-Services warnen sichtbar „Transkript unbestätigt: {display_name}" statt
+      still auf einem unbestätigten Transkript zu produzieren
+- [x] **Gate B — Skript-Freigabe** — neue chat-gestartete Produktions-Sessions tragen
+      `BoardMeta.script_gate`; `synthesize_script_voice` verweigert die Stimmsynthese bis
+      zur Freigabe; Chat-Tool `approve_script` gibt frei + setzt die Session fort; die
+      ActionCard zeigt „📝 Sprechertext wartet auf Freigabe" + Skriptzeilen, kein
+      „▶ ansehen" solange offen
+- [x] Gemessene Sprechraten-Kalibrierung (`script_budget.rate_source`: `measured`|
+      `heuristic`) statt fixer Heuristik
+- [x] Text-first Szenen-Matching (`suggest_scenes_for_script`) vor Embedding-Suche
+- [x] Read-only Second-Brain-Tools (`search_second_brain`/`read_brain_note`), env-gated
+      über `LAURA_SECONDBRAIN_PATH`, pfadtraversal-gesichert
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2560 passed, 12
+      skipped, 585.9s; bare `uv run mypy` clean (518 Dateien); `uv run ruff check src tests`
+      clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 496 Tests grün; `pnpm typecheck`
+      clean.
+- **Exit:** ✓ beide Gates greifen chat-seitig End-to-End (Tools ↔ Endpoints ↔ Board/Karten);
+  volle Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter Chat-Durchlauf in
+  der laufenden App (Gate A Round-Trip, Gate B Round-Trip, Warnungs-Sichtbarkeit) — siehe
+  `.superpowers/sdd/2026-08-04-transcript-gates/task-13-report.md`.
+
+## Modulare Produktion (deterministischer Post-Gate-Pfad)  `[x]`  (Spec + Plan 2026-08-05)
+Nach Gate B bleibt in der Produktionskette nichts Kreatives mehr übrig: Voice→Cutlist→
+Kontaktbogen→Render laufen als reine Werkzeugkette statt über das Agenten-Team, das
+freigegebene Scripts sonst hätte umschreiben können.
+- [x] **MP1 — `production_pipeline.run_deterministic_tail`** — Kette ohne QA: Skip-Semantik
+      über `Board.resume_point`, genau ein Auto-Retry pro Schritt, ehrliches Scheitern mit
+      Schrittname; kein Schreibpfad auf `script`/`storyline` (Exakt-Tupel-Test pinnt das
+      Vier-Werkzeuge-Menü)
+- [x] **MP2 — begrenzte QA-Stufe** — `build_production_team` bekommt einen `agent_names`-
+      Filter (Exakt-Tupel-Whitelist, `ValueError` bei unbekanntem Namen); `run_tail_with_qa`
+      hängt ein Ein-Agent-Team (`qa_reviewer`, Lese-/QA-Werkzeuge) nach einer erfolgreichen
+      Kette an, überspringt QA bei Kettenfehler
+- [x] **MP3 — `deterministic_eligible` + Zweig in `run_production`** — reines Prädikat: Gate
+      aktiv, Freigabe content-aktuell (`content_hash`-Vergleich), Kreativarbeit fertig
+      (`resume_point` in Voice…QA-Report), kein Text-Follow-up; `run_production` nimmt bei
+      Eignung den Tail statt des Team-Aufbaus, identische `_completed_result`-Form
+- [x] **MP4 — `approve_script` als purer Resume** — `run_production_resume` ohne
+      `message`-Key im Job-Payload; Doppel-Freigabe auf einem unfertigen Board stößt einen
+      weiteren Resume an (Recovery nach gescheitertem Tail) statt nur zu antworten;
+      `_SCRIPT_APPROVED_FOLLOW_UP_TEXT` entfällt ersatzlos
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2601 passed, 7
+      skipped, 788.97s; bare `uv run mypy` clean (520 Dateien); `uv run ruff check src tests`
+      clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 498 Tests grün; `pnpm typecheck`
+      clean (keine Frontend-Änderung in diesem Arc — der grüne Lauf beweist genau das).
+- **Exit:** ✓ nach „Script freigeben" läuft die Produktion als deterministische
+  Werkzeugkette plus begrenzter QA-Bewertung, das Team fasst freigegebene Scripts nicht
+  mehr an; volle Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter
+  Chat-Durchlauf in der laufenden App (Pipeline-Tool-Events auf der Karte, keine zweite
+  Freigabe nötig, Text-Follow-up läuft weiterhin über das Team und bewaffnet das Gate neu)
+  — siehe `.superpowers/sdd/2026-08-05-modular-production/task-MP5-report.md`.
+
+## Follow-up-Erlebnis (discuss + Session-Grounding)  `[x]`  (Spec + Plan 2026-08-05)
+Freie Kritik/Fragen zum Video bekommen gegrundete Antworten mit umsetzbarem Vorschlag,
+Anpassungs-Sprache landet zuverlässig als Follow-up, und die Fertig-Karte lädt zum
+Weitermachen ein.
+- [x] **FE1 — `discuss`-Tool + Router-Prompt-Regeln** — neues Router-Tool `discuss`
+      (`{"text": str}`), Prioritätsregel: aktive Session + Rede über das ERGEBNIS
+      (Video/Szenen/Schnitt/Captions/Wortlaut/Transkript-Qualität) bevorzugt `discuss`
+      oder `follow_up` vor Asset-Werkzeugen; ein „ja" direkt nach einer `Vorschlag:`-Zeile
+      routet als `follow_up` mit dem Text NACH `Vorschlag:`, nie mit dem bloßen „ja";
+      `build_one_shot_runner` als öffentliche Fassade über den bestehenden Router-Runner
+- [x] **FE2 — Gegrundeter Discuss-Handler** — `_handle_discuss` baut den Task-Text aus
+      Board-Kompakt (`resume_point`/Gate/Export), Skriptzeilen, Transkript-Treffern
+      (`_matching_segments`: explizite „Segment N" schlägt Bigram-Suche) und Thread-Tail
+      und lässt ihn über einen injizierbaren `discuss_runner` laufen; ein fehlender/
+      leerer/fehlschlagender Runner fällt deterministisch auf einen festen Text zurück —
+      ein Chat-Turn endet nie im 500
+- [x] **FE3 — Active-Session-Zeile im Router-Kontext** — `compose_context` bekommt
+      `active_session` (`done+export`/`awaiting-approval`/`running`/`failed`/
+      `in-progress`), in `api/chat.py` best-effort ermittelt (jeder Fehler lässt die
+      Zeile einfach weg) — genau das Signal, das den Live-Vorfall verhindert (freie
+      Kritik mit „Transkript" im Wortlaut landete als Transkript-Karte statt als Antwort)
+- [x] **FE4 — Fertig-Karten-Hinweis** — die ProductionActionCard lädt im Export-Zweig
+      unter „▶ ansehen" zur Weiterbearbeitung ein: „Weiter anpassen: sag z. B. ‚mach den
+      Hook kürzer' — oder frag einfach."
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2625 passed, 7
+      skipped, 742.45s; bare `uv run mypy` clean (520 Dateien); `uv run ruff check src
+      tests` clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 499 Tests grün;
+      `pnpm typecheck` clean.
+- **Exit:** ✓ freie Fragen/Kritik zu einer aktiven Session bekommen eine gegrundete
+  Antwort im `Vorschlag:`-Format, ein „ja" setzt den Vorschlag als Follow-up-Lauf um, die
+  Fertig-Karte lädt sichtbar zum Weitermachen ein; volle Backend- + Desktop-Gates grün.
+  **Manuell zu prüfen:** kompletter Chat-Durchlauf in der laufenden App (Live-Vorfall als
+  Regressionsfall: freie Kritik mit „Transkript" im Wortlaut bei aktiver Session →
+  discuss-Antwort statt Transkript-Karte; „ja" auf eine `Vorschlag:`-Zeile → Follow-up-Lauf
+  startet, Karte zeigt „⚙ läuft"; Fertig-Karte zeigt die Hinweiszeile) — App-Neustart mit
+  detachtem Backend nötig, siehe
+  `.superpowers/sdd/2026-08-05-follow-up-experience/task-FE4-report.md`.
+
+## Sprache folgt dem Input  `[x]`  (Spec + Plan 2026-08-05)
+Die Sprache des produzierten Videos folgt der Sprache der Anweisung statt fix Deutsch zu
+sein: eine explizite Nennung wie „auf Englisch" gewinnt bei der ersten Produktion, und ein
+Follow-up wie „mach das in english" wechselt die Sprache eines bereits bestehenden Videos
+nachträglich.
+- [x] **SP1 — Router `language`-Argument + Erkennungsregel** — `_LANGUAGE_RE`/
+      `_validate_optional_language` (mirrors `_validate_optional_target_seconds`) in
+      `start_short`/`start_overview`; neue Regel im System-Prompt: explizite
+      Sprachnennung in der Anweisung gewinnt, sonst Standard Deutsch
+- [x] **SP2 — Executor reicht `language` durch** — `_handle_start_short`/
+      `_handle_start_overview` lesen `language` aus den Router-Argumenten
+      (`.strip() or _DEFAULT_LANGUAGE` gegen Whitespace-Only) und reichen sie an
+      `run_project_auto_short`/`run_project_auto_overview` durch statt sie fix auf
+      Deutsch zu hart-kodieren
+- [x] **SP3 — `set_board_language`-Tool + Charter-Regel** — `Board.set_language()`
+      (volle Schema-Validierung via `model_validate`, kein `model_copy`-Bypass mehr;
+      Fix-Runde schloss eine 1-Zeichen-Board-Brick-Lücke); neues Tool in
+      `build_production_tool_specs`, `scene_author` bekommt es als erstes Tool plus eine
+      LANGUAGE-SWITCH-Systemnachricht („zuerst das Tool rufen, dann jedes Kapitel neu
+      schreiben"); Charter-Satz in `build_production_task` Abschnitt 6
+- [x] **SP4 — Volle Gates + Doku + Prüfliste** — Doku-Satz in `docs/00-overview.md`,
+      dieser todo.md-Block, plus ein Docstring-Fix in `production_tools.py`
+      (`set_board_language` behauptete dieselben 2-32-Zeichen-Grenzen wie `BoardMeta`,
+      tatsächlich teilen sie nur die 2-Zeichen-Untergrenze — die 32er-Obergrenze ist
+      enger als das Modell-Feld mit 40)
+- [x] **Verifiziert:** Backend voll `uv run pytest -p no:cacheprovider` — 2644 passed, 7
+      skipped, 627.55s; bare `uv run mypy` clean (520 Dateien); `uv run ruff check src
+      tests` clean. Desktop `pnpm test -- --run` — 68 Test-Dateien, 499 Tests grün;
+      `pnpm typecheck` clean (keine Frontend-Änderung in diesem Arc — der grüne Lauf
+      beweist genau das).
+- **Exit:** ✓ Produktions-Sprache folgt der Anweisung statt fix Deutsch zu sein, ein
+  Sprachwechsel-Follow-up bewaffnet das Skript neu über `set_board_language`; volle
+  Backend- + Desktop-Gates grün. **Manuell zu prüfen:** kompletter Chat-Durchlauf in der
+  laufenden App (a: „build me a 45s short about X" → englisches Script an der
+  Gate-Karte; b: Follow-up „mach das in english" auf ein deutsches Video → Team ruft
+  `set_board_language` sichtbar im Ledger, Script wird englisch, Gate re-armed, nach
+  Freigabe englische Voice; c: deutscher Auftrag bleibt deutsch als Regressionsfall) —
+  App-Neustart mit detachtem Backend nötig, siehe
+  `.superpowers/sdd/2026-08-05-language-follows-input/task-SP4-report.md`.
+
+## Szenen-Auswahl (Gate S) + Voice pro Szene  `[x]`  (Spec + Plan 1 + Plan 2 2026-08-06)
+Der User sieht und bestätigt vor dem Script, welche Szenen ins Video kommen (Gate S,
+`docs/superpowers/plans/2026-08-06-gate-s-scene-selection.md`), und jede Skriptzeile
+bekommt danach ihre EIGENE Voice-Synthese über GENAU der Szene, die sie beschreibt
+(Voice pro Szene, `docs/superpowers/plans/2026-08-06-voice-per-scene.md`) — behebt „Bild
+≠ Ton" (der User sah n8n im Bild, während über Rowboat gesprochen wurde), weil bisher eine
+durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
+- [x] **GS1 — SceneSelection-Modelle + Gate-abhängige Ketten-Wurzel** — `SceneCandidate`/
+      `SceneSelection` in `board_models.py` (Kandidat = SHOWS/SAYS/Begründung,
+      `confirmed_utc` nur serverseitig gesetzt), `scene_selection` als neue Ketten-Wurzel
+      wenn `BoardMeta.scene_gate` an ist.
+- [x] **GS2 — `propose_scene_selection` + strukturelle Guards** — Team-Tool schreibt den
+      Vorschlag; `save_storyline` verweigert strukturell, solange kein bestätigter
+      `scene_selection` vorliegt.
+- [x] **GS3 — Orchestrator-Pause + Charter + `scene_gate` für neue Sessions** —
+      `run_production` pausiert ohne Team-Turn, solange ein Vorschlag unbestätigt auf dem
+      Board liegt; `build_production_task` trägt die SCENE-SELECTION-GATE-Charter
+      (Vorschlag-dann-Stopp bzw. „use ONLY scenes […]" nach Bestätigung).
+- [x] **GS4 — Confirm-Service + Endpoint + `select_scenes`-Chat-Pfad** —
+      `confirm_scene_selection` (Service + Endpoint) plus Router-Tool `select_scenes`, mit
+      dem der User die Auswahl direkt im Chat bestätigt.
+- [x] **GS5 — api.ts + `SceneSelectionCard` + volle Gates** — Desktop-Vertrag +
+      Kandidaten-Karte im ChatPanel zum Auswählen/Bestätigen.
+- [x] **VS1 — `voice_concat`: Konstruktion der Gesamtspur** — pure Funktion + ffmpeg-Pfad,
+      `INTER_SCENE_GAP_S = 0.35` als einzige Pausenkonstante zwischen Zeilen-Clips.
+- [x] **VS2 — `VoiceSegment` + Synthese pro Zeile mit Zeilen-Cache** — jede Skriptzeile
+      bekommt ihren eigenen ElevenLabs-Aufruf statt einer Kapitel-Sammelspur; Cache
+      verhindert unnötige Re-Synthese unveränderter Zeilen.
+- [x] **VS3 — `build_cutlist`: Segment = Clip-Länge** — Video-Segmente folgen jetzt der
+      Zeilen-Voice-Dauer statt einer Kapitel-Pauschale, Sync-Invariante (Video == Audio,
+      `-shortest` schneidet nichts ab) bleibt erhalten.
+- [x] **VS4 — Kapazitäts-Guard pro Zeile beim Script-Schreiben** — `script_budget`/
+      `save_script_chapter` warnen pro Zeile, wenn die zugeordnete Szene die Sprechzeit
+      nicht trägt (`capacity_warning`), bevor synthetisiert wird.
+- [x] **VS5 — Grounding + Secondbrain-Charter + volle Gates + Doku** —
+      `build_production_task` trägt jetzt einen SCENE-FACTS-Block direkt nach dem
+      SOURCE-MATERIAL-Abschnitt: bei bestätigter `SceneSelection` eine SHOWS+SAYS-Zeile
+      je GEWÄHLTER Szene aus deren Kandidat, sonst (kein Gate / keine Bestätigung) eine
+      SHOWS-Zeile je `board.scene_reviews()` als Fallback — alte, gate-lose Sessions
+      profitieren vom selben Grounding. `scene_author`-Systemprompt bekommt zwei
+      Charter-Zeilen: jede Zeile FÜR ihre Szene schreiben (SCENE FACTS + optional Zitat aus
+      `get_scene_transcript`), Produkt-/Eigennamen vor dem Schreiben mit
+      `search_second_brain` prüfen, wenn verfügbar (Rowboat-vs-n8n-Fehlerklasse). Zwei
+      neue Tests in
+      `test_production_orchestrator.py`: bestätigte Auswahl → Facts nur für gewählte
+      Szenen, keine Auswahl → Reviews-Fallback.
+- [x] **Verifiziert (VS5, dieser Task):** `uv run pytest tests/test_production_orchestrator.py`
+      — 46 passed; `uv run pytest tests/test_production_agents.py` — 10 passed; bare
+      `uv run mypy` clean; `uv run ruff check .` clean. Voller Backend-Suite-Lauf sowie die
+      Desktop-Gates (`pnpm typecheck && pnpm test && pnpm build`) sind Sache des
+      Controller-Reviews am Ende des gesamten Arcs (siehe Task-Brief), hier bewusst nicht
+      erneut mitgelaufen.
+- **Exit:** ✓ Gate S + Voice pro Szene komplett: die Szenenwahl passiert VOR dem Script und
+  mit Bestätigung des Users, jede Zeile bekommt ihre eigene Voice über die richtige Szene,
+  und der Task-Text plus die Charter grounden das Schreiben selbst in genau diesen
+  Szenen-Fakten. **Manuell zu prüfen:** voller Lauf mit Gate S (Auswahl → Script →
+  Freigabe → Film, hörbar prüfen dass jede Szene über IHRE Zeile läuft), Hook-Follow-up
+  (nur eine Zeile neu synthetisiert), Sprachwechsel-Follow-up (alle Zeilen neu, Film
+  konsistent), Alt-Session-Resume (Legacy-Ein-Spur-Pfad unverändert) — siehe
+  `.superpowers/sdd/2026-08-06-voice-per-scene/task-VS5-report.md`.

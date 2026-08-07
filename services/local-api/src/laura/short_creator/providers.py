@@ -431,6 +431,12 @@ def build_model_client(
         for pool_model in pool:
             client_kwargs = dict(kwargs)
             client_kwargs["model"] = pool_model
+            # gpt-5.6-family models refuse function tools on /v1/chat/completions unless
+            # reasoning_effort is explicitly "none" (live 400, 2026-08-07: "To use function
+            # tools, use /v1/responses or set reasoning_effort to 'none'"). Sent only for
+            # models that demand it — other models would reject the unknown parameter.
+            if pool_model.startswith("gpt-5.6"):
+                client_kwargs["reasoning_effort"] = "none"
             clients.append(RetryingChatClient(OpenAIChatCompletionClient(**client_kwargs)))
         if len(clients) == 1:
             return cast("ChatCompletionClient", clients[0])

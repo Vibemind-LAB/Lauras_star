@@ -27,6 +27,7 @@ from laura.short_creator.board_models import (
     ContactSheet,
     Cutlist,
     CutSegment,
+    Roi,
     canvas_for,
     content_hash,
 )
@@ -176,6 +177,57 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
     sheet = board.load("contact_sheet")
     assert cutlist_now is not None and isinstance(sheet, ContactSheet)
     assert sheet.parents == {"cutlist": content_hash(cutlist_now)}
+
+
+def test_save_contact_sheet_crops_in_proxy_space_for_downscaled_proxy(tmp_path: Path) -> None:
+    """ROI crops must be computed against the PROXY's pixel space, not the source's.
+
+    Live finding 2026-08-04: a 4K source (3840x2160) with a 1080p proxy made every
+    roi'd tile fail — the crop window was computed in source pixels and overflowed
+    the smaller proxy frame, killing the PNG encoder ("Invalid argument") on all 40
+    attempts of a real production run. The proxy here is 320x180, the asset row says
+    4K; a source-space crop (>320 wide) cannot succeed.
+    """
+    db, asset_id = _seed_asset(tmp_path)
+    repos.update_asset_probe(
+        db,
+        asset_id,
+        type="video",
+        duration_frames=PROXY_SECONDS * FPS,
+        rate_num=FPS,
+        rate_den=1,
+        audio_sample_rate=None,
+        start_timecode=None,
+        width=3840,
+        height=2160,
+        codec_video="h264",
+        codec_audio=None,
+        is_vfr=False,
+        sha256=None,
+    )
+    board = _board(tmp_path, asset_id)
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[
+                CutSegment(
+                    order=0, scene_number=1, start_frame=0, end_frame_exclusive=60,
+                    roi=Roi(x=0.1, y=0.1, w=0.8, h=0.8),
+                ),
+                CutSegment(
+                    order=1, scene_number=2, start_frame=60, end_frame_exclusive=120,
+                    roi=Roi(x=0.5, y=0.5, w=0.5, h=0.5),
+                ),
+            ]
+        ),
+    )
+    specs = _specs(db, board, asset_id)
+
+    out = specs["save_contact_sheet"].func()
+
+    assert out["ok"] is True, out
+    png = Path(out["png_path"])
+    assert png.is_file() and png.stat().st_size > 0
 
 
 def test_save_contact_sheet_versions_are_separate_files(tmp_path: Path) -> None:

@@ -45,7 +45,10 @@ frame-accurate ``Cutlist``: one ``CutSegment`` per scene entry in arc order, cut
 window the entry references (offset, per-window roi — duration is budget-driven, never the
 window's own duration), clamped inside its own source range, with an optional zoom timed to when
 the scene's script line is actually spoken (the voice sidecar's word ``start_s``, via
-:func:`line_starts`, offset by ``transition_lead_s``).
+:func:`line_starts`, offset by ``transition_lead_s``). ``zoom="off"`` is the user's framing
+lever: it drops every roi and ``zoom_start_s`` regardless of the storyline's window references
+(live 2026-08-04: "zeig das volle Bild" was otherwise not executable — the team would have had
+to re-save the storyline without its window refs, and failed to in three follow-up runs).
 Segment durations are coupled to that same sidecar: :func:`chapter_audio_windows` tiles the
 voice track into per-chapter windows (boundaries midway between adjacent chapters' words, the
 last chapter running to voice end + a short tail) and ``_scale_chapter_durations`` rescales each
@@ -95,6 +98,7 @@ instead of raising, matching every other tool's error contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -102,6 +106,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,7 +117,7 @@ from pydantic import ValidationError
 from ..analysis.transition_review import extract_frames
 from ..db import repos
 from ..db.database import Database
-from ..ingest.ffmpeg import ffmpeg_bin
+from ..ingest.ffmpeg import FFmpegError, ffmpeg_bin, probe
 from ..render.zoom import roi_to_window
 from ..util import new_id, utcnow_iso
 from . import context
@@ -129,11 +134,14 @@ from .board_models import (
     RenderCheck,
     RenderReport,
     Roi,
+    SceneCandidate,
     SceneReview,
+    SceneSelection,
     Script,
     ScriptLine,
     Storyline,
     VoiceArtifact,
+    VoiceSegment,
     as_scene_window,
     canvas_for,
     stage_direction_label,
@@ -142,9 +150,18 @@ from .board_models import content_hash as _content_hash
 from .board_models import lines_in_storyline_order as _lines_in_storyline_order_impl
 from .board_models import script_hash as _script_hash
 from .board_models import script_text as _script_text
+from .brain_tools import brain_root, read_brain_note, search_second_brain
 from .describe import DescribeBackend, resolve_describe_backend
+from .script_match import match_lines_to_scenes
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
 from .voice import VoiceBackend, resolve_voice_backend
+from .voice_concat import (
+    INTER_SCENE_GAP_S,
+    concat_with_gaps,
+    line_offsets,
+    merge_word_timings,
+    probe_duration_s,
+)
 
 # Signature of laura.mcp.tools.tool_render_segments — wired in from Task 6 on.
 logger = logging.getLogger(__name__)
@@ -217,12 +234,52 @@ def _roi_rule(*, src_w: int, src_h: int, out_w: int, out_h: int) -> str:
 
 _RENDER_POLL_INTERVAL_S = 2.0
 _VOICE_FIT_TOLERANCE_S = 0.05
+# voice_fits on a per-line (segments) board needs more slack than the legacy path: the check
+# compares a PROBED voice duration (container/LAME padding included) against an exact
+# frame-rounded video length, and build_cutlist's own last-segment cushion (below) is itself a
+# few hundredths of a second of intentional headroom, not error — 0.05s left no margin for
+# either and made voice_fits fail deterministically on an otherwise-correct render.
+_SEGMENTS_VOICE_FIT_TOLERANCE_S = 0.15
+# The LAST cutlist segment (per-line/segments path only) gets this much EXTRA picture beyond
+# what its own clip(s) measure, clamped to the scene's own capacity. ``-shortest`` at mux time
+# always trims the delivered file to the (shorter) voice track, so the extra picture never
+# lengthens the film — it only protects the last word's tail from a probe/round-trip mismatch
+# (the probed voice duration includes container padding an exact frame-rounded video does not)
+# that would otherwise make voice_fits fail on an otherwise-correct cut. See build_cutlist's
+# per-scene-voice branch and the spec's §5.2 note.
+_LAST_SEGMENT_CUSHION_S = 0.3
 # A hard cap on real renders per production — the net for a loop that keeps revising for a
 # reason the budget fix cannot remove (a QA verdict, the model second-guessing itself). One
 # render plus one revise round is the charter; past that, render_production ships the last cut
 # instead of spending another render, and the turn budget stops the rest. A prompt saying "one
 # revise round" did not hold — gpt-5-mini rendered four times, gpt-5.5 more.
+# The cap guards against the TEAM's loops, not against the USER: an explicit follow-up message
+# raises it via ProductionDeps.max_render_cycles = follow_up_render_cap(board).
 _MAX_RENDER_CYCLES = 2
+# How much of a storyline may stay unwritten before the render reports a failing check. Some
+# slack is deliberate — a short closing beat the author folded into the previous chapter is not
+# a broken film — but a majority of the planned seconds without narration is.
+_SILENT_SHARE_LIMIT = 0.4
+# How much of the usable length an arc must plan for before save_storyline warns. The plan is
+# the ceiling: a film cannot come out longer than the seconds its chapters asked for.
+_PLAN_COVERAGE_MIN = 0.8
+
+
+def _probe_duration(path: str) -> float | None:
+    """The measured length of a rendered file in seconds, or None when it cannot be measured.
+
+    Measuring must never break a finished render: a missing ffprobe, a file the renderer wrote
+    somewhere else, a container without a duration — all of them mean "unknown", which the
+    report says plainly instead of falling back to a number that would read as measured.
+    """
+    try:
+        if not Path(path).is_file():
+            return None
+        raw = probe(path).get("format", {}).get("duration")
+        seconds = float(raw)
+    except Exception:  # ffprobe failure, unparsable JSON, no duration field
+        return None
+    return seconds if seconds > 0.0 else None
 
 
 def _shape_of(out_w: int, out_h: int) -> str:
@@ -254,6 +311,11 @@ class ProductionDeps:
     frame_extract: Callable[[Database, str, list[int]], list[bytes]] | None = None
     voice_backend: VoiceBackend | None = None  # used from Task 5 on
     render_segments: RenderSegmentsFn | None = None  # used from Task 6 on
+    probe_duration: Callable[[str], float | None] | None = None  # measures the rendered file
+    # render_production's revision cap (None = _MAX_RENDER_CYCLES). run_production raises it to
+    # follow_up_render_cap(board) for a run carrying an explicit user follow-up message — the
+    # cap exists to stop the team's own revision loops, never an operator-requested change.
+    max_render_cycles: int | None = None
 
 
 # --- reply parsing + clamping (pure) ------------------------------------------------------------
@@ -482,6 +544,22 @@ def _run_ffmpeg_quiet(args: list[str]) -> bool:
     return proc.returncode == 0
 
 
+def _probe_video_dims(path: str) -> tuple[int, int]:
+    """The video stream's own width/height, ``(0, 0)`` when unprobeable.
+
+    ``(0, 0)`` flows into the letterbox-never-crop fallback downstream — a sheet
+    without zoom framing beats no sheet at all.
+    """
+    try:
+        streams = probe(path).get("streams", [])
+    except FFmpegError:
+        return 0, 0
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video is None:
+        return 0, 0
+    return int(video.get("width") or 0), int(video.get("height") or 0)
+
+
 def _tile_filter(
     *, roi: tuple[float, float, float, float] | None, src_w: int, src_h: int,
     out_w: int, out_h: int, fontfile: str | None, label: str,
@@ -621,6 +699,39 @@ def _validation_errors(exc: ValidationError) -> list[str]:
     return [f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]]
 
 
+# --- scene selection gate (Gate S, pure) ------------------------------------------------------
+
+
+def scene_selection_block_reason(
+    selection: SceneSelection | None, referenced_scenes: list[int], *, gate_on: bool
+) -> str | None:
+    """Why a storyline/script write must be refused under Gate S — or None to proceed.
+
+    Structural, not prompt (I2 lesson): the contract that only USER-picked scenes may be
+    written lives at the write site.
+    """
+    if not gate_on:
+        return None
+    if not isinstance(selection, SceneSelection):
+        return (
+            "scene selection gate: no proposal on the board yet — call "
+            "propose_scene_selection first; the user then confirms in chat"
+        )
+    if selection.confirmed_utc is None:
+        return (
+            "scene selection gate: awaiting the user's pick — the user must confirm "
+            "the scene selection in chat before storyline or script are written"
+        )
+    allowed = set(selection.selected_scene_numbers)
+    stray = sorted(set(referenced_scenes) - allowed)
+    if stray:
+        return (
+            f"scenes {stray} are outside the user's confirmed selection "
+            f"{sorted(allowed)} — only selected scenes may be used"
+        )
+    return None
+
+
 # --- voice + cutlist (pure) -------------------------------------------------------------------
 
 
@@ -685,6 +796,49 @@ def silent_chapters(script: Script, storyline: Storyline | None) -> list[int]:
     return [chapter.chapter for chapter in storyline.arc if chapter.chapter not in written]
 
 
+def numbered_chapters(chapters: list[Any]) -> list[Any]:
+    """Fill in each chapter's missing ``chapter`` number from its position in the list.
+
+    Live 2026-08-02 (Drive-Test): ``chapter: Field required`` came back 42, 53 and 22 times
+    across three runs — by a wide margin the most repeated failure in the pipeline, and the one
+    that actually burned the turn budgets. The required field is called ``chapter`` and sits
+    inside a list called ``chapters``: an author reads ``chapters: [{...}]``, takes the object
+    to BE the chapter, and never supplies the number. That is not a wrong guess so much as the
+    only reading the shape suggests.
+
+    The arc is an ordered sequence, so position IS the number wherever one is missing. An
+    explicit number is never touched (an author that renumbers on purpose keeps its intent),
+    and a non-dict entry is passed through untouched so it still fails validation as before.
+    """
+    return [
+        {**raw, "chapter": index} if isinstance(raw, dict) and "chapter" not in raw else raw
+        for index, raw in enumerate(chapters, start=1)
+    ]
+
+
+def _with_material_hint(reply: dict[str, Any], hint: str | None) -> dict[str, Any]:
+    """Attach ``material_hint`` to a rejection when there is one to give (never otherwise)."""
+    if hint is not None:
+        reply["material_hint"] = hint
+    return reply
+
+
+def silent_seconds_share(script: Script, storyline: Storyline | None) -> tuple[list[int], float]:
+    """The silent chapters and the share of the storyline's planned seconds they carry.
+
+    Counting chapters alone would weigh a 2s sting the same as the 25s payoff that actually made
+    the live film a fifth of its target. The share is what says how much of the story is gone.
+    """
+    silent = silent_chapters(script, storyline)
+    if storyline is None or not silent:
+        return silent, 0.0
+    planned = sum(chapter.target_seconds for chapter in storyline.arc)
+    if planned <= 0.0:
+        return silent, 0.0
+    unwritten = sum(c.target_seconds for c in storyline.arc if c.chapter in set(silent))
+    return silent, unwritten / planned
+
+
 # script_hash lives with the model it hashes (board_models) so the board can compute it too —
 # it is the one identity every derived artifact is checked against, and a second copy of that
 # rule is precisely the drift these checks exist to catch. Re-exported here for its callers.
@@ -694,7 +848,7 @@ script_hash = _script_hash
 def line_starts(
     lines: list[ScriptLine], words: list[dict[str, Any]]
 ) -> dict[tuple[int, int], float]:
-    """Each line's ``(chapter, scene_number)`` mapped to its first word's ``start_s``.
+    """Each line's ``(chapter, scene_number)`` mapped to its FIRST word's ``start_s``.
 
     ``words`` (a voice backend's timings sidecar) are assumed to be the whitespace tokens of
     exactly :func:`script_text` of these SAME ``lines``, in the SAME order — so each line
@@ -702,13 +856,20 @@ def line_starts(
     forward in that order. A line is absent from the result if the word stream runs out before
     reaching it (e.g. a sidecar shorter than the script) — callers treat a missing entry as "no
     known start" (skip the zoom for that line).
+
+    Two lines can share a ``(chapter, scene_number)`` key (a scene spoken by multiple lines,
+    identity-paired into one cutlist segment by VS3) — the FIRST line's start wins, never a
+    later one's: the only consumer anchors a zoom to when the scene's narration BEGINS, and a
+    later write here would silently point it at a later sub-line's moment instead (or drop the
+    zoom entirely, if the later time falls too close to the segment's end).
     """
     out: dict[tuple[int, int], float] = {}
     idx = 0
     for line in lines:
         n_tokens = len(line.text.split())
-        if n_tokens and idx < len(words):
-            out[(line.chapter, line.scene_number)] = _as_float(words[idx].get("start_s"), 0.0)
+        key = (line.chapter, line.scene_number)
+        if n_tokens and idx < len(words) and key not in out:
+            out[key] = _as_float(words[idx].get("start_s"), 0.0)
         idx += n_tokens
     return out
 
@@ -739,7 +900,13 @@ def _read_words(timings_path: str | None) -> list[dict[str, Any]]:
 # script and was optimistic: natural agent prose, with names and numbers and pauses, runs
 # slower. German is slower still because its compounds are long words.
 _SECONDS_PER_WORD: dict[str, float] = {"German": 0.58, "English": 0.41}
-_DEFAULT_LANGUAGE = "German"
+# ISO-ish short codes agents actually pass ("mach das in english" → the team sent "en" live,
+# 2026-08-05). ``_SECONDS_PER_WORD`` and ``BoardMeta.language`` speak full English names, so a
+# raw code silently falls back to the German rate. Matched case-insensitively; anything not in
+# this map passes through unchanged.
+_LANGUAGE_ALIASES: dict[str, str] = {"en": "English", "de": "German"}
+# User decision 2026-08-07: every production defaults to English; German only on explicit ask.
+_DEFAULT_LANGUAGE = "English"
 _VOICE_RATE_TOLERANCE = 0.20
 
 
@@ -848,14 +1015,64 @@ def ungrounded_terms(script_text_: str, grounding_text: str) -> list[str]:
 _BUDGET_HEADROOM = 0.10
 
 
-def budget_words_for(usable_seconds: float, language: str = _DEFAULT_LANGUAGE) -> int:
+def budget_words_for(
+    usable_seconds: float,
+    language: str = _DEFAULT_LANGUAGE,
+    *,
+    measured_rate_wps: float | None = None,
+) -> int:
     """The word count to ASK FOR — the usable length minus headroom for the rate's variance.
 
-    ``word_budget_for`` converts seconds to words at the measured rate; this is the number a
-    script should actually be written to. Live finding: budgeting the full usable length put
+    ``word_budget_for`` converts seconds to words at the language heuristic; this is the number
+    a script should actually be written to. Live finding: budgeting the full usable length put
     the voice 2s past the video and voice_fits failed.
+
+    A ``measured_rate_wps`` (words/second, from :func:`_measured_rate_wps` — this board's OWN
+    last synthesis) overrides the language heuristic entirely: ``int(usable_seconds *
+    measured_rate_wps)``, no headroom. Calibration finding 2026-08-04: a 93-word heuristic
+    budget (assuming ~1.55 w/s) actually spoke at ~1.9 w/s and the film came in 10s short — the
+    heuristic's headroom was compensating for the WRONG uncertainty (a per-language guess) and a
+    rate measured on this exact board's own text needs none of it.
     """
+    if measured_rate_wps is not None and measured_rate_wps > 0:
+        return max(0, int(usable_seconds * measured_rate_wps))
     return word_budget_for(usable_seconds * (1.0 - _BUDGET_HEADROOM), language)
+
+
+def _measured_rate_wps(
+    storyline: Storyline, script: Script | None, voice: VoiceArtifact | None
+) -> float | None:
+    """The speech rate (words/second) measured from the board's own last voice synthesis, or
+    None when there is nothing to measure from or the measurement would be stale.
+
+    Trustworthy only when ``voice`` was synthesized from the CURRENT ``script`` — checked the
+    same way ``build_cutlist`` checks it, by re-hashing the script in storyline (played) order
+    and comparing against ``voice.script_hash``. A script edited after the last synthesis makes
+    the stored ``voice_s`` describe words that are no longer what will be spoken; smuggling that
+    stale rate into a fresh budget would be worse than the heuristic it replaces, so this falls
+    back to None (caller uses the heuristic) rather than guess.
+    """
+    if script is None or voice is None or voice.voice_s is None or voice.voice_s <= 0:
+        return None
+    ordered_lines = _lines_in_storyline_order(script, storyline)
+    if voice.script_hash != script_hash(ordered_lines):
+        return None
+    total_words = len(script_text(ordered_lines).split())
+    if total_words <= 0:
+        return None
+    return total_words / voice.voice_s
+
+
+# The under-budget gate (live 2026-08-04): three 45-60s targets shipped as 20-34s films
+# because the team wrote ~50-word scripts against a computed 93-word allocation.
+# script_budget's docstring says "call it ONCE before writing" — prompts do not bind, so the
+# floor lives on the write path (same lesson as the storyline-order guard). Both bounds must
+# hold before the gate speaks: the chapter is below RATIO of its allocation AND the missing
+# words are at least MISSING_S of film — tiny chapters (a 7-word hook) must never nag. The
+# allocation itself is capacity-limited (usable = min(target, material)), so the gate never
+# demands words the footage could not cover; what it blocks is leaving budgeted film unwritten.
+_BUDGET_GATE_RATIO = 0.7
+_BUDGET_GATE_MISSING_S = 5.0
 
 
 def segment_capacity_seconds(window: BestWindow, scene_duration_s: float) -> float:
@@ -870,7 +1087,10 @@ def segment_capacity_seconds(window: BestWindow, scene_duration_s: float) -> flo
 
 
 def chapter_word_budgets(
-    material_per_chapter: dict[int, float], language: str = _DEFAULT_LANGUAGE
+    material_per_chapter: dict[int, float],
+    language: str = _DEFAULT_LANGUAGE,
+    *,
+    measured_rate_wps: float | None = None,
 ) -> dict[int, int]:
     """Words each chapter may spend, from the material that chapter's own windows hold.
 
@@ -881,9 +1101,13 @@ def chapter_word_budgets(
 
     A chapter budgeted at almost nothing is not a bug in this function — it is the storyline
     saying that beat has one second of reviewed footage, which is the thing worth seeing.
+
+    ``measured_rate_wps``, when given, is forwarded to :func:`budget_words_for` for every
+    chapter — the same measured rate throughout, never a mix of chapters on the heuristic and
+    one on a measured number.
     """
     return {
-        chapter: budget_words_for(seconds, language)
+        chapter: budget_words_for(seconds, language, measured_rate_wps=measured_rate_wps)
         for chapter, seconds in material_per_chapter.items()
     }
 
@@ -904,6 +1128,32 @@ def allocate_chapter_seconds(
         return dict(capacity_per_chapter)
     scale = usable_seconds / total
     return {chapter: seconds * scale for chapter, seconds in capacity_per_chapter.items()}
+
+
+def plan_coverage(*, planned_seconds: float, usable_seconds: float) -> dict[str, Any] | None:
+    """How much of the usable length the storyline's chapters actually plan for.
+
+    The arc is the film's ceiling: the cut is built per chapter against the chapter's target, so
+    seconds nobody planned are seconds nobody shoots. Live 2026-08-02: a 60s short was planned
+    as 3+12+25=40s and nothing weighed the plan against the length it was for. Measured against
+    the SAME usable length ``script_budget`` uses, not the raw target — under-planning a target
+    the footage cannot reach anyway is the honest answer, not a mistake.
+    """
+    if usable_seconds <= 0.0:
+        return None
+    pct = planned_seconds / usable_seconds * 100.0
+    out: dict[str, Any] = {
+        "planned_seconds": round(planned_seconds, 1),
+        "usable_seconds": round(usable_seconds, 1),
+        "coverage_pct": round(pct, 1),
+    }
+    if planned_seconds < usable_seconds * _PLAN_COVERAGE_MIN:
+        out["plan_warning"] = (
+            f"this arc plans {planned_seconds:.1f}s of the {usable_seconds:.1f}s the material "
+            f"can carry ({pct:.0f}%) — the film cannot come out longer than its plan. Add a "
+            "chapter or give the existing ones longer targets before writing the script."
+        )
+    return out
 
 
 def usable_budget_seconds(*, material_seconds: float, target_seconds: float) -> float:
@@ -1070,6 +1320,20 @@ def _renders_so_far(board: Board) -> int:
     return max([0, current_v, *archived])
 
 
+def follow_up_render_cap(board: Board) -> int:
+    """The render-cycle cap for a run carrying an explicit user follow-up message.
+
+    ``_MAX_RENDER_CYCLES`` is a runaway-loop backstop against the TEAM re-rendering on its own
+    judgment; an operator-requested change is not a runaway loop. Live 2026-08-04: the user
+    asked for a reframe after the cap was spent, and the cap silently shipped the old cut.
+    One render above what has already been spent — never below the plain cap, so a board with
+    render budget left gains nothing extra. Wired in by ``run_production`` through
+    ``ProductionDeps.max_render_cycles``, so each follow-up run grants at most ONE re-render
+    and the backstop holds again right after.
+    """
+    return max(_MAX_RENDER_CYCLES, _renders_so_far(board) + 1)
+
+
 def _storyline_material(
     db: Database, board: Board, asset_id: str, storyline: Storyline
 ) -> tuple[dict[int, float], list[int], int]:
@@ -1155,6 +1419,79 @@ def build_production_tool_specs(
                 "src_end_frame_exclusive": src_end_exclusive,
                 "duration_s": round(duration_s, 2),
                 "text": text,
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def get_scene_transcript(scene_number: int) -> dict[str, Any]:
+        """The scene's verbatim source transcript — the ground truth script lines are built
+        from. Each spoken segment with scene-relative start/end seconds, speaker and text,
+        plus verbatim_words: the exact word stream inside the scene's frame range (word rows
+        past the scene boundary are excluded even when their segment straddles it). Quote or
+        tightly paraphrase THESE words and the review's visible facts — a claim supported by
+        neither is invented. Empty segments mean the scene has no speech: narrate what the
+        review says is visible instead."""
+        try:
+            asset = repos.get_asset(db, asset_id)
+            if asset is None:
+                return {"ok": False, "reason": "unknown scene"}
+            timeline = repos.get_or_create_asset_rough_cut(
+                db, str(asset["project_id"]), asset_id
+            )
+            scenes = repos.list_scenes(db, str(timeline["id"]))
+            by_number = {int(s["order_index"]) + 1: s for s in scenes}
+            scene = by_number.get(int(scene_number))
+            if scene is None:
+                return {"ok": False, "reason": "unknown scene"}
+            clips = repos.list_timeline_clips(db, str(timeline["id"]))
+            ranges = context._scene_src_ranges(
+                clips,
+                seq_in=int(scene["seq_in_frame"]),
+                seq_out_exclusive=int(scene["seq_out_frame_exclusive"]),
+            )
+            if not ranges:
+                return {"ok": False, "reason": "unknown scene"}
+            src_start, src_end_exclusive = ranges[0][0], ranges[-1][1]
+            fps = _fps(db, asset)
+            run = repos.get_latest_transcript_run(db, asset_id)
+            segments = (
+                repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
+            )
+            in_scene = context._segments_in_ranges(segments, ranges)
+
+            def _word_in_ranges(word: dict[str, Any]) -> bool:
+                start_frame, end_frame = word.get("start_frame"), word.get("end_frame")
+                if start_frame is None or end_frame is None:
+                    return False
+                s, e = int(start_frame), int(end_frame)
+                return any(e > lo and s < hi for lo, hi in ranges)
+
+            seg_rows: list[dict[str, Any]] = []
+            verbatim: list[str] = []
+            for seg in in_scene:
+                start_s = max(0.0, (int(seg["start_frame"]) - src_start) / fps)
+                end_s = max(start_s, (int(seg["end_frame"]) - src_start) / fps)
+                seg_rows.append(
+                    {
+                        "start_s": round(start_s, 2),
+                        "end_s": round(end_s, 2),
+                        "speaker": seg.get("speaker_label"),
+                        "text": str(seg.get("text") or "").strip(),
+                    }
+                )
+                verbatim.extend(
+                    text
+                    for w in seg.get("words") or []
+                    if _word_in_ranges(w) and (text := str(w.get("text") or "").strip())
+                )
+            return {
+                "ok": True,
+                "scene_number": int(scene_number),
+                "src_start_frame": src_start,
+                "src_end_frame_exclusive": src_end_exclusive,
+                "duration_s": round((src_end_exclusive - src_start) / fps, 2),
+                "segments": seg_rows,
+                "verbatim_words": " ".join(verbatim),
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
@@ -1321,20 +1658,209 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
-    def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
-        """Validate and save the short's storyline (red thread + chapter arc) to the board.
-        A scene_numbers entry is a plain scene number (= that review's primary window 0) or
-        {"scene": N, "window": K} to play review window K (0-based, see get_reviews); the
-        same scene may appear several times with DIFFERENT windows, the same (scene, window)
-        pair only once. Every referenced scene must already have a review on the board and
-        every referenced window must exist in that review — rejected with exactly the
-        scenes/refs to fix so the agent reviews or corrects them first. A malformed chapter
-        is rejected with field-level validation errors instead of raising."""
+    def _material_hint(n_chapters: int) -> str | None:
+        """What the reviews can actually carry, when the arc asks for more than exists.
+
+        Live 2026-08-02 (Drive-Test): an uncut screen recording is ONE scene and its review
+        proposed ONE window. The prompt asks for the four-chapter arc; a (scene, window) pair
+        may be used once; so four chapters need four distinct refs and there was one. The agent
+        alternated between "window 1 is referenced but scene 1 has 1" and "window 0 is
+        referenced more than once" for 269 turns and the run ended with no film.
+
+        The schema never demanded four chapters — ``arc`` is ``min_length=1``. Only the prompt
+        did. So the rejection carries the arithmetic and names the legal way out; an error that
+        says only what is forbidden leaves the caller to guess what is allowed.
+        """
+        reviews = board.scene_reviews()
+        available = sum(len(r.windows) for r in reviews)
+        if available == 0 or n_chapters <= available:
+            return None
+        per_scene = ", ".join(f"scene {r.scene_number}: {len(r.windows)}" for r in reviews)
+        return (
+            f"these reviews offer {available} distinct scene/window ref(s) ({per_scene}), and a "
+            f"(scene, window) pair may be used only once — so at most {available} chapter(s) "
+            f"can be built from them, not {n_chapters}. Use fewer chapters (an arc of one is "
+            "valid) or have review_scene propose more windows for a long scene first."
+        )
+
+    def set_board_language(language: str) -> dict[str, Any]:
+        """Switch the production language (script/voice/captions) for this board.
+
+        Call this FIRST when the user asks for another language, then rewrite every
+        chapter via save_script_chapter — it picks the new language up automatically.
+        Short codes normalize to the full English name before anything else ("en" ->
+        "English", "de" -> "German", case-insensitive; other values pass through
+        unchanged) — ``_SECONDS_PER_WORD`` only knows full names, so a raw "en" on the
+        board would silently price every chapter at the German speaking rate.
+        Validation mirrors the router's letters/spaces/length shape, but is deliberately
+        looser: it accepts any Unicode letter (``str.isalpha()``), not just ASCII, with the
+        same 2-char floor ``BoardMeta.language`` enforces (the 32-char ceiling is the
+        tool's own, tighter than the model's 40).
+
+        A switch AWAY from the previous language (with a script already on the board)
+        also re-arms Gate B via ``board.clear_script_approval()``: the script text itself
+        is untouched by this call, so leaving the old approval standing would let an
+        unrewritten, wrong-language script keep reading as approved-current — the user's
+        "mach das in english" would silently no-op on a script nobody rewrote, and the
+        stale meta would poison the NEXT follow-up too. ``Board.status()``'s
+        ``language_mismatch`` flag stays True until a chapter is re-saved in the new
+        language.
+
+        The success result carries a ``note`` restating the new-language order: the
+        production task prompt is built at run START and keeps saying e.g. "the script
+        MUST be written in German" after a mid-run switch — live 2026-08-05 the team
+        switched to English correctly and then rewrote every chapter in German anyway,
+        because the stale prompt outweighed the meta. A fresh tool RESULT outranks stale
+        prompt text, so the instruction rides along here."""
         try:
+            cleaned = (language or "").strip()
+            cleaned = _LANGUAGE_ALIASES.get(cleaned.lower(), cleaned)
+            if len(cleaned) < 2 or len(cleaned) > 32 or not all(
+                c.isalpha() or c == " " for c in cleaned
+            ):
+                return {"ok": False, "reason": "language must be an English language "
+                                               "name (letters/spaces, 2-32 chars)"}
+            previous = board.meta().language
+            board.set_language(cleaned)
+            if cleaned != previous and isinstance(board.load("script"), Script):
+                board.clear_script_approval()
+            return {
+                "ok": True,
+                "previous": previous,
+                "language": cleaned,
+                "note": (
+                    f"Language switched. Write ALL chapter text in {cleaned} from now "
+                    "on, regardless of earlier language instructions in this run."
+                ),
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def propose_scene_selection(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        """Propose scene candidates for the user's Gate-S pick and save them to the board.
+        Each candidate: {"scene_number", "description", "transcript_snippet", "rationale",
+        "recommended"} — frame range and thumb frame are resolved server-side from the scene
+        itself, so pass only what you judged. At least one candidate must be recommended
+        (the pre-checked suggestion). Saving a new proposal archives the old one and
+        invalidates everything downstream; the run then STOPS and waits for the user.
+        Refuses on a gate-off board (nothing reads this artifact there) and once the user
+        has already confirmed a pick — a confirmed selection is final; the user changes it
+        via the confirm endpoint/chat, never via a new proposal from this tool."""
+        try:
+            if not board.meta().scene_gate:
+                return {
+                    "ok": False,
+                    "reason": "scene selection gate is not enabled for this session",
+                }
+            existing = board.load("scene_selection")
+            if isinstance(existing, SceneSelection) and existing.confirmed_utc is not None:
+                return {
+                    "ok": False,
+                    "reason": (
+                        "the user already confirmed scenes "
+                        f"{sorted(existing.selected_scene_numbers)} — that pick is final; "
+                        "changing it happens through the user's confirm (chat), not a new "
+                        "proposal from this tool"
+                    ),
+                }
+            built: list[SceneCandidate] = []
+            for cand in candidates:
+                scene_number = int(cand.get("scene_number", 0))
+                resolved = _resolve_scene(db, asset_id, scene_number)
+                if resolved is None:
+                    return {"ok": False, "reason": f"scene {scene_number} does not exist"}
+                src_start, src_end, _text = resolved
+                built.append(
+                    SceneCandidate(
+                        scene_number=scene_number,
+                        src_start_frame=src_start,
+                        src_end_frame_exclusive=src_end,
+                        thumb_frame=src_start + (src_end - src_start) // 2,
+                        description=str(cand.get("description") or "").strip()
+                        or "(keine Bildanalyse verfügbar)",
+                        transcript_snippet=str(
+                            cand.get("transcript_snippet") or ""
+                        ).strip(),
+                        rationale=str(cand.get("rationale") or "").strip(),
+                        recommended=bool(cand.get("recommended", False)),
+                    )
+                )
             try:
-                storyline = Storyline(red_thread=red_thread, arc=[Chapter(**c) for c in chapters])
+                selection = SceneSelection(candidates=built)
             except ValidationError as exc:
                 return {"ok": False, "errors": _validation_errors(exc)}
+            if not any(c.recommended for c in built):
+                return {
+                    "ok": False,
+                    "reason": "mark at least one candidate recommended — it is the "
+                    "pre-checked suggestion the user confirms with one click",
+                }
+            version = board.save("scene_selection", selection)
+            return {
+                "ok": True,
+                "version": version,
+                "candidates": len(built),
+                "note": (
+                    "proposal saved — STOP now. The user picks scenes in chat; the run "
+                    "resumes automatically after their confirmation."
+                ),
+            }
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
+    def save_storyline(red_thread: str, chapters: list[dict[str, Any]]) -> dict[str, Any]:
+        """Validate and save the short's storyline (red thread + chapter arc) to the board.
+        Each chapter's ``chapter`` number may be omitted — it is taken from the entry's position
+        in the list, so pass the chapters in arc order.
+        A scene_numbers entry is a plain scene number (= that review's primary window 0) or
+        {"scene": N, "window": K} to play review window K (0-based, see get_reviews); a scene
+        may be reused only in a DIFFERENT chapter — where it gets its own narration line —
+        never twice within the SAME chapter (any window combination), and the same
+        (scene, window) pair never twice anywhere. Every referenced scene must already have a
+        review on the board and every referenced window must exist in that review — rejected
+        with exactly the scenes/refs to fix so the agent reviews or corrects them first. A
+        malformed chapter is rejected with field-level validation errors instead of raising."""
+        try:
+            try:
+                storyline = Storyline(
+                    red_thread=red_thread,
+                    arc=[Chapter(**c) for c in numbered_chapters(chapters)],
+                )
+            except ValidationError as exc:
+                return _with_material_hint(
+                    {"ok": False, "errors": _validation_errors(exc)}, _material_hint(len(chapters))
+                )
+            # Per-scene voice binds every storyline ENTRY to its own narration line
+            # (save_script_chapter writes one ScriptLine per (chapter, scene_number)) — a
+            # second entry for the same scene in the SAME chapter, even via a different
+            # window, has no line of its own to speak and build_cutlist can only refuse it
+            # ("no own narration line") once the whole pipeline has already run past
+            # save_storyline. That remedy the old prompt pointed to ("write it once for the
+            # chapter") is unreachable: a chapter has exactly one ScriptLine slot per scene.
+            # Reject here instead, where the fix (a different chapter, or one window) is free.
+            within_chapter_reuse = sorted(
+                {
+                    (chapter.chapter, scene)
+                    for chapter in storyline.arc
+                    for scene, count in Counter(
+                        as_scene_window(entry)[0] for entry in chapter.scene_numbers
+                    ).items()
+                    if count > 1
+                }
+            )
+            if within_chapter_reuse:
+                detail = "; ".join(f"chapter {ch}: scene {s}" for ch, s in within_chapter_reuse)
+                return {
+                    "ok": False,
+                    "reason": (
+                        f"same scene reused within one chapter ({detail}) — per-scene voice "
+                        "binds every storyline entry to its own narration line, so a scene can "
+                        "be reused only in a DIFFERENT chapter (where it gets its own script "
+                        "line), never twice within the SAME chapter even via different "
+                        "windows. Keep one window per chapter for this scene, or move the "
+                        "reuse to a later chapter."
+                    ),
+                }
             refs = [
                 as_scene_window(entry)
                 for chapter in storyline.arc
@@ -1351,7 +1877,23 @@ def build_production_tool_specs(
                     f"(0..{len(reviews[s].windows) - 1}) but window {w} is referenced"
                     for s, w in bad_refs
                 )
-                return {"ok": False, "reason": detail}
+                return _with_material_hint(
+                    {"ok": False, "reason": detail}, _material_hint(len(chapters))
+                )
+            # Gate S: under an active gate, only scenes the USER confirmed may be written into
+            # the storyline — structural, not a prompt rule (I2 lesson: prompts do not bind).
+            meta = board.meta()
+            selection = board.load("scene_selection")
+            selection = selection if isinstance(selection, SceneSelection) else None
+            block = scene_selection_block_reason(
+                selection, [s for s, _w in refs], gate_on=meta.scene_gate
+            )
+            if block is not None:
+                return {"ok": False, "reason": block}
+            if meta.scene_gate and selection is not None:
+                storyline = storyline.model_copy(
+                    update={"parents": {"scene_selection": _content_hash(selection)}}
+                )
             # A storyline save invalidates the whole chain below — including a script that is
             # still perfectly right. Live finding (run 48d5660a): a re-save changing ONLY
             # messages and target_seconds wiped a finished script and its voice; the author
@@ -1363,6 +1905,22 @@ def build_production_tool_specs(
             old_voice = board.load("voice")
             version = board.save("storyline", storyline)
             result: dict[str, Any] = {"ok": True, "version": version}
+            # Weigh the plan against the length it is for, here, where it can still be fixed
+            # for free. Guarded on its own: the save already happened, so a material lookup
+            # that fails must cost the report, never turn a completed save into ok: False.
+            try:
+                per_chapter, _missing, _n = _storyline_material(db, board, asset_id, storyline)
+                coverage = plan_coverage(
+                    planned_seconds=sum(c.target_seconds for c in storyline.arc),
+                    usable_seconds=usable_budget_seconds(
+                        material_seconds=sum(per_chapter.values()),
+                        target_seconds=board.meta().target_seconds,
+                    ),
+                )
+            except Exception:  # the storyline is saved either way — reporting is best-effort
+                coverage = None
+            if coverage is not None:
+                result.update(coverage)
             # Carry over ONLY when the save actually invalidated something. An identical
             # re-save is a complete no-op (board.save short-circuits it) and the script is
             # still on the board — "rescuing" it then would bump versions and wipe the very
@@ -1429,10 +1987,13 @@ def build_production_tool_specs(
         """How many words the script may spend — ask this instead of guessing a length.
 
         Reads the saved storyline, adds up the reviewed windows it references, and turns
-        that into a word count. Call it ONCE before writing, write to ``words``, then
-        synthesize and correct against the MEASURED ``voice_s`` from render_production.
-        Do not iterate the script by feel: that burned a whole run on 34 saves that never
-        reached a render.
+        that into a word count. Prefers a MEASURED speech rate over the language heuristic
+        when this board's own last ``synthesize_script_voice`` run still matches the current
+        script (``rate_source: "measured"``); falls back to the per-language heuristic
+        otherwise (``rate_source: "heuristic"`` — no voice yet, or the script changed since).
+        Call it ONCE before writing, write to ``words``, then synthesize and correct against
+        the MEASURED ``voice_s`` from render_production. Do not iterate the script by feel:
+        that burned a whole run on 34 saves that never reached a render.
         """
         try:
             storyline = board.load("storyline")
@@ -1445,15 +2006,28 @@ def build_production_tool_specs(
             target = board.meta().target_seconds
             usable = usable_budget_seconds(material_seconds=material, target_seconds=target)
             language = board.meta().language
+            script = board.load("script")
+            voice = board.load("voice")
+            measured_rate_wps = _measured_rate_wps(
+                storyline,
+                script if isinstance(script, Script) else None,
+                voice if isinstance(voice, VoiceArtifact) else None,
+            )
+            rate_source = "measured" if measured_rate_wps is not None else "heuristic"
             # Per chapter as well as in total: a right total over a wrong distribution still
             # breaks the film — one chapter carried 27s of narration for a 1s window.
             shares = allocate_chapter_seconds(per_chapter, usable_seconds=usable)
-            chapter_budgets = chapter_word_budgets(shares, language)
+            chapter_budgets = chapter_word_budgets(
+                shares, language, measured_rate_wps=measured_rate_wps
+            )
+            effective_seconds_per_word = (
+                1.0 / measured_rate_wps if measured_rate_wps else seconds_per_word(language)
+            )
             return {
                 "ok": True,
                 "material_seconds": round(material, 1),
                 "usable_seconds": round(usable, 1),
-                "words": budget_words_for(usable, language),
+                "words": budget_words_for(usable, language, measured_rate_wps=measured_rate_wps),
                 "per_chapter": [
                     {
                         "chapter": ch,
@@ -1464,7 +2038,8 @@ def build_production_tool_specs(
                     for ch in sorted(per_chapter)
                 ],
                 "language": language,
-                "seconds_per_word": seconds_per_word(language),
+                "seconds_per_word": effective_seconds_per_word,
+                "rate_source": rate_source,
                 "tolerance": _VOICE_RATE_TOLERANCE,
                 "segments": n_segments,
                 "unresolved_scenes": missing,
@@ -1476,81 +2051,206 @@ def build_production_tool_specs(
                     "wrong split still breaks the film, because a chapter's video cannot cover "
                     "voice its own scenes do not hold. A chapter budgeted at almost nothing "
                     "means its window is a second long — say less there, or give that beat a "
-                    "longer window in the storyline. Synthesize ONCE and correct from the "
-                    f"measured voice_s; the rate is only good to "
-                    f"+/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                    "longer window in the storyline. "
+                    + (
+                        "This budget uses the MEASURED speech rate from the board's own last "
+                        "synthesis, not a guess."
+                        if rate_source == "measured"
+                        else (
+                            "Synthesize ONCE and correct from the measured voice_s; the "
+                            f"language rate is only good to +/-{int(_VOICE_RATE_TOLERANCE * 100)}%."
+                        )
+                    )
                 ),
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    # Per-run acknowledgement for the under-budget gate: the FIRST far-under-budget save of a
+    # chapter is rejected with the numbers; saving that chapter again is the author saying
+    # "the shorter film is deliberate" and is accepted, with the gap still named in the reply.
+    # Same per-run-closure lifetime as ``healthy_re_reviews``.
+    budget_gate_hit: set[int] = set()
+
     def save_script_chapter(chapter: int, lines: list[dict[str, Any]]) -> dict[str, Any]:
         """Replace one chapter's script lines; every other chapter's lines are kept as-is
         (merge semantics). Lines are validated (each needs scene_number + text; a malformed
         line is rejected with field-level validation errors). The script's language follows the
-        board's — an English board produces an English-tagged script. Saving invalidates every
-        downstream artifact (voice, cutlist, render report, qa report) so they get regenerated
-        from the new script."""
+        board's — an English board produces an English-tagged script. A chapter far below its
+        script_budget per_chapter allocation is rejected ONCE with the exact numbers: write the
+        missing words from the scene's transcript (get_scene_transcript) and reviews, or save
+        the chapter again unchanged to deliberately accept a shorter film. Saving invalidates
+        every downstream artifact (voice, cutlist, render report, qa report) so they get
+        regenerated from the new script."""
         try:
-            # The chain is storyline -> script, and a save_storyline wipes everything below.
-            # A script written FIRST is doomed work: a live run wrote a complete 433-word
-            # script before its storyline, and the storyline save erased all of it. The prompt
-            # mandates the order; prompts do not bind — so the contract lives here.
-            storyline_for_guard = board.load("storyline")
-            if not isinstance(storyline_for_guard, Storyline):
-                return {
-                    "ok": False,
-                    "reason": (
-                        "no storyline on the board — call save_storyline first. A script "
-                        "written before the storyline is wiped by the storyline save."
-                    ),
-                }
-            try:
-                new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
-            except ValidationError as exc:
-                return {"ok": False, "errors": _validation_errors(exc)}
-            # Screenplay labels go straight into the voice: three autonomous runs spoke
-            # "Narration:" and "CAPTION:" eight times each. Rejected here, on the write path,
-            # rather than in the model — the model also validates on load, and a board written
-            # before this rule must stay readable.
-            spoken_labels = [
-                (line.scene_number, label)
-                for line in new_lines
-                if (label := stage_direction_label(line.text)) is not None
-            ]
-            if spoken_labels:
-                detail = "; ".join(f"scene {n}: '{label}:'" for n, label in spoken_labels)
-                return {
-                    "ok": False,
-                    "reason": (
-                        f"stage-direction labels would be read out loud ({detail}). Write only "
-                        f"the spoken words — what is on screen is already on screen, so narrate "
-                        f"what it MEANS instead of describing it."
-                    ),
-                }
-            existing = board.load("script")
-            # The board decides the language, not a hard-coded "de": two English runs wrote
-            # English text tagged "de" because this line ignored the board.
-            language = board.meta().language
-            kept: list[ScriptLine] = []
-            replaced: list[ScriptLine] = []
-            if isinstance(existing, Script):
-                kept = [line for line in existing.lines if line.chapter != chapter]
-                replaced = [line for line in existing.lines if line.chapter == chapter]
-            merged = sorted(kept + new_lines, key=lambda line: line.chapter)
-            merged_script = Script(
-                language=language,
-                lines=merged,
-                parents={"storyline": _content_hash(storyline_for_guard)},
-            )
-            version = board.save("script", merged_script)
+            # The whole load-merge-save must be ONE step: agent turns fire tool calls in
+            # parallel, and a five-way save_script_chapter batch once interleaved between
+            # a sibling's load and save — chapters silently overwrote each other (and the
+            # unlocked writer of that era corrupted script.json outright).
+            with board.transaction():
+                # The chain is storyline -> script, and a save_storyline wipes everything
+                # below. A script written FIRST is doomed work: a live run wrote a complete
+                # 433-word script before its storyline, and the storyline save erased all of
+                # it. The prompt mandates the order; prompts do not bind — so the contract
+                # lives here.
+                storyline_for_guard = board.load("storyline")
+                if not isinstance(storyline_for_guard, Storyline):
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "no storyline on the board — call save_storyline first. A script "
+                            "written before the storyline is wiped by the storyline save."
+                        ),
+                    }
+                # Gate S: the same structural refusal as save_storyline — a script line for a
+                # scene outside the user's confirmed selection must never reach the board.
+                meta_for_gate = board.meta()
+                selection_for_gate = board.load("scene_selection")
+                selection_for_gate = (
+                    selection_for_gate
+                    if isinstance(selection_for_gate, SceneSelection)
+                    else None
+                )
+                block = scene_selection_block_reason(
+                    selection_for_gate,
+                    [int(line.get("scene_number", 0)) for line in lines],
+                    gate_on=meta_for_gate.scene_gate,
+                )
+                if block is not None:
+                    return {"ok": False, "reason": block}
+                try:
+                    new_lines = [ScriptLine(chapter=chapter, **line) for line in lines]
+                except ValidationError as exc:
+                    return {"ok": False, "errors": _validation_errors(exc)}
+                # Screenplay labels go straight into the voice: three autonomous runs spoke
+                # "Narration:" and "CAPTION:" eight times each. Rejected here, on the write
+                # path, rather than in the model — the model also validates on load, and a
+                # board written before this rule must stay readable.
+                spoken_labels = [
+                    (line.scene_number, label)
+                    for line in new_lines
+                    if (label := stage_direction_label(line.text)) is not None
+                ]
+                if spoken_labels:
+                    detail = "; ".join(f"scene {n}: '{label}:'" for n, label in spoken_labels)
+                    return {
+                        "ok": False,
+                        "reason": (
+                            f"stage-direction labels would be read out loud ({detail}). Write "
+                            f"only the spoken words — what is on screen is already on screen, "
+                            f"so narrate what it MEANS instead of describing it."
+                        ),
+                    }
+                # The board decides the language, not a hard-coded "de": two English runs wrote
+                # English text tagged "de" because this line ignored the board.
+                language = board.meta().language
+                # A chapter can only be as long as its scenes (see the capacity_warning below) —
+                # but VS2/VS3 went further and bound each storyline LINE's video segment to its
+                # OWN scene's clip length, so a line that grossly outspeaks its own scene now
+                # fails at CUTLIST time, once redistribution is expensive. Caught here instead,
+                # at the write, where moving words to another scene still costs nothing. Several
+                # NEW lines for the SAME scene in one call each add speech to that one scene, so
+                # this sums THIS CALL's estimated seconds per scene_number before comparing
+                # against capacity — three lines each under cap can still overflow together, and
+                # that is exactly the overflow the per-line version would miss. The 1.15 factor
+                # plus a 0.5s floor gives the +/-20% estimate headroom before hard-blocking;
+                # narrower misses stay a capacity_warning below, not a refusal.
+                asset_row = repos.get_asset(db, asset_id)
+                fps = _fps(db, asset_row) if asset_row is not None else 30.0
+                scene_word_totals: dict[int, int] = {}
+                for line in new_lines:
+                    scene_word_totals[line.scene_number] = scene_word_totals.get(
+                        line.scene_number, 0
+                    ) + len(line.text.split())
+                for scene_number, scene_words in scene_word_totals.items():
+                    resolved_scene = _resolve_scene(db, asset_id, scene_number)
+                    if resolved_scene is None:
+                        continue  # unknown scene: the storyline guard owns that failure
+                    src_start, src_end, _scene_text = resolved_scene
+                    scene_capacity_s = (src_end - src_start) / fps
+                    if scene_capacity_s <= 0.0:
+                        continue  # unresolved/zero-length scene: not this guard's false alarm
+                    scene_est_s = estimate_voice_seconds(scene_words, language)
+                    if scene_est_s > scene_capacity_s * 1.15 + 0.5:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                f"scene {scene_number}: this call's line(s) would speak "
+                                f"~{scene_est_s:.1f}s but the scene only holds "
+                                f"{scene_capacity_s:.1f}s — shorten the text or split it "
+                                "across more scenes; per-scene voice binds each line's video "
+                                "segment to its own clip length"
+                            ),
+                        }
+                # The under-budget gate (_BUDGET_GATE_*), computed from the SAME material as
+                # script_budget so the number in this message and the number the author was told
+                # to write to can never diverge. Live 2026-08-04: 45-60s targets shipped as
+                # 20-34s films off ~50-word chapters nobody stopped.
+                per_chapter, _missing_scenes, _n_resolved = _storyline_material(
+                    db, board, asset_id, storyline_for_guard
+                )
+                usable = usable_budget_seconds(
+                    material_seconds=sum(per_chapter.values()),
+                    target_seconds=board.meta().target_seconds,
+                )
+                shares = allocate_chapter_seconds(per_chapter, usable_seconds=usable)
+                # Same measured-vs-heuristic rate as script_budget, and for the same reason:
+                # the number in this gate's message and the number script_budget told the
+                # author to write to must never diverge (see _measured_rate_wps).
+                script_for_rate = board.load("script")
+                voice_for_rate = board.load("voice")
+                measured_rate_wps = _measured_rate_wps(
+                    storyline_for_guard,
+                    script_for_rate if isinstance(script_for_rate, Script) else None,
+                    voice_for_rate if isinstance(voice_for_rate, VoiceArtifact) else None,
+                )
+                budget_words = chapter_word_budgets(
+                    shares, language, measured_rate_wps=measured_rate_wps
+                ).get(chapter, 0)
+                words_after = sum(len(line.text.split()) for line in new_lines)
+                effective_seconds_per_word = (
+                    1.0 / measured_rate_wps if measured_rate_wps else seconds_per_word(language)
+                )
+                missing_s = (budget_words - words_after) * effective_seconds_per_word
+                under_budget = (
+                    budget_words > 0
+                    and words_after < _BUDGET_GATE_RATIO * budget_words
+                    and missing_s >= _BUDGET_GATE_MISSING_S
+                )
+                if under_budget and chapter not in budget_gate_hit:
+                    budget_gate_hit.add(chapter)
+                    return {
+                        "ok": False,
+                        "reason": (
+                            f"chapter {chapter}: {words_after} words against its "
+                            f"{budget_words}-word share of script_budget — about {missing_s:.0f}s "
+                            "of the film would simply be missing. Nothing was saved. Write the "
+                            "missing words from the SOURCE, not from imagination: "
+                            "get_scene_transcript(scene_number) quotes what is actually said, the "
+                            "reviews say what is visible. If the scenes truly hold nothing more "
+                            "worth saying, save this chapter again and the shorter film is "
+                            "accepted."
+                        ),
+                    }
+                existing = board.load("script")
+                kept: list[ScriptLine] = []
+                replaced: list[ScriptLine] = []
+                if isinstance(existing, Script):
+                    kept = [line for line in existing.lines if line.chapter != chapter]
+                    replaced = [line for line in existing.lines if line.chapter == chapter]
+                merged = sorted(kept + new_lines, key=lambda line: line.chapter)
+                merged_script = Script(
+                    language=language,
+                    lines=merged,
+                    parents={"storyline": _content_hash(storyline_for_guard)},
+                )
+                version = board.save("script", merged_script)
             # The word arithmetic, in the reply the agent actually reads. This save REPLACES
             # the chapter, and "replace" reads as "append" under expansion pressure: a live
             # run told to ADD ~200 words saved only the new lines per chapter, six times, and
             # 263 words fell to 123 — a 174s film with ~50s of voice — without anyone
             # noticing, because the reply named only version and line count.
             words_before = sum(len(line.text.split()) for line in replaced)
-            words_after = sum(len(line.text.split()) for line in new_lines)
             result: dict[str, Any] = {
                 "ok": True,
                 "version": version,
@@ -1570,23 +2270,26 @@ def build_production_tool_specs(
             # The first full agent-built film shipped 62 words into an 11.5s chapter — the
             # TOTAL was on budget, the distribution was not, and 14s of narration fell off the
             # end (voice_fits FAIL by 26s). Say it here, where redistribution is still cheap.
-            storyline_now = board.load("storyline")
-            if isinstance(storyline_now, Storyline):
-                per_chapter, _missing, _n = _storyline_material(
-                    db, board, asset_id, storyline_now
+            # ``per_chapter`` is the gate's computation above — a script save never touches
+            # the storyline, so it is still current here.
+            capacity = per_chapter.get(chapter)
+            voice_s = estimate_voice_seconds(words_after, language)
+            # capacity 0.0 means the chapter's scenes could not be RESOLVED (unknown), not
+            # that they hold nothing — a "0.0s" false alarm teaches agents to ignore the
+            # real one.
+            if capacity is not None and capacity > 0.0 and voice_s > capacity + 0.5:
+                result["capacity_warning"] = (
+                    f"chapter {chapter}: {words_after} words are ~{voice_s:.1f}s of voice, "
+                    f"but its scenes hold only {capacity:.1f}s — the overflow will have no "
+                    "picture. Move the extra words to a chapter with spare capacity (see "
+                    "script_budget's per_chapter) or cut them."
                 )
-                capacity = per_chapter.get(chapter)
-                voice_s = estimate_voice_seconds(words_after, language)
-                # capacity 0.0 means the chapter's scenes could not be RESOLVED (unknown), not
-                # that they hold nothing — a "0.0s" false alarm teaches agents to ignore the
-                # real one.
-                if capacity is not None and capacity > 0.0 and voice_s > capacity + 0.5:
-                    result["capacity_warning"] = (
-                        f"chapter {chapter}: {words_after} words are ~{voice_s:.1f}s of voice, "
-                        f"but its scenes hold only {capacity:.1f}s — the overflow will have no "
-                        "picture. Move the extra words to a chapter with spare capacity (see "
-                        "script_budget's per_chapter) or cut them."
-                    )
+            if under_budget:
+                result["budget_warning"] = (
+                    f"chapter {chapter} stays at {words_after} of its {budget_words}-word "
+                    f"share of script_budget (~{missing_s:.0f}s of film shorter) — accepted "
+                    "as a deliberate shorter film."
+                )
             return result
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
@@ -1644,6 +2347,28 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def suggest_scenes_for_script() -> dict[str, Any]:
+        """Deterministic, LLM-free check: for each of the board's script lines, which rough-cut
+        scene actually carries that text (same matching discovery.search_material uses,
+        restricted to this asset) — ``scene_number: null`` when no scene's transcript matches.
+        This is the TEXT'S opinion of where each line belongs, independent of what scene the
+        author assigned it to; call it after every script (re-)approval and compare its
+        suggestions against the storyline before treating the script as final. Requires
+        save_script_chapter to have run first."""
+        try:
+            script = board.load("script")
+            if not isinstance(script, Script):
+                return {"ok": False, "reason": "no script on the board; save_script_chapter first"}
+            asset = repos.get_asset(db, asset_id)
+            if asset is None:
+                return {"ok": False, "reason": "unknown asset"}
+            project_id = str(asset["project_id"])
+            lines = [line.text for line in script.lines]
+            suggestions = match_lines_to_scenes(db, project_id, asset_id, lines)
+            return {"ok": True, "suggestions": suggestions}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     def synthesize_script_voice() -> dict[str, Any]:
         """Speak the board's current script — in STORYLINE scene order, not the order the
         lines were written in (see _lines_in_storyline_order) — with the configured voice
@@ -1653,8 +2378,40 @@ def build_production_tool_specs(
         run first. On a fresh synthesis, the mp3 plus a word-timings sidecar (used for caption
         burn-in and build_cutlist's zoom timing) are saved as the board's voice artifact.
         Gracefully reports ``ok: False`` without raising when no voice backend is configured or
-        the backend itself fails."""
+        the backend itself fails. Deterministically refuses first of all when Gate B is active
+        and unapproved (script_gate: the user must approve the script in chat — approve_script —
+        before voice, cutlist or render may run); this is enforced HERE, not just in the
+        orchestrator prompt, so a run cannot talk its way past the checkpoint. The refusal is
+        content-aware, not just a bare timestamp check: a script edited (or reverted to a
+        DIFFERENT version) AFTER approval changes its content_hash while
+        ``script_approved_utc`` stays set, so the approval only still counts when the stamped
+        hash matches the CURRENT script — otherwise voice would run on text the user never
+        actually signed off on (review finding). Synthesizes PER LINE with an on-disk line
+        cache (only changed lines hit the TTS API) and constructs the single track + merged
+        sidecar from the clips."""
         try:
+            meta = board.meta()
+            if meta.script_gate:
+                if meta.script_approved_utc is None:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "script gate: awaiting user approval — the user must approve the "
+                            "script in chat before voice is synthesized"
+                        ),
+                    }
+                gate_script = board.load("script")
+                gate_hash = (
+                    _content_hash(gate_script) if isinstance(gate_script, Script) else None
+                )
+                if gate_hash is None or meta.script_approved_script_hash != gate_hash:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "script gate: script changed after approval — the user must "
+                            "re-approve the script in chat"
+                        ),
+                    }
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
                 return {
@@ -1686,18 +2443,94 @@ def build_production_tool_specs(
             if project is None:
                 return {"ok": False, "reason": "project not found"}
 
-            out_path = Path(str(project["workspace_root"])) / "voiceovers" / f"{new_id()}.mp3"
-            result = backend.synthesize(script_text(ordered_lines), out_path)
-            if not result.get("ok"):
-                return {"ok": False, "reason": str(result.get("reason") or "synthesis failed")}
+            workspace = Path(str(project["workspace_root"]))
+            lines_dir = workspace / "voiceovers" / "lines"
+            gap = INTER_SCENE_GAP_S
 
-            words = _read_words(result.get("timings_path"))
-            voice_s = _as_float(words[-1].get("end_s"), 0.0) if words else None
+            def _line_failure(line: ScriptLine, reason: object) -> dict[str, Any]:
+                """Spec §6's failure contract (scene AND chapter named), also on the
+                exception path — the tool's own OUTER boundary can only report a bare
+                ``str(exc)``, which is how a corrupt cache file used to fail anonymously."""
+                return {
+                    "ok": False,
+                    "reason": (
+                        f"voice synthesis failed for scene {line.scene_number} "
+                        f"(chapter {line.chapter}): "
+                        f"{str(reason or 'synthesis failed')[:120]}"
+                    ),
+                }
+
+            clip_paths: list[Path] = []
+            durations: list[float] = []
+            per_line_words: list[list[dict[str, Any]]] = []
+            metas: list[tuple[int, int, str]] = []  # (scene_number, chapter, line_hash)
+            for line in ordered_lines:
+                # I2: the cache key folds in the backend's voice identity, not just the text —
+                # otherwise a voice/model switch would silently keep serving a DIFFERENT
+                # voice's audio for unchanged text.
+                lh = hashlib.sha256(
+                    f"{line.text}|{getattr(backend, 'voice_id', '')}|"
+                    f"{getattr(backend, 'model', '')}".encode()
+                ).hexdigest()
+                clip = lines_dir / f"{lh}.mp3"
+                timings = Path(str(clip) + ".timings.json")
+                try:
+                    duration: float | None = None
+                    if clip.is_file():
+                        try:
+                            duration = probe_duration_s(clip)
+                        except RuntimeError:
+                            # A killed writer (or any partial write) can leave a truncated
+                            # clip sitting AT the cache path — without eviction that one
+                            # corrupt file fails this line PERMANENTLY, every future run.
+                            # Evict it and its sidecar and fall through to a fresh
+                            # synthesis below: this IS the line's one retry.
+                            clip.unlink(missing_ok=True)
+                            timings.unlink(missing_ok=True)
+                    if duration is None:
+                        # ElevenLabs mp3s default to 44.1 kHz, matching concat_with_gaps'
+                        # hardcoded silence sample rate — if a backend ever emits a different
+                        # rate, resample inputs in voice_concat's filter graph instead (see
+                        # VS1 review note).
+                        synth = backend.synthesize(line.text, clip)
+                        if not synth.get("ok"):
+                            synth = backend.synthesize(line.text, clip)  # exactly one retry
+                        if not synth.get("ok"):
+                            return _line_failure(line, synth.get("reason"))
+                        duration = probe_duration_s(clip)
+                except Exception as exc:  # any remaining probe/synth failure still names
+                    # its scene+chapter here — the tool's outer boundary can no longer do it
+                    return _line_failure(line, exc)
+                clip_paths.append(clip)
+                durations.append(duration)
+                per_line_words.append(_read_words(str(timings)) if timings.is_file() else [])
+                metas.append((line.scene_number, line.chapter, lh))
+
+            offsets = line_offsets(durations, gap)
+            out_path = workspace / "voiceovers" / f"{new_id()}.mp3"
+            concat_with_gaps(clip_paths, gap, out_path)
+            merged = merge_word_timings(per_line_words, offsets)
+            timings_path: str | None = None
+            if merged["words"]:
+                timings_path = str(out_path) + ".timings.json"
+                Path(timings_path).write_text(
+                    json.dumps(merged, ensure_ascii=False), encoding="utf-8"
+                )
+            voice_s = probe_duration_s(out_path)
             artifact = VoiceArtifact(
                 script_hash=new_hash,
                 mp3_path=str(out_path),
-                timings_path=result.get("timings_path"),
+                timings_path=timings_path,
                 voice_s=voice_s,
+                segments=[
+                    VoiceSegment(
+                        scene_number=scene, chapter=chap, line_hash=lh,
+                        mp3_path=str(clip), duration_s=dur, offset_s=off,
+                    )
+                    for (scene, chap, lh), clip, dur, off in zip(
+                        metas, clip_paths, durations, offsets, strict=True
+                    )
+                ],
                 parents={
                     "storyline": _content_hash(storyline),
                     "script": _content_hash(script),
@@ -1710,32 +2543,57 @@ def build_production_tool_specs(
                 "version": version,
                 "mp3_path": artifact.mp3_path,
                 "voice_s": voice_s,
+                "lines": len(clip_paths),
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
-    def build_cutlist(transition_lead_s: float = 0.4) -> dict[str, Any]:
+    def build_cutlist(transition_lead_s: float = 0.4, zoom: str = "auto") -> dict[str, Any]:
         """Deterministically derive a frame-accurate cutlist from storyline + script + voice:
         one CutSegment per scene entry in arc order (chapter, then that chapter's
         scene_numbers order). An entry that references a review window ({"scene": N,
         "window": K}) is cut from THAT window — its offset is the segment start, its roi
-        the zoom region (falling back to the review-level roi); the segment's LENGTH comes
-        from the chapter's time budget / audio window, never from the window's duration —
-        so the same scene can appear several times with different windows. Segment
-        lengths are COUPLED TO THE VOICE so picture chapters stay in sync with the one
-        continuous voice track: each chapter's audio window (from the word-timings sidecar;
-        boundaries midway between adjacent chapters' words, the last chapter running to voice
-        end + a short tail) is distributed over its segments proportionally to their
-        per-scene chapter budget — 2s floor per segment, each segment starting at
-        its window's offset and stretching past the window's duration_s if needed, but never
-        past its scene's end. A chapter the sidecar doesn't cover (or a missing sidecar)
-        falls back to the plain target_seconds budget. An optional zoom-in is timed to when
-        the scene's script line is actually spoken (word starts, offset ahead by
-        transition_lead_s so the zoom lands just before the word lands, not on it). Requires
+        the zoom region (falling back to the review-level roi).
+
+        SEGMENT LENGTH depends on which voice is on the board. The NORMAL case since VS2 is a
+        per-line voice (VoiceArtifact.segments is set): each storyline entry's length is its
+        OWN voice clip(s) duration — paired by (chapter, scene_number) IDENTITY, not position —
+        plus the inter-scene gap between multiple lines merged into one entry, plus a trailing
+        gap to the next entry (dropped for the entry holding the globally LAST voice clip,
+        which instead gets a small cushion — clamped to the scene's own capacity — so
+        render_production's voice_fits check has room against probe/rounding drift). That path
+        refuses loudly instead of silently misaligning: "no own narration line" when an entry's
+        (chapter, scene_number) key has no clip of its own (a repeat reference within one
+        chapter, or a scene the script never wrote a line for), a scene-capacity refusal when
+        the line(s) speak more than the scene holds, and a leftover-clips refusal when the
+        voice still carries a clip for a (chapter, scene_number) the CURRENT storyline no
+        longer references at all.
+
+        The LEGACY case (an older per-track voice with segments=None) instead sizes segments
+        from the chapter's time budget / audio window, never from the window's duration — so
+        the same scene can appear several times with different windows. Segment lengths are
+        COUPLED TO THE VOICE so picture chapters stay in sync with the one continuous voice
+        track: each chapter's audio window (from the word-timings sidecar; boundaries midway
+        between adjacent chapters' words, the last chapter running to voice end + a short tail)
+        is distributed over its segments proportionally to their per-scene chapter budget — 2s
+        floor per segment, each segment starting at its window's offset and stretching past the
+        window's duration_s if needed, but never past its scene's end. A chapter the sidecar
+        doesn't cover (or a missing sidecar) falls back to the plain target_seconds budget.
+
+        An optional zoom-in is timed to when the scene's script line is actually spoken (word
+        starts, offset ahead by transition_lead_s so the zoom lands just before the word lands,
+        not on it). zoom is the FRAMING LEVER: "auto" (default) keeps each segment's
+        window/review roi and the spoken-word zoom timing; zoom="off" drops EVERY roi and
+        zoom_start_s regardless of the storyline's window references, so the render shows the
+        full frame (blur-filled) — when the user asks for the full picture / no tight zoom,
+        call build_cutlist(zoom="off") directly; the storyline does NOT need to be re-saved for
+        a framing change. Any other zoom value is rejected. Requires
         save_storyline, save_script_chapter and synthesize_script_voice to have all run first
         — reports which one is missing instead of raising, and rejects a storyline window
         reference the scene's review does not have (fix the storyline or re-review)."""
         try:
+            if zoom not in ("auto", "off"):
+                return {"ok": False, "reason": 'zoom must be "auto" or "off"'}
             storyline = board.load("storyline")
             if not isinstance(storyline, Storyline):
                 return {
@@ -1772,6 +2630,24 @@ def build_production_tool_specs(
                         "the narration agree"
                     ),
                 }
+            # VS3: a voice with per-line segments (VS2) sizes each cutlist segment to its OWN
+            # clip(s) instead of proportionally scaling the chapter's audio window (the legacy
+            # path below, kept byte-identical for segments=None — every board voiced before
+            # per-scene synthesis). Pairing is by IDENTITY, not position: each storyline entry's
+            # (chapter, scene_number) key is looked up in a one-time grouping of voice_segments
+            # by that same key (clips of one key are consecutive in the constructed track by
+            # construction — synthesize_script_voice walks the identical
+            # _lines_in_storyline_order grouping). A key is POPPED from the group on first use,
+            # so a chapter that references one scene twice (two review windows, one line) finds
+            # nothing the second time — a hard, actionable refusal instead of a silent
+            # zero-duration segment that would drift every later scene. Any group left unpopped
+            # after the whole arc is walked is a line the storyline no longer references at all
+            # (checked once, after the loop below).
+            voice_segments = voice.segments  # None = legacy single-track board
+            clips_by_key: dict[tuple[int, int], list[VoiceSegment]] = {}
+            if voice_segments is not None:
+                for seg in voice_segments:
+                    clips_by_key.setdefault((seg.chapter, seg.scene_number), []).append(seg)
             words = _read_words(voice.timings_path)
             line_map = line_starts(ordered_lines, words)
             audio_windows = chapter_audio_windows(ordered_lines, words)
@@ -1786,12 +2662,28 @@ def build_production_tool_specs(
                 # their base durations, so the chapter's audio window can be distributed over
                 # them BEFORE any segment is cut.
                 resolved_scenes: list[tuple[int, int, int, BestWindow, Roi | None]] = []
+                # Parallel to resolved_scenes — only needed for the per-scene-voice path's
+                # window-naming refusals below, kept separate rather than widening the
+                # resolved_scenes tuple everywhere (including the legacy path's consumers).
+                window_idxs: list[int] = []
                 base_durations: list[float] = []
                 stretch_caps: list[float] = []
                 for entry in chapter.scene_numbers:
                     scene_number, window_idx = as_scene_window(entry)
                     resolved = _resolve_scene(db, asset_id, scene_number)
                     if resolved is None:
+                        if voice_segments is not None:
+                            # The legacy path's silent skip would desync the identity pairing
+                            # below (a scene the voice HAS a clip for would simply never be
+                            # matched, and its clip would misreport as "no longer referenced").
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"scene {scene_number} is referenced by the storyline but "
+                                    "does not exist in this asset's rough cut — fix the "
+                                    "storyline (save_storyline)"
+                                ),
+                            }
                         continue
                     src_start, src_end, _text = resolved
                     scene_duration_s = (src_end - src_start) / fps
@@ -1824,7 +2716,11 @@ def build_production_tool_specs(
                         )
                         roi = None
 
+                    if zoom == "off":  # framing lever: full frame, window offsets kept
+                        roi = None
+
                     resolved_scenes.append((scene_number, src_start, src_end, window, roi))
+                    window_idxs.append(window_idx)
                     base_durations.append(
                         _segment_duration_s(
                             target_seconds=chapter.target_seconds,
@@ -1838,13 +2734,69 @@ def build_production_tool_specs(
                     # start back for exactly that case, as before).
                     stretch_caps.append(segment_capacity_seconds(window, scene_duration_s))
 
-                audio_window = audio_windows.get(chapter.chapter)
-                if audio_window is not None:
-                    durations = _scale_chapter_durations(
-                        base_durations, stretch_caps, audio_window[1] - audio_window[0]
-                    )
+                if voice_segments is not None:
+                    durations = []
+                    for idx, (scene_number, src_start, src_end, _w, _r) in enumerate(
+                        resolved_scenes
+                    ):
+                        window_idx = window_idxs[idx]
+                        group = clips_by_key.pop((chapter.chapter, scene_number), None)
+                        if group is None:
+                            # Either a repeat reference to a (chapter, scene) key another
+                            # entry in this arc already consumed (a scene reused via a second
+                            # review window, with only ONE script line — see the precompute
+                            # comment above), or a scene with no script line at all. Both are
+                            # the SAME author-facing problem: this storyline entry has no line
+                            # of its own to speak.
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"per-scene voice: storyline entry scene {scene_number} "
+                                    f"(window {window_idx}) has no own narration line — every "
+                                    "entry needs its own line; drop the repeated window or "
+                                    "give the scene a line (save_script_chapter), then re-run "
+                                    "synthesize_script_voice"
+                                ),
+                            }
+                        # This entry's own clip(s), consecutive in the constructed track (VS1's
+                        # concat_with_gaps): the group's own inner gaps (k-1 of them) plus one
+                        # trailing gap to the NEXT entry's clip — except when this group holds
+                        # the single, globally LAST voice segment, matching VS1/VS2's
+                        # n-1-gaps-total, no-trailing-gap construction exactly.
+                        contains_last_clip = group[-1] is voice_segments[-1]
+                        inner_gaps = (len(group) - 1) * INTER_SCENE_GAP_S
+                        trailing_gap = 0.0 if contains_last_clip else INTER_SCENE_GAP_S
+                        total_spoken = sum(seg.duration_s for seg in group)
+                        want = total_spoken + inner_gaps + trailing_gap
+                        capacity = (src_end - src_start) / fps
+                        if want > capacity + 1e-6:
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"the line(s) for scene {scene_number} speak "
+                                    f"{total_spoken:.1f}s but the scene only holds "
+                                    f"{capacity:.1f}s — shorten the line(s) "
+                                    "(save_script_chapter), then re-run "
+                                    "synthesize_script_voice"
+                                ),
+                            }
+                        if contains_last_clip:
+                            # The globally LAST voice segment's picture: give it a small
+                            # cushion beyond what it measures, clamped to the scene's own
+                            # capacity so this can never push the segment past its scene's
+                            # src_end. ``-shortest`` always trims delivery to the (shorter)
+                            # voice, so this never lengthens the film — it only protects the
+                            # probe-vs-frame-rounding gap voice_fits checks against.
+                            want = min(want + _LAST_SEGMENT_CUSHION_S, capacity)
+                        durations.append(want)
                 else:
-                    durations = base_durations
+                    audio_window = audio_windows.get(chapter.chapter)
+                    if audio_window is not None:
+                        durations = _scale_chapter_durations(
+                            base_durations, stretch_caps, audio_window[1] - audio_window[0]
+                        )
+                    else:
+                        durations = base_durations
 
                 for scene_info, seg_dur_s in zip(resolved_scenes, durations, strict=True):
                     scene_number, src_start, src_end, window, roi = scene_info
@@ -1874,6 +2826,20 @@ def build_production_tool_specs(
                     video_start_s += actual_dur_s
                     order += 1
 
+            if voice_segments is not None and clips_by_key:
+                # Every entry the storyline still references popped its own group above — what
+                # is left is a line the CURRENT storyline no longer references at all (a scene
+                # dropped from the arc after the voice was synthesized; lines_in_storyline_order
+                # never drops a line from the voice itself, so it is still sitting in
+                # voice_segments with nothing left to claim it).
+                return {
+                    "ok": False,
+                    "reason": (
+                        "voice has clips for lines the storyline no longer references — "
+                        "re-run synthesize_script_voice"
+                    ),
+                }
+
             if not segments:
                 return {"ok": False, "reason": "no scenes resolved from the storyline"}
 
@@ -1891,12 +2857,18 @@ def build_production_tool_specs(
             )
             total_seconds = sum((s.end_frame_exclusive - s.start_frame) / fps for s in segments)
             with_zoom = sum(1 for s in segments if s.zoom_start_s is not None)
-            return {
+            reply: dict[str, Any] = {
                 "ok": True,
                 "segments": len(segments),
                 "total_seconds": round(total_seconds, 3),
                 "with_zoom": with_zoom,
             }
+            if zoom == "off":
+                reply["note"] = (
+                    "zoom off: every roi and zoom_start_s dropped — the render shows the "
+                    "full frame"
+                )
+            return reply
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
@@ -1942,8 +2914,12 @@ def build_production_tool_specs(
 
             # Tiles are framed the way the render frames them (crop for a zoomed segment,
             # letterbox otherwise), so the sheet can show the framing faults it gates.
-            src_w = int(asset.get("width") or 0)
-            src_h = int(asset.get("height") or 0)
+            # The crop window must live in the PROXY's pixel space, not the source's:
+            # the sheet samples the proxy, and a 4K source's 1080p proxy is smaller than
+            # a source-space window — every roi'd tile then overflows the frame and the
+            # PNG encoder dies with "Invalid argument" (live finding 2026-08-04). The ROI
+            # is normalized, so proxy-space windows frame identically, just smaller.
+            src_w, src_h = _probe_video_dims(proxy)
             _, (out_w, out_h) = canvas_for(board.meta().format)
             roi_by_order = {
                 s.order: (s.roi.x, s.roi.y, s.roi.w, s.roi.h) if s.roi is not None else None
@@ -2020,18 +2996,26 @@ def build_production_tool_specs(
         them with captions on and a blur-filled letterbox onto the canvas the board's format
         selects (insta 1080x1920, x 1920x1080, linkedin 1080x1080), plus the board's voice as
         the new audio track. Polls the resulting export (bounded by
-        RENDER_WAIT_SECONDS) until it leaves the "rendering" state, then grades three checks:
-        voice_fits (the rendered video covers the whole voice track, small tolerance),
-        export_ready, and has_voice_timings (captions can be burned in). The RenderReport is
-        saved to the board regardless of the verdict, so a failing render stays inspectable.
+        RENDER_WAIT_SECONDS) until it leaves the "rendering" state, MEASURES the finished file
+        with ffprobe (``delivered_s`` — the mux ends with whichever stream runs out first, so
+        the cut is not the film), then grades four checks: voice_fits (the rendered video
+        covers the whole voice track, small tolerance), export_ready, has_voice_timings
+        (captions can be burned in), and story_covered (the script wrote the chapters the
+        storyline planned). The RenderReport is saved to the board regardless of the verdict,
+        so a failing render stays inspectable.
 
         CODING-AGENT CHARTER: if voice_fits comes back False, do NOT shorten or cut the voice —
-        build_cutlist already sizes segments to the voice's chapter audio windows, so a
-        shortfall means the scene material ran out (segments hit their scene-end caps) or the
-        voice has no timings sidecar. Re-run build_cutlist and render again; if it still fails,
-        the chapters need more/longer scenes (a storyline decision — report it), or, in the
-        sidecar-less fallback, a longer per-chapter time budget. The voice is the script the
-        team already agreed on; the video must fit it.
+        it is the script the team already agreed on; the video must fit it. A shortfall means
+        the scene material ran out (segments hit their scene-end caps) or the voice has no
+        timings sidecar. On a per-line (segments) board — the normal case since VS2 —
+        build_cutlist is a PURE, deterministic derivation of the same storyline/script/voice:
+        re-running it with nothing upstream changed reproduces the byte-identical cutlist, so
+        looping build_cutlist and render_production again wastes a render cycle for nothing.
+        Report the shortfall honestly instead, naming which chapter's scenes ran out of
+        material, so the Story Architect can give it more/longer scenes — that is a storyline
+        decision, not one a re-render fixes. Only on the legacy sidecar-less fallback
+        (voice.segments is None) can a longer per-chapter time budget or a fresh
+        synthesize_script_voice run actually change what build_cutlist derives.
         """
         try:
             cutlist = board.load("cutlist")
@@ -2056,11 +3040,16 @@ def build_production_tool_specs(
                     "reason": "no storyline on the board; run save_storyline first",
                 }
 
-            # Revision cap: once this production has rendered _MAX_RENDER_CYCLES times, do not
-            # spend another render. Ship the last one instead. An upstream re-save may have
+            # Revision cap: once this production has rendered render_cap times, do not spend
+            # another render. Ship the last one instead. An upstream re-save may have
             # invalidated the current render_report — restore the newest archived one so the
-            # finished export is still reported.
-            if _renders_so_far(board) >= _MAX_RENDER_CYCLES:
+            # finished export is still reported. deps raise the cap for an explicit user
+            # follow-up (see follow_up_render_cap) — an operator-requested reframe must not
+            # be eaten by the team's runaway-loop backstop.
+            render_cap = (
+                d.max_render_cycles if d.max_render_cycles is not None else _MAX_RENDER_CYCLES
+            )
+            if _renders_so_far(board) >= render_cap:
                 last = board.load("render_report")
                 if not isinstance(last, RenderReport):
                     newest = max(board.versions("render_report"), default=0)
@@ -2076,7 +3065,7 @@ def build_production_tool_specs(
                     current_hash = script_hash(_lines_in_storyline_order(script, storyline))
                     stale = bool(last.script_hash) and last.script_hash != current_hash
                     note = (
-                        f"revision limit reached ({_MAX_RENDER_CYCLES} renders); shipping "
+                        f"revision limit reached ({render_cap} renders); shipping "
                         "this cut instead of rendering again"
                     )
                     if stale:
@@ -2144,8 +3133,25 @@ def build_production_tool_specs(
                 row = repos.get_export(db, export_id) or row
 
             export_ready = row is not None and str(row.get("status")) == "ready"
+            # What the mux actually produced, not what was cut. ffmpeg's -shortest ends the
+            # film with whichever stream runs out first, so a cut longer than its voiceover
+            # ships short and every number derived from the cut reads too high.
+            delivered_s: float | None = None
+            export_path = row.get("path") if row is not None else None
+            if export_ready and export_path:
+                measure = d.probe_duration if d.probe_duration is not None else _probe_duration
+                delivered_s = measure(str(export_path))
+            # A per-line (segments) voice needs the wider tolerance: build_cutlist's own
+            # last-segment cushion is a belt-and-braces corner (a scene with no room left to
+            # give it) and the probed voice duration includes container padding an exact
+            # frame-rounded video length does not.
+            voice_fit_tolerance = (
+                _SEGMENTS_VOICE_FIT_TOLERANCE_S
+                if voice.segments is not None
+                else _VOICE_FIT_TOLERANCE_S
+            )
             voice_fits = voice.voice_s is None or (
-                video_s + _VOICE_FIT_TOLERANCE_S >= voice.voice_s
+                video_s + voice_fit_tolerance >= voice.voice_s
             )
             has_voice_timings = bool(voice.timings_path)
             voice_note = (
@@ -2153,6 +3159,10 @@ def build_production_tool_specs(
                 if voice.voice_s is not None
                 else f"video={video_s:.2f}s voice=unknown"
             )
+            if delivered_s is not None:
+                voice_note += f" delivered={delivered_s:.2f}s"
+            silent, silent_share = silent_seconds_share(script, storyline)
+            story_covered = silent_share <= _SILENT_SHARE_LIMIT
 
             checks = [
                 RenderCheck(name="voice_fits", ok=voice_fits, note=voice_note),
@@ -2166,12 +3176,29 @@ def build_production_tool_specs(
                     ok=has_voice_timings,
                     note="" if has_voice_timings else "no timings sidecar on the voice artifact",
                 ),
+                # Whether the script covered the story it was written for. get_script has
+                # reported silent_chapters for a while and it changed nothing, because the
+                # author reads its own report and moves on: only a failing check reaches the
+                # loop. Unlike target adherence this is not a length to chase — the remedy is
+                # "write chapter N", one save, no re-render spiral.
+                RenderCheck(
+                    name="story_covered",
+                    ok=story_covered,
+                    note=(
+                        "every planned chapter has narration"
+                        if not silent
+                        else f"chapters {silent} were never written — {silent_share:.0%} of the "
+                        "storyline's planned seconds have no narration"
+                    ),
+                ),
             ]
             target_s = board.meta().target_seconds
-            target_ratio = round(video_s / target_s, 3) if target_s > 0 else None
+            measured_s = delivered_s if delivered_s is not None else video_s
+            target_ratio = round(measured_s / target_s, 3) if target_s > 0 else None
             report = RenderReport(
                 export_id=export_id,
                 video_s=video_s,
+                delivered_s=delivered_s,
                 voice_s=voice.voice_s,
                 width=out_w,
                 height=out_h,
@@ -2195,9 +3222,14 @@ def build_production_tool_specs(
                 "checks": [c.model_dump() for c in checks],
             }
             if target_ratio is not None:
-                reply["target_note"] = (
-                    f"video {video_s:.1f}s vs target {target_s:.1f}s ({target_ratio:.0%})"
-                )
+                label = "delivered" if delivered_s is not None else "video"
+                note = f"{label} {measured_s:.1f}s vs target {target_s:.1f}s ({target_ratio:.0%})"
+                if delivered_s is not None and delivered_s + 0.5 < video_s:
+                    note += (
+                        f" — cut {video_s:.1f}s, so the mux ended with the voice and dropped "
+                        "the rest of the footage; lengthen the narration or shorten the cut"
+                    )
+                reply["target_note"] = note
             return reply
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
@@ -2310,13 +3342,17 @@ def build_production_tool_specs(
     funcs: list[Callable[..., dict[str, Any]]] = [
         board_status,
         get_scene_context,
+        get_scene_transcript,
         review_scene,
         get_reviews,
+        set_board_language,
+        propose_scene_selection,
         save_storyline,
         get_storyline,
         script_budget,
         save_script_chapter,
         get_script,
+        suggest_scenes_for_script,
         synthesize_script_voice,
         build_cutlist,
         save_contact_sheet,
@@ -2325,4 +3361,9 @@ def build_production_tool_specs(
         save_qa_report,
         revert_artifact,
     ]
+    # Optional extra, env-gated (LAURA_SECONDBRAIN_PATH): only offered when a vault is actually
+    # configured — same convention as the VLM/voice backends (see brain_tools' module docstring).
+    if brain_root() is not None:
+        funcs.append(search_second_brain)
+        funcs.append(read_brain_note)
     return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]

@@ -26,7 +26,7 @@ from ..jobs.runner import enqueue
 
 # Pure-pydantic leaf: safe at runtime even without the optional 'autoshort' extra, unlike
 # short_creator.board below.
-from ..short_creator.board_models import Format
+from ..short_creator.board_models import Format, SceneSelection
 
 # discovery/scout import nothing from autogen at module load either (Tasks 1-2 of the
 # auto-short arc) — safe here too. run_scout is imported at module level (rather than inside
@@ -96,6 +96,10 @@ class ProductionMessageRequest(BaseModel):
 class ProductionRevertRequest(BaseModel):
     artifact: str
     version: int
+
+
+class SceneSelectionConfirmRequest(BaseModel):
+    scene_numbers: list[int]
 
 
 def _db(request: Request) -> Database:
@@ -175,19 +179,57 @@ def _restored_from_job(job: dict[str, Any]) -> list[str]:
     unparseable ``result_json``, or a result missing/mistyping the key must degrade to ``[]``
     rather than raise or 500 the whole status endpoint.
     """
-    raw = job.get("result_json")
-    if not raw:
-        return []
-    try:
-        result = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if not isinstance(result, dict):
+    result = _result_of(job)
+    if result is None:
         return []
     restored = result.get("restored")
     if not isinstance(restored, list):
         return []
     return [item for item in restored if isinstance(item, str)]
+
+
+def _result_of(job: dict[str, Any]) -> dict[str, Any] | None:
+    """*job*'s parsed ``result_json``, or None when there is none / it is unusable.
+
+    A pure status read: a queued job, unparseable JSON, or a non-object result must degrade to
+    None rather than raise and 500 the endpoint that reports liveness.
+    """
+    raw = job.get("result_json")
+    if not raw:
+        return None
+    try:
+        result = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _outcome_from_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Did the run actually produce a film — and if not, where did it stop?
+
+    The job status answers a different question than the user is asking. It means "the handler
+    returned without raising", which is true of a run that spent its whole turn budget failing
+    to save a storyline. Live 2026-08-02 (Drive-Test): two such runs both read ``succeeded``
+    with ``export_id: null`` and half a board. ``run_production``'s result has carried the real
+    answer all along (``complete`` = ``resume_point == "done"``; see its own docstring on why
+    ``ok`` is not it) — nobody read it. ``complete`` is None while nothing is known yet: a
+    queued job has not failed to deliver, it simply has not run.
+    """
+    result = _result_of(job)
+    if result is None:
+        return {"complete": None, "export_id": None, "stopped_at": None}
+    complete = result.get("complete")
+    complete = bool(complete) if isinstance(complete, bool) else None
+    export_id = result.get("export_id")
+    resume_point = result.get("resume_point")
+    return {
+        "complete": complete,
+        "export_id": export_id if isinstance(export_id, str) else None,
+        # Only an INCOMPLETE run stopped somewhere; a finished one stopped nowhere.
+        "stopped_at": (
+            str(resume_point) if complete is False and isinstance(resume_point, str) else None
+        ),
+    }
 
 
 def _job_view(job: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -203,6 +245,7 @@ def _job_view(job: dict[str, Any] | None) -> dict[str, Any] | None:
         "lease_expires_at": job["lease_expires_at"],
         "finished_at": job["finished_at"],
         "restored": _restored_from_job(job),
+        **_outcome_from_job(job),
     }
 
 
@@ -334,6 +377,8 @@ def _create_production_session(
     target_seconds: float,
     format: str,
     language: str,
+    script_gate: bool = False,
+    scene_gate: bool = False,
 ) -> tuple[str, str]:
     """Create a v2 production session row for *asset_id* and enqueue its ``production.run`` job.
 
@@ -342,25 +387,34 @@ def _create_production_session(
     row is created before the job is enqueued: a session without a job is harmless (visible,
     just never progresses), while a job without a session row would reference an entity that
     doesn't exist. Returns ``(session_id, job_id)``.
+
+    ``script_gate`` (Gate B, opt-in) and ``scene_gate`` (Gate S, opt-in) are only ever added to
+    the job payload when True — a caller that never asks for either (every caller except
+    ``run_project_auto_short``) enqueues the exact payload shape this always had, unchanged.
     """
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
         db, session_id=session_id, asset_id=asset_id, created_utc=created_utc
     )
+    payload: dict[str, Any] = {
+        "asset_id": asset_id,
+        "session_id": session_id,
+        "task": task,
+        "target_seconds": target_seconds,
+        "format": format,
+        "language": language,
+    }
+    if script_gate:
+        payload["script_gate"] = True
+    if scene_gate:
+        payload["scene_gate"] = True
     # LLM-driven production runs are expensive + non-idempotent — do not auto-retry.
     job_id = enqueue(
         db,
         queue=queue_for("production.run"),
         kind="production.run",
-        payload={
-            "asset_id": asset_id,
-            "session_id": session_id,
-            "task": task,
-            "target_seconds": target_seconds,
-            "format": format,
-            "language": language,
-        },
+        payload=payload,
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
@@ -400,86 +454,7 @@ def create_production(
     }
 
 
-# --- v2 project-scoped auto-short endpoint (Task 3) ---------------------------------------------
-
-
-@router.post("/projects/{project_id}/auto-short", status_code=status.HTTP_202_ACCEPTED)
-def create_project_auto_short(
-    project_id: str,
-    body: ProjectAutoShortRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
-) -> dict[str, Any]:
-    """Topic in, scouted v2 production session out.
-
-    Distinct from ``POST /assets/{asset_id}/auto-short`` (the v1 per-asset NL-agent path, left
-    untouched): this route picks the asset ITSELF by scanning the whole project's transcripts
-    (:func:`search_material`), lets the scout (:func:`run_scout`) choose the best asset and
-    scenes for *topic*, then starts a normal v2 production session on that asset — the exact
-    same session-creation path as ``POST /assets/{asset_id}/production``.
-
-    404 unknown project; 503 preflight (missing extra / unusable agent config) BEFORE any
-    material search or scout call; 422 (no matching material) BEFORE any session is created —
-    no corpse sessions on a topic nothing was found for.
-    """
-    db = _db(request)
-    if repos.get_project(db, project_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
-    _require_autoshort()
-    _require_usable_agent_config()
-
-    material = search_material(db, project_id, body.topic)
-    if not material["ranking"]:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={
-                "reason": "no material found for topic",
-                "skipped": material["skipped"],
-                "source": material["source"],
-            },
-        )
-
-    from ..short_creator.providers import config_warnings, resolve_from_env
-
-    config = resolve_from_env()
-    decision: ScoutDecision = run_scout(
-        db, config, project_id=project_id, topic=body.topic, material=material
-    )
-
-    # decision["asset_id"] is always one of material["ranking"]'s asset ids: run_scout only ever
-    # adopts a reply after validating asset_id against the ranking, and its fallback picks the
-    # ranking's own top entry — so this lookup can never miss.
-    chosen = next(e for e in material["ranking"] if e["asset_id"] == decision["asset_id"])
-    snippets = [hit["snippet"] for hit in chosen["scene_hits"]]
-    task = (
-        f"{body.topic}\n\n"
-        f"Material scout: use asset '{chosen['display_name']}'. Focus on scenes "
-        f"{', '.join(map(str, decision['scene_numbers']))} — transcript hits: "
-        f"{'; '.join(snippets)}. Scout rationale: {decision['rationale']}"
-    )
-
-    session_id, job_id = _create_production_session(
-        db,
-        decision["asset_id"],
-        task=task,
-        target_seconds=body.target_seconds,
-        format=body.format,
-        language=body.language,
-    )
-
-    return {
-        "session_id": session_id,
-        "job_id": job_id,
-        "asset_id": decision["asset_id"],
-        "scene_numbers": decision["scene_numbers"],
-        "rationale": decision["rationale"],
-        "fallback": decision["fallback"],
-        "ranking": material["ranking"],
-        "warnings": config_warnings(config),
-    }
-
-
-# --- v2 project-scoped auto-overview endpoint (spec 2026-07-31) ---------------------------------
+# --- v2 project-scoped auto-short + auto-overview endpoints (Task 3 / spec 2026-07-31) ----------
 
 
 def _split_by_source_presence(
@@ -495,9 +470,10 @@ def _split_by_source_presence(
 
     So the check is the filesystem itself, done ONCE per ranked asset, here rather than in
     :func:`discovery.search_material`: discovery answers "what matches the topic" and is
-    consumed by other callers, while this route is where the pipeline commits to BUILDING —
-    and it must not build a montage out of clips it cannot render. Dropping (rather than
-    aborting) keeps the overview useful: the remaining videos still make one.
+    consumed by other callers, while these routes are where the pipeline commits to BUILDING —
+    and they must not build out of clips they cannot render. Dropping (rather than aborting)
+    keeps the result useful: the remaining videos still make an overview, and the scout still
+    has candidates to choose from.
 
     The asset's proxy may well still exist, but the renderer resolves the SOURCE, so a present
     proxy does not make the asset usable here.
@@ -514,6 +490,146 @@ def _split_by_source_presence(
         missing.append(name)
         logger.info("auto-overview: dropping %s — source file missing (%s)", name, source)
     return usable, missing
+
+
+def run_project_auto_short(
+    db: Database,
+    project_id: str,
+    *,
+    topic: str,
+    target_seconds: int,
+    format: Format,
+    language: str,
+) -> dict[str, Any]:
+    """Topic in, scouted v2 production session out.
+
+    Distinct from ``POST /assets/{asset_id}/auto-short`` (the v1 per-asset NL-agent path, left
+    untouched): this route picks the asset ITSELF by scanning the whole project's transcripts
+    (:func:`search_material`), lets the scout (:func:`run_scout`) choose the best asset and
+    scenes for *topic*, then starts a normal v2 production session on that asset — the exact
+    same session-creation path as ``POST /assets/{asset_id}/production``.
+
+    404 unknown project; 503 preflight (missing extra / unusable agent config) BEFORE any
+    material search or scout call; 422 (no matching material) BEFORE any session is created —
+    no corpse sessions on a topic nothing was found for.
+    """
+    if repos.get_project(db, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    _require_autoshort()
+    _require_usable_agent_config()
+
+    material = search_material(db, project_id, topic)
+    if not material["ranking"]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no material found for topic",
+                "skipped": material["skipped"],
+                "source": material["source"],
+            },
+        )
+
+    # An asset whose source file is gone can be ranked, scouted and produced -- and only fails
+    # at render, once a session and a job already exist. Drop those before the scout sees them
+    # (see _split_by_source_presence).
+    ranking, missing_sources = _split_by_source_presence(db, material["ranking"])
+    if not ranking:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "no usable material: every matching video's source file is missing",
+                "missing_sources": missing_sources,
+                "source": material["source"],
+            },
+        )
+    material = {**material, "ranking": ranking}
+
+    # Check for unconfirmed transcripts in the ranking.
+    unconfirmed_assets: list[str] = []
+    for entry in ranking:
+        asset = repos.get_asset(db, str(entry["asset_id"]))
+        if asset is not None and not asset.get("transcript_confirmed_at"):
+            unconfirmed_assets.append(str(entry.get("display_name") or ""))
+
+    from ..short_creator.providers import config_warnings, resolve_from_env
+
+    config = resolve_from_env()
+    decision: ScoutDecision = run_scout(
+        db, config, project_id=project_id, topic=topic, material=material
+    )
+
+    # decision["asset_id"] is always one of material["ranking"]'s asset ids: run_scout only ever
+    # adopts a reply after validating asset_id against the ranking, and its fallback picks the
+    # ranking's own top entry — so this lookup can never miss.
+    chosen = next(e for e in material["ranking"] if e["asset_id"] == decision["asset_id"])
+    snippets = [hit["snippet"] for hit in chosen["scene_hits"]]
+    task = (
+        f"{topic}\n\n"
+        f"Material scout: use asset '{chosen['display_name']}'. Focus on scenes "
+        f"{', '.join(map(str, decision['scene_numbers']))} — transcript hits: "
+        f"{'; '.join(snippets)}. Scout rationale: {decision['rationale']}"
+    )
+
+    session_id, job_id = _create_production_session(
+        db,
+        decision["asset_id"],
+        task=task,
+        target_seconds=target_seconds,
+        format=format,
+        language=language,
+        # Gate B: a chat-driven short pauses after the script for the user to approve it —
+        # deliberately NOT set on auto-overview (Phase 2 does not use the production board at
+        # all) or on the plain POST /assets/{asset_id}/production endpoint.
+        script_gate=True,
+        # Gate S (spec 2026-08-06): same opt-in as Gate B above, same exclusions — a chat-driven
+        # short pauses after the team proposes scenes for the user to pick before storyline/
+        # script work starts.
+        scene_gate=True,
+    )
+
+    warnings = config_warnings(config)
+    if missing_sources:
+        warnings = [
+            *warnings,
+            "left out of the material, source file missing: " + ", ".join(missing_sources),
+        ]
+    if unconfirmed_assets:
+        warnings = [
+            *warnings,
+            *(f"Transkript unbestätigt: {name}" for name in unconfirmed_assets),
+        ]
+
+    return {
+        "session_id": session_id,
+        "job_id": job_id,
+        "asset_id": decision["asset_id"],
+        "scene_numbers": decision["scene_numbers"],
+        "rationale": decision["rationale"],
+        "fallback": decision["fallback"],
+        "ranking": material["ranking"],
+        "warnings": warnings,
+    }
+
+
+@router.post("/projects/{project_id}/auto-short", status_code=status.HTTP_202_ACCEPTED)
+def create_project_auto_short(
+    project_id: str,
+    body: ProjectAutoShortRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Topic in, scouted v2 production session out. See :func:`run_project_auto_short`."""
+    return run_project_auto_short(
+        _db(request),
+        project_id,
+        topic=body.topic,
+        target_seconds=body.target_seconds,
+        format=body.format,
+        language=body.language,
+    )
+
+
+# --- v2 project-scoped auto-overview endpoint (spec 2026-07-31) ---------------------------------
 
 
 def _overview_scene_bounds(
@@ -559,12 +675,13 @@ def _overview_fps(
     return out
 
 
-@router.post("/projects/{project_id}/auto-overview", status_code=status.HTTP_202_ACCEPTED)
-def create_project_auto_overview(
+def run_project_auto_overview(
+    db: Database,
     project_id: str,
-    body: ProjectAutoOverviewRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+    *,
+    topic: str,
+    target_seconds: int,
+    language: str,
 ) -> dict[str, Any]:
     """Topic in, a watchable overview cut across several videos out.
 
@@ -575,14 +692,17 @@ def create_project_auto_overview(
     404 unknown project; 503 preflight (missing extra / unusable agent config); 422 when the
     topic finds no material, no window survives, or the target is shorter than every
     candidate — all BEFORE anything is written.
+
+    ``language`` is accepted and echoed for symmetry with the short's service function, but
+    changes nothing in v1: the cut runs on the clips' ORIGINAL audio, so there is no script to
+    write in any language (mirrors :class:`ProjectAutoOverviewRequest`'s own docstring).
     """
-    db = _db(request)
     if repos.get_project(db, project_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     _require_autoshort()
     _require_usable_agent_config()
 
-    material = search_material(db, project_id, body.topic)
+    material = search_material(db, project_id, topic)
     if not material["ranking"]:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -607,6 +727,13 @@ def create_project_auto_overview(
             },
         )
 
+    # Check for unconfirmed transcripts in the ranking.
+    unconfirmed_assets: list[str] = []
+    for entry in ranking:
+        asset = repos.get_asset(db, str(entry["asset_id"]))
+        if asset is not None and not asset.get("transcript_confirmed_at"):
+            unconfirmed_assets.append(str(entry.get("display_name") or ""))
+
     fps_by_asset = _overview_fps(db, project_id, ranking)
     candidates = build_candidates(
         ranking,
@@ -629,9 +756,9 @@ def create_project_auto_overview(
     config = resolve_from_env()
     decision: OverviewDecision = run_overview_scout(
         config,
-        topic=body.topic,
+        topic=topic,
         candidates=candidates,
-        target_seconds=body.target_seconds,
+        target_seconds=target_seconds,
         fps_by_asset=fps_by_asset,
     )
 
@@ -647,18 +774,16 @@ def create_project_auto_overview(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "reason": (
-                    f"target_seconds ({body.target_seconds}) is shorter than the shortest "
+                    f"target_seconds ({target_seconds}) is shorter than the shortest "
                     f"available clip (~{shortest_s:.1f}s) — raise target_seconds to at least "
                     "that length"
                 ),
-                "target_seconds": body.target_seconds,
+                "target_seconds": target_seconds,
                 "shortest_candidate_seconds": round(shortest_s, 1),
             },
         )
 
-    built = build_overview(
-        db, project_id=project_id, topic=body.topic, clips=decision["clips"]
-    )
+    built = build_overview(db, project_id=project_id, topic=topic, clips=decision["clips"])
 
     export = repos.create_export(
         db,
@@ -694,12 +819,17 @@ def create_project_auto_overview(
             warnings = [
                 *warnings,
                 "overview covers a single source: target_seconds "
-                f"({body.target_seconds}) left room for only one clip after trimming",
+                f"({target_seconds}) left room for only one clip after trimming",
             ]
     if missing_sources:
         warnings = [
             *warnings,
             "left out of the overview, source file missing: " + ", ".join(missing_sources),
+        ]
+    if unconfirmed_assets:
+        warnings = [
+            *warnings,
+            *(f"Transkript unbestätigt: {name}" for name in unconfirmed_assets),
         ]
 
     return {
@@ -727,25 +857,46 @@ def create_project_auto_overview(
     }
 
 
-# --- v2 production follow-up + status endpoints (Slice 4) -------------------------------------
-
-
-@router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)
-def send_production_message(
-    session_id: str,
-    body: ProductionMessageRequest,
+@router.post("/projects/{project_id}/auto-overview", status_code=status.HTTP_202_ACCEPTED)
+def create_project_auto_overview(
+    project_id: str,
+    body: ProjectAutoOverviewRequest,
     request: Request,
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
 ) -> dict[str, Any]:
-    """Enqueue a follow-up ``production.run`` job on top of *session_id*'s existing board.
+    """Topic in, an overview cut across several videos out.
 
-    404 if the session is unknown, 503 if the 'autoshort' extra is missing, 404 if the session
-    has no board yet (a follow-up assumes a prior production run — there is nothing to follow up
-    on otherwise). ``task``/``target_seconds`` are read back from the board's own meta (fixed at
-    session creation, Task 5) rather than accepted again here — the follow-up only supplies the
-    new ``message`` text.
+    See :func:`run_project_auto_overview`.
     """
-    db = _db(request)
+    return run_project_auto_overview(
+        _db(request),
+        project_id,
+        topic=body.topic,
+        target_seconds=body.target_seconds,
+        language=body.language,
+    )
+
+
+# --- v2 production follow-up + status endpoints (Slice 4) -------------------------------------
+
+
+def _enqueue_production_run(
+    db: Database, session_id: str, message: str | None
+) -> dict[str, Any]:
+    """Shared enqueue for both a text follow-up (``message`` set — a request for a team turn)
+    and a pure resume (``message`` is ``None`` — the chat approval flow's recovery/continue
+    path, spec 2026-08-05 modular production). 404 if the session is unknown, 503 if the
+    'autoshort' extra is missing or the agent provider is not usable, 404 if the session has no
+    board yet. ``task``/``target_seconds`` are always read back from the board's own meta (fixed
+    at session creation, Task 5) rather than accepted again here.
+
+    The payload OMITS the ``message`` key entirely when *message* is ``None`` — not
+    ``"message": None`` — because the job handler and ``production_orchestrator``'s
+    ``deterministic_eligible`` (MP3) both key off "no message" to decide whether an eligible
+    gated board takes the deterministic tail instead of spinning up an agent team; a
+    present-but-null key would be an easy way to accidentally reintroduce a team run through the
+    resume path, so the key's mere presence is one bit and it must actually be missing.
+    """
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
@@ -754,18 +905,20 @@ def send_production_message(
     asset_id = str(session["asset_id"])
     board = _open_board_or_404(db, asset_id, session_id)
     meta = board.meta()
+    payload: dict[str, Any] = {
+        "asset_id": asset_id,
+        "session_id": session_id,
+        "task": meta.task,
+        "target_seconds": int(meta.target_seconds),
+    }
+    if message is not None:
+        payload["message"] = message
     # LLM-driven production runs are expensive + non-idempotent — do not auto-retry.
     job_id = enqueue(
         db,
         queue=queue_for("production.run"),
         kind="production.run",
-        payload={
-            "asset_id": asset_id,
-            "session_id": session_id,
-            "task": meta.task,
-            "target_seconds": int(meta.target_seconds),
-            "message": body.text,
-        },
+        payload=payload,
         max_attempts=1,
     )
     repos.set_production_session_job(db, session_id, job_id)
@@ -776,6 +929,131 @@ def send_production_message(
         "job_id": job_id,
         "warnings": config_warnings(resolve_from_env()),
     }
+
+
+def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[str, Any]:
+    """Enqueue a follow-up ``production.run`` job on top of *session_id*'s existing board.
+
+    404 if the session is unknown, 503 if the 'autoshort' extra is missing, 404 if the session
+    has no board yet (a follow-up assumes a prior production run — there is nothing to follow up
+    on otherwise). ``task``/``target_seconds`` are read back from the board's own meta (fixed at
+    session creation, Task 5) rather than accepted again here — the follow-up only supplies the
+    new ``message`` text.
+    """
+    return _enqueue_production_run(db, session_id, text)
+
+
+def run_production_resume(db: Database, session_id: str) -> dict[str, Any]:
+    """Enqueue the SAME kind of ``production.run`` job as :func:`run_production_follow_up`, but
+    with NO ``message`` — the chat approval flow's resume (spec 2026-08-05 modular production):
+    an eligible gated board (``production_orchestrator.deterministic_eligible``) takes the
+    deterministic post-gate tail instead of a full agent-team turn.
+    """
+    return _enqueue_production_run(db, session_id, None)
+
+
+def _utc_now_iso() -> str:
+    """Current UTC time, ISO-8601 seconds precision — this module's existing
+    ``datetime.now(UTC).isoformat(timespec="seconds")`` idiom (see session creation above)
+    wrapped for :func:`confirm_scene_selection`'s one call site."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def confirm_scene_selection(
+    db: Database, session_id: str, scene_numbers: list[int]
+) -> dict[str, Any]:
+    """Server-side Gate-S confirmation (spec 2026-08-06 §4.4): stamps the user's pick on
+    the scene_selection artifact and enqueues the resume run. The ONLY writer of
+    ``confirmed_utc`` — chat and HTTP both land here.
+
+    The busy check mirrors :func:`run_production_revert`'s own inline guard exactly (same
+    ``latest_job_id`` -> ``repos.get_job`` -> status check) rather than importing
+    ``chat.executor``'s ``_production_job_busy`` — that module imports FROM this one, so the
+    reverse import would be circular; this is the one true service-side precedent for "is the
+    session's latest job still alive".
+    """
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    if not board.meta().scene_gate:
+        raise HTTPException(status.HTTP_409_CONFLICT, "scene gate is not enabled")
+    selection = board.load("scene_selection")
+    if not isinstance(selection, SceneSelection):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "no scene proposal on the board yet"
+        )
+    picked = sorted(set(int(n) for n in scene_numbers))
+    if not picked:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "pick at least one scene")
+    pool = {c.scene_number for c in selection.candidates}
+    stray = sorted(set(picked) - pool)
+    if stray:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"scenes {stray} are not among the proposed candidates",
+        )
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    if job is not None and str(job["status"]) in ("queued", "running"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "a production run is in progress — wait for it before changing the selection",
+        )
+    if selection.confirmed_utc is not None and selection.selected_scene_numbers == picked:
+        # Idempotent re-confirm: a fresh timestamp would bump the version and wipe a
+        # perfectly valid storyline downstream for nothing (Board.save's own no-op guard
+        # compares content EXCLUDING only "version" — confirmed_utc would still differ on
+        # every call, so this short-circuit has to happen here, before the save) — this branch
+        # NEVER writes to the board, so the version never moves either way.
+        #
+        # It still HEALS a resume that never actually started: if a PRIOR confirm's stamp
+        # landed but run_production_resume then raised (a transient 503, say), every later
+        # re-confirm with the same picks used to hit this branch and return without ever
+        # retrying the resume — the session got stuck confirmed-but-parked forever. The busy
+        # guard above already proved no job is in flight, so calling run_production_resume
+        # again here is safe: on a FINISHED board it hits deterministic_eligible's own
+        # done-short-circuit (cheap no-op), on a still-parked one it is exactly the healing
+        # this needs. No rollback machinery — heal forward instead, same "heals synchronously"
+        # philosophy as run_production_revert (controller decision, 2026-08-06).
+        return {
+            "session_id": session_id,
+            "already_current": True,
+            **run_production_resume(db, session_id),
+        }
+    confirm_result = {"session_id": session_id, "selected": picked}
+    board.save(
+        "scene_selection",
+        selection.model_copy(
+            update={"selected_scene_numbers": picked, "confirmed_utc": _utc_now_iso()}
+        ),
+    )
+    return {**confirm_result, **run_production_resume(db, session_id)}
+
+
+@router.post(
+    "/production/{session_id}/scene-selection:confirm",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def confirm_scene_selection_endpoint(
+    session_id: str,
+    body: SceneSelectionConfirmRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Confirm the user's Gate-S scene pick. See :func:`confirm_scene_selection`."""
+    return confirm_scene_selection(_db(request), session_id, body.scene_numbers)
+
+
+@router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)
+def send_production_message(
+    session_id: str,
+    body: ProductionMessageRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Enqueue a follow-up production run. See :func:`run_production_follow_up`."""
+    return run_production_follow_up(_db(request), session_id, body.text)
 
 
 def _production_status_payload(
@@ -848,6 +1126,57 @@ def get_production_status(
     return _production_status_payload(db, asset_id=asset_id, board=board, job_view=job_view)
 
 
+@router.get("/production/{session_id}/events")
+def get_production_events(
+    session_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("read"))],
+    after: int = 0,
+) -> dict[str, Any]:
+    """The session's newest run log as a pollable event stream (spec 2026-08-03).
+
+    Cursor = 0-based line index into the newest ``runs/*.ndjson``; unparsable lines are
+    skipped but still advance the cursor, so a client can never loop on a bad line.
+    ``done`` mirrors whether a terminal ``{"type": "done"}`` line exists in the file.
+    """
+    from ..short_creator.production_orchestrator import board_root_for
+
+    db = _db(request)
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    try:
+        runs_dir = board_root_for(db, str(session["asset_id"]), session_id).parent / "runs"
+    except ValueError:
+        return {"events": [], "next": max(0, after), "done": False}
+    logs = (
+        sorted(runs_dir.glob("*.ndjson"), key=lambda p: p.stat().st_mtime)
+        if runs_dir.is_dir()
+        else []
+    )
+    if not logs:
+        return {"events": [], "next": max(0, after), "done": False}
+    lines = logs[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+    start = max(0, after)
+    events: list[dict[str, Any]] = []
+    done = False
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == "done":
+            done = True
+    for line in lines[start:]:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return {"events": events, "next": len(lines), "done": done}
+
+
 @router.get("/production/{session_id}/contact-sheet")
 def get_production_contact_sheet(
     session_id: str,
@@ -878,12 +1207,8 @@ def get_production_contact_sheet(
     return FileResponse(path, media_type="image/png")
 
 
-@router.post("/production/{session_id}/revert")
-def revert_production_artifact(
-    session_id: str,
-    body: ProductionRevertRequest,
-    request: Request,
-    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+def run_production_revert(
+    db: Database, session_id: str, artifact: str, version: int
 ) -> dict[str, Any]:
     """Revert one board artifact to an archived version and heal the suffix — synchronously,
     no job and no agent turn. Mirrors the revert_artifact tool's validation; then
@@ -898,7 +1223,6 @@ def revert_production_artifact(
     from ..short_creator.board import Board, downstream_of
     from ..short_creator.production_orchestrator import board_root_for
 
-    db = _db(request)
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
@@ -915,29 +1239,40 @@ def revert_production_artifact(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session has no board") from None
 
     valid_names = downstream_of("scene_reviews")
-    if body.artifact not in valid_names:
+    if artifact not in valid_names:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"unknown artifact '{body.artifact}'; valid: {', '.join(valid_names)}",
+            f"unknown artifact '{artifact}'; valid: {', '.join(valid_names)}",
         )
-    invalidated = [d for d in downstream_of(body.artifact) if board.load(d) is not None]
+    invalidated = [d for d in downstream_of(artifact) if board.load(d) is not None]
     try:
-        board.revert(body.artifact, body.version)
+        board.revert(artifact, version)
     except FileNotFoundError:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"no archived {body.artifact} v{body.version}",
+            f"no archived {artifact} v{version}",
         ) from None
     restored = board.restore_coherent_suffix()
 
     job_view = _job_view(job)
     return {
         "ok": True,
-        "artifact": body.artifact,
-        "version": body.version,
+        "artifact": artifact,
+        "version": version,
         "invalidated": invalidated,
         "restored": restored,
         "status": _production_status_payload(
             db, asset_id=asset_id, board=board, job_view=job_view
         ),
     }
+
+
+@router.post("/production/{session_id}/revert")
+def revert_production_artifact(
+    session_id: str,
+    body: ProductionRevertRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Revert a board artifact and heal the suffix. See :func:`run_production_revert`."""
+    return run_production_revert(_db(request), session_id, body.artifact, body.version)

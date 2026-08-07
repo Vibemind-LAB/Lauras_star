@@ -11,6 +11,7 @@ transcript text without a run; that text is never read by these tools.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from laura.short_creator.production_tools import (
     script_hash,
     script_text,
 )
+from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
 FPS = 30
 SCENE_FRAMES = 300  # 300 frames @ 30fps = 10.0s per scene
@@ -176,28 +178,59 @@ def _words() -> list[dict[str, Any]]:
     ]
 
 
+def _tone(path: Path, seconds: float) -> None:
+    """Same helper as test_voice_concat.py: a real ffmpeg-encoded sine tone. synthesize_script_
+    voice now runs real ffprobe/ffmpeg over every per-line clip (VS2), so the fake backend must
+    hand it playable audio, not a dummy byte string."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-q:a", "9", str(path)],
+        check=True, capture_output=True,
+    )
+
+
 class _FakeVoiceBackend:
-    """Fake VoiceBackend: writes a dummy mp3 + a timings sidecar with caller-supplied word
-    times (so the cutlist zoom test can hand-compute expected values), and counts calls."""
+    """Fake VoiceBackend: writes a real short tone per call (one call per script LINE under
+    the VS2 per-line contract, not one call for the whole track) plus a timings sidecar
+    carrying that call's own share of the caller-supplied word list — consumed in order by
+    token count, rebased to start at 0 (production code re-applies the real per-line offset
+    via merge_word_timings). Counts calls and records every text passed, in order."""
 
     def __init__(
-        self, *, words: list[dict[str, Any]] | None = None, ok: bool = True, reason: str = "boom"
+        self, *, words: list[dict[str, Any]] | None = None, ok: bool = True, reason: str = "boom",
+        seconds_per_call: float = 0.5,
     ) -> None:
         self.calls = 0
+        self.texts: list[str] = []
         self.last_text: str | None = None
         self._words = words if words is not None else []
+        self._cursor = 0
         self._ok = ok
         self._reason = reason
+        self._seconds_per_call = seconds_per_call
 
     def synthesize(self, text: str, out_path: Path) -> dict[str, Any]:
         self.calls += 1
         self.last_text = text
+        self.texts.append(text)
         if not self._ok:
             return {"ok": False, "reason": self._reason}
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(b"id3-fake-mp3")
+        _tone(out_path, self._seconds_per_call)
+        n_tokens = len(text.split())
+        line_words = self._words[self._cursor : self._cursor + n_tokens]
+        self._cursor += n_tokens
+        base = float(line_words[0]["start_s"]) if line_words else 0.0
+        rel_words = [
+            {
+                "text": w["text"],
+                "start_s": float(w["start_s"]) - base,
+                "end_s": float(w["end_s"]) - base,
+            }
+            for w in line_words
+        ]
         timings_path = Path(str(out_path) + ".timings.json")
-        timings_path.write_text(json.dumps({"words": self._words}), encoding="utf-8")
+        timings_path.write_text(json.dumps({"words": rel_words}), encoding="utf-8")
         return {"ok": True, "path": str(out_path), "timings_path": str(timings_path)}
 
 
@@ -300,19 +333,23 @@ def test_synthesize_uses_cache_on_same_hash(tmp_path: Path) -> None:
     first = specs["synthesize_script_voice"].func()
     assert first["ok"] is True
     assert first.get("cached") is False
-    assert first["voice_s"] == pytest.approx(2.1)
-    assert backend.calls == 1
+    # Per-line synthesis (VS2): TWO lines -> two 0.5s tones + one 0.35s inter-scene gap, then
+    # ffprobe's real (frame-quantized) duration of the constructed track — not the old
+    # caller-supplied words' literal end_s.
+    assert first["voice_s"] == pytest.approx(2 * 0.5 + INTER_SCENE_GAP_S, abs=0.15)
+    assert backend.calls == 2  # one call per script line, not one for the whole track
 
     second = specs["synthesize_script_voice"].func()
     assert second["ok"] is True
     assert second["cached"] is True
-    assert backend.calls == 1  # no second synthesis — same script hash
+    assert backend.calls == 2  # no further synthesis — same script hash
 
     saved = board.load("voice")
     assert isinstance(saved, VoiceArtifact)
     # default _storyline() scene_numbers=[1, 2] matches _script()'s natural line order, so the
     # storyline-ordered hash equals the raw line-order hash here.
     assert saved.script_hash == script_hash(_script().lines)
+    assert saved.segments is not None and len(saved.segments) == 2
 
 
 def test_synthesize_reports_backend_failure(tmp_path: Path) -> None:
@@ -328,7 +365,14 @@ def test_synthesize_reports_backend_failure(tmp_path: Path) -> None:
 
     out = specs["synthesize_script_voice"].func()
 
-    assert out == {"ok": False, "reason": "quota exceeded"}
+    # Per-line synthesis (VS2): fails on the FIRST line (scene 1, chapter 1 in _storyline()'s
+    # default order), named in the reason, after exactly one retry — never a bare backend
+    # passthrough anymore.
+    assert out["ok"] is False
+    assert "scene 1" in out["reason"]
+    assert "chapter 1" in out["reason"]
+    assert "quota exceeded" in out["reason"]
+    assert backend.calls == 2  # one synth + exactly one retry, then give up
     assert board.load("voice") is None
 
 
@@ -474,7 +518,14 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
 
     # Word timings as a real TTS backend would produce them for the CORRECTLY (storyline-)
     # ordered text "Ein Klick genügt Stopp dein Team" (scene 2's line, then scene 1's line).
+    # seconds_per_call is bumped to 2.0s (default 0.5s): the picture segments here are fixed at
+    # a 2.0s floor (target_seconds/n_scenes, unrelated to voice pacing pre-VS3), and
+    # zoom_start_s clamps to 0.0 when a line's real offset falls short of the ACCUMULATED
+    # picture time before it — at the default duration scene 1's candidate goes negative and
+    # both segments' zooms collapse indistinguishably to the floor. A longer per-line clip keeps
+    # both candidates positive so the order-discrimination below is real, not a clamp artifact.
     backend = _FakeVoiceBackend(
+        seconds_per_call=2.0,
         words=[
             {"text": "Ein", "start_s": 0.2, "end_s": 0.45},
             {"text": "Klick", "start_s": 0.5, "end_s": 0.75},
@@ -492,8 +543,10 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     synth = specs["synthesize_script_voice"].func()
     assert synth["ok"] is True
     assert synth["cached"] is False
-    assert backend.calls == 1
-    assert backend.last_text == "Ein Klick genügt Stopp dein Team"
+    # Per-line synthesis (VS2): one backend call per line, in STORYLINE order (scene 2's line,
+    # then scene 1's) — not the old single whole-track call.
+    assert backend.calls == 2
+    assert backend.texts == ["Ein Klick genügt", "Stopp dein Team"]
 
     built = specs["build_cutlist"].func()
     assert built["ok"] is True
@@ -505,12 +558,16 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     # Video order follows the STORYLINE (scene 2 first, scene 1 second) ...
     assert (seg0.order, seg0.scene_number) == (0, 2)
     assert (seg1.order, seg1.scene_number) == (1, 1)
-    # ... and the zoom timing follows that SAME order: scene 2's zoom uses the EARLY word start
-    # (its line is spoken first), scene 1's zoom uses the LATE one (its line is spoken second) —
-    # the exact opposite of what the naive (chapter, list-position) order would have produced
-    # (which would have paired scene 1 with the early words and scene 2 with the late ones).
-    assert seg0.zoom_start_s == pytest.approx(0.6)
-    assert seg1.zoom_start_s == pytest.approx(0.9)
+    # ... and both carry a zoom (both scenes have a roi). The exact zoom_start_s values this test
+    # used to hand-verify assumed a single continuous synthesis call with the caller's literal
+    # word times; VS2 constructs the track from independently-synthesized+REAL-ffprobe-measured
+    # per-line clips, so those literals no longer reproduce (the precise number is a construction
+    # detail VS3 owns, wiring build_cutlist to VoiceArtifact.segments directly). The ORDER
+    # discrimination this test exists for still has to hold, though: scene 2's line plays FIRST
+    # in the constructed track, so its zoom must land before scene 1's.
+    assert seg0.zoom_start_s is not None
+    assert seg1.zoom_start_s is not None
+    assert seg0.zoom_start_s < seg1.zoom_start_s
 
     # The voice cache is keyed on the ORDERED text: re-saving the storyline with a DIFFERENT
     # scene order changes that text (even though the script itself is untouched) and must
@@ -522,9 +579,12 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
 
     second = specs["synthesize_script_voice"].func()
     assert second["ok"] is True
-    assert second["cached"] is False  # order-only change still busts the cache
+    assert second["cached"] is False  # order-only change still busts the WHOLE-TRACK cache
+    # ... but the PER-LINE cache still hits both lines — their TEXTS are unchanged, only their
+    # play order — so the reorder is served entirely from the on-disk line cache, zero new
+    # backend calls.
     assert backend.calls == 2
-    assert backend.last_text == "Stopp dein Team Ein Klick genügt"
+    assert backend.texts == ["Ein Klick genügt", "Stopp dein Team"]
 
 
 def test_chapters_narrated_in_numeric_order_not_save_order(tmp_path: Path) -> None:
@@ -599,10 +659,11 @@ def test_chapters_narrated_in_numeric_order_not_save_order(tmp_path: Path) -> No
         s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
     }
 
-    # Synthesize voice: backend must receive text in NUMERIC chapter order, not save order
+    # Synthesize voice: backend must receive each LINE in NUMERIC chapter order, not save order
+    # (per-line synthesis, VS2 — one call per line, not one call for the whole joined text).
     synth = specs["synthesize_script_voice"].func()
     assert synth["ok"] is True
-    assert backend.last_text == "First chapter Second chapter"
+    assert backend.texts == ["First chapter", "Second chapter"]
 
     # Build cutlist: must follow numeric order, not save order
     built = specs["build_cutlist"].func()
@@ -933,7 +994,14 @@ def test_build_cutlist_uses_referenced_window(tmp_path: Path) -> None:
 
 
 def test_build_cutlist_same_scene_twice_with_different_windows(tmp_path: Path) -> None:
-    """One chapter plays scene 1 twice — window 0 (plain int entry) then window 1 — as two
+    """LEGACY path only (voice.segments is None, seeded via ``_save_voice`` below) — storyline
+    saved straight to the board, bypassing ``save_storyline``. C1 made the TOOL refuse a
+    within-chapter scene reuse at write time (see test_production_tools_write.py::
+    test_save_storyline_rejects_within_chapter_scene_reuse); a hand-built board can still reach
+    this legacy sizing path directly, and it stays byte-identical here as defense-in-depth
+    coverage for boards/writers that bypass the tool.
+
+    One chapter plays scene 1 twice — window 0 (plain int entry) then window 1 — as two
     separate segments, each cut from its own window's offset."""
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
@@ -1165,3 +1233,132 @@ def test_build_cutlist_tool_description_teaches_offset_only_window_contract(
 
     assert "base-duration cap" not in description
     assert "never from the window's duration" in description
+
+
+# --- the zoom lever (live finding 2026-08-04) ----------------------------------------------------
+# The user asked for the full frame ("zeig das volle Bild, kein enger Zoom"); rois derive from
+# the STORYLINE's window references, and three follow-up runs failed to re-save the storyline —
+# twice rebuilding the cutlist from the unchanged storyline. The workaround was stripping rois
+# out of cutlist.json by hand. zoom="off" is that workaround as a first-class, one-call lever.
+
+
+def test_build_cutlist_zoom_off_drops_all_rois_and_zoom(tmp_path: Path) -> None:
+    """zoom="off": EVERY segment comes out roi-less and unzoomed, regardless of the storyline's
+    window references — while the cut itself (window offsets, durations) stays exactly the one
+    zoom="auto" builds. Same fixture numbers as
+    ``test_build_cutlist_deterministic_segments_and_zoom`` (which pins the auto behaviour)."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    _review(
+        board,
+        1,
+        best_window=BestWindow(offset_s=1.0, duration_s=3.0),
+        roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2),
+    )
+    _review(
+        board,
+        2,
+        best_window=BestWindow(offset_s=0.0, duration_s=3.0),
+        roi=Roi(x=0.3, y=0.3, w=0.2, h=0.2),
+    )
+    board.save("storyline", _storyline(scene_numbers=[1, 2], target_seconds=4.0))
+    board.save("script", _script())
+    _save_voice(
+        board,
+        tmp_path,
+        words=[
+            {"text": "Stopp", "start_s": 0.2, "end_s": 0.45},
+            {"text": "dein", "start_s": 0.5, "end_s": 0.75},
+            {"text": "Team", "start_s": 0.9, "end_s": 1.2},
+            {"text": "Ein", "start_s": 2.5, "end_s": 2.75},
+            {"text": "Klick", "start_s": 2.8, "end_s": 3.0},
+            {"text": "genügt", "start_s": 3.1, "end_s": 3.4},
+        ],
+    )
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func(zoom="off")
+
+    assert out["ok"] is True
+    assert out["segments"] == 2
+    assert out["with_zoom"] == 0
+    assert "zoom" in str(out.get("note", "")).lower()  # the override is named in the reply
+
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg0, seg1 = cutlist.segments
+    assert seg0.roi is None and seg0.zoom_start_s is None
+    assert seg1.roi is None and seg1.zoom_start_s is None
+    # The CUT is untouched — same frames as the zoom="auto" run over these exact numbers.
+    assert (seg0.start_frame, seg0.end_frame_exclusive) == (30, 90)
+    assert (seg1.start_frame, seg1.end_frame_exclusive) == (300, 360)
+
+
+def test_build_cutlist_zoom_off_overrides_window_refs(tmp_path: Path) -> None:
+    """The live failure mode exactly: the storyline references a review window WITH a roi, and
+    zoom="off" must still drop it — the whole point is that the storyline does not need to be
+    re-saved without its window refs."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    w0 = BestWindow(offset_s=0.0, duration_s=2.0)
+    w1 = BestWindow(offset_s=5.0, duration_s=3.0, roi=Roi(x=0.3, y=0.3, w=0.2, h=0.2))
+    _review(board, 1, best_window=w0, windows=[w0, w1], roi=Roi(x=0.1, y=0.1, w=0.2, h=0.2))
+    board.save(
+        "storyline",
+        Storyline(
+            red_thread="rt",
+            arc=[
+                Chapter(
+                    chapter=1,
+                    role="hook",
+                    message="m",
+                    scene_numbers=[SceneWindowRef(scene=1, window=1)],
+                    target_seconds=4.0,
+                )
+            ],
+        ),
+    )
+    board.save(
+        "script",
+        Script(
+            language="de", lines=[ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team")]
+        ),
+    )
+    _save_voice(board, tmp_path, words=[])
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func(zoom="off")
+
+    assert out["ok"] is True
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    seg = cutlist.segments[0]
+    assert seg.roi is None and seg.zoom_start_s is None
+    # The referenced window still decides WHERE the segment starts — only the crop is dropped.
+    assert seg.start_frame == 150
+
+
+def test_build_cutlist_rejects_unknown_zoom_value(tmp_path: Path) -> None:
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    out = specs["build_cutlist"].func(zoom="wide")
+
+    assert out["ok"] is False
+    assert '"auto"' in out["reason"] and '"off"' in out["reason"]
+    assert board.load("cutlist") is None
+
+
+def test_build_cutlist_tool_description_documents_the_zoom_off_lever(tmp_path: Path) -> None:
+    """The team can only comply with 'zeig das volle Bild' in one call if the docstring (the
+    LLM-facing tool description) says so — three live follow-up runs failed without it."""
+    db, asset_id = _seed_two_scenes(tmp_path)
+    board = _board(tmp_path, asset_id)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    description = specs["build_cutlist"].description
+
+    assert 'zoom="off"' in description
+    assert "regardless of the storyline" in description
+    assert "full frame" in description

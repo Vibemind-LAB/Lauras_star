@@ -10,11 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 
 from .. import PIPELINE_VERSION, audit
+from ..analysis.semantic_sync import reindex_segments
 from ..auth import Principal, require_permission
 from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..util import utcnow_iso
 from .models import (
     AnalysisAccepted,
     AnalysisRunOut,
@@ -22,6 +24,7 @@ from .models import (
     SegmentOut,
     SegmentUpdate,
     ShotOut,
+    TranscriptConfirmOut,
     TranscriptRealignAccepted,
     TranscriptRealignRequest,
     WordOut,
@@ -198,13 +201,37 @@ def update_transcript_segment(
     principal: Annotated[Principal, Depends(require_permission("asset:write"))],
 ) -> SegmentOut:
     db = _db(request)
-    if repos.get_segment(db, segment_id) is None:
+    seg = repos.get_segment(db, segment_id)
+    if seg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "segment not found")
     repos.update_segment(db, segment_id, text=body.text, speaker_id=body.speaker_id)
     audit.record(db, principal, "transcript.update", entity_type="segment", entity_id=segment_id)
+    # Best-effort semantic re-index of just this segment (never raises); the edit itself
+    # already committed above regardless of index availability. Deliberately does NOT touch
+    # transcript_confirmed_at — a correction after confirmation stays confirmed, the card
+    # shows the confirmed state as-is rather than silently reverting it.
+    reindex_segments(db, seg["asset_id"], [segment_id])
     seg = repos.get_segment(db, segment_id)
     assert seg is not None
     return _segment_out(seg, repos.get_segment_words(db, segment_id))
+
+
+@router.post(
+    "/assets/{asset_id}/transcript:confirm",
+    response_model=TranscriptConfirmOut,
+)
+def confirm_transcript(
+    asset_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("asset:write"))],
+) -> TranscriptConfirmOut:
+    db = _db(request)
+    if repos.get_asset(db, asset_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    confirmed_at = utcnow_iso()
+    repos.set_transcript_confirmed_at(db, asset_id, confirmed_at)
+    audit.record(db, principal, "transcript.confirm", entity_type="asset", entity_id=asset_id)
+    return TranscriptConfirmOut(asset_id=asset_id, transcript_confirmed_at=confirmed_at)
 
 
 @router.post(

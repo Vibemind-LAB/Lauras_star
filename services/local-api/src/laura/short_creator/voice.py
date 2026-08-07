@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,25 @@ def _http_post_bytes(url: str, payload: bytes, headers: dict[str, str]) -> bytes
     req = urllib.request.Request(url, data=payload, headers=headers)
     with urllib.request.urlopen(req, timeout=300.0) as resp:  # noqa: S310 (fixed https host)
         return bytes(resp.read())
+
+
+def _write_atomic_bytes(path: Path, data: bytes) -> None:
+    """Publish ``data`` at ``path`` via a uniquely named tmp file + atomic replace.
+
+    ``path`` doubles as this line's on-disk synthesis CACHE — a killed process (or any writer
+    interrupted mid-write) must never leave a truncated file sitting AT the cache path, because
+    a future run would then find it via ``clip.is_file()`` and treat garbage bytes as a valid,
+    permanently-cached clip. The tmp name is unique per call (mirrors board.py's
+    ``_write_atomic``) so two concurrent synthesis calls for the same line never tear each
+    other's writes.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _words_from_alignment(
@@ -108,8 +128,7 @@ class ElevenLabsVoiceBackend:
             audio = b""
         if not audio:
             return {"ok": False, "reason": "empty audio response"}
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(audio)
+        _write_atomic_bytes(out_path, audio)
         result: dict[str, Any] = {"ok": True, "path": str(out_path), "bytes": len(audio)}
 
         alignment = data.get("alignment") or data.get("normalized_alignment") or {}

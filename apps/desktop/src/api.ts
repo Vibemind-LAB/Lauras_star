@@ -696,16 +696,45 @@ export type AgentEvent =
       type: "done";
       ok: boolean;
       stage: string;
-      team: string;
+      // Resume-path done lines omit team/summary (the run log is the source, not a
+      // live team) — consumers must treat both as optional.
+      team?: string;
       weak: boolean;
       escalated: boolean;
-      summary: string;
+      summary?: string;
     }
   | { type: "error"; message: string };
 
-export interface AutoShortRequest {
+/** Body for POST /projects/{pid}/auto-overview — topic in, cross-video montage out. */
+export interface AutoOverviewRequest {
   topic: string;
+  /** Backend default: 180 (an overview spanning several videos needs room). */
   target_seconds?: number;
+  language?: string;
+}
+
+/** One clip the overview scout picked — enough to say WHAT plays and WHY. */
+export interface AutoOverviewClip {
+  asset_id: string;
+  display_name: string;
+  scene_number: number;
+  start_frame: number;
+  end_frame_exclusive: number;
+  snippet: string;
+}
+
+/** 202 response of POST /projects/{pid}/auto-overview: the built sequence + enqueued render.
+ * A one-shot, not a production session — the film lands as an export (job_id tracks it). */
+export interface AutoOverviewResult {
+  sequence_id: string;
+  source_timeline_id: string;
+  clips: AutoOverviewClip[];
+  rationale: string;
+  fallback: boolean;
+  ranking: unknown[];
+  warnings: string[];
+  export_id: string;
+  job_id: string;
 }
 
 /** Presence + version bookkeeping for one artifact slot on a v2 production session board.
@@ -718,7 +747,7 @@ export interface ProductionArtifactState {
   checks_ok?: boolean;
   failed_checks?: string[];
   stale?: boolean | null;
-  /** Video length / target; reporting only. */
+  /** Length of the delivered file / target; reporting only. */
   target_ratio?: number;
 }
 
@@ -734,6 +763,41 @@ export interface ProductionJobState {
   /** Artifact names a resume restored from the provenance chain (empty when nothing was
    * restored, or on an older backend that predates this field). */
   restored?: string[];
+  /** Whether the run actually produced a film. `null` while nothing is known yet (queued or
+   * still running) — the job's own `status` only says the handler did not raise, which was
+   * true of runs that delivered nothing. */
+  complete?: boolean | null;
+  /** The rendered export, when the run produced one. */
+  export_id?: string | null;
+  /** The chain link an incomplete run never got past (`null` for a finished one). */
+  stopped_at?: string | null;
+}
+
+/** One proposed scene for the user's Gate-S pick — exact mirror of the backend's
+ * `SceneCandidate` (services/local-api/src/laura/short_creator/board_models.py). */
+export interface SceneCandidate {
+  scene_number: number;
+  src_start_frame: number;
+  src_end_frame_exclusive: number;
+  thumb_frame: number;
+  description: string;
+  transcript_snippet: string;
+  rationale: string;
+  recommended: boolean;
+}
+
+/** Gate S (scene checkpoint): whether the gate is active, whether a pick is still awaited, and
+ * (once a proposal exists on the board) the candidates plus the recommendation/current
+ * selection — mirrors `Board.status()`'s `scene_gate` block (spec 2026-08-06 §4.1/§4.4).
+ * `candidates`/`recommended`/`selected` are only present once a `scene_selection` artifact
+ * exists, same optionality reasoning as `ProductionBoardStatus.script_lines`. */
+export interface SceneGateStatus {
+  enabled: boolean;
+  pending: boolean;
+  confirmed: boolean;
+  candidates?: SceneCandidate[];
+  recommended?: number[];
+  selected?: number[];
 }
 
 /** GET /production/{sessionId} when the board exists: full board status + liveness. */
@@ -756,6 +820,7 @@ export interface ProductionBoardStatus {
     degraded_scenes: number[];
   };
   artifacts: Record<
+    | "scene_selection"
     | "storyline"
     | "script"
     | "voice"
@@ -766,6 +831,16 @@ export interface ProductionBoardStatus {
     ProductionArtifactState
   >;
   resume_point: string;
+  /** Gate B (script checkpoint): whether the gate is active for this session, and its current
+   * decision state. Optional — older backends that predate the gate never send this field. */
+  script_gate?: { enabled: boolean; approved: boolean; pending: boolean };
+  /** The script's lines for the chat card to render inline, keyed by chapter + scene. Optional
+   * for the same reason as `script_gate`: no client call needed, the card's payload carries it. */
+  script_lines?: { chapter: number; scene_number: number; text: string }[];
+  /** Gate S (scene checkpoint): whether the gate is active, and — once a proposal exists — the
+   * candidates the user picks from. Optional for the same reason as `script_gate`: older
+   * backends that predate the gate (or gate-off boards) never send it. */
+  scene_gate?: SceneGateStatus;
 }
 
 /** GET /production/{sessionId} before a board exists — queued, or died before building one.
@@ -799,6 +874,43 @@ export interface ProductionReverted {
   status: ProductionStatus;
 }
 
+// --- Chat (conversations) API (spec 2026-08-03-chat-first) ------------------------------------
+
+/** One row of GET /conversations — the conversation list's sidebar shape. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+/** How a chat message renders: plain text, an approval card, or an executed-action card. */
+export type ChatMessageKind = "text" | "approval_request" | "action";
+
+/** One stored turn in a conversation thread. `content` is kind-dependent — narrow on `kind`. */
+export interface ChatMessage {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  role: "user" | "assistant";
+  kind: ChatMessageKind;
+  content: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Response shape shared by POST .../message and POST .../approvals/{id}: every message
+ * appended by the turn, in the same shape a GET reload would return. */
+export interface ChatTurnResult {
+  messages: ChatMessage[];
+}
+
+/** One poll of GET /production/{sessionId}/events?after=N: the new events since the cursor,
+ * the next cursor to poll from, and whether the run has reached a terminal `done` line. */
+export interface ProductionEvents {
+  events: AgentEvent[];
+  next: number;
+  done: boolean;
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -828,57 +940,6 @@ export class LauraClient {
     if (!res.ok) {
       throw new Error(`${res.status}: ${await res.text()}`);
     }
-  }
-
-  /**
-   * Run the short-creator live for an asset and stream normalized agent events. Reads the NDJSON
-   * response body via fetch (sets the auth header, unlike EventSource) and calls `onEvent` per line.
-   * Resolves when the stream ends; rejects on a non-OK status. Pass `signal` to abort the run.
-   */
-  async streamAutoShort(
-    assetId: string,
-    req: AutoShortRequest,
-    onEvent: (event: AgentEvent) => void,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/assets/${assetId}/auto-short/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Laura-Token": this.token },
-      body: JSON.stringify(req),
-      signal,
-    });
-    if (!res.ok) {
-      throw new Error(`${res.status}: ${await res.text()}`);
-    }
-    if (!res.body) return;
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const flush = (line: string): void => {
-      const trimmed = line.trim();
-      if (trimmed === "") return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        // A malformed line must not abort the whole stream — surface it and keep reading.
-        onEvent({ type: "error", message: `Ungültige Stream-Zeile: ${trimmed.slice(0, 80)}` });
-        return;
-      }
-      onEvent(parsed as AgentEvent);
-    };
-    let result = await reader.read();
-    while (!result.done) {
-      buffer += decoder.decode(result.value, { stream: true });
-      let nl = buffer.indexOf("\n");
-      while (nl >= 0) {
-        flush(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
-        nl = buffer.indexOf("\n");
-      }
-      result = await reader.read();
-    }
-    flush(buffer);
   }
 
   /**
@@ -929,12 +990,54 @@ export class LauraClient {
   }
 
   /**
+   * Confirm the user's Gate-S scene pick — the ONLY writer of `confirmed_utc` server-side
+   * (`confirm_scene_selection`, services/local-api/src/laura/api/short_creator.py). Enqueues the
+   * resume run; `job_id` is present on every non-error return (even an idempotent re-confirm
+   * heals a resume that may never have started), `already_current` marks a no-op re-confirm.
+   * POST /production/{sessionId}/scene-selection:confirm {scene_numbers} -> 202
+   */
+  confirmSceneSelection(
+    sessionId: string,
+    sceneNumbers: number[],
+  ): Promise<{ session_id: string; job_id?: string; already_current?: boolean }> {
+    return this.request<{ session_id: string; job_id?: string; already_current?: boolean }>(
+      `/production/${sessionId}/scene-selection:confirm`,
+      { method: "POST", body: JSON.stringify({ scene_numbers: sceneNumbers }) },
+    );
+  }
+
+  /**
    * Read-only status of a production session's board: per-artifact versions, scene-review
    * progress, and the resume point. Pure read — never enqueues anything.
    * GET /production/{sessionId} -> 200 ProductionStatus
    */
   getProductionStatus(sessionId: string): Promise<ProductionStatus> {
     return this.request<ProductionStatus>(`/production/${sessionId}`);
+  }
+
+  /** Topic in, cross-video montage out: builds an overview sequence over the whole project
+   * and enqueues its render. One-shot (no production session) — track `job_id` for the
+   * render; the film lands as an export. POST /projects/{pid}/auto-overview -> 202. */
+  autoOverview(projectId: string, body: AutoOverviewRequest): Promise<AutoOverviewResult> {
+    return this.request<AutoOverviewResult>(`/projects/${projectId}/auto-overview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** The session's current contact-sheet PNG (the visual pre-render checkpoint) as an object
+   * URL. The caller owns the URL and should revoke it when replacing it — the sheet is a
+   * single moderate image, so a blob (like posters/thumbnails) is the right vehicle here,
+   * unlike the media proxies which stream via laura-media://. */
+  async contactSheetUrl(sessionId: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/production/${sessionId}/contact-sheet`, {
+      headers: { "X-Laura-Token": this.token },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status}: ${await res.text()}`);
+    }
+    return URL.createObjectURL(await res.blob());
   }
 
   health(): Promise<Health> {
@@ -1676,5 +1779,77 @@ export class LauraClient {
       `/assets/${assetId}/shorts-candidates:extract`,
       { method: "POST", body: JSON.stringify(opts) },
     );
+  }
+
+  // --- Chat (conversations) --------------------------------------------------------------------
+
+  /** Start a new empty conversation. POST /conversations -> 200 { id }. */
+  createConversation(): Promise<{ id: string }> {
+    return this.request<{ id: string }>("/conversations", { method: "POST" });
+  }
+
+  /** The conversation sidebar list, newest-touched first (backend-ordered). */
+  listConversations(): Promise<ConversationSummary[]> {
+    return this.request<ConversationSummary[]>("/conversations");
+  }
+
+  /** A conversation's full thread — same message shape POST .../message returns, so a
+   *  reload renders identically to the live turn. */
+  getConversation(
+    id: string,
+  ): Promise<{ id: string; title: string; active_project_id: string | null; messages: ChatMessage[] }> {
+    return this.request<{
+      id: string;
+      title: string;
+      active_project_id: string | null;
+      messages: ChatMessage[];
+    }>(`/conversations/${id}`);
+  }
+
+  /** Delete a conversation and its messages. DELETE /conversations/{id} -> 204. */
+  deleteConversation(id: string): Promise<void> {
+    return this.del(`/conversations/${id}`);
+  }
+
+  /** One chat turn: persist the user's text, route it, execute the resulting tool call.
+   *  POST /conversations/{id}/message {text} -> 202 { messages }. */
+  sendChatMessage(id: string, text: string): Promise<ChatTurnResult> {
+    return this.request<ChatTurnResult>(`/conversations/${id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  /** Approve or reject a pending approval card. Approve runs the executor's import
+   *  machinery; reject is a plain status flip.
+   *  POST /conversations/{id}/approvals/{messageId} {decision} -> 200 { messages }. */
+  decideApproval(
+    id: string,
+    messageId: string,
+    decision: "approve" | "reject",
+  ): Promise<ChatTurnResult> {
+    return this.request<ChatTurnResult>(`/conversations/${id}/approvals/${messageId}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+  }
+
+  /** Poll a v2 production session's run log from cursor `after` — pull-based, for chat threads
+   *  that watch a production session without holding an open connection.
+   *  GET /production/{sessionId}/events?after=N -> 200 { events, next, done }. */
+  getProductionEvents(sessionId: string, after: number): Promise<ProductionEvents> {
+    return this.request<ProductionEvents>(`/production/${sessionId}/events?after=${after}`);
+  }
+
+  /** Read an export's render status. GET /exports/{exportId} -> 200. */
+  getExport(
+    exportId: string,
+  ): Promise<{ id: string; status: string; path: string | null; size_bytes: number | null }> {
+    return this.request<{
+      id: string;
+      status: string;
+      path: string | null;
+      size_bytes: number | null;
+    }>(`/exports/${exportId}`);
   }
 }

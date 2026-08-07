@@ -34,6 +34,7 @@ from .diarize import assign_speakers, diarize, pyannote_available
 from .manifest import write_manifest
 from .mapping import map_segment
 from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark_duplicates
+from .semantic_sync import segment_index_item
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
 from .sidecar import asr_available, transcribe
 from .transition_review import default_backend, run_transition_review
@@ -324,15 +325,8 @@ def _run_transcript(
             db, asset_id=asset["id"], run_id=run_id, speaker_id=speaker_id,
             segment=seg_row, words=word_rows,
         )
-        index_items.append({
-            "id": seg_id, "text": seg_row["text"],
-            "payload": {
-                "project_id": asset["project_id"], "asset_id": asset["id"],
-                "segment_id": seg_id, "asset_name": asset["display_name"],
-                "text": seg_row["text"], "start_frame": seg_row["start_frame"],
-                "end_frame": seg_row["end_frame"], "speaker_label": seg.speaker_label,
-            },
-        })
+        seg_row["id"] = seg_id
+        index_items.append(segment_index_item(asset, seg_row, seg.speaker_label))
 
     embedded = 0
     embed_status: str | None = None

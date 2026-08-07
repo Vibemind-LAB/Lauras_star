@@ -8,6 +8,7 @@ rough-cut scenes READ-ONLY: the ranking must never create timelines as a side ef
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from ..db import repos
@@ -19,6 +20,63 @@ logger = logging.getLogger(__name__)
 
 _SNIPPET_CHARS = 160
 _MAX_SCENE_SNIPPETS = 3
+# Words that carry no topic signal. Deliberately tiny and bilingual (the boards are German,
+# the transcripts often English): this is a noise filter, not a linguistic model. A word too
+# short to be distinctive is dropped by _MIN_TERM_CHARS instead of being listed here.
+_STOPWORDS = frozenset(
+    {
+        "aber", "auch", "auf", "aus", "bei", "das", "dem", "den", "der", "des", "die", "ein",
+        "eine", "einen", "einer", "für", "fuer", "hier", "ist", "mit", "nicht", "noch", "oder",
+        "per", "sich", "sind", "über", "ueber", "und", "van", "von", "was", "wie", "wir", "zum",
+        "zur", "and", "are", "but", "for", "from", "how", "into", "not", "the", "this", "that",
+        "with", "you", "your", "what", "when", "why", "does", "can", "via",
+    }
+)
+_MIN_TERM_CHARS = 3
+
+
+def topic_terms(topic: str) -> list[str]:
+    """The distinctive words of *topic*, lowercased, in order, without repeats.
+
+    Splits on everything that is not a letter or digit, so a compound written with a hyphen
+    ("Desktop-Automatisierung") becomes the two words a transcript is likely to contain
+    separately. Empty when the topic is only stopwords — the caller then falls back to the raw
+    phrase rather than matching everything.
+    """
+    seen: list[str] = []
+    for raw in re.split(r"[^0-9A-Za-zÄÖÜäöüß]+", topic.lower()):
+        if len(raw) < _MIN_TERM_CHARS or raw in _STOPWORDS or raw in seen:
+            continue
+        seen.append(raw)
+    return seen
+
+
+def _lexical_hits(
+    db: Database, project_id: str, topic: str, limit: int
+) -> list[dict[str, Any]]:
+    """Lexical hits for *topic*, matched WORD BY WORD and scored by distinct words hit.
+
+    ``repos.search_transcript`` is a substring match, so handing it a whole sentence asks a
+    transcript to contain that sentence verbatim — live 2026-08-02 that returned nothing for a
+    topic the material plainly covered, and with Qdrant down this path IS the discovery. So the
+    topic is taken apart and each word searched on its own; a segment that matched two of the
+    topic's words outranks one that matched a single word. A topic with no distinctive words
+    left keeps the old whole-phrase behaviour.
+    """
+    terms = topic_terms(topic)
+    if not terms:
+        return repos.search_transcript(db, project_id=project_id, query=topic, limit=limit)
+    merged: dict[str, dict[str, Any]] = {}
+    for term in terms:
+        for row in repos.search_transcript(db, project_id=project_id, query=term, limit=limit):
+            key = str(row.get("segment_id"))
+            hit = merged.get(key)
+            if hit is None:
+                hit = {**row, "score": 0.0}
+                merged[key] = hit
+            hit["score"] = float(hit["score"]) + 1.0
+    ranked = sorted(merged.values(), key=lambda h: (-float(h["score"]), str(h["segment_id"])))
+    return ranked[:limit]
 
 
 def _segment_hits(
@@ -41,10 +99,7 @@ def _segment_hits(
             hits = []
         if hits:
             return hits, "semantic"
-    return (
-        repos.search_transcript(db, project_id=project_id, query=topic, limit=limit),
-        "lexical",
-    )
+    return _lexical_hits(db, project_id, topic, limit), "lexical"
 
 
 def _scene_ranges(

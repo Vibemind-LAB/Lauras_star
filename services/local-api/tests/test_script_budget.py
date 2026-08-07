@@ -33,7 +33,7 @@ LIVE_SYNTHESES = [(78, 38.453), (89, 57.261), (179, 108.391), (228, 157.989)]
 
 @pytest.mark.parametrize(("words", "measured"), LIVE_SYNTHESES)
 def test_estimate_lands_within_the_documented_tolerance(words: int, measured: float) -> None:
-    estimate = estimate_voice_seconds(words)
+    estimate = estimate_voice_seconds(words, "German")
     relative_error = abs(estimate - measured) / measured
     assert relative_error <= _VOICE_RATE_TOLERANCE, (
         f"{words} words: estimated {estimate:.1f}s vs measured {measured:.1f}s "
@@ -49,7 +49,7 @@ def test_the_rate_really_does_vary_across_scripts() -> None:
 
 def test_budget_is_the_inverse_of_the_estimate() -> None:
     for target in (40.0, 60.0, 160.0):
-        assert estimate_voice_seconds(word_budget_for(target)) <= target
+        assert estimate_voice_seconds(word_budget_for(target, "German"), "German") <= target
 
 
 def test_word_budget_is_never_negative() -> None:

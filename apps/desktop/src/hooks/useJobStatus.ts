@@ -15,7 +15,11 @@ export interface JobStatusResult {
   isRunning: boolean;
 }
 
-function parseJobError(job: JobStatus): string | null {
+/** A job's `error_json` is `{"error": "..."}` from the runner's own JSON dump when available,
+ * else the raw string, else `null` (no error recorded). Exported so other job-status readers
+ * (e.g. `ActionCard.tsx`'s production-job backstop) render the same failure text this hook's
+ * own `error` field does, instead of re-deriving it. */
+export function parseJobError(job: JobStatus): string | null {
   if (!job.error_json) return null;
   try {
     const parsed = JSON.parse(job.error_json) as unknown;
@@ -48,6 +52,11 @@ export function useJobStatus(
       if (data !== undefined && TERMINAL.has(data.status)) return false;
       return 1500;
     },
+    // Keep polling while the window is unfocused: react-query pauses interval
+    // refetches for backgrounded windows by default, which froze the chat
+    // card's job backstop mid-production (seen live 2026-08-04 — the job
+    // failed but the card kept showing "läuft" until refocus).
+    refetchIntervalInBackground: true,
     // Do not use stale cached data from a previous job — always start fresh
     // when a new jobId is provided. gcTime 0 would remove it too eagerly;
     // staleTime 0 ensures the first fetch fires immediately.

@@ -12,9 +12,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 # Platform format presets: (vertical, (out_w, out_h)). "x" is the native 16:9 pass-through.
 # The canvas belongs to the format, and the format belongs to the production — a screen
@@ -135,6 +143,54 @@ def as_scene_window(entry: int | SceneWindowRef) -> tuple[int, int]:
     return entry, 0
 
 
+class SceneCandidate(BaseModel):
+    """One proposed scene for the user's Gate-S pick (spec 2026-08-06 §4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_number: int = Field(ge=1)
+    src_start_frame: int = Field(ge=0)
+    src_end_frame_exclusive: int
+    thumb_frame: int = Field(ge=0)  # scene middle; frontend renders it via assetFrameUrl
+    description: str  # VLM view; "(keine Bildanalyse verfügbar)" when degraded
+    transcript_snippet: str = Field(min_length=1)
+    rationale: str
+    recommended: bool = False
+
+    @model_validator(mode="after")
+    def _frames_end_exclusive(self) -> SceneCandidate:
+        if self.src_end_frame_exclusive <= self.src_start_frame:
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        if not (self.src_start_frame <= self.thumb_frame < self.src_end_frame_exclusive):
+            raise ValueError("thumb_frame must lie inside the scene's frame range")
+        return self
+
+
+class SceneSelection(BaseModel):
+    """Gate-S root artifact: the proposal (agent-written) plus the user's confirmed pick
+    (server-written ONLY — no agent tool ever sets ``confirmed_utc``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    candidates: list[SceneCandidate] = Field(min_length=1)
+    selected_scene_numbers: list[int] = Field(default_factory=list)
+    confirmed_utc: str | None = None
+    parents: dict[str, str] = Field(default_factory=dict)  # chain root: stays empty
+
+    @model_validator(mode="after")
+    def _selection_consistent(self) -> SceneSelection:
+        pool = {c.scene_number for c in self.candidates}
+        if len(pool) != len(self.candidates):
+            raise ValueError("duplicate candidate scene_numbers")
+        stray = sorted(set(self.selected_scene_numbers) - pool)
+        if stray:
+            raise ValueError(f"selected scenes not among candidates: {stray}")
+        if self.confirmed_utc is not None and not self.selected_scene_numbers:
+            raise ValueError("a confirmed selection must select at least one scene")
+        return self
+
+
 class Chapter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -151,6 +207,9 @@ class Storyline(BaseModel):
     version: int = Field(default=1, ge=1)
     red_thread: str
     arc: list[Chapter] = Field(min_length=1)
+    # Which parent artifact instances this was built from (Gate-S boards stamp
+    # {"scene_selection": hash}); empty = gate-off or pre-Gate-S board.
+    parents: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("arc")
     @classmethod
@@ -308,6 +367,19 @@ class Script(BaseModel):
     parents: dict[str, str] = Field(default_factory=dict)
 
 
+class VoiceSegment(BaseModel):
+    """One script line's own clip inside the constructed track (spec 2026-08-06 §5.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_number: int = Field(ge=1)
+    chapter: int = Field(ge=1)
+    line_hash: str
+    mp3_path: str
+    duration_s: float = Field(gt=0.0)
+    offset_s: float = Field(ge=0.0)
+
+
 class VoiceArtifact(BaseModel):
     """Synthesis result, cached by script hash (re-voice only on text change)."""
 
@@ -318,9 +390,29 @@ class VoiceArtifact(BaseModel):
     mp3_path: str
     timings_path: str | None = None
     voice_s: float | None = None
+    # Per-line clips in STORYLINE playback order; None = legacy single-call track (every
+    # board written before per-scene voice). build_cutlist sizes segment i to segments[i].
+    segments: list[VoiceSegment] | None = None
     # Which parent artifact instances this was built from: chain name -> content_hash of the
     # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
     parents: dict[str, str] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _omit_null_segments(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Drop a null ``segments`` key so every pre-VS2 board (and any artifact built without
+        per-line clips) serializes byte-identically to before this field existed.
+
+        ``content_hash`` hashes ``model_dump(mode="json", exclude={"version"})`` — without this,
+        adding ``segments`` would change that JSON (a new ``"segments": null`` key) for EVERY
+        artifact, including every legacy one already on disk, so every existing board's
+        downstream ``parents["voice"]`` stamp would read stale and ``restore_coherent_suffix``
+        would refuse otherwise-healthy old archives. An artifact WITH segments still serializes
+        them (and therefore still hashes differently from its ``segments=None`` twin).
+        """
+        data: dict[str, Any] = handler(self)
+        if data.get("segments") is None:
+            data.pop("segments", None)
+        return data
 
 
 class CutSegment(BaseModel):
@@ -416,9 +508,15 @@ class RenderReport(BaseModel):
     # Which parent artifact instances this was built from: chain name -> content_hash of the
     # parent AS IT WAS at build time. Empty = pre-provenance board (unknown, never coherent).
     parents: dict[str, str] = Field(default_factory=dict)
-    # video_s / the board's target_seconds, rounded to 3 places; None when no usable target.
-    # Reporting only — never a member of checks (a failing length gate would provoke render
-    # thrashing); QA reads it and weighs the shortfall in its verdict.
+    # What the muxed file actually runs, measured with ffprobe after the render; None when it
+    # could not be measured. video_s is the CUT, which is not the same thing: ffmpeg's
+    # -shortest trims the mux to the shorter stream, so a cut longer than its voiceover ships
+    # short. Live 2026-08-02: a 37.8s cut against a 12.2s voice delivered a 12.2s film.
+    delivered_s: float | None = None
+    # The delivered length (falling back to video_s when unmeasurable) / the board's
+    # target_seconds, rounded to 3 places; None when no usable target. Reporting only — never a
+    # member of checks (a failing length gate would provoke render thrashing); QA reads it and
+    # weighs the shortfall in its verdict.
     target_ratio: float | None = None
 
 
@@ -453,12 +551,36 @@ class BoardMeta(BaseModel):
     task: str
     format: Format = "insta"
     # The spoken/caption language, named as the script should be written ("German", "English").
-    # German is the default because that is what this workspace ships; a submission with an
-    # international jury asks for English, and a task string cannot argue a system prompt out
-    # of a hard-coded language.
-    language: str = Field(default="German", min_length=2, max_length=40)
+    # English is the default (user decision 2026-08-07: every video ships English; German only
+    # on explicit ask) — a task string cannot argue a system prompt out of a hard-coded
+    # language, so the default lives here.
+    language: str = Field(default="English", min_length=2, max_length=40)
     target_seconds: float = Field(gt=0.0)
     # A lifecycle value, not free text. It was a bare ``str`` that only ``Board.create`` ever
     # wrote, so it read "active" forever — including for 55 minutes after a run had died. A
     # closed set plus ``Board.set_status`` makes it answerable.
     status: BoardStatus = "active"
+    # Gate B (script checkpoint, 2026-08-04): when True, ``synthesize_script_voice`` refuses
+    # deterministically until ``script_approved_utc`` is set — the production pauses right after
+    # the script for the user to approve it in chat (``approve_script``), so voice/cutlist/render
+    # never run against text nobody signed off on. Both fields default so every meta.json written
+    # before this gate existed still loads unchanged. Only ``run_project_auto_short``'s NEW
+    # sessions turn the gate on (auto-overview does not use the production board at all).
+    script_gate: bool = False
+    # Gate S (scene selection, 2026-08-06): when True, save_storyline/save_script_chapter
+    # refuse until the user confirmed a scene selection. Default False so every meta.json
+    # written before this gate loads unchanged; only NEW auto-short sessions turn it on.
+    scene_gate: bool = False
+    # Set once, by ``Board.set_script_approved``, when the user approves the script in chat.
+    # ``None`` means "not yet approved" — irrespective of whether the gate is even enabled.
+    script_approved_utc: str | None = None
+    # The approved script's ``content_hash`` (board_models.content_hash), stamped alongside
+    # ``script_approved_utc`` by the SAME write. Binds the approval to what was actually
+    # approved: a post-approval script edit (team rewrite, or ``Board.revert("script")`` to a
+    # DIFFERENT version) changes the content hash without touching the timestamp, so a bare
+    # ``script_approved_utc is not None`` check used to keep reading "approved" for text the
+    # user never saw. Both status()'s ``script_gate.approved`` and
+    # ``synthesize_script_voice``'s gate check compare this against the CURRENT script's
+    # content_hash — approval is content-aware, not just a stamp. Optional so every meta.json
+    # written before this field existed still loads unchanged (pydantic default).
+    script_approved_script_hash: str | None = None

@@ -77,13 +77,23 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "You are the Story Architect. Fill the FIXED viral arc — chapter roles are "
                 "exactly hook, problem, feature, payoff_cta: hook (2-3s) -> problem -> 3-4 "
                 "feature chapters (2-3 scenes each, building on each other) -> payoff_cta. "
+                "The arc is the goal, not a quota: a (scene, window) pair may be used only "
+                "ONCE, so the reviews' total window count is the hard ceiling on how many "
+                "chapters you can build. Count them in get_reviews BEFORE you plan. One "
+                "reviewed scene with one window means a ONE-chapter arc — that is valid and "
+                "correct, and far better than retrying a four-chapter arc the material cannot "
+                "carry. If save_storyline answers with a material_hint, it has done that "
+                "arithmetic for you: obey it on the next attempt instead of rephrasing the "
+                "same arc. "
                 "First call get_reviews to see what material is actually "
                 "available, and get_scene_context for detail on any scene you are unsure about — "
                 "use ONLY reviewed scenes, never a scene number that has no review yet. A review "
                 "may list several strong windows (get_reviews shows them, 0-based): a plain "
-                "scene number plays window 0, {\"scene\": N, \"window\": K} plays window K — "
-                "reuse the SAME scene with DIFFERENT windows to fill long targets (long scenes "
-                "often carry 2-4 usable moments), never the same (scene, window) pair twice. A "
+                "scene number plays window 0, {\"scene\": N, \"window\": K} plays window K. "
+                "Per-scene voice binds every storyline entry to its own narration line, so a "
+                "chapter may reference a given scene only ONCE (any window) — to fill long "
+                "targets, reuse a scene's OTHER windows in a LATER chapter instead, where the "
+                "reuse gets its own line; never the same (scene, window) pair twice anywhere. A "
                 "first-time viewer who has never seen the source video must be able to follow "
                 "every step of the arc without confusion or a missing link. Check board_status if "
                 "you need the current resume point. Save your storyline via save_storyline; if it "
@@ -93,6 +103,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
             tool_names=(
                 "get_reviews",
                 "get_scene_context",
+                "propose_scene_selection",
                 "save_storyline",
                 "get_storyline",
                 "board_status",
@@ -103,7 +114,11 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
             name="scene_author",
             description="Writes the spoken script line by line from the storyline's scenes.",
             system_message=(
-                "You are the Scene Author. First call get_storyline to see the arc and its "
+                "You are the Scene Author. LANGUAGE SWITCH: if the user's message asks for "
+                "another language (e.g. 'mach das auf englisch'), call set_board_language "
+                "FIRST, then rewrite every chapter of the script in that language before doing "
+                "anything else — never leave some chapters in the old language. "
+                "First call get_storyline to see the arc and its "
                 "chapters, then script_budget — it tells you how many words the whole script "
                 "may spend AND how many each chapter may spend in per_chapter; never guess a "
                 "length or count seconds yourself. Spend the PER-CHAPTER numbers, not just the "
@@ -111,18 +126,34 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "right total over a wrong split still breaks the film. A chapter budgeted at "
                 "almost nothing means its reviewed window is about a second long — write "
                 "barely anything there rather than borrowing from the total. Then "
-                "get_scene_context (and get_reviews for visual detail) for each "
-                "scene you write for. Write 1-2 sentences per scene, per chapter, in "
+                "get_scene_transcript for each scene you write for — the verbatim spoken "
+                "words — plus get_reviews for what is visible. "
+                "Write 1-2 sentences per scene, per chapter, in "
                 f"{language} — the video's language, never switch languages mid-script. "
                 "Write each chapter's "
                 "lines in the SAME scene order the storyline lists that chapter's scenes in — "
-                "voice and captions play back in that order, not the order you type them in. A "
-                "chapter may list the same scene several times with different windows — write "
-                "that scene's line(s) once for the chapter; they cover all its windows. "
-                "Ground every sentence in what the review says is VISIBLE; never invent a claim "
-                "the scene does not support. Keep the tone energetic with concrete value, no "
-                "marketing fog, no sleepy phrasing — this has to hook a cold, scrolling viewer "
-                "in the first seconds. Save chapter by chapter via save_script_chapter (it "
+                "voice and captions play back in that order, not the order you type them in. "
+                "Each chapter references a given scene at most once — per-scene voice binds "
+                "every entry to its own narration line. If the storyline reuses a scene in a "
+                "LATER chapter (a different window, a callback), write that chapter's OWN line "
+                "for it too — a reused scene speaks again each time it recurs. "
+                "GROUNDING RULE: every line must be supported by the scene's transcript "
+                "(get_scene_transcript) or its review — quote or tightly paraphrase what is "
+                "actually said and seen; never invent a product claim, feature name or "
+                "capability neither of them contains. Every line is written FOR its scene: it "
+                "must match what that scene SHOWS (the task's SCENE FACTS block) and may quote "
+                "what is SAID there — never narrate things the scene does not show. Generic "
+                "marketing copy ('maximale Effizienz') is a defect, not a style. Keep the tone "
+                "energetic with concrete value, no marketing fog, no sleepy phrasing — this has "
+                "to hook a cold, scrolling viewer in the first seconds. "
+                "SECOND BRAIN (when available): search_second_brain and read_brain_note reach "
+                "the user's own notes for a correct product name, feature term or fact the "
+                "transcript alone does not spell out. Before writing a product or proper name, "
+                "verify it there instead of guessing — the vault knows the real names (a "
+                "Rowboat-vs-n8n class of mistake). If these tools are not offered to you, none "
+                "is configured for this run — ground everything in get_scene_transcript and "
+                "get_reviews as usual. "
+                "Save chapter by chapter via save_script_chapter (it "
                 "merges — other chapters' lines stay untouched); fix and resave on validation "
                 "errors. Verify with get_script once every chapter in the storyline has its "
                 "lines written — it reports words against budget_words, a shortfall_pct, "
@@ -143,12 +174,23 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "re-save the script to chase a length."
             ),
             tool_names=(
+                "set_board_language",
                 "get_storyline",
                 "script_budget",
                 "get_reviews",
                 "get_scene_context",
+                "get_scene_transcript",
                 "save_script_chapter",
                 "get_script",
+                # Task 10 (Transkript-Gates): named UNCONDITIONALLY — build_production_team
+                # only wires an AssistantAgent's tools by name-lookup against the tool specs
+                # actually built for this run (``[tools_by_name[n] for n in spec.tool_names if
+                # n in tools_by_name]``), so a name with no matching spec is silently dropped,
+                # never an error. When LAURA_SECONDBRAIN_PATH is unset, build_production_tool_
+                # specs simply never builds these two, and the scene_author ends up without
+                # them — no gating needed here to keep team construction safe.
+                "search_second_brain",
+                "read_brain_note",
             ),
             max_tool_iterations=6,
         ),
@@ -165,14 +207,23 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "checkpoint — NEVER skip it, and re-run it after EVERY build_cutlist call (a "
                 "cutlist save archives the current sheet). If the task or a user message says "
                 "to stop at the contact sheet, end after save_contact_sheet and report its "
-                "tiles instead of rendering. Read the checks "
+                "tiles instead of rendering. FRAMING LEVER: when the task or a user message "
+                "asks for the full frame / no tight zoom (e.g. 'zeig das volle Bild', 'kein "
+                "Zoom'), call build_cutlist with zoom=\"off\" — it drops every roi and zoom "
+                "timing regardless of the storyline's window references; the storyline does "
+                "NOT need to be re-saved for a framing change. Read the checks "
                 "render_production returns: if voice does not fit (voice_fits is false), do not "
-                "shorten it — build_cutlist already sizes segments to the voice's chapter audio "
-                "windows, so rebuild the cutlist (then a fresh contact sheet) and render again; "
-                "if it STILL fails, the scenes "
-                "ran out of material — report that the storyline needs more/longer scenes. NEVER "
+                "shorten it — build_cutlist is a pure, deterministic derivation of the same "
+                "storyline/script/voice, so rebuilding it with nothing upstream changed "
+                "reproduces the byte-identical cutlist and another render wastes a cycle for "
+                "nothing. Report it honestly instead: the scenes ran out of material — name "
+                "which chapter needs more/longer scenes (a Story Architect decision, not yours "
+                "to fix by re-rendering). NEVER "
                 "cut the voice — it is the script the team already agreed on, and the video must "
-                "fit it, not the other way round. "
+                "fit it, not the other way round. If story_covered is false, chapters the "
+                "storyline planned were never written at all: that is the Scene Author's work, "
+                "not yours — name the silent chapters in your report and stop rendering until "
+                "they exist. "
                 "Report the export_id and the checks verbatim so the QA Reviewer can verify them "
                 "independently instead of trusting your summary. Use revert_artifact ONLY when "
                 "the task or user message explicitly asks to go back to an earlier version — "
@@ -184,6 +235,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "get_storyline",
                 "get_script",
                 "get_reviews",
+                "suggest_scenes_for_script",
                 "synthesize_script_voice",
                 "build_cutlist",
                 "save_contact_sheet",
@@ -205,7 +257,8 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "revise, saved via save_qa_report together with concrete findings — every finding "
                 "must name WHERE (which scene or timestamp) and WHAT is wrong, no vague words "
                 "like 'looks off'. board_status's render_report entry carries target_ratio "
-                "(video length / target) when known — weigh a large shortfall in your verdict "
+                "(the length of the DELIVERED file / target) when known — weigh a large "
+                "shortfall in your verdict "
                 "reasoning, but a shorter film is pre-authorized by the charter, so target_ratio "
                 "alone is never grounds to revise. Use the board's contact sheet as your segment "
                 "map — its tiles are labeled '<order> S<scene_number>'. You judge the board; you "
@@ -235,6 +288,7 @@ def build_production_team(
     asset_id: str,
     stage: Stage = "A",
     deps: ProductionDeps | None = None,
+    agent_names: tuple[str, ...] | None = None,
 ) -> MagenticOneGroupChat:
     """Assemble the v2 production Magentic-One team (roster + orchestrator model client).
 
@@ -245,6 +299,12 @@ def build_production_team(
     pattern as :func:`laura.short_creator.toolset.build_function_tools`, inlined here since that
     builder needs ``board``/``asset_id``/``deps`` that the plain short-creator toolset does not).
     Raises a clear :class:`RuntimeError` if the optional ``autoshort`` extra is missing.
+
+    ``agent_names`` narrows the roster (MP2, the bounded QA stage): ``None`` builds the full
+    five-agent roster as before; a tuple builds ONLY those agents — the structural guarantee that
+    a one-agent QA team cannot hold any write-capable creative tool. An unknown name is a
+    programmer error (a caller misspelled a roster name), so it raises immediately rather than
+    silently building a smaller-than-intended team.
     """
     try:
         from autogen_agentchat.agents import AssistantAgent
@@ -256,12 +316,23 @@ def build_production_team(
             "Install it with: uv sync --extra autoshort"
         ) from exc
 
+    # Validate agent_names FIRST — fail fast on a misspelled roster name before spending work on
+    # tool_specs/tools_by_name/model_client, which an unknown name would only throw away.
+    specs_all = production_agent_specs(board.meta().language)
+    if agent_names is not None:
+        known = {s.name for s in specs_all}
+        unknown = [n for n in agent_names if n not in known]
+        if unknown:
+            raise ValueError(f"unknown agent name(s): {unknown}")
+        specs_all = [s for s in specs_all if s.name in agent_names]
+
     tool_specs = build_production_tool_specs(db, board, asset_id=asset_id, deps=deps)
     tools_by_name = {
         spec.name: FunctionTool(spec.func, name=spec.name, description=spec.description)
         for spec in tool_specs
     }
     model_client = build_model_client(config, role="agent", stage=stage)
+
     # list[Any]: participants wants list[ChatAgent]; AssistantAgent subclasses it, but list is
     # invariant (and ChatAgent is only importable with the extra installed).
     agents: list[Any] = [
@@ -273,7 +344,7 @@ def build_production_team(
             system_message=spec.system_message,
             max_tool_iterations=spec.max_tool_iterations,
         )
-        for spec in production_agent_specs(board.meta().language)
+        for spec in specs_all
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
     return MagenticOneGroupChat(participants=agents, model_client=orchestrator, max_turns=MAX_TURNS)
