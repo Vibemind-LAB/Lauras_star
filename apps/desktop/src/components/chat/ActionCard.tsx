@@ -9,13 +9,13 @@ import type {
 } from "../../api";
 import { parseJobError, useJobStatus } from "../../hooks/useJobStatus";
 import { log } from "../../shared/log";
-import { EventLine } from "../ChatPanel";
 import { CardErrorBoundary } from "./CardErrorBoundary";
+import { EventLine } from "./EventLine";
 import { SceneSelectionCard } from "./SceneSelectionCard";
+import { parseRevertError, SessionChips, sessionArtifactLabel } from "./SessionChips";
 
-/** Same cadence as `useProductionSession`'s board/job poll (see hooks/useProductionSession.ts) —
- * kept in step so a chat thread narrating a session feels like the rest of the app, not a
- * separate rhythm. */
+/** Same cadence the pre-chat production panel used for its board/job poll — kept in step so a
+ * chat thread narrating a session feels like the rest of the app, not a separate rhythm. */
 const POLL_INTERVAL_MS = 2500;
 
 /** How many of the accumulated events show before the „alle anzeigen" expander is needed. */
@@ -267,6 +267,37 @@ function ProductionActionCard({
   // second jobStatus update landing while the first getProductionStatus fetch is still in
   // flight) — the same overlap the events poll's tickInFlightRef guards against.
   const finalizingRef = useRef(false);
+  // Optimistic board snapshot from the most recent revert response, shown immediately instead of
+  // waiting for the next status fetch to land — mirrors the same pattern the pre-chat SessionPanel
+  // used (see git history: ChatPanel.tsx's `SessionPanel`, migrated here). Dropped as soon as a
+  // fresh `status` (a real fetch) or a new tracked job arrives, so a real update can never be
+  // shadowed by a stale override.
+  const [revertStatus, setRevertStatus] = useState<ProductionStatus | null>(null);
+  const [revertHint, setRevertHint] = useState<string | null>(null);
+  const effectiveStatus = revertStatus ?? status;
+
+  useEffect(() => {
+    setRevertStatus(null);
+    setRevertHint(null);
+  }, [status, activeJobId]);
+
+  const handleRevert = (artifact: string, version: number): void => {
+    setRevertHint(null);
+    void client
+      .revertProduction(sessionId, artifact, version)
+      .then((response) => {
+        setRevertStatus(response.status);
+        if (response.restored.length > 0) {
+          setRevertHint(
+            `♻️ Wiederhergestellt: ${response.restored.map(sessionArtifactLabel).join(", ")}`,
+          );
+        }
+      })
+      .catch((e: unknown) => {
+        const { code, detail } = parseRevertError(e);
+        setRevertHint(code === 409 ? "Lauf aktiv — warte, bis der Job fertig ist" : detail);
+      });
+  };
 
   // Independent job-status poll (same `useJobStatus` every other job-backed card in this file
   // uses): self-stops once the job reaches a terminal status, and keeps its last known value
@@ -404,6 +435,22 @@ function ProductionActionCard({
         >
           alle anzeigen
         </button>
+      )}
+      {/* Board chips (artifact chain versions, staleness/checks warnings, scene-review count,
+       * restored-on-resume count) — shown as soon as a board snapshot exists, which can happen
+       * mid-"running" too (e.g. right after a Gate-S confirm's refreshAfterConfirm re-fetches
+       * status before flipping back to running). The revert dropdown is wired only once the run
+       * has actually landed — the endpoint 409s on a queued/running job. */}
+      {effectiveStatus !== null && (
+        <SessionChips
+          status={effectiveStatus}
+          onRevert={phase === "running" ? undefined : handleRevert}
+        />
+      )}
+      {revertHint !== null && (
+        <div className="mb-1 text-content-faint" role="status">
+          {revertHint}
+        </div>
       )}
       {phase === "running" && (
         <div className="animate-pulse text-content-faint" role="status">

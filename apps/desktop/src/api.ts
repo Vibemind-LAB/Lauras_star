@@ -705,11 +705,6 @@ export type AgentEvent =
     }
   | { type: "error"; message: string };
 
-export interface AutoShortRequest {
-  topic: string;
-  target_seconds?: number;
-}
-
 /** Body for POST /projects/{pid}/auto-overview — topic in, cross-video montage out. */
 export interface AutoOverviewRequest {
   topic: string;
@@ -945,57 +940,6 @@ export class LauraClient {
     if (!res.ok) {
       throw new Error(`${res.status}: ${await res.text()}`);
     }
-  }
-
-  /**
-   * Run the short-creator live for an asset and stream normalized agent events. Reads the NDJSON
-   * response body via fetch (sets the auth header, unlike EventSource) and calls `onEvent` per line.
-   * Resolves when the stream ends; rejects on a non-OK status. Pass `signal` to abort the run.
-   */
-  async streamAutoShort(
-    assetId: string,
-    req: AutoShortRequest,
-    onEvent: (event: AgentEvent) => void,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/assets/${assetId}/auto-short/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Laura-Token": this.token },
-      body: JSON.stringify(req),
-      signal,
-    });
-    if (!res.ok) {
-      throw new Error(`${res.status}: ${await res.text()}`);
-    }
-    if (!res.body) return;
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const flush = (line: string): void => {
-      const trimmed = line.trim();
-      if (trimmed === "") return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        // A malformed line must not abort the whole stream — surface it and keep reading.
-        onEvent({ type: "error", message: `Ungültige Stream-Zeile: ${trimmed.slice(0, 80)}` });
-        return;
-      }
-      onEvent(parsed as AgentEvent);
-    };
-    let result = await reader.read();
-    while (!result.done) {
-      buffer += decoder.decode(result.value, { stream: true });
-      let nl = buffer.indexOf("\n");
-      while (nl >= 0) {
-        flush(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
-        nl = buffer.indexOf("\n");
-      }
-      result = await reader.read();
-    }
-    flush(buffer);
   }
 
   /**
@@ -1890,9 +1834,8 @@ export class LauraClient {
     });
   }
 
-  /** Poll a v2 production session's run log from cursor `after`. Same event shape as
-   *  `streamAutoShort`'s live stream, but pull-based — for chat threads that watch a
-   *  production session without holding an open connection.
+  /** Poll a v2 production session's run log from cursor `after` — pull-based, for chat threads
+   *  that watch a production session without holding an open connection.
    *  GET /production/{sessionId}/events?after=N -> 200 { events, next, done }. */
   getProductionEvents(sessionId: string, after: number): Promise<ProductionEvents> {
     return this.request<ProductionEvents>(`/production/${sessionId}/events?after=${after}`);

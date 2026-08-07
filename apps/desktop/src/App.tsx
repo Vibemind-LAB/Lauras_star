@@ -13,7 +13,6 @@ import {
   type UrlImportOptions,
 } from "./api";
 import { AssembleView } from "./components/AssembleView";
-import { ChatPanel } from "./components/ChatPanel";
 import { ChatStage } from "./components/chat/ChatStage";
 import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
@@ -921,23 +920,6 @@ export function App(): ReactElement {
               </div>
             ))}
         </div>
-
-        {client && (
-          <ChatPanel
-            client={client}
-            assetId={selectedAssetId}
-            onEvent={(event) => {
-              // Live app-fill: when the agents produce an artifact (or finish), refresh the
-              // asset list + the selected video's rough cut so the views update alongside the chat.
-              if (event.type === "artifact" || event.type === "done") {
-                if (selectedProjectId) {
-                  void loadAssets(client, selectedProjectId).catch((e) => setError(String(e)));
-                }
-                reloadRoughCut();
-              }
-            }}
-          />
-        )}
       </div>
     </div>
   );

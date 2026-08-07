@@ -299,8 +299,10 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     });
 
     expect(c.getProductionStatus).toHaveBeenCalledWith("s1");
-    expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
-    expect(screen.getByText(/82%/)).toBeTruthy();
+    // Exact string, not a loose /82%/ match: the migrated artifact chips (below) also render a
+    // "Export v1 · 82%" chip off the SAME render_report.target_ratio, so a loose regex would now
+    // match two elements and throw. This pins the result block's own line specifically.
+    expect(screen.getByText("Export: exp-1 · 82%")).toBeTruthy();
   });
 
   it("the done state invites further adjustment", async () => {
@@ -506,6 +508,239 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
 
     expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
     expect(getJob).not.toHaveBeenCalled();
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Board chips (artifact chain + revert dropdown) — migrated from the removed pre-chat
+// "Assistent" panel's SessionChips/RevertChip (ChatPanel.tsx, deleted). ProductionActionCard
+// now renders the same chips whenever a board snapshot (`status`) is available, wiring the
+// revert button to `client.revertProduction` once the run has landed (not while "running" —
+// the endpoint 409s on a queued/running job).
+// -------------------------------------------------------------------------------------------
+
+describe("ActionCard — board chips (artifact chain + revert)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("done renders one chip per present artifact in chain order", async () => {
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      getProductionStatus: vi.fn().mockResolvedValue(boardStatus()),
+    });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("storyline v1")).toBeTruthy();
+    expect(screen.getByText("script v1")).toBeTruthy();
+    expect(screen.getByText("voice v1")).toBeTruthy();
+    expect(screen.getByText("cutlist v1")).toBeTruthy();
+    expect(screen.getByText("Bogen v1")).toBeTruthy();
+    expect(screen.getByText("QA v1")).toBeTruthy();
+    // render_report's chip carries its own ratio annotation, distinct from the result block's
+    // "Export: exp-1 · 82%" line (pinned by exact string above).
+    expect(screen.getByText("Export v1 · 82%")).toBeTruthy();
+  });
+
+  it("a chip with archived versions renders a button; picking a version and confirming reverts to it", async () => {
+    const status = boardStatus({
+      artifacts: { ...boardStatus().artifacts, cutlist: { version: 3, archived_versions: [1, 2] } },
+    });
+    const revertProduction = vi.fn().mockResolvedValue({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: [],
+      restored: [],
+      status,
+    });
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      revertProduction,
+    });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    expect(screen.getByRole("button", { name: "v1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "v2" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(revertProduction).toHaveBeenCalledWith("s1", "cutlist", 1);
+  });
+
+  it("re-renders chips from the revert response and shows the restored hint", async () => {
+    const initialStatus = boardStatus({
+      artifacts: { ...boardStatus().artifacts, cutlist: { version: 3, archived_versions: [1, 2] } },
+    });
+    const revertedStatus = boardStatus({
+      artifacts: {
+        ...boardStatus().artifacts,
+        cutlist: { version: 1, archived_versions: [] },
+        contact_sheet: { version: 2, archived_versions: [1] },
+      },
+    });
+    const revertProduction = vi.fn().mockResolvedValue({
+      ok: true,
+      artifact: "cutlist",
+      version: 1,
+      invalidated: ["contact_sheet"],
+      restored: ["contact_sheet"],
+      status: revertedStatus,
+    });
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      getProductionStatus: vi.fn().mockResolvedValue(initialStatus),
+      revertProduction,
+    });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText("cutlist v1")).toBeTruthy();
+    expect(screen.getByText("Bogen v2")).toBeTruthy();
+    expect(screen.getByText(/♻️ Wiederhergestellt: Bogen/)).toBeTruthy();
+  });
+
+  it("a 409 (run in progress) revert response shows the 'Lauf aktiv' hint, not the raw detail", async () => {
+    const status = boardStatus({
+      artifacts: { ...boardStatus().artifacts, cutlist: { version: 3, archived_versions: [1, 2] } },
+    });
+    const revertProduction = vi
+      .fn()
+      .mockRejectedValue(new Error('409: {"detail":"run in progress — revert would race the team"}'));
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+      revertProduction,
+    });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
+    fireEvent.click(screen.getByRole("button", { name: "v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText(/Lauf aktiv/)).toBeTruthy();
+  });
+
+  it("a resume that restored artifacts shows the ♻️ chip with a friendly-label tooltip", async () => {
+    const status = boardStatus({
+      job: {
+        id: "j1",
+        status: "succeeded",
+        attempt: 1,
+        updated_at: "2026-01-01T00:00:05Z",
+        lease_expires_at: null,
+        finished_at: "2026-01-01T00:00:05Z",
+        restored: ["voice", "contact_sheet"],
+      },
+    });
+    const c = client({
+      getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
+      getProductionStatus: vi.fn().mockResolvedValue(status),
+    });
+    renderWithQuery(
+      <ActionCard message={actionMessage("start_short", { session_id: "s1" })} client={c} />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    const chip = screen.getByText("♻️ 2");
+    expect(chip.getAttribute("title")).toBe("Wiederhergestellt: voice, Bogen");
+  });
+
+  it("running (post Gate-S confirm) shows chips but suppresses the revert button", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 0, done: true });
+    const pendingStatus = boardStatus({ scene_gate: sceneGate() });
+    const resumedStatus = boardStatus({
+      scene_gate: { enabled: true, pending: false, confirmed: true, selected: [2] },
+      job: {
+        id: "j2",
+        status: "running",
+        attempt: 1,
+        updated_at: "2026-01-01T00:01:00Z",
+        lease_expires_at: null,
+        finished_at: null,
+      },
+      artifacts: { ...boardStatus().artifacts, cutlist: { version: 3, archived_versions: [1, 2] } },
+    });
+    const getProductionStatus = vi
+      .fn()
+      .mockResolvedValueOnce(pendingStatus)
+      .mockResolvedValueOnce(resumedStatus);
+    const getJob = vi
+      .fn()
+      .mockImplementation((id: string) =>
+        Promise.resolve(job({ id, status: id === "j1" ? "succeeded" : "running" })),
+      );
+    const confirmSceneSelection = vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j2" });
+    const c = client({ getProductionEvents, getProductionStatus, getJob, confirmSceneSelection });
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    // The chip is visible (chips show across running too) …
+    const chip = screen.getByText("cutlist v3");
+    // … but as a plain read-only pill, not the revert-capable button variant.
+    expect(chip.tagName).toBe("SPAN");
+    expect(screen.queryByRole("button", { name: /cutlist v3/ })).toBeNull();
   });
 });
 

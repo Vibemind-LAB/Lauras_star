@@ -7,8 +7,8 @@ import { ActionCard } from "./ActionCard";
 
 // Same rationale as ChatThread.crash.test.tsx, one level down: a single defective event LINE
 // inside a running production card must not take the card (or the app) with it. `EventLine` is
-// ActionCard's only import from ChatPanel, so the module mock stays this small.
-vi.mock("../ChatPanel", () => ({
+// ActionCard's only import from ./EventLine, so the module mock stays this small.
+vi.mock("./EventLine", () => ({
   EventLine: (): never => {
     throw new Error("kaputte Zeile");
   },
