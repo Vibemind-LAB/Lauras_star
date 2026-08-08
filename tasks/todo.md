@@ -716,5 +716,7 @@ durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
 - [x] Geparkte Runs melden `status=awaiting_user_input`, `ok=true`, `complete=false` und
       `resume_point=scene_selection`; echte Turn-Erschöpfung ohne Gate-Transition ist
       `hard_fail`.
-- [x] Verifiziert mit fokussierten Gate-S-/Chat-/Event-Log-Tests sowie vollständigem
-      Backend-Pytest, Mypy strict und Ruff; die exakten Laufzahlen stehen im Commit-Bericht.
+- [x] Verifiziert: 141 fokussierte Gate-S-/Chat-/Event-Log-Tests inklusive echter
+      AutoGen-Contracts bestanden (2 Warnings); voller Backend-Pytest: 2713 bestanden,
+      12 übersprungen, 2 Warnings; Mypy strict prüfte 528 Dateien und Ruff war sauber.
+      CI-YAML geparst; der Backend-Sync installiert `scene`, `otel` und `autoshort`.
