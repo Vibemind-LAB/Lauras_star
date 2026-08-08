@@ -139,9 +139,11 @@ Orchestrator-Behauptungen können den Zustand auslösen.
 
 ### Expliziter Run-Status
 
-Nach Ende des Teamstreams leitet `_parse_outcome` den fachlichen Zustand erneut aus dem
-Board ab. Liegt ein unbestätigtes Proposal mit verändertem Versionsstand vor, entsteht
-ein `StageOutcome(status="awaiting_user_input", ...)`.
+Nach Ende des Teamstreams leitet `run_production` den fachlichen Zustand erneut aus dem
+Board ab. Der allgemeine `StageOutcome` der providerübergreifenden Eskalationsleiter
+bleibt bewusst auf `ok|hard_fail` begrenzt; Gate-Warten ist kein Provider-Ergebnis.
+Liegt ein unbestätigtes Proposal vor, setzt ausschließlich der Produktions-Resultvertrag
+den lokalen `ProductionRunStatus` auf `awaiting_user_input`.
 
 `_completed_result` bildet diesen Zustand auf Folgendes ab:
 
@@ -168,8 +170,9 @@ anderer zukünftiger Loop nicht erneut als erfolgreicher Run erscheinen.
 
 - `production_agents.py`: erzeugt die native AutoGen-Terminationsbedingung und reicht
   sie an `MagenticOneGroupChat` weiter.
-- `production_orchestrator.py`: erfasst den Start-Snapshot, klassifiziert das Ergebnis
-  als `awaiting_user_input` und wertet `stop_reason` aus.
+- `production_orchestrator.py`: klassifiziert den autoritativen Board-Zustand im
+  Produktions-Resultvertrag als `awaiting_user_input` und wertet `stop_reason` aus,
+  ohne den allgemeinen `StageOutcome` zu verbreitern.
 - `production_tools.py`: persistiert das Proposal weiterhin unverändert; der vorhandene
   „STOP now"-Text bleibt nur Nutzer-/Agentenhinweis, nicht Steuerlogik.
 - `api/short_creator.py`: bleibt alleiniger Owner der Confirmation-Transition.
