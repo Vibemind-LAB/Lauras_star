@@ -11,6 +11,7 @@ from laura.short_creator.board_models import (
     SceneReview,
     ScriptLine,
     VisualRecutRequest,
+    VisualShotCandidate,
     VoiceArtifact,
     VoiceSegment,
 )
@@ -18,6 +19,7 @@ from laura.short_creator.visual_candidates import (
     InsufficientVisualCandidates,
     SceneMaterial,
     TranscriptSpan,
+    _recommend,
     build_visual_plan,
     coverage_windows,
 )
@@ -175,6 +177,83 @@ def test_relevant_transcript_anchor_beats_uniform_fallback() -> None:
     assert windows[0].start_frame <= 2100 < windows[0].end_frame_exclusive
 
 
+def test_relevant_transcript_span_outranks_an_earlier_irrelevant_span() -> None:
+    scene = SceneMaterial(
+        scene_number=1,
+        src_start_frame=0,
+        src_end_frame_exclusive=1200,
+        description="desktop workflow",
+        transcript="garden plants then drafting invoices",
+        transcript_spans=(
+            TranscriptSpan(0, 120, "garden plants"),
+            TranscriptSpan(600, 720, "drafting invoices"),
+        ),
+        review=None,
+    )
+
+    windows = coverage_windows(
+        scene,
+        beat_text="drafting invoices",
+        beat_duration_s=3.0,
+        fps=_FPS,
+    )
+
+    assert windows[0].transcript_snippet == "drafting invoices"
+    assert windows[0].start_frame <= 600 < windows[0].end_frame_exclusive
+
+
+def _candidate(
+    candidate_id: str,
+    *,
+    scene_number: int,
+    start_frame: int,
+    end_frame_exclusive: int,
+    score: float,
+) -> VisualShotCandidate:
+    return VisualShotCandidate(
+        candidate_id=candidate_id,
+        beat_id="beat-2",
+        voice_segment_index=1,
+        scene_number=scene_number,
+        window_index=0,
+        src_start_frame=start_frame,
+        src_end_frame_exclusive=end_frame_exclusive,
+        thumb_frame=start_frame + (end_frame_exclusive - start_frame) // 2,
+        description="workflow",
+        transcript_snippet="drafting invoices",
+        rationale="test candidate",
+        score=score,
+    )
+
+
+def test_recommendation_skips_a_strongly_overlapping_window_from_the_same_scene() -> None:
+    previous = _candidate(
+        "previous",
+        scene_number=1,
+        start_frame=0,
+        end_frame_exclusive=120,
+        score=1.0,
+    )
+    near_duplicate = _candidate(
+        "near-duplicate",
+        scene_number=1,
+        start_frame=1,
+        end_frame_exclusive=121,
+        score=1.0,
+    )
+    alternative = _candidate(
+        "alternative",
+        scene_number=2,
+        start_frame=240,
+        end_frame_exclusive=360,
+        score=0.9,
+    )
+
+    recommended = _recommend([near_duplicate, alternative], previous)
+
+    assert recommended == alternative.candidate_id
+
+
 def test_recommendations_avoid_adjacent_duplicate_visuals() -> None:
     plan = build_visual_plan(
         request=request(), ordered_lines=lines(), voice=voice(), scenes=scenes(), fps=_FPS
@@ -203,8 +282,20 @@ def test_plan_ids_are_deterministic_and_candidates_are_limited_to_four() -> None
         request=request(), ordered_lines=lines(), voice=voice(), scenes=scenes(), fps=_FPS
     )
 
+    candidate_ids = [
+        candidate.candidate_id for beat in first.beats for candidate in beat.candidates
+    ]
+    assert candidate_ids == [
+        "1910509b64a9daa1c33185d8211d42f72184b43aec5784bdac770ad58002c578",
+        "1285e429e6f530a6b40c1e60c69d42e68bf185aca79cb2d6970aa774a1fabad7",
+        "57134f2989a067c9fe83185885354a2eafdb5568233c3a14310895dc76a9c593",
+        "abdf25a79fe48170894a37d3b01bcebc97b440afb80bf2a8d272544ae465a587",
+        "f82ddacf71971be283b7e090c0d53c14aa933f449db91acab7ec985780ddcc5d",
+        "ac3ee18ec3fb4f194f83fe26dee4243ab49506339a7db195559ac17f32a11465",
+    ]
+    assert first.proposal_hash == "8ed0adb5a0e9f754fcd1ab5a1b9749a6cb3ec3a374cc2e29edc9992e08283bcd"
     assert first.proposal_hash == second.proposal_hash
-    assert [candidate.candidate_id for beat in first.beats for candidate in beat.candidates] == [
+    assert candidate_ids == [
         candidate.candidate_id for beat in second.beats for candidate in beat.candidates
     ]
     assert all(len(beat.candidates) <= 4 for beat in first.beats)

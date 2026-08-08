@@ -21,7 +21,7 @@ from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
 _DEFAULT_FPS = 30.0
 _MAX_CANDIDATES_PER_BEAT = 4
-_TOKEN_RE = re.compile(r"[\\w']+", re.UNICODE)
+_TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
 
 class InsufficientVisualCandidates(ValueError):
@@ -232,25 +232,32 @@ def _candidate_for_window(
     )
 
 
+def _is_near_duplicate(left: VisualShotCandidate, right: VisualShotCandidate) -> bool:
+    if left.scene_number != right.scene_number:
+        return False
+    overlap = max(
+        0,
+        min(left.src_end_frame_exclusive, right.src_end_frame_exclusive)
+        - max(left.src_start_frame, right.src_start_frame),
+    )
+    shorter_window = min(
+        left.src_end_frame_exclusive - left.src_start_frame,
+        right.src_end_frame_exclusive - right.src_start_frame,
+    )
+    return shorter_window > 0 and overlap / shorter_window >= 0.8
+
+
 def _recommend(candidates: list[VisualShotCandidate], previous: VisualShotCandidate | None) -> str:
     top = candidates[0]
     if previous is None:
         return top.candidate_id
-    previous_key = (
-        previous.scene_number,
-        previous.src_start_frame,
-        previous.src_end_frame_exclusive,
-    )
-    top_key = (top.scene_number, top.src_start_frame, top.src_end_frame_exclusive)
-    if top_key != previous_key:
+    if not _is_near_duplicate(top, previous):
         return top.candidate_id
     for candidate in candidates[1:]:
-        candidate_key = (
-            candidate.scene_number,
-            candidate.src_start_frame,
-            candidate.src_end_frame_exclusive,
-        )
-        if candidate_key != previous_key and candidate.score >= top.score * 0.85:
+        if (
+            not _is_near_duplicate(candidate, previous)
+            and candidate.score >= top.score * 0.85
+        ):
             return candidate.candidate_id
     return top.candidate_id
 
