@@ -35,6 +35,7 @@ FORMAT_PRESETS: dict[str, tuple[bool, tuple[int, int]]] = {
 }
 
 Format = Literal["insta", "x", "linkedin"]
+FramingMode = Literal["full_frame_blur"]
 
 
 def canvas_for(fmt: Format) -> tuple[bool, tuple[int, int]]:
@@ -415,6 +416,100 @@ class VoiceArtifact(BaseModel):
         return data
 
 
+class VisualRecutRequest(BaseModel):
+    """A user-requested visual-only recut bound to the current script and voice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    user_request: str = Field(min_length=1, max_length=2000)
+    framing_mode: FramingMode = "full_frame_blur"
+    script_version: int = Field(ge=1)
+    script_hash: str = Field(min_length=64, max_length=64)
+    voice_version: int = Field(ge=1)
+    voice_hash: str = Field(min_length=64, max_length=64)
+    parents: dict[str, str] = Field(default_factory=dict)
+
+
+class VisualShotCandidate(BaseModel):
+    """One visual source window proposed for one voice beat."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    beat_id: str
+    voice_segment_index: int = Field(ge=0)
+    scene_number: int = Field(ge=1)
+    window_index: int = Field(ge=0)
+    src_start_frame: int = Field(ge=0)
+    src_end_frame_exclusive: int
+    thumb_frame: int = Field(ge=0)
+    description: str
+    transcript_snippet: str
+    rationale: str
+    score: float
+
+    @model_validator(mode="after")
+    def _frames_are_a_valid_source_window(self) -> VisualShotCandidate:
+        if self.src_end_frame_exclusive <= self.src_start_frame:
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        if not self.src_start_frame <= self.thumb_frame < self.src_end_frame_exclusive:
+            raise ValueError("thumb_frame must lie inside the source frame range")
+        return self
+
+
+class VisualBeatPlan(BaseModel):
+    """Candidate choices for exactly one spoken beat."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: str
+    voice_segment_index: int = Field(ge=0)
+    narration_text: str = Field(min_length=1)
+    duration_s: float = Field(gt=0.0)
+    candidates: list[VisualShotCandidate] = Field(min_length=1, max_length=4)
+    recommended_candidate_id: str
+    selected_candidate_id: str | None = None
+
+    @model_validator(mode="after")
+    def _candidate_choices_belong_to_this_beat(self) -> VisualBeatPlan:
+        candidate_ids = {candidate.candidate_id for candidate in self.candidates}
+        if len(candidate_ids) != len(self.candidates):
+            raise ValueError("duplicate candidate_ids")
+        if any(candidate.beat_id != self.beat_id for candidate in self.candidates):
+            raise ValueError("candidate beat_id must match the containing beat")
+        if self.recommended_candidate_id not in candidate_ids:
+            raise ValueError("recommended_candidate_id must belong to the beat")
+        if (
+            self.selected_candidate_id is not None
+            and self.selected_candidate_id not in candidate_ids
+        ):
+            raise ValueError("selected_candidate_id must belong to the beat")
+        return self
+
+
+class VisualPlan(BaseModel):
+    """Persisted visual proposal; confirmation is a user-only state transition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    proposal_hash: str = Field(min_length=64, max_length=64)
+    request_hash: str = Field(min_length=64, max_length=64)
+    beats: list[VisualBeatPlan] = Field(min_length=1)
+    confirmed_utc: str | None = None
+    parents: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _candidate_ids_are_unique_across_the_proposal(self) -> VisualPlan:
+        candidate_ids = [
+            candidate.candidate_id for beat in self.beats for candidate in beat.candidates
+        ]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("duplicate candidate_ids")
+        return self
+
+
 class CutSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -461,6 +556,20 @@ class ContactSheetTile(BaseModel):
     scene_number: int = Field(ge=1)
     frame: int = Field(ge=0)  # sampled SOURCE frame (the segment window's middle)
     label: str
+    src_start_frame: int | None = Field(default=None, ge=0)
+    src_end_frame_exclusive: int | None = None
+    narration_excerpt: str = ""
+    rationale: str = ""
+
+    @model_validator(mode="after")
+    def _optional_source_range_is_end_exclusive(self) -> ContactSheetTile:
+        if (
+            self.src_start_frame is not None
+            and self.src_end_frame_exclusive is not None
+            and self.src_end_frame_exclusive <= self.src_start_frame
+        ):
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        return self
 
 
 class ContactSheet(BaseModel):
@@ -584,3 +693,9 @@ class BoardMeta(BaseModel):
     # content_hash — approval is content-aware, not just a stamp. Optional so every meta.json
     # written before this field existed still loads unchanged (pydantic default).
     script_approved_script_hash: str | None = None
+    # Gate C (contact-sheet checkpoint): optional for old boards. A matching sheet content
+    # hash, rather than a bare timestamp, is the only proof that the user approved the CURRENT
+    # contact sheet after a visual recut.
+    contact_sheet_gate: bool = False
+    contact_sheet_approved_utc: str | None = None
+    contact_sheet_approved_hash: str | None = None

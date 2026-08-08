@@ -45,8 +45,15 @@ def _selection(confirmed: bool) -> SceneSelection:
 
 def test_downstream_of_scene_selection_is_whole_rest() -> None:
     assert downstream_of("scene_selection") == (
-        "storyline", "script", "voice", "cutlist",
-        "contact_sheet", "render_report", "qa_report",
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
     )
 
 
