@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import sys
 import types
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -33,7 +34,7 @@ from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
 from laura.short_creator import production_agents, providers
 from laura.short_creator.board import Board
-from laura.short_creator.board_models import BoardMeta
+from laura.short_creator.board_models import BoardMeta, SceneCandidate, SceneSelection
 from laura.short_creator.production_tools import ProductionDeps, build_production_tool_specs
 
 FPS = 30
@@ -184,15 +185,59 @@ def _seed_scene(tmp_path: Path) -> tuple[Database, str]:
     return db, str(asset["id"])
 
 
-def _board(tmp_path: Path, asset_id: str) -> Board:
+def _board(tmp_path: Path, asset_id: str, *, scene_gate: bool = False) -> Board:
     meta = BoardMeta(
         session_id="s1",
         asset_id=asset_id,
         created_utc="2026-07-13T00:00:00Z",
         task="overview short",
         target_seconds=20.0,
+        scene_gate=scene_gate,
     )
     return Board.create(tmp_path / "board", meta)
+
+
+def _selection(*, confirmed: bool = False, description: str = "dashboard") -> SceneSelection:
+    return SceneSelection(
+        candidates=[
+            SceneCandidate(
+                scene_number=1,
+                src_start_frame=0,
+                src_end_frame_exclusive=SCENE_FRAMES,
+                thumb_frame=SCENE_FRAMES // 2,
+                description=description,
+                transcript_snippet="hallo welt",
+                rationale="hook",
+                recommended=True,
+            )
+        ],
+        selected_scene_numbers=[1] if confirmed else [],
+        confirmed_utc="2026-08-08T00:00:00+00:00" if confirmed else None,
+    )
+
+
+def test_scene_gate_termination_requires_a_new_unconfirmed_version(tmp_path: Path) -> None:
+    _db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, scene_gate=True)
+
+    assert production_agents._scene_selection_version(board) is None
+    assert production_agents._new_pending_scene_selection(board, None) is False
+
+    board.save("scene_selection", _selection())
+    assert production_agents._new_pending_scene_selection(board, None) is True
+    current = production_agents._scene_selection_version(board)
+    assert production_agents._new_pending_scene_selection(board, current) is False
+
+
+def test_scene_gate_termination_ignores_gate_off_and_confirmed_boards(tmp_path: Path) -> None:
+    _db, asset_id = _seed_scene(tmp_path)
+    gate_off = _board(tmp_path / "off", asset_id, scene_gate=False)
+    gate_off.save("scene_selection", _selection())
+    assert production_agents._new_pending_scene_selection(gate_off, None) is False
+
+    confirmed = _board(tmp_path / "confirmed", asset_id, scene_gate=True)
+    confirmed.save("scene_selection", _selection(confirmed=True))
+    assert production_agents._new_pending_scene_selection(confirmed, None) is False
 
 
 # --- pure roster tests -----------------------------------------------------------------------
@@ -343,14 +388,24 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
             self.system_message = system_message
             self.max_tool_iterations = max_tool_iterations
 
+    class FakeFunctionalTermination:
+        def __init__(self, func: object) -> None:
+            created["termination_predicate"] = func
+
     class FakeMagenticOneGroupChat:
         def __init__(
-            self, *, participants: tuple[object, ...], model_client: object, max_turns: int = 0
+            self,
+            *,
+            participants: tuple[object, ...],
+            model_client: object,
+            termination_condition: object | None = None,
+            max_turns: int = 0,
         ) -> None:
             # Mirrors the real autogen_agentchat MagenticOneGroupChat, which only exposes
             # these as private attributes (set by BaseGroupChat.__init__ / this __init__).
             self._participants = list(participants)
             self._model_client = model_client
+            self._termination_condition = termination_condition
             self._max_turns = max_turns
             created["team"] = self
 
@@ -362,6 +417,8 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     ac_agents.AssistantAgent = FakeAssistantAgent  # type: ignore[attr-defined]
     ac_teams = types.ModuleType("autogen_agentchat.teams")
     ac_teams.MagenticOneGroupChat = FakeMagenticOneGroupChat  # type: ignore[attr-defined]
+    ac_conditions = types.ModuleType("autogen_agentchat.conditions")
+    ac_conditions.FunctionalTermination = FakeFunctionalTermination  # type: ignore[attr-defined]
     for name, mod in {
         "autogen_ext": types.ModuleType("autogen_ext"),
         "autogen_ext.models": types.ModuleType("autogen_ext.models"),
@@ -370,6 +427,7 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
         "autogen_core.tools": core_tools,
         "autogen_agentchat": types.ModuleType("autogen_agentchat"),
         "autogen_agentchat.agents": ac_agents,
+        "autogen_agentchat.conditions": ac_conditions,
         "autogen_agentchat.teams": ac_teams,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
@@ -378,8 +436,8 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 
 def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db, asset_id = _seed_scene(tmp_path)
-    board = _board(tmp_path, asset_id)
-    _install_fake_autogen(monkeypatch)
+    board = _board(tmp_path, asset_id, scene_gate=True)
+    created = _install_fake_autogen(monkeypatch)
     # A configured vault so scene_author's search_second_brain/read_brain_note (Task 10,
     # Transkript-Gates) actually resolve to tools here too — see
     # test_roster_shape_and_tool_names_resolve for why this is required.
@@ -396,7 +454,13 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert {p.name for p in participants} == set(EXPECTED_ROSTER)
     assert len(participants) == len(EXPECTED_ROSTER)
     assert team._model_client is not None
+    assert team._termination_condition is not None
     assert team._max_turns == production_agents.MAX_TURNS
+
+    predicate = cast(Callable[[list[object]], bool], created["termination_predicate"])
+    assert predicate([]) is False
+    board.save("scene_selection", _selection())
+    assert predicate([]) is True
 
     # Every agent got the shared agent-role model client and its own tool set (by name).
     by_name = {p.name: p for p in participants}
@@ -409,6 +473,24 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert len({id(a.model_client) for a in participants}) == 1
     # The orchestrator gets its own client instance (role="orchestrator"), distinct from agents'.
     assert team._model_client is not by_name["vision_reviewer"].model_client
+
+
+def test_build_team_termination_detects_a_new_scene_selection_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, scene_gate=True)
+    board.save("scene_selection", _selection())
+    created = _install_fake_autogen(monkeypatch)
+
+    production_agents.build_production_team(
+        db, board, providers.resolve_from_env({}), asset_id=asset_id
+    )
+
+    predicate = cast(Callable[[list[object]], bool], created["termination_predicate"])
+    assert predicate([]) is False
+    board.save("scene_selection", _selection(description="settings"))
+    assert predicate([]) is True
 
 
 def test_agent_names_filter_builds_a_qa_only_team(

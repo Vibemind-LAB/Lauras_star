@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from ..db.database import Database
 from .agents import AgentSpec
 from .board import Board
+from .board_models import SceneSelection
 from .production_tools import ProductionDeps, build_production_tool_specs
 from .providers import AgentConfig, Stage, build_model_client
 
@@ -33,6 +34,22 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 
 # Hard cap on the orchestrator's turn budget — a runaway-loop backstop (mirrors magentic.MAX_TURNS).
 MAX_TURNS = 30
+
+
+def _scene_selection_version(board: Board) -> int | None:
+    selection = board.load("scene_selection")
+    return selection.version if isinstance(selection, SceneSelection) else None
+
+
+def _new_pending_scene_selection(board: Board, initial_version: int | None) -> bool:
+    if not board.meta().scene_gate:
+        return False
+    selection = board.load("scene_selection")
+    return (
+        isinstance(selection, SceneSelection)
+        and selection.confirmed_utc is None
+        and selection.version != initial_version
+    )
 
 
 def production_agent_specs(language: str = "German") -> list[AgentSpec]:
@@ -308,6 +325,7 @@ def build_production_team(
     """
     try:
         from autogen_agentchat.agents import AssistantAgent
+        from autogen_agentchat.conditions import FunctionalTermination
         from autogen_agentchat.teams import MagenticOneGroupChat
         from autogen_core.tools import FunctionTool
     except ImportError as exc:
@@ -347,4 +365,13 @@ def build_production_team(
         for spec in specs_all
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
-    return MagenticOneGroupChat(participants=agents, model_client=orchestrator, max_turns=MAX_TURNS)
+    initial_scene_selection_version = _scene_selection_version(board)
+    scene_gate_termination = FunctionalTermination(
+        lambda _messages: _new_pending_scene_selection(board, initial_scene_selection_version)
+    )
+    return MagenticOneGroupChat(
+        participants=agents,
+        model_client=orchestrator,
+        termination_condition=scene_gate_termination,
+        max_turns=MAX_TURNS,
+    )
