@@ -767,6 +767,7 @@ def run_production(
     # resume parks instead of spending an LLM run. A follow-up MESSAGE still goes through
     # (the user may be adjusting the proposal in chat via the team).
     if message is None and _awaiting_scene_selection(board, expected_scenes):
+        board.set_status("active")
         return _completed_result(
             board,
             session_id=session_id,
@@ -895,6 +896,8 @@ def run_production(
     # left the board reporting "active" for 55 minutes because only the result was ever told.
     if result_status == "hard_fail":
         board.set_status("failed")
+    elif result_status == "awaiting_user_input":
+        board.set_status("active")
     elif resume_point == "done":
         board.set_status("complete")
 

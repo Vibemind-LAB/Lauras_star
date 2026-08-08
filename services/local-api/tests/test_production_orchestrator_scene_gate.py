@@ -144,13 +144,15 @@ def _make_board(db: Database, asset_id: str, session_id: str, *, scene_gate: boo
 
 
 def test_run_awaiting_selection_never_spawns_team(tmp_path: Path) -> None:
-    """Proposal on the board, unconfirmed, no message -> no execute call, awaiting summary."""
+    """A failed board with a pending proposal resumes as an active, healthy park."""
     db, asset_id = _seed_scene(tmp_path)
     config = providers.resolve_from_env({})
     board = _make_board(db, asset_id, "sess-scene-gate", scene_gate=True)
     board.save_scene_review(_review(1))
     board.save("scene_selection", _proposal())
+    board.set_status("failed")
     assert board.resume_point([1]) == "scene_selection"
+    assert board.meta().status == "failed"
 
     calls: list[str] = []
 
@@ -180,8 +182,9 @@ def test_run_awaiting_selection_never_spawns_team(tmp_path: Path) -> None:
     assert "scene selection" in result["summary"]
     assert result["ok"] is True
     assert result["complete"] is False
-    # the run is a healthy park, not a failure — the board must stay "active"
+    # The run is a healthy park, so both persisted and returned lifecycle state are active.
     assert board.meta().status == "active"
+    assert result["board"]["meta"]["status"] == "active"
 
 
 def test_run_confirmed_selection_runs_the_team(tmp_path: Path) -> None:
@@ -232,12 +235,14 @@ def test_run_confirmed_selection_runs_the_team(tmp_path: Path) -> None:
 
 
 def test_pending_selection_revision_runs_once_then_parks_again(tmp_path: Path) -> None:
-    """A follow-up can revise a pending proposal once, then the run parks at Gate S again."""
+    """A follow-up reopens a completed board, revises once, then parks active at Gate S."""
     db, asset_id = _seed_scene(tmp_path)
     config = providers.resolve_from_env({})
     board = _make_board(db, asset_id, "sess-scene-gate-msg", scene_gate=True)
     board.save_scene_review(_review(1))
     board.save("scene_selection", _proposal())
+    board.set_status("complete")
+    assert board.meta().status == "complete"
 
     calls: list[tuple[str, str]] = []
 
@@ -274,6 +279,7 @@ def test_pending_selection_revision_runs_once_then_parks_again(tmp_path: Path) -
     assert result["resume_point"] == "scene_selection"
     assert result["ok"] is True
     assert board.meta().status == "active"
+    assert result["board"]["meta"]["status"] == "active"
 
 
 def test_new_pending_proposal_parks_without_stage_b_retry(tmp_path: Path) -> None:
