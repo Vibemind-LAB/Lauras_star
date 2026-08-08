@@ -391,7 +391,8 @@ def _deps_for_run(
 
 
 def _turn_budget_exhausted(stop_reason: str | None) -> bool:
-    return "maximum number of turns" in (stop_reason or "").lower()
+    normalized = (stop_reason or "").casefold()
+    return normalized == "max rounds reached." or "maximum number of turns" in normalized
 
 
 def _parse_outcome(

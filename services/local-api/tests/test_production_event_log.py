@@ -120,7 +120,7 @@ def test_stream_turn_exhaustion_is_not_reported_ok(
         _Msg("story_architect", "Paused."),
         TaskResult(
             [_Msg("story_architect", "Paused.")],
-            stop_reason="Maximum number of turns 30 reached.",
+            stop_reason="Max rounds reached.",
         ),
     ]
     monkeypatch.setattr(po, "build_production_team", lambda *a, **k: _FakeTeam(events))
@@ -129,7 +129,7 @@ def test_stream_turn_exhaustion_is_not_reported_ok(
     outcome = execute(None, _config(), "A", "magentic", "the task")  # type: ignore[arg-type]
 
     assert outcome.status == "hard_fail"
-    assert "Maximum number of turns" in outcome.summary
+    assert outcome.summary == "Max rounds reached."
 
 
 def test_a_crashing_sink_does_not_kill_the_run(

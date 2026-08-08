@@ -1294,7 +1294,7 @@ def test_parse_outcome_empty_result_gives_empty_summary(tmp_path: Path) -> None:
     assert outcome.summary == ""
 
 
-def test_parse_outcome_max_turns_hard_fails(tmp_path: Path) -> None:
+def test_parse_outcome_base_group_chat_max_turns_hard_fails(tmp_path: Path) -> None:
     from laura.short_creator.production_orchestrator import _parse_outcome
 
     board = _make_board(tmp_path)
@@ -1309,13 +1309,46 @@ def test_parse_outcome_max_turns_hard_fails(tmp_path: Path) -> None:
     assert "Maximum number of turns 30 reached" in outcome.summary
 
 
+@pytest.mark.parametrize("stop_reason", ["Max rounds reached.", "mAx RoUnDs ReAcHeD."])
+def test_parse_outcome_magentic_max_rounds_hard_fails(
+    tmp_path: Path, stop_reason: str
+) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("still waiting")],
+        stop_reason=stop_reason,
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=3)
+
+    assert outcome.status == "hard_fail"
+    assert outcome.summary == stop_reason
+
+
 def test_parse_outcome_functional_termination_stays_ok(tmp_path: Path) -> None:
     from laura.short_creator.production_orchestrator import _parse_outcome
 
     board = _make_board(tmp_path)
     result = SimpleNamespace(
         messages=[_SummaryMsg("proposal saved")],
-        stop_reason="FunctionalTermination triggered",
+        stop_reason="Functional termination condition met",
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=1)
+
+    assert outcome.status == "ok"
+    assert outcome.summary == "proposal saved"
+
+
+def test_parse_outcome_unrelated_max_round_reason_stays_ok(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("proposal saved")],
+        stop_reason="Max round-trip latency reached.",
     )
 
     outcome = _parse_outcome(board, result, stage="A", tool_calls=1)
