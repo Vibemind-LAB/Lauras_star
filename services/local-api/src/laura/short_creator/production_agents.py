@@ -336,7 +336,8 @@ def build_production_team(
 
     # Validate agent_names FIRST — fail fast on a misspelled roster name before spending work on
     # tool_specs/tools_by_name/model_client, which an unknown name would only throw away.
-    specs_all = production_agent_specs(board.meta().language)
+    board_meta = board.meta()
+    specs_all = production_agent_specs(board_meta.language)
     if agent_names is not None:
         known = {s.name for s in specs_all}
         unknown = [n for n in agent_names if n not in known]
@@ -360,7 +361,11 @@ def build_production_team(
             tools=[tools_by_name[n] for n in spec.tool_names if n in tools_by_name],
             description=spec.description,
             system_message=spec.system_message,
-            max_tool_iterations=spec.max_tool_iterations,
+            max_tool_iterations=(
+                1
+                if board_meta.scene_gate and spec.name == "story_architect"
+                else spec.max_tool_iterations
+            ),
         )
         for spec in specs_all
     ]

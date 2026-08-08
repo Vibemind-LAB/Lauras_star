@@ -21,6 +21,7 @@ succeeded analysis run + transcript + a hand-built one-scene rough cut via
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import types
 from collections.abc import Callable
@@ -47,6 +48,70 @@ EXPECTED_ROSTER = [
     "coding_agent",
     "qa_reviewer",
 ]
+
+_AUTOGEN_075_PROPOSAL_CONTRACT = r"""
+import asyncio
+import sys
+from importlib.metadata import version
+
+from autogen_agentchat.agents import AssistantAgent
+from autogen_core import FunctionCall
+from autogen_core.models import CreateResult, RequestUsage
+
+assert version("autogen-agentchat") == "0.7.5"
+
+
+class ProposalModel:
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def model_info(self):
+        return {
+            "vision": False,
+            "function_calling": True,
+            "json_output": False,
+            "family": "unknown",
+            "structured_output": False,
+        }
+
+    async def create(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("second model call after proposal")
+        return CreateResult(
+            finish_reason="function_calls",
+            content=[
+                FunctionCall(
+                    id="proposal-1",
+                    arguments="{}",
+                    name="propose_scene_selection",
+                )
+            ],
+            usage=RequestUsage(prompt_tokens=1, completion_tokens=1),
+            cached=False,
+        )
+
+
+tool_calls = 0
+
+
+def propose_scene_selection() -> str:
+    global tool_calls
+    tool_calls += 1
+    return "proposal saved"
+
+
+model = ProposalModel()
+agent = AssistantAgent(
+    name="story_architect",
+    model_client=model,
+    tools=[propose_scene_selection],
+    max_tool_iterations=int(sys.argv[1]),
+)
+asyncio.run(agent.run(task="Propose scenes"))
+print(f"model_calls={model.calls} tool_calls={tool_calls}")
+"""
 
 # name -> (tool_names, max_tool_iterations), per the Task-7 brief's roster table.
 EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
@@ -360,7 +425,8 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     full suite runs together, because the submodule stays resolvable in ``sys.modules`` even after
     the parent package name is monkeypatched to ``None``).
     """
-    created: dict[str, object] = {}
+    assistant_kwargs: list[dict[str, object]] = []
+    created: dict[str, object] = {"assistant_kwargs": assistant_kwargs}
 
     class FakeClient:
         def __init__(self, **kw: object) -> None:
@@ -381,6 +447,16 @@ def _install_fake_autogen(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
             system_message: str = "",
             max_tool_iterations: int = 1,
         ) -> None:
+            assistant_kwargs.append(
+                {
+                    "name": name,
+                    "model_client": model_client,
+                    "tools": tools,
+                    "description": description,
+                    "system_message": system_message,
+                    "max_tool_iterations": max_tool_iterations,
+                }
+            )
             self.name = name
             self.model_client = model_client
             self.tools = list(tools)
@@ -464,15 +540,66 @@ def test_build_team_constructs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     # Every agent got the shared agent-role model client and its own tool set (by name).
     by_name = {p.name: p for p in participants}
+    wired = {
+        cast(str, kwargs["name"]): kwargs
+        for kwargs in cast(list[dict[str, object]], created["assistant_kwargs"])
+    }
     for spec_name, (tool_names, max_iters) in EXPECTED_ASSIGNMENTS.items():
         agent = by_name[spec_name]
         assert agent.model_client is not None
         assert {t.name for t in agent.tools} == set(tool_names)
-        assert agent.max_tool_iterations == max_iters
+        expected_iterations = 1 if spec_name == "story_architect" else max_iters
+        assert wired[spec_name]["max_tool_iterations"] == expected_iterations
     # "ein geteilter Agent-Client" — one shared client instance across all agents, not one each.
     assert len({id(a.model_client) for a in participants}) == 1
     # The orchestrator gets its own client instance (role="orchestrator"), distinct from agents'.
     assert team._model_client is not by_name["vision_reviewer"].model_client
+
+
+def test_gate_off_preserves_all_agent_iteration_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, scene_gate=False)
+    created = _install_fake_autogen(monkeypatch)
+
+    production_agents.build_production_team(
+        db, board, providers.resolve_from_env({}), asset_id=asset_id
+    )
+
+    wired = {
+        cast(str, kwargs["name"]): kwargs["max_tool_iterations"]
+        for kwargs in cast(list[dict[str, object]], created["assistant_kwargs"])
+    }
+    assert wired == {name: max_iters for name, (_tools, max_iters) in EXPECTED_ASSIGNMENTS.items()}
+
+
+def test_gate_on_story_architect_stops_after_proposal_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, scene_gate=True)
+    created = _install_fake_autogen(monkeypatch)
+
+    production_agents.build_production_team(
+        db, board, providers.resolve_from_env({}), asset_id=asset_id
+    )
+
+    wired = {
+        cast(str, kwargs["name"]): kwargs
+        for kwargs in cast(list[dict[str, object]], created["assistant_kwargs"])
+    }
+    configured_iterations = cast(int, wired["story_architect"]["max_tool_iterations"])
+    result = subprocess.run(
+        [sys.executable, "-c", _AUTOGEN_075_PROPOSAL_CONTRACT, str(configured_iterations)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "model_calls=1 tool_calls=1"
+    assert configured_iterations == 1
 
 
 def test_build_team_termination_detects_a_new_scene_selection_revision(
