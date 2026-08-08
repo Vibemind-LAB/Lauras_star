@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..db import repos
 from ..db.database import Database
@@ -42,13 +42,15 @@ from .board_models import (
     canvas_for,
     content_hash,
 )
-from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
+from .orchestrator import ExecuteFn, StageOutcome, TeamKind, _safe_execute
 from .production_agents import build_production_team
 from .production_pipeline import run_tail_with_qa
 from .production_tools import ProductionDeps, follow_up_render_cap
 from .providers import AgentConfig, Stage, config_warnings
 
 logger = logging.getLogger(__name__)
+
+ProductionRunStatus = Literal["ok", "hard_fail", "awaiting_user_input"]
 
 
 def board_root_for(db: Database, asset_id: str, session_id: str) -> Path:
@@ -530,12 +532,20 @@ def _make_default_execute(
     return execute
 
 
+def _awaiting_scene_selection(board: Board, expected_scenes: list[int]) -> bool:
+    return (
+        board.meta().scene_gate
+        and isinstance(board.load("scene_selection"), SceneSelection)
+        and board.resume_point(expected_scenes) == "scene_selection"
+    )
+
+
 def _completed_result(
     board: Board,
     *,
     session_id: str,
     restored: list[str],
-    status: Status,
+    status: ProductionRunStatus,
     stage: Stage,
     team: TeamKind,
     weak: bool,
@@ -557,7 +567,7 @@ def _completed_result(
     compute them the same way.
     """
     return {
-        "ok": status == "ok",
+        "ok": status != "hard_fail",
         "complete": resume_point == "done",
         "status": status,
         "stage": stage,
@@ -756,17 +766,12 @@ def run_production(
     # A team turn now would only run into save_storyline's structural refusal — so a plain
     # resume parks instead of spending an LLM run. A follow-up MESSAGE still goes through
     # (the user may be adjusting the proposal in chat via the team).
-    if (
-        message is None
-        and board.meta().scene_gate
-        and isinstance(board.load("scene_selection"), SceneSelection)
-        and board.resume_point(expected_scenes) == "scene_selection"
-    ):
+    if message is None and _awaiting_scene_selection(board, expected_scenes):
         return _completed_result(
             board,
             session_id=session_id,
             restored=restored,
-            status="ok",
+            status="awaiting_user_input",
             stage="A",
             team="magentic",
             weak=_qa_weak(board),
@@ -867,18 +872,28 @@ def run_production(
     )
 
     outcome = _safe_execute(run, db, config, "A", "magentic", task_text)
+    awaiting_scene_selection = _awaiting_scene_selection(board, expected_scenes)
     escalated = False
-    if outcome.status == "hard_fail":
+    if outcome.status == "hard_fail" and not awaiting_scene_selection:
         outcome = _safe_execute(run, db, config, "B", "magentic", task_text)
         escalated = True
+        awaiting_scene_selection = _awaiting_scene_selection(board, expected_scenes)
 
     export_id = _export_id_of(board)
     resume_point = board.resume_point(expected_scenes)
+    result_status: ProductionRunStatus = (
+        "awaiting_user_input" if awaiting_scene_selection else outcome.status
+    )
+    result_summary = (
+        "awaiting user scene selection — pick scenes in chat to continue"
+        if awaiting_scene_selection
+        else outcome.summary
+    )
 
     # Tell the BOARD how this ended, not just the caller. The result dict goes into the job row;
     # the board is what the session endpoint reads. A run that hard-failed on a missing API key
     # left the board reporting "active" for 55 minutes because only the result was ever told.
-    if outcome.status == "hard_fail":
+    if result_status == "hard_fail":
         board.set_status("failed")
     elif resume_point == "done":
         board.set_status("complete")
@@ -887,12 +902,12 @@ def run_production(
         board,
         session_id=session_id,
         restored=restored,
-        status=outcome.status,
+        status=result_status,
         stage=outcome.stage,
         team=outcome.team,
         weak=outcome.weak,
         escalated=escalated,
-        summary=outcome.summary,
+        summary=result_summary,
         export_id=export_id,
         resume_point=resume_point,
     )
