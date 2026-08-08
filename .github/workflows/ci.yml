@@ -21,8 +21,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Sync (scene extra for shot-detection, otel for tracing tests)
-        run: uv sync --frozen --extra scene --extra otel
+      - name: Sync (scene, otel, and autoshort extras for tests)
+        run: uv sync --frozen --extra scene --extra otel --extra autoshort
 
       - name: Ruff
         run: uv run ruff check .

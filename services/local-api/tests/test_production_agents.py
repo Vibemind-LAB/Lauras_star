@@ -21,6 +21,8 @@ succeeded analysis run + transcript + a hand-built one-scene rough cut via
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import subprocess
 import sys
 import types
@@ -49,20 +51,30 @@ EXPECTED_ROSTER = [
     "qa_reviewer",
 ]
 
-_AUTOGEN_075_PROPOSAL_CONTRACT = r"""
+_AUTOGEN_075_TEAM_CONTRACT = r"""
 import asyncio
+import json
 import sys
 from importlib.metadata import version
+from pathlib import Path
 
 from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.conditions import FunctionalTermination
+from autogen_agentchat.messages import SelectSpeakerEvent
+from autogen_agentchat.teams import MagenticOneGroupChat
 from autogen_core import FunctionCall
 from autogen_core.models import CreateResult, RequestUsage
+
+from laura.short_creator.board import Board
+from laura.short_creator.board_models import BoardMeta, SceneCandidate, SceneSelection
+from laura.short_creator.production_agents import _new_pending_scene_selection
 
 assert version("autogen-agentchat") == "0.7.5"
 
 
-class ProposalModel:
-    def __init__(self):
+class ScriptedModel:
+    def __init__(self, responses):
+        self.responses = list(responses)
         self.calls = 0
 
     @property
@@ -77,40 +89,134 @@ class ProposalModel:
 
     async def create(self, *args, **kwargs):
         self.calls += 1
-        if self.calls > 1:
-            raise AssertionError("second model call after proposal")
-        return CreateResult(
-            finish_reason="function_calls",
-            content=[
+        if not self.responses:
+            raise AssertionError(f"forbidden model call {self.calls}")
+        return self.responses.pop(0)
+
+
+def result(content, finish_reason="stop"):
+    return CreateResult(
+        finish_reason=finish_reason,
+        content=content,
+        usage=RequestUsage(prompt_tokens=1, completion_tokens=1),
+        cached=False,
+    )
+
+
+def ledger(instruction):
+    return json.dumps(
+        {
+            "is_request_satisfied": {"reason": "proposal pending", "answer": False},
+            "is_progress_being_made": {"reason": "yes", "answer": True},
+            "is_in_loop": {"reason": "no", "answer": False},
+            "instruction_or_question": {"reason": "next step", "answer": instruction},
+            "next_speaker": {"reason": "only agent", "answer": "story_architect"},
+        }
+    )
+
+
+board = Board.create(
+    Path(sys.argv[2]),
+    BoardMeta(
+        session_id="contract",
+        asset_id="asset",
+        created_utc="2026-08-08T00:00:00Z",
+        task="select scenes",
+        target_seconds=20,
+        scene_gate=True,
+    ),
+)
+tool_calls = {"get_reviews": 0, "propose_scene_selection": 0}
+
+
+def get_reviews() -> str:
+    tool_calls["get_reviews"] += 1
+    return "reviews ready"
+
+
+def propose_scene_selection() -> str:
+    tool_calls["propose_scene_selection"] += 1
+    board.save(
+        "scene_selection",
+        SceneSelection(
+            candidates=[
+                SceneCandidate(
+                    scene_number=1,
+                    src_start_frame=0,
+                    src_end_frame_exclusive=150,
+                    thumb_frame=75,
+                    description="dashboard",
+                    transcript_snippet="hallo welt",
+                    rationale="hook",
+                    recommended=True,
+                )
+            ]
+        ),
+    )
+    return "proposal persisted"
+
+
+architect_model = ScriptedModel(
+    [
+        result(
+            [FunctionCall(id="reviews-1", arguments="{}", name="get_reviews")],
+            "function_calls",
+        ),
+        result(
+            [
                 FunctionCall(
                     id="proposal-1",
                     arguments="{}",
                     name="propose_scene_selection",
                 )
             ],
-            usage=RequestUsage(prompt_tokens=1, completion_tokens=1),
-            cached=False,
-        )
-
-
-tool_calls = 0
-
-
-def propose_scene_selection() -> str:
-    global tool_calls
-    tool_calls += 1
-    return "proposal saved"
-
-
-model = ProposalModel()
+            "function_calls",
+        ),
+    ]
+)
+orchestrator_model = ScriptedModel(
+    [
+        result("facts"),
+        result("plan"),
+        result(ledger("Read the reviews first.")),
+        result(ledger("Now persist the proposal.")),
+    ]
+)
 agent = AssistantAgent(
     name="story_architect",
-    model_client=model,
-    tools=[propose_scene_selection],
+    model_client=architect_model,
+    tools=[get_reviews, propose_scene_selection],
     max_tool_iterations=int(sys.argv[1]),
 )
-asyncio.run(agent.run(task="Propose scenes"))
-print(f"model_calls={model.calls} tool_calls={tool_calls}")
+team = MagenticOneGroupChat(
+    [agent],
+    model_client=orchestrator_model,
+    termination_condition=FunctionalTermination(
+        lambda _messages: _new_pending_scene_selection(board, None)
+    ),
+    max_turns=5,
+    emit_team_events=True,
+)
+run_result = asyncio.run(team.run(task="Review first, then propose scenes."))
+selection = board.load("scene_selection")
+print(
+    json.dumps(
+        {
+            "architect_model_calls": architect_model.calls,
+            "orchestrator_model_calls": orchestrator_model.calls,
+            "tool_calls": tool_calls,
+            "selected_speakers": [
+                event.content
+                for event in run_result.messages
+                if isinstance(event, SelectSpeakerEvent)
+            ],
+            "selection_version": (
+                selection.version if isinstance(selection, SceneSelection) else None
+            ),
+            "stop_reason": run_result.stop_reason,
+        }
+    )
+)
 """
 
 # name -> (tool_names, max_tool_iterations), per the Task-7 brief's roster table.
@@ -574,9 +680,12 @@ def test_gate_off_preserves_all_agent_iteration_limits(
     assert wired == {name: max_iters for name, (_tools, max_iters) in EXPECTED_ASSIGNMENTS.items()}
 
 
-def test_gate_on_story_architect_stops_after_proposal_tool(
+def test_gate_on_story_architect_team_stops_after_second_turn_proposal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    if importlib.util.find_spec("autogen_agentchat") is None:
+        pytest.skip("requires the optional autoshort extra")
+
     db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id, scene_gate=True)
     created = _install_fake_autogen(monkeypatch)
@@ -591,15 +700,28 @@ def test_gate_on_story_architect_stops_after_proposal_tool(
     }
     configured_iterations = cast(int, wired["story_architect"]["max_tool_iterations"])
     result = subprocess.run(
-        [sys.executable, "-c", _AUTOGEN_075_PROPOSAL_CONTRACT, str(configured_iterations)],
+        [
+            sys.executable,
+            "-c",
+            _AUTOGEN_075_TEAM_CONTRACT,
+            str(configured_iterations),
+            str(tmp_path / "autogen-team-board"),
+        ],
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "model_calls=1 tool_calls=1"
     assert configured_iterations == 1
+    assert json.loads(result.stdout) == {
+        "architect_model_calls": 2,
+        "orchestrator_model_calls": 4,
+        "tool_calls": {"get_reviews": 1, "propose_scene_selection": 1},
+        "selected_speakers": [["story_architect"], ["story_architect"]],
+        "selection_version": 1,
+        "stop_reason": "Functional termination condition met",
+    }
 
 
 def test_build_team_termination_detects_a_new_scene_selection_revision(
