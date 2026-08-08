@@ -1294,6 +1294,36 @@ def test_parse_outcome_empty_result_gives_empty_summary(tmp_path: Path) -> None:
     assert outcome.summary == ""
 
 
+def test_parse_outcome_max_turns_hard_fails(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("still waiting")],
+        stop_reason="Maximum number of turns 30 reached.",
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=3)
+
+    assert outcome.status == "hard_fail"
+    assert "Maximum number of turns 30 reached" in outcome.summary
+
+
+def test_parse_outcome_functional_termination_stays_ok(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("proposal saved")],
+        stop_reason="FunctionalTermination triggered",
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=1)
+
+    assert outcome.status == "ok"
+    assert outcome.summary == "proposal saved"
+
+
 # --- follow-up guards (live finding 2026-08-04) --------------------------------------------------
 # Live session 6021d069: the user asked for a reframe; run 170643Z's MagenticOne orchestrator
 # declared success with ZERO tool calls, and the render-cycle cap silently ate the re-render.

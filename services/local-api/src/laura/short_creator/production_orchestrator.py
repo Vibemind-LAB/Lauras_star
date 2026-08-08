@@ -388,6 +388,10 @@ def _deps_for_run(
     return replace(deps, max_render_cycles=cap)
 
 
+def _turn_budget_exhausted(stop_reason: str | None) -> bool:
+    return "maximum number of turns" in (stop_reason or "").lower()
+
+
 def _parse_outcome(
     board: Board,
     result: Any,
@@ -414,6 +418,8 @@ def _parse_outcome(
     Stage B instead of reporting a success that changed nothing — with the team's own closing
     claim kept in the summary so the false success stays inspectable.
     """
+    stop_reason_raw = getattr(result, "stop_reason", None)
+    stop_reason = str(stop_reason_raw) if stop_reason_raw is not None else None
     summary = ""
     for msg in reversed(getattr(result, "messages", None) or []):
         to_text = getattr(msg, "to_model_text", None)
@@ -421,6 +427,14 @@ def _parse_outcome(
         if text:
             summary = text[:2000]
             break
+    if _turn_budget_exhausted(stop_reason):
+        return StageOutcome(
+            status="hard_fail",
+            weak=_qa_weak(board),
+            summary=(stop_reason or summary)[:2000],
+            team="magentic",
+            stage=stage,
+        )
     if require_tool_call and tool_calls == 0:
         return StageOutcome(
             status="hard_fail",
