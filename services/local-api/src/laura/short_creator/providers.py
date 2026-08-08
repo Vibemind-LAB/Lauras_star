@@ -404,7 +404,7 @@ def build_model_client(
         if spec.kind == "ollama":
             from autogen_ext.models.ollama import OllamaChatCompletionClient
 
-            return OllamaChatCompletionClient(model=spec.model)
+            return cast("ChatCompletionClient", OllamaChatCompletionClient(model=spec.model))
 
         from autogen_core.models import ModelInfo
         from autogen_ext.models.openai import OpenAIChatCompletionClient
