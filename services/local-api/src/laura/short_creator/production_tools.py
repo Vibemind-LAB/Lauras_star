@@ -748,6 +748,47 @@ def _scene_materials(
     return materials
 
 
+def _rough_cut_source_hash(db: Database, asset_id: str) -> str | None:
+    """Hash the ordered Rough-Cut scene boundaries and every mapped source range."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return None
+    timeline = repos.get_asset_rough_cut(db, str(asset["project_id"]), asset_id)
+    if timeline is None:
+        return None
+    clips = repos.list_timeline_clips(db, str(timeline["id"]))
+    scenes = sorted(
+        repos.list_scenes(db, str(timeline["id"])),
+        key=lambda scene: int(scene["order_index"]),
+    )
+    identity: list[dict[str, Any]] = []
+    for scene in scenes:
+        ranges = context._scene_src_ranges(
+            clips,
+            seq_in=int(scene["seq_in_frame"]),
+            seq_out_exclusive=int(scene["seq_out_frame_exclusive"]),
+        )
+        if not ranges:
+            return None
+        identity.append(
+            {
+                "rough_cut_order": int(scene["order_index"]),
+                "seq_in_frame": int(scene["seq_in_frame"]),
+                "seq_out_frame_exclusive": int(scene["seq_out_frame_exclusive"]),
+                "source_ranges": [[int(start), int(end)] for start, end in ranges],
+            }
+        )
+    if not identity:
+        return None
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _expected_scenes(db: Database, asset_id: str) -> list[int]:
     """Scene numbers this asset's rough cut has — the reviews ``review_scene`` must cover."""
     result = context.scene_transcripts(db, asset_id)
@@ -2687,6 +2728,9 @@ def build_production_tool_specs(
             materials = _scene_materials(db, asset_id, board.scene_reviews())
             if not materials:
                 return {"ok": False, "reason": "no rough-cut scene material available"}
+            rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+            if rough_cut_hash is None:
+                return {"ok": False, "reason": "no Rough-Cut source ranges available"}
             total_frames = voice_total_frames(voice, fps)
             plan = build_rough_cut_visual_plan(
                 request=request,
@@ -2700,6 +2744,7 @@ def build_production_tool_specs(
                         "visual_recut_request": _content_hash(request),
                         "script": _content_hash(script),
                         "voice": _content_hash(voice),
+                        "rough_cut": rough_cut_hash,
                     }
                 }
             )
@@ -2834,23 +2879,47 @@ def build_production_tool_specs(
                     "script": current_script_hash,
                     "voice": current_voice_hash,
                 }
+                if visual_plan.scene_choices:
+                    current_rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+                    if current_rough_cut_hash is None:
+                        return {
+                            "ok": False,
+                            "reason": "current Rough-Cut source ranges are unavailable",
+                        }
+                    expected_plan_parents["rough_cut"] = current_rough_cut_hash
                 if visual_plan.parents != expected_plan_parents:
                     return {
                         "ok": False,
                         "reason": (
-                            "visual plan does not match the current script and voice; "
+                            "visual plan does not match the current script, voice, or Rough-Cut; "
                             "start_visual_recut again"
                         ),
                     }
                 if visual_plan.scene_choices:
+                    if visual_plan.fps != fps:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                "visual plan frame rate does not match the current project; "
+                                "start_visual_recut again"
+                            ),
+                        }
+                    current_voice_total_frames = voice_total_frames(voice, fps)
+                    if visual_plan.voice_total_frames != current_voice_total_frames:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                "visual plan Voice frame projection is stale; "
+                                "start_visual_recut again"
+                            ),
+                        }
                     resolved_shots = resolve_selected_shots(visual_plan)
                     v2_segments: list[CutSegment] = []
                     for order, shot in enumerate(resolved_shots):
-                        start_frame = min(
-                            shot.src_start_frame,
-                            shot.src_end_frame_exclusive - shot.final_frames,
+                        candidate_width = (
+                            shot.src_end_frame_exclusive - shot.src_start_frame
                         )
-                        if start_frame < 0:
+                        if shot.final_frames > candidate_width:
                             return {
                                 "ok": False,
                                 "reason": (
@@ -2858,6 +2927,7 @@ def build_production_tool_specs(
                                     "for its resolved duration"
                                 ),
                             }
+                        start_frame = shot.src_start_frame
                         v2_segments.append(
                             CutSegment(
                                 order=order,

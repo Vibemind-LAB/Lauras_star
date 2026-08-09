@@ -43,6 +43,7 @@ from laura.short_creator.board_models import (
 )
 from laura.short_creator.production_tools import (
     ProductionDeps,
+    _rough_cut_source_hash,
     _scale_chapter_durations,
     _segment_duration_s,
     build_production_tool_specs,
@@ -499,6 +500,7 @@ def test_v2_cutlist_uses_selected_lengths_and_exact_voice_frames(tmp_path: Path)
             "visual_recut_request": content_hash(request),
             "script": content_hash(script),
             "voice": content_hash(voice),
+            "rough_cut": _rough_cut_source_hash(db, asset_id),
         },
     )
     confirmed = apply_scene_selections(

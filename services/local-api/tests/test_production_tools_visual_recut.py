@@ -553,6 +553,145 @@ def test_new_v2_selection_invalidates_finished_tail_and_rebuilds_contact_sheet(
     assert v2_harness.board.load("qa_report") is None
 
 
+def test_v2_cutlist_refuses_changed_rough_cut_without_mutation(
+    v2_harness: Harness,
+) -> None:
+    result = tool(v2_harness, "start_visual_recut")(
+        user_request="all five Rough-Cut scenes",
+        framing_mode="full_frame_blur",
+    )
+    assert result["ok"] is True
+    assert len(result["scene_choices"]) == 5
+    asset = repos.get_asset(v2_harness.db, v2_harness.asset_id)
+    assert asset is not None
+    timeline = repos.get_or_create_asset_rough_cut(
+        v2_harness.db,
+        str(asset["project_id"]),
+        v2_harness.asset_id,
+    )
+    repos.replace_scenes(
+        v2_harness.db,
+        str(asset["project_id"]),
+        str(timeline["id"]),
+        [
+            (index * SCENE_FRAMES, (index + 1) * SCENE_FRAMES)
+            for index in range(4)
+        ],
+    )
+    confirm_v2_plan(v2_harness.board, [10, 10, 10, 10, 10])
+    before = versions_and_hashes(
+        v2_harness.board,
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+    )
+
+    built = tool(v2_harness, "build_cutlist")()
+
+    assert built["ok"] is False
+    assert "Rough-Cut" in built["reason"]
+    assert v2_harness.board.load("cutlist") is None
+    assert versions_and_hashes(
+        v2_harness.board,
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+    ) == before
+
+
+def test_v2_cutlist_refuses_changed_project_fps_without_mutation(
+    v2_harness: Harness,
+) -> None:
+    result = tool(v2_harness, "start_visual_recut")(
+        user_request="all Rough-Cut scenes at current sequence rate",
+        framing_mode="full_frame_blur",
+    )
+    assert result["ok"] is True
+    plan = v2_harness.board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    assert plan.fps == 30.0
+    assert plan.voice_total_frames == 1350
+    confirm_v2_plan(v2_harness.board, [10, 10, 10, 10, 10])
+    asset = repos.get_asset(v2_harness.db, v2_harness.asset_id)
+    assert asset is not None
+    with v2_harness.db.transaction() as conn:
+        conn.execute(
+            "UPDATE projects SET sequence_rate_num = ?, sequence_rate_den = ? WHERE id = ?",
+            (24, 1, str(asset["project_id"])),
+        )
+    before = versions_and_hashes(
+        v2_harness.board,
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+    )
+
+    built = tool(v2_harness, "build_cutlist")()
+
+    assert built["ok"] is False
+    assert "frame rate" in built["reason"]
+    assert v2_harness.board.load("cutlist") is None
+    assert versions_and_hashes(
+        v2_harness.board,
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+    ) == before
+
+
+def test_v2_cutlist_rejects_candidate_narrower_than_resolved_duration(
+    v2_harness: Harness,
+) -> None:
+    result = tool(v2_harness, "start_visual_recut")(
+        user_request="all Rough-Cut scenes with bounded source ranges",
+        framing_mode="full_frame_blur",
+    )
+    assert result["ok"] is True
+    plan = v2_harness.board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    first_choice = plan.scene_choices[0]
+    narrow_id = first_choice.recommended_candidate_id
+    narrow_candidates = [
+        candidate.model_copy(
+            update={
+                "src_start_frame": 1000,
+                "src_end_frame_exclusive": 1030,
+                "thumb_frame": 1015,
+                "max_duration_s": 10,
+            }
+        )
+        if candidate.candidate_id == narrow_id
+        else candidate
+        for candidate in first_choice.candidates
+    ]
+    v2_harness.board.save(
+        "visual_plan",
+        plan.model_copy(
+            update={
+                "scene_choices": [
+                    first_choice.model_copy(update={"candidates": narrow_candidates}),
+                    *plan.scene_choices[1:],
+                ]
+            }
+        ),
+    )
+    confirm_v2_plan(v2_harness.board, [10, 10, 10, 10, 10])
+
+    built = tool(v2_harness, "build_cutlist")()
+
+    assert built["ok"] is False
+    assert "too short" in built["reason"]
+    assert v2_harness.board.load("cutlist") is None
+
+
 def test_start_visual_recut_rejects_other_framing_without_mutation(harness: Harness) -> None:
     before = versions(harness.board, "storyline", "script", "voice")
 

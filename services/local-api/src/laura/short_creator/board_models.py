@@ -686,6 +686,22 @@ class ContactSheetTile(BaseModel):
     requested_duration_s: int | None = Field(default=None, ge=1, le=10)
     final_duration_frames: int | None = Field(default=None, ge=1)
 
+    @model_serializer(mode="wrap")
+    def _omit_null_v2_metadata(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Keep pre-v2 tile JSON and content hashes byte-compatible."""
+        data: dict[str, Any] = handler(self)
+        for field in (
+            "rough_cut_order",
+            "description",
+            "requested_duration_s",
+            "final_duration_frames",
+        ):
+            if data.get(field) is None:
+                data.pop(field, None)
+        return data
+
     @model_validator(mode="after")
     def _optional_source_range_is_end_exclusive(self) -> ContactSheetTile:
         if (

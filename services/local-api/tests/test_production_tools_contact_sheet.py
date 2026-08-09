@@ -25,6 +25,7 @@ from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BoardMeta,
     ContactSheet,
+    ContactSheetTile,
     Cutlist,
     CutSegment,
     Roi,
@@ -181,6 +182,49 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
     sheet = board.load("contact_sheet")
     assert cutlist_now is not None and isinstance(sheet, ContactSheet)
     assert sheet.parents == {"cutlist": content_hash(cutlist_now)}
+
+
+def test_legacy_contact_sheet_tile_keeps_pre_v2_serialization_and_hash() -> None:
+    legacy_payload = {
+        "order": 0,
+        "scene_number": 1,
+        "frame": 15,
+        "label": "0 S1",
+        "src_start_frame": None,
+        "src_end_frame_exclusive": None,
+        "narration_excerpt": "",
+        "rationale": "",
+    }
+    tile = ContactSheetTile.model_validate_json(json.dumps(legacy_payload))
+
+    assert tile.model_dump(mode="json") == legacy_payload
+    # Derived independently from the ContactSheetTile shape at b0cc00a by canonicalizing the
+    # literal payload above with sorted JSON keys, then hashing those UTF-8 bytes with SHA-256.
+    assert content_hash(tile) == "05cc4b6a37e42eb408817728f2fd9841ec2b558a2b2a8b1a991d23c40ed1333d"
+
+    v2_tile = tile.model_copy(
+        update={
+            "rough_cut_order": 0,
+            "description": "Rough-Cut scene 1",
+            "requested_duration_s": 2,
+            "final_duration_frames": 45,
+        }
+    )
+    v2_payload = v2_tile.model_dump(mode="json")
+    assert {
+        field: v2_payload[field]
+        for field in (
+            "rough_cut_order",
+            "description",
+            "requested_duration_s",
+            "final_duration_frames",
+        )
+    } == {
+        "rough_cut_order": 0,
+        "description": "Rough-Cut scene 1",
+        "requested_duration_s": 2,
+        "final_duration_frames": 45,
+    }
 
 
 def test_save_contact_sheet_enriches_v2_rough_cut_metadata(tmp_path: Path) -> None:
