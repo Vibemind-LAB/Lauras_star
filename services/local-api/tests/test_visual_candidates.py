@@ -10,7 +10,9 @@ from laura.short_creator.board_models import (
     BestWindow,
     SceneReview,
     ScriptLine,
+    VisualPlan,
     VisualRecutRequest,
+    VisualSceneSelection,
     VisualShotCandidate,
     VoiceArtifact,
     VoiceSegment,
@@ -23,6 +25,10 @@ from laura.short_creator.visual_candidates import (
     build_rough_cut_visual_plan,
     build_visual_plan,
     coverage_windows,
+)
+from laura.short_creator.visual_timeline import (
+    apply_scene_selections,
+    resolve_selected_shots,
 )
 from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
@@ -171,6 +177,69 @@ def rough_cut_scenes(count: int) -> list[SceneMaterial]:
     ]
 
 
+def scored_rough_cut_scenes(
+    hook_scores: list[int],
+    *,
+    duration_frames: int = 300,
+) -> list[SceneMaterial]:
+    duration_s = duration_frames / _FPS
+    return [
+        SceneMaterial(
+            scene_number=index + 1,
+            src_start_frame=index * duration_frames,
+            src_end_frame_exclusive=(index + 1) * duration_frames,
+            description="unrelated visual",
+            transcript="",
+            transcript_spans=(),
+            review=SceneReview(
+                scene_number=index + 1,
+                src_start_frame=index * duration_frames,
+                src_end_frame_exclusive=(index + 1) * duration_frames,
+                description="unrelated visual",
+                whats_happening="unrelated visual",
+                hook_score=hook_score,
+                best_window=BestWindow(offset_s=0.0, duration_s=duration_s),
+            ),
+        )
+        for index, hook_score in enumerate(hook_scores)
+    ]
+
+
+def clamped_review_scenes(count: int) -> list[SceneMaterial]:
+    return [
+        SceneMaterial(
+            scene_number=index + 1,
+            src_start_frame=index * 300,
+            src_end_frame_exclusive=(index + 1) * 300,
+            description="clamped review window",
+            transcript="",
+            transcript_spans=(),
+            review=SceneReview(
+                scene_number=index + 1,
+                src_start_frame=index * 300,
+                src_end_frame_exclusive=(index + 1) * 300,
+                description="clamped review window",
+                whats_happening="same frame range at both frame rates",
+                hook_score=5,
+                best_window=BestWindow(offset_s=0.0, duration_s=20.0),
+            ),
+        )
+        for index in range(count)
+    ]
+
+
+def recommended_selections(plan: VisualPlan) -> list[VisualSceneSelection]:
+    return [
+        VisualSceneSelection(
+            rough_cut_order=choice.rough_cut_order,
+            candidate_id=choice.recommended_candidate_id,
+            included=choice.recommended_included,
+            requested_duration_s=choice.recommended_duration_s,
+        )
+        for choice in plan.scene_choices
+    ]
+
+
 def test_every_rough_cut_scene_appears_once_in_order() -> None:
     plan = build_rough_cut_visual_plan(
         request=request(),
@@ -182,6 +251,99 @@ def test_every_rough_cut_scene_appears_once_in_order() -> None:
 
     assert [choice.rough_cut_order for choice in plan.scene_choices] == list(range(8))
     assert [choice.scene_number for choice in plan.scene_choices] == list(range(1, 9))
+
+
+def test_proposal_hash_binds_voice_frames_and_canonical_fps() -> None:
+    scenes = rough_cut_scenes(8)
+    base = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=scenes,
+        narration_text="organize files and draft mail",
+        voice_total_frames=1200,
+        fps=30.0,
+    )
+    changed_frames = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=scenes,
+        narration_text="organize files and draft mail",
+        voice_total_frames=1199,
+        fps=30.0,
+    )
+    canonical_equivalent_fps = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=scenes,
+        narration_text="organize files and draft mail",
+        voice_total_frames=1200,
+        fps=30,
+    )
+    fps_scenes = clamped_review_scenes(3)
+    fps_30 = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=fps_scenes,
+        narration_text="same narration",
+        voice_total_frames=29,
+        fps=30.0,
+    )
+    fps_2997 = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=fps_scenes,
+        narration_text="same narration",
+        voice_total_frames=29,
+        fps=29.97,
+    )
+
+    assert base.proposal_hash != changed_frames.proposal_hash
+    assert base.proposal_hash == canonical_equivalent_fps.proposal_hash
+    assert fps_30.proposal_hash != fps_2997.proposal_hash
+
+    confirmed_base = apply_scene_selections(
+        base,
+        recommended_selections(base),
+        "2026-08-09T12:00:00Z",
+    )
+    confirmed_changed_frames = apply_scene_selections(
+        changed_frames,
+        recommended_selections(changed_frames),
+        "2026-08-09T12:00:00Z",
+    )
+    assert confirmed_base.selection_hash != confirmed_changed_frames.selection_hash
+    assert resolve_selected_shots(confirmed_base)[-1].final_frames == 300
+    assert resolve_selected_shots(confirmed_changed_frames)[-1].final_frames == 299
+
+
+def test_subset_recommendation_uses_score_then_rough_cut_order() -> None:
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=scored_rough_cut_scenes([1, 10, 3, 10, 10]),
+        narration_text="relevant narration",
+        voice_total_frames=90,
+        fps=_FPS,
+    )
+
+    assert [
+        choice.rough_cut_order
+        for choice in plan.scene_choices
+        if choice.recommended_included
+    ] == [1, 3, 4]
+    assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1, 2, 3, 4]
+
+
+def test_one_second_subset_expansion_is_directly_confirmable() -> None:
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=scored_rough_cut_scenes([5] * 8, duration_frames=30),
+        narration_text="relevant narration",
+        voice_total_frames=210,
+        fps=_FPS,
+    )
+
+    assert sum(choice.recommended_included for choice in plan.scene_choices) == 7
+    confirmed = apply_scene_selections(
+        plan,
+        recommended_selections(plan),
+        "2026-08-09T12:00:00Z",
+    )
+    assert sum(shot.final_frames for shot in resolve_selected_shots(confirmed)) == 210
 
 
 def test_long_degraded_scene_offers_distributed_windows() -> None:

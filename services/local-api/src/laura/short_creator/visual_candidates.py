@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from hashlib import sha256
 from math import ceil, floor
 
@@ -60,6 +61,10 @@ class CandidateWindow:
 def _canonical_hash(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _canonical_fps(fps: float) -> str:
+    return format(Decimal(str(fps)).normalize(), "f")
 
 
 def _tokens(text: str) -> set[str]:
@@ -279,23 +284,47 @@ def _recommend_scene_coverage(
     if sum(capacities) < target_seconds:
         raise InsufficientVisualCandidates("Rough-Cut scenes cannot cover the Voice")
 
-    included_count = len(choices) if target_seconds >= len(choices) else min(3, len(choices))
+    ranked_indices = sorted(
+        range(len(choices)),
+        key=lambda index: (
+            -max(candidate.score for candidate in choices[index].candidates),
+            choices[index].rough_cut_order,
+        ),
+    )
+    if target_seconds >= len(choices):
+        included_indices = list(ranked_indices)
+    else:
+        included_indices = list(ranked_indices[: min(3, len(choices))])
+        next_rank = len(included_indices)
+        while (
+            sum(capacities[index] for index in included_indices) < target_seconds
+            and next_rank < len(ranked_indices)
+        ):
+            included_indices.append(ranked_indices[next_rank])
+            next_rank += 1
+
+    included_index_set = set(included_indices)
     durations = [1] * len(choices)
-    remaining = target_seconds - included_count
-    for index in range(included_count):
+    remaining = max(0, target_seconds - len(included_indices))
+    final_timeline_index = max(
+        included_indices,
+        key=lambda index: choices[index].rough_cut_order,
+    )
+    allocation_order = [
+        final_timeline_index,
+        *[index for index in ranked_indices if index != final_timeline_index],
+    ]
+    for index in allocation_order:
+        if index not in included_index_set:
+            continue
         capacity = capacities[index] - durations[index]
-        allocated = min(max(remaining, 0), capacity)
+        allocated = min(remaining, capacity)
         durations[index] += allocated
         remaining -= allocated
+        if remaining == 0:
+            break
     if remaining > 0:
-        for index in range(included_count, len(choices)):
-            included_count = index + 1
-            capacity = capacities[index] - 1
-            allocated = min(remaining, capacity)
-            durations[index] += allocated
-            remaining -= allocated
-            if remaining == 0:
-                break
+        raise InsufficientVisualCandidates("Rough-Cut scenes cannot cover the Voice")
 
     return [
         choice.model_copy(
@@ -305,7 +334,7 @@ def _recommend_scene_coverage(
                     for candidate in choice.candidates
                     if candidate.max_duration_s >= durations[index]
                 ),
-                "recommended_included": index < included_count,
+                "recommended_included": index in included_index_set,
                 "recommended_duration_s": durations[index],
             }
         )
@@ -344,6 +373,9 @@ def build_rough_cut_visual_plan(
     proposal_hash = _canonical_hash(
         {
             "request_hash": request_hash,
+            "voice_total_frames": voice_total_frames,
+            "fps": _canonical_fps(fps),
+            "rough_cut_scene_count": len(scenes),
             "scene_choices": [
                 {
                     "rough_cut_order": choice.rough_cut_order,
