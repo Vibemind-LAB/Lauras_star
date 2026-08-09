@@ -648,7 +648,7 @@ class QaReport(BaseModel):
     parents: dict[str, str] = Field(default_factory=dict)
 
 
-BoardStatus = Literal["active", "failed", "complete"]
+BoardStatus = Literal["active", "failed", "complete", "cancelled"]
 
 
 class BoardMeta(BaseModel):

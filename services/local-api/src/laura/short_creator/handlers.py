@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, cast
@@ -135,6 +136,7 @@ def handle_production_run(
     scene_gate = bool(payload.get("scene_gate", False))
 
     from .production_orchestrator import run_production
+    from .production_tools import ProductionDeps
     from .providers import resolve_from_env
 
     config = resolve_from_env()
@@ -150,6 +152,10 @@ def handle_production_run(
         meta_event["message"] = message
     _append_run_log_line(log_file, log_path, meta_event)
 
+    run_deps = replace(
+        deps or ProductionDeps(),
+        cancel_requested=lambda: repos.is_job_cancel_requested(ctx.db, ctx.job_id),
+    )
     result = run_production(
         ctx.db,
         config,
@@ -163,7 +169,7 @@ def handle_production_run(
         script_gate=script_gate,
         scene_gate=scene_gate,
         execute=execute,
-        deps=deps,
+        deps=run_deps,
         # Every team event lands in the session run log, flushed per line — a stalled phase
         # used to leave a two-line log (meta + done) and 44 minutes of nothing to diagnose.
         event_sink=lambda event: _append_run_log_line(log_file, log_path, event),

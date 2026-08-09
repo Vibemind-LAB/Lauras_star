@@ -44,6 +44,27 @@ def test_missing_handler_fails(db: Database) -> None:
     assert "no handler" in job["error_json"]
 
 
+def test_cancelled_handler_result_is_terminal_cancelled(db: Database) -> None:
+    """A cooperative cancellation result must never be persisted as success or failure."""
+    result = {"status": "cancelled", "reason": "user"}
+    job_id = enqueue(db, queue="x", kind="cancel-test")
+    runner = JobRunner(
+        db,
+        {"cancel-test": lambda _ctx: result},
+        lease_seconds=60,
+    )
+
+    assert runner.run_once() is True
+
+    job = repos.get_job(db, job_id)
+    assert job is not None
+    assert job["status"] == "cancelled"
+    assert job["finished_at"] is not None
+    assert job["result_json"] is not None
+    assert '"reason": "user"' in job["result_json"]
+    assert job["error_json"] is None
+
+
 def test_reaper_requeues_then_fails(db: Database) -> None:
     job_id = enqueue(db, queue="x", kind="echo", max_attempts=3)
     past = "2000-01-01T00:00:00.000000Z"

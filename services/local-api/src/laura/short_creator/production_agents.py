@@ -417,7 +417,12 @@ def build_production_team(
     initial_scene_selection_version = _scene_selection_version(board)
     initial_visual_plan_version = _visual_plan_version(board)
     pending_user_gate_termination = FunctionalTermination(
-        lambda _messages: _new_pending_user_proposal(
+        lambda _messages: (
+            deps is not None
+            and deps.cancel_requested is not None
+            and deps.cancel_requested()
+        )
+        or _new_pending_user_proposal(
             board, initial_scene_selection_version, initial_visual_plan_version
         )
     )

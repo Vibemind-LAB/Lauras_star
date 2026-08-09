@@ -52,7 +52,7 @@ from .providers import AgentConfig, Stage, config_warnings
 
 logger = logging.getLogger(__name__)
 
-ProductionRunStatus = Literal["ok", "hard_fail", "awaiting_user_input"]
+ProductionRunStatus = Literal["ok", "hard_fail", "awaiting_user_input", "cancelled"]
 PendingUserGate = Literal["scene_selection", "visual_selection", "contact_sheet"]
 
 
@@ -634,6 +634,35 @@ def _completed_result(
     return result
 
 
+def _cancel_requested(deps: ProductionDeps | None) -> bool:
+    return deps is not None and deps.cancel_requested is not None and deps.cancel_requested()
+
+
+def _cancelled_result(
+    board: Board,
+    *,
+    session_id: str,
+    restored: list[str],
+    expected_scenes: list[int],
+    stage: Stage = "A",
+) -> dict[str, Any]:
+    """Persist the sole allowed post-cancel board write and return a terminal result."""
+    board.set_status("cancelled")
+    return _completed_result(
+        board,
+        session_id=session_id,
+        restored=restored,
+        status="cancelled",
+        stage=stage,
+        team="magentic",
+        weak=_qa_weak(board),
+        escalated=False,
+        summary="production cancelled by user",
+        export_id=_export_id_of(board),
+        resume_point=board.resume_point(expected_scenes),
+    )
+
+
 # The five resume points that :func:`production_pipeline.run_deterministic_tail` actually
 # advances (``_STEP_BY_RESUME_POINT`` plus its terminal ``qa_report``). A resume point OUTSIDE
 # this set (``storyline``/``script``, still creative work; ``done``, nothing left) makes the
@@ -768,6 +797,14 @@ def run_production(
         )
         board = Board.create(root, meta)
 
+    if _cancel_requested(deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=[],
+            expected_scenes=_expected_scene_numbers(db, asset_id),
+        )
+
     # Advisory (never a gate): say out loud when the text agents will run on a local ollama
     # model. Live incident 2026-07-20: three production runs silently ran qwen2.5:7b — tool
     # calls as prose, invented schemas — and nothing anywhere said so.
@@ -792,6 +829,14 @@ def run_production(
     # Computed once and reused below (the short-circuit condition and the completion tail both
     # need it); build_production_task computes its own copy internally for its other callers.
     expected_scenes = _expected_scene_numbers(db, asset_id)
+
+    if _cancel_requested(deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            expected_scenes=expected_scenes,
+        )
 
     # Spec decision 2 (2026-07-20-provenance-chain-design.md, §Entscheidungen (User)): a fully
     # coherent board reaches complete WITHOUT an agent-team turn. A follow-up ``message`` is
@@ -861,6 +906,13 @@ def run_production(
             db, board, config, asset_id=asset_id, deps=run_deps,
             event_sink=event_sink, expected_scenes=expected_scenes,
         )
+        if _cancel_requested(run_deps):
+            return _cancelled_result(
+                board,
+                session_id=session_id,
+                restored=restored,
+                expected_scenes=expected_scenes,
+            )
         resume_point = board.resume_point(expected_scenes)
         tail_pending_gate = pending_user_gate(board, expected_scenes)
         # A hard-failed QA stage (LLM outage, etc. — _safe_execute turns any exception into a
@@ -941,10 +993,34 @@ def run_production(
     )
 
     outcome = _safe_execute(run, db, config, "A", "magentic", task_text)
+    if _cancel_requested(run_deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            expected_scenes=expected_scenes,
+            stage=outcome.stage,
+        )
     pending_gate = pending_user_gate(board, expected_scenes)
     escalated = False
     if outcome.status == "hard_fail" and pending_gate is None:
+        if _cancel_requested(run_deps):
+            return _cancelled_result(
+                board,
+                session_id=session_id,
+                restored=restored,
+                expected_scenes=expected_scenes,
+                stage=outcome.stage,
+            )
         outcome = _safe_execute(run, db, config, "B", "magentic", task_text)
+        if _cancel_requested(run_deps):
+            return _cancelled_result(
+                board,
+                session_id=session_id,
+                restored=restored,
+                expected_scenes=expected_scenes,
+                stage=outcome.stage,
+            )
         escalated = True
         pending_gate = pending_user_gate(board, expected_scenes)
 

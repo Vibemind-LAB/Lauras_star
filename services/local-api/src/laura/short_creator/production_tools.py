@@ -109,6 +109,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -324,6 +325,7 @@ class ProductionDeps:
     # follow_up_render_cap(board) for a run carrying an explicit user follow-up message — the
     # cap exists to stop the team's own revision loops, never an operator-requested change.
     max_render_cycles: int | None = None
+    cancel_requested: Callable[[], bool] | None = None
 
 
 # --- reply parsing + clamping (pure) ------------------------------------------------------------
@@ -3703,4 +3705,39 @@ def build_production_tool_specs(
     if brain_root() is not None:
         funcs.append(search_second_brain)
         funcs.append(read_brain_note)
-    return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]
+    mutating_names = {
+        "review_scene",
+        "propose_scene_selection",
+        "save_storyline",
+        "save_script_chapter",
+        "set_board_language",
+        "synthesize_script_voice",
+        "start_visual_recut",
+        "build_cutlist",
+        "save_contact_sheet",
+        "render_production",
+        "save_qa_report",
+        "revert_artifact",
+    }
+
+    def cancel_guard(func: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+        @wraps(func)
+        def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            if d.cancel_requested is not None and d.cancel_requested():
+                return {
+                    "ok": False,
+                    "status": "cancelled",
+                    "reason": "user requested cancellation",
+                }
+            return func(*args, **kwargs)
+
+        return guarded
+
+    return [
+        ToolSpec(
+            name=func.__name__,
+            description=(func.__doc__ or "").strip(),
+            func=cancel_guard(func) if func.__name__ in mutating_names else func,
+        )
+        for func in funcs
+    ]
