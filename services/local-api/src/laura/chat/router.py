@@ -45,6 +45,8 @@ TOOLS: frozenset[str] = frozenset(
         "confirm_transcript",
         "approve_script",
         "select_scenes",
+        "select_visuals",
+        "approve_contact_sheet",
         "discuss",
     }
 )
@@ -97,6 +99,14 @@ _SYSTEM_PROMPT = (
     "gewünschte Auswahl. Relativ-Anweisungen gegen die Empfehlung auflösen: bei Empfehlung "
     '[2, 4, 5] heißt "nimm 2 und 5 statt 4" -> [2, 5]; "passt so" / "nimm deine Auswahl" '
     "-> die Empfehlung unverändert.\n"
+    "- select_visuals: der User bestätigt die aktuelle Visual-Auswahl. Nur wenn der Kontext "
+    'eine Zeile "Visual-Auswahl offen" zeigt. args.proposal_hash muss exakt der dortige '
+    "64-stellige Hash sein und args.selected_candidate_ids ist die KOMPLETTE Auswahl mit "
+    "genau einem Kandidaten pro Beat. Bei 'deine Auswahl passt' die empfohlenen IDs aus dem "
+    "Kontext unverändert übernehmen.\n"
+    "- approve_contact_sheet: der User gibt den aktuellen Kontaktbogen frei. Nur wenn der "
+    'Kontext eine Zeile "Kontaktbogen-Freigabe offen" zeigt. args.contact_sheet_hash muss '
+    "exakt der dortige 64-stellige Hash sein.\n"
     '- discuss: {"text": str} — answer a question, critique, or comment about the result or '
     "process; pass the user's message verbatim as text. Choose this whenever the user is "
     "ASKING or COMPLAINING about the video, its scenes, its wording, or the transcript "
@@ -247,6 +257,23 @@ def compose_context(
             lines.append(
                 f"Szenen-Vorschlag offen: empfohlen {recommended} von Kandidaten {candidates}"
             )
+        visual_gate = active_session.get("visual_selection_gate")
+        if isinstance(visual_gate, dict):
+            proposal_hash = visual_gate.get("proposal_hash")
+            recommended = visual_gate.get("recommended_candidate_ids") or []
+            if isinstance(proposal_hash, str) and proposal_hash:
+                lines.append(
+                    f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+                    f"empfohlen {recommended}"
+                )
+        contact_sheet_gate = active_session.get("contact_sheet_gate")
+        if isinstance(contact_sheet_gate, dict):
+            contact_sheet_hash = contact_sheet_gate.get("contact_sheet_hash")
+            if isinstance(contact_sheet_hash, str) and contact_sheet_hash:
+                lines.append(
+                    "Kontaktbogen-Freigabe offen: "
+                    f"contact_sheet_hash={contact_sheet_hash}"
+                )
     lines.append(f"Running jobs: {running_jobs}")
     lines.append("")
     lines.append("Recent conversation (oldest first):")
@@ -442,6 +469,28 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
             isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers
         ):
             return "select_scenes.scene_numbers must all be integers >= 1"
+        return None
+
+    if tool == "select_visuals":
+        proposal_hash = args.get("proposal_hash")
+        if not isinstance(proposal_hash, str) or len(proposal_hash) != 64:
+            return "select_visuals.proposal_hash must be a 64-character string"
+        candidate_ids = args.get("selected_candidate_ids")
+        if not isinstance(candidate_ids, list) or not candidate_ids:
+            return (
+                "select_visuals.selected_candidate_ids is missing, not a list, or empty"
+            )
+        if not all(
+            isinstance(candidate_id, str) and candidate_id
+            for candidate_id in candidate_ids
+        ):
+            return "select_visuals.selected_candidate_ids must all be non-empty strings"
+        return None
+
+    if tool == "approve_contact_sheet":
+        contact_sheet_hash = args.get("contact_sheet_hash")
+        if not isinstance(contact_sheet_hash, str) or len(contact_sheet_hash) != 64:
+            return "approve_contact_sheet.contact_sheet_hash must be a 64-character string"
         return None
 
     if tool == "discuss":

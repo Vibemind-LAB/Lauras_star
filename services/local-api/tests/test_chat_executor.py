@@ -1917,6 +1917,129 @@ def test_select_scenes_without_an_open_proposal_fails_gracefully(tmp_path: Path)
     assert "Session" in messages[0]["content"]["text"]
 
 
+# --- visual recut approval gates -------------------------------------------------------------
+
+
+def test_select_visuals_delegates_to_service_and_cards_resumed_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    calls: list[tuple[str, str, list[str]]] = []
+
+    def fake_confirm(
+        db: Database,
+        session_id: str,
+        proposal_hash: str,
+        selected_candidate_ids: list[str],
+    ) -> dict[str, Any]:
+        calls.append((session_id, proposal_hash, selected_candidate_ids))
+        return {"session_id": session_id, "job_id": "job-visual", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.confirm_visual_selection", fake_confirm)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="sess-visual")
+    selected = ["beat-0-candidate-0", "beat-1-candidate-2"]
+
+    messages = execute_decision(
+        db,
+        settings,
+        conversation_id=conversation_id,
+        decision=_decision(
+            "select_visuals",
+            {"proposal_hash": "a" * 64, "selected_candidate_ids": selected},
+        ),
+        now_utc=_NOW,
+    )
+
+    assert calls == [("sess-visual", "a" * 64, selected)]
+    assert messages[1]["kind"] == "action"
+    assert messages[1]["content"]["tool"] == "select_visuals"
+    assert messages[1]["content"]["refs"] == {
+        "session_id": "sess-visual",
+        "job_id": "job-visual",
+    }
+    assert messages[1]["content"]["outcome"] == "running"
+
+
+def test_approve_contact_sheet_delegates_to_service_and_cards_resumed_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_confirm(
+        db: Database, session_id: str, contact_sheet_hash: str
+    ) -> dict[str, Any]:
+        calls.append((session_id, contact_sheet_hash))
+        return {"session_id": session_id, "job_id": "job-sheet", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.confirm_contact_sheet", fake_confirm)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="sess-sheet")
+
+    messages = execute_decision(
+        db,
+        settings,
+        conversation_id=conversation_id,
+        decision=_decision(
+            "approve_contact_sheet", {"contact_sheet_hash": "b" * 64}
+        ),
+        now_utc=_NOW,
+    )
+
+    assert calls == [("sess-sheet", "b" * 64)]
+    assert messages[1]["kind"] == "action"
+    assert messages[1]["content"]["tool"] == "approve_contact_sheet"
+    assert messages[1]["content"]["refs"] == {
+        "session_id": "sess-sheet",
+        "job_id": "job-sheet",
+    }
+    assert messages[1]["content"]["outcome"] == "running"
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "service_name"),
+    [
+        (
+            "select_visuals",
+            {"proposal_hash": "a" * 64, "selected_candidate_ids": ["candidate-a"]},
+            "confirm_visual_selection",
+        ),
+        (
+            "approve_contact_sheet",
+            {"contact_sheet_hash": "b" * 64},
+            "confirm_contact_sheet",
+        ),
+    ],
+)
+def test_visual_gate_service_error_detail_is_preserved(
+    tmp_path: Path,
+    monkeypatch: Any,
+    tool: str,
+    args: dict[str, Any],
+    service_name: str,
+) -> None:
+    def fail(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise HTTPException(409, "stale approval identity")
+
+    monkeypatch.setattr(f"laura.chat.executor.{service_name}", fail)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db,
+        settings,
+        conversation_id=conversation_id,
+        decision=_decision(tool, args),
+        now_utc=_NOW,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["content"]["text"] == "stale approval identity"
+    assert messages[0]["kind"] == "text"
+
+
 def test_select_scenes_no_proposal_on_board_yet_fails_gracefully(tmp_path: Path) -> None:
     """The gate is on but the team never wrote a scene_selection artifact — the service's own
     409 ("no scene proposal on the board yet") passes through as a clear, specific card."""

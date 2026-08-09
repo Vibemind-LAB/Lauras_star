@@ -235,6 +235,36 @@ def test_compose_context_omits_scene_gate_line_when_absent() -> None:
     assert "Szenen-Vorschlag offen" not in ctx
 
 
+def test_compose_context_appends_pending_visual_selection_with_recommendations() -> None:
+    proposal_hash = "a" * 64
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"}, running_jobs=0, messages=[],
+        active_session={
+            "id": "s1", "state": "in-progress",
+            "visual_selection_gate": {
+                "proposal_hash": proposal_hash,
+                "recommended_candidate_ids": ["beat-0-candidate-0", "beat-1-candidate-2"],
+            },
+        },
+    )
+    assert (
+        "Visual-Auswahl offen: proposal_hash=" + proposal_hash
+        + " empfohlen ['beat-0-candidate-0', 'beat-1-candidate-2']"
+    ) in ctx
+
+
+def test_compose_context_appends_pending_contact_sheet_hash() -> None:
+    sheet_hash = "b" * 64
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"}, running_jobs=0, messages=[],
+        active_session={
+            "id": "s1", "state": "in-progress",
+            "contact_sheet_gate": {"contact_sheet_hash": sheet_hash},
+        },
+    )
+    assert "Kontaktbogen-Freigabe offen: contact_sheet_hash=" + sheet_hash in ctx
+
+
 def test_compose_context_lists_all_projects_marking_the_active_one() -> None:
     """Live incident 2026-08-07: the router had no roster of existing projects, so a loosely
     mentioned project name ('aus Drive Vibemind') couldn't be verified and was misread as a
@@ -282,7 +312,7 @@ def test_every_tool_is_reachable() -> None:
         "reply", "create_project", "switch_project", "propose_import",
         "start_short", "start_overview", "follow_up", "revert",
         "review_transcript", "correct_transcript", "confirm_transcript", "approve_script",
-        "select_scenes", "discuss",
+        "select_scenes", "select_visuals", "approve_contact_sheet", "discuss",
     }) == TOOLS
 
 
@@ -430,6 +460,88 @@ def test_select_scenes_requires_nonempty_int_list() -> None:
     assert decision == {
         "tool": "select_scenes", "args": {"scene_numbers": [2, 5]}, "fallback": False,
     }
+
+
+def test_select_visuals_routes_current_recommendations() -> None:
+    proposal_hash = "a" * 64
+    recommendations = ["beat-0-candidate-0", "beat-1-candidate-2"]
+    reply = json.dumps({
+        "tool": "select_visuals",
+        "args": {
+            "proposal_hash": proposal_hash,
+            "selected_candidate_ids": recommendations,
+        },
+    })
+    decision = run_router(
+        _config(),
+        context=(
+            f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+            f"empfohlen {recommendations}"
+        ),
+        user_text="deine Auswahl passt",
+        runner=lambda _task: reply,
+    )
+    assert decision == {
+        "tool": "select_visuals",
+        "args": {
+            "proposal_hash": proposal_hash,
+            "selected_candidate_ids": recommendations,
+        },
+        "fallback": False,
+    }
+
+
+def test_select_visuals_requires_hash_and_nonempty_candidate_ids() -> None:
+    valid = {
+        "tool": "select_visuals",
+        "args": {"proposal_hash": "a" * 64, "selected_candidate_ids": ["candidate-a"]},
+    }
+    replies = iter([
+        json.dumps({
+            "tool": "select_visuals",
+            "args": {"proposal_hash": "short", "selected_candidate_ids": []},
+        }),
+        json.dumps(valid),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "select_visuals" and decision["fallback"] is False
+
+
+def test_approve_contact_sheet_routes_current_hash() -> None:
+    sheet_hash = "b" * 64
+    reply = json.dumps({
+        "tool": "approve_contact_sheet",
+        "args": {"contact_sheet_hash": sheet_hash},
+    })
+    decision = run_router(
+        _config(),
+        context=f"Kontaktbogen-Freigabe offen: contact_sheet_hash={sheet_hash}",
+        user_text="Kontaktbogen freigeben",
+        runner=lambda _task: reply,
+    )
+    assert decision == {
+        "tool": "approve_contact_sheet",
+        "args": {"contact_sheet_hash": sheet_hash},
+        "fallback": False,
+    }
+
+
+def test_approve_contact_sheet_requires_64_character_hash() -> None:
+    replies = iter([
+        json.dumps({"tool": "approve_contact_sheet", "args": {"contact_sheet_hash": "short"}}),
+        json.dumps({"tool": "approve_contact_sheet", "args": {"contact_sheet_hash": "b" * 64}}),
+    ])
+    decision = run_router(_config(), context="", user_text="x", runner=lambda _t: next(replies))
+    assert decision["tool"] == "approve_contact_sheet" and decision["fallback"] is False
+
+
+def test_system_prompt_carries_visual_and_contact_sheet_gate_rules() -> None:
+    from laura.chat.router import _SYSTEM_PROMPT
+
+    assert "Visual-Auswahl offen" in _SYSTEM_PROMPT
+    assert "select_visuals" in _SYSTEM_PROMPT
+    assert "Kontaktbogen-Freigabe offen" in _SYSTEM_PROMPT
+    assert "approve_contact_sheet" in _SYSTEM_PROMPT
 
 
 def test_select_scenes_rejects_non_list() -> None:

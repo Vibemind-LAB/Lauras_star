@@ -83,6 +83,10 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, A
     ``select_scenes`` router rule keys off of. ``candidates`` is reduced to bare scene numbers
     (not the full candidate payload) — the router only ever needs to name/validate scenes, and
     the fuller card content already reaches the client through ``board.status()`` directly.
+
+    The visual-selection and contact-sheet gates follow the same rule: their hash-bound
+    identity and current recommendations are exposed only while the corresponding persisted
+    gate is pending. Once approved, no stale confirmation material remains in chat context.
     """
     from ..chat.executor import _latest_session_id
     from ..short_creator.board import Board
@@ -104,13 +108,19 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, A
             return None
         status_payload = board.status()
         gate = status_payload.get("script_gate") or {}
+        visual_gate = status_payload.get("visual_selection_gate") or {}
+        contact_sheet_gate = status_payload.get("contact_sheet_gate") or {}
         job = repos.get_job(db, str(session["latest_job_id"])) if session.get(
             "latest_job_id"
         ) else None
         job_status = (job or {}).get("status")
         if job_status in ("queued", "running"):
             state = "running"
-        elif gate.get("pending"):
+        elif (
+            gate.get("pending")
+            or visual_gate.get("pending")
+            or contact_sheet_gate.get("pending")
+        ):
             state = "awaiting-approval"
         elif board.meta().status == "failed":
             state = "failed"
@@ -126,6 +136,25 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, A
                 "candidates": [
                     int(c["scene_number"]) for c in scene_gate.get("candidates") or []
                 ],
+            }
+        if visual_gate.get("pending") and isinstance(
+            visual_gate.get("proposal_id"), str
+        ):
+            beats = visual_gate.get("beats") or []
+            result["visual_selection_gate"] = {
+                "proposal_hash": visual_gate["proposal_id"],
+                "recommended_candidate_ids": [
+                    str(beat["recommended_candidate_id"])
+                    for beat in beats
+                    if isinstance(beat, dict)
+                    and isinstance(beat.get("recommended_candidate_id"), str)
+                ],
+            }
+        if contact_sheet_gate.get("pending") and isinstance(
+            contact_sheet_gate.get("current_sheet_hash"), str
+        ):
+            result["contact_sheet_gate"] = {
+                "contact_sheet_hash": contact_sheet_gate["current_sheet_hash"]
             }
         return result
     except Exception:  # noqa: BLE001 — the line is best-effort, the turn always runs

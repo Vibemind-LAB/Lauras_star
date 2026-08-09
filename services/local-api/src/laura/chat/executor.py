@@ -31,7 +31,9 @@ from ..api.assets import _enqueue_url_fetch, _expand_playlist_urls
 # Imported BY NAME (not `from ..api import short_creator`) so tests can monkeypatch
 # `laura.chat.executor.<name>` without touching the real service functions.
 from ..api.short_creator import (
+    confirm_contact_sheet,
     confirm_scene_selection,
+    confirm_visual_selection,
     run_production_follow_up,
     run_production_resume,
     run_production_revert,
@@ -628,6 +630,93 @@ def _handle_select_scenes(
     return [text_msg, action_msg]
 
 
+def _handle_select_visuals(
+    db: Database,
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    decision: RouterDecision,
+    now_utc: str,
+) -> list[dict[str, Any]]:
+    """Confirm the hash-bound visual proposal through the shared API service."""
+    args = decision["args"]
+    session_id = _resolve_session_id(messages, "")
+    if session_id is None:
+        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+    candidate_ids = [str(value) for value in args["selected_candidate_ids"]]
+    try:
+        out = confirm_visual_selection(
+            db, session_id, str(args["proposal_hash"]), candidate_ids
+        )
+    except HTTPException as exc:
+        return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
+
+    text = (
+        "Visual-Auswahl unverändert — die Produktion wird fortgesetzt."
+        if out.get("already_current")
+        else "Visual-Auswahl übernommen. Die Produktion läuft weiter."
+    )
+    text_msg = _append_text(db, conversation_id, text, now_utc)
+    refs: dict[str, Any] = {"session_id": session_id}
+    if "job_id" in out:
+        refs["job_id"] = out["job_id"]
+    action_msg = _append(
+        db,
+        conversation_id,
+        role="assistant",
+        kind="action",
+        content={
+            "tool": "select_visuals",
+            "args": dict(args),
+            "refs": refs,
+            "outcome": "running" if "job_id" in out else "done",
+        },
+        now_utc=now_utc,
+    )
+    return [text_msg, action_msg]
+
+
+def _handle_approve_contact_sheet(
+    db: Database,
+    conversation_id: str,
+    messages: list[dict[str, Any]],
+    decision: RouterDecision,
+    now_utc: str,
+) -> list[dict[str, Any]]:
+    """Approve the hash-bound contact sheet through the shared API service."""
+    args = decision["args"]
+    session_id = _resolve_session_id(messages, "")
+    if session_id is None:
+        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+    try:
+        out = confirm_contact_sheet(db, session_id, str(args["contact_sheet_hash"]))
+    except HTTPException as exc:
+        return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
+
+    text = (
+        "Kontaktbogen war bereits freigegeben — die Produktion wird fortgesetzt."
+        if out.get("already_current")
+        else "Kontaktbogen freigegeben. Die Produktion läuft weiter."
+    )
+    text_msg = _append_text(db, conversation_id, text, now_utc)
+    refs: dict[str, Any] = {"session_id": session_id}
+    if "job_id" in out:
+        refs["job_id"] = out["job_id"]
+    action_msg = _append(
+        db,
+        conversation_id,
+        role="assistant",
+        kind="action",
+        content={
+            "tool": "approve_contact_sheet",
+            "args": dict(args),
+            "refs": refs,
+            "outcome": "running" if "job_id" in out else "done",
+        },
+        now_utc=now_utc,
+    )
+    return [text_msg, action_msg]
+
+
 def _handle_revert(
     db: Database,
     conversation_id: str,
@@ -1102,6 +1191,16 @@ def execute_decision(
         if tool == "select_scenes":
             messages = repos.list_conversation_messages(db, conversation_id)
             return _handle_select_scenes(db, conversation_id, messages, decision, now_utc)
+        if tool == "select_visuals":
+            messages = repos.list_conversation_messages(db, conversation_id)
+            return _handle_select_visuals(
+                db, conversation_id, messages, decision, now_utc
+            )
+        if tool == "approve_contact_sheet":
+            messages = repos.list_conversation_messages(db, conversation_id)
+            return _handle_approve_contact_sheet(
+                db, conversation_id, messages, decision, now_utc
+            )
         if tool == "discuss":
             messages = repos.list_conversation_messages(db, conversation_id)
             return _handle_discuss(
