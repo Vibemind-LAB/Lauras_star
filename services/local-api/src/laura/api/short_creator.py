@@ -1112,7 +1112,12 @@ def confirm_visual_selection(
                 "select exactly one candidate per beat",
             )
 
-        _guard_production_not_busy(db, session, action="changing the visual selection")
+        current_session = repos.get_production_session(db, session_id)
+        if current_session is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        _guard_production_not_busy(
+            db, current_session, action="changing the visual selection"
+        )
         selected_in_beat_order = [
             next(
                 candidate.candidate_id
@@ -1170,7 +1175,12 @@ def confirm_contact_sheet(
         if contact_sheet_hash != current_hash:
             raise HTTPException(status.HTTP_409_CONFLICT, "stale contact sheet")
 
-        _guard_production_not_busy(db, session, action="approving the contact sheet")
+        current_session = repos.get_production_session(db, session_id)
+        if current_session is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        _guard_production_not_busy(
+            db, current_session, action="approving the contact sheet"
+        )
         already_current = (
             meta.contact_sheet_approved_utc is not None
             and meta.contact_sheet_approved_hash == current_hash

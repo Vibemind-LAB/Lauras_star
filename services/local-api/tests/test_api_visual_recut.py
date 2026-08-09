@@ -8,6 +8,8 @@ real production queue so ``latest_job_id`` proves that the endpoint enqueued a p
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from laura.api.short_creator import confirm_contact_sheet
+from laura.api.short_creator import confirm_contact_sheet, confirm_visual_selection
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database
@@ -217,6 +219,40 @@ def _unchanged_core(board: Board) -> dict[str, str]:
     }
 
 
+def _synchronize_first_board_open(monkeypatch: Any) -> None:
+    """Make two callers enter a confirmation with the same pre-lock session snapshot."""
+    from laura.api import short_creator
+
+    original = short_creator._open_board_or_404
+    barrier = threading.Barrier(2)
+    local = threading.local()
+
+    def synchronized(db: Database, asset_id: str, session_id: str) -> Board:
+        board = original(db, asset_id, session_id)
+        if not getattr(local, "synchronized", False):
+            local.synchronized = True
+            barrier.wait(timeout=5)
+        return board
+
+    monkeypatch.setattr(short_creator, "_open_board_or_404", synchronized)
+
+
+def _parallel_outcomes(calls: list[Any]) -> list[tuple[str, int | None]]:
+    def capture(call: Any) -> tuple[str, int | None]:
+        try:
+            call()
+        except HTTPException as exc:
+            return ("error", exc.status_code)
+        return ("ok", None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        return sorted(pool.map(capture, calls))
+
+
+def _production_job_count(db: Database) -> int:
+    return sum(job["kind"] == "production.run" for job in repos.list_jobs(db))
+
+
 def test_confirm_visual_selection_rejects_stale_proposal(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -315,6 +351,29 @@ def test_confirm_visual_selection_stamps_choices_and_enqueues_real_resume(
     assert _unchanged_core(board) == core_before
 
 
+def test_parallel_visual_reconfirm_enqueues_exactly_one_resume(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    db = _client(tmp_path, monkeypatch)[1]
+    _seed_board(db, tmp_path, session_id="parallel-visual", plan=_plan())
+    _synchronize_first_board_open(monkeypatch)
+    selected = ["beat-0-candidate-0", "beat-1-candidate-0"]
+
+    outcomes = _parallel_outcomes(
+        [
+            lambda: confirm_visual_selection(
+                db, "parallel-visual", _HASH_A, selected
+            ),
+            lambda: confirm_visual_selection(
+                db, "parallel-visual", _HASH_A, selected
+            ),
+        ]
+    )
+
+    assert outcomes == [("error", 409), ("ok", None)]
+    assert _production_job_count(db) == 1
+
+
 def test_visual_reconfirm_is_noop_and_heals_missing_resume(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -405,6 +464,33 @@ def test_confirm_contact_sheet_stamps_current_hash_and_enqueues_resume(
     assert job is not None and "message" not in json.loads(str(job["payload_json"]))
     assert board.status()["contact_sheet_gate"]["approved"] is True
     assert _unchanged_core(board) == core_before
+
+
+def test_parallel_contact_sheet_reconfirm_enqueues_exactly_one_resume(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    db = _client(tmp_path, monkeypatch)[1]
+    sheet = _sheet()
+    _seed_board(
+        db,
+        tmp_path,
+        session_id="parallel-sheet",
+        plan=_plan(confirmed=True),
+        sheet=sheet,
+        contact_sheet_gate=True,
+    )
+    _synchronize_first_board_open(monkeypatch)
+    sheet_hash = content_hash(sheet)
+
+    outcomes = _parallel_outcomes(
+        [
+            lambda: confirm_contact_sheet(db, "parallel-sheet", sheet_hash),
+            lambda: confirm_contact_sheet(db, "parallel-sheet", sheet_hash),
+        ]
+    )
+
+    assert outcomes == [("error", 409), ("ok", None)]
+    assert _production_job_count(db) == 1
 
 
 def test_confirm_contact_sheet_rejects_stale_hash_without_job(
