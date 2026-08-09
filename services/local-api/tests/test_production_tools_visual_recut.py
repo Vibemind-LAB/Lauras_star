@@ -743,6 +743,148 @@ def test_start_visual_recut_is_idempotent_while_same_proposal_is_pending(
     assert versions(harness.board, "visual_recut_request", "visual_plan") == before
 
 
+def test_pending_v2_rebuilds_after_rough_cut_drift(v2_harness: Harness) -> None:
+    voice = v2_harness.board.load("voice")
+    assert isinstance(voice, VoiceArtifact)
+    assert voice.segments is not None
+    v2_harness.board.save(
+        "voice",
+        voice.model_copy(
+            update={
+                "voice_s": 36.7,
+                "segments": [
+                    segment.model_copy(
+                        update={"duration_s": 7.0, "offset_s": index * 7.35}
+                    )
+                    for index, segment in enumerate(voice.segments)
+                ],
+            }
+        ),
+    )
+    start = tool(v2_harness, "start_visual_recut")
+    first = start(
+        user_request="same request after Rough-Cut edit",
+        framing_mode="full_frame_blur",
+    )
+    assert first["ok"] is True
+    assert len(first["scene_choices"]) == 5
+    first_plan = v2_harness.board.load("visual_plan")
+    assert isinstance(first_plan, VisualPlan)
+    narration_before = versions_and_hashes(
+        v2_harness.board, "storyline", "script", "voice"
+    )
+    asset = repos.get_asset(v2_harness.db, v2_harness.asset_id)
+    assert asset is not None
+    timeline = repos.get_or_create_asset_rough_cut(
+        v2_harness.db,
+        str(asset["project_id"]),
+        v2_harness.asset_id,
+    )
+    repos.replace_scenes(
+        v2_harness.db,
+        str(asset["project_id"]),
+        str(timeline["id"]),
+        [
+            (index * 375, (index + 1) * 375)
+            for index in range(4)
+        ],
+    )
+
+    second = start(
+        user_request="same request after Rough-Cut edit",
+        framing_mode="full_frame_blur",
+    )
+
+    assert second["ok"] is True
+    assert len(second["scene_choices"]) == 4
+    second_plan = v2_harness.board.load("visual_plan")
+    assert isinstance(second_plan, VisualPlan)
+    assert second_plan.version > first_plan.version
+    assert second_plan.proposal_hash != first_plan.proposal_hash
+    assert second_plan.rough_cut_scene_count == 4
+    assert v2_harness.board.load("cutlist") is None
+    assert versions_and_hashes(
+        v2_harness.board, "storyline", "script", "voice"
+    ) == narration_before
+
+
+def test_pending_v2_rebuilds_after_project_fps_drift(v2_harness: Harness) -> None:
+    start = tool(v2_harness, "start_visual_recut")
+    first = start(
+        user_request="same request after frame-rate edit",
+        framing_mode="full_frame_blur",
+    )
+    assert first["ok"] is True
+    first_plan = v2_harness.board.load("visual_plan")
+    assert isinstance(first_plan, VisualPlan)
+    assert first_plan.fps == 30.0
+    assert first_plan.voice_total_frames == 1350
+    narration_before = versions_and_hashes(
+        v2_harness.board, "storyline", "script", "voice"
+    )
+    asset = repos.get_asset(v2_harness.db, v2_harness.asset_id)
+    assert asset is not None
+    with v2_harness.db.transaction() as conn:
+        conn.execute(
+            "UPDATE projects SET sequence_rate_num = ?, sequence_rate_den = ? WHERE id = ?",
+            (24, 1, str(asset["project_id"])),
+        )
+
+    second = start(
+        user_request="same request after frame-rate edit",
+        framing_mode="full_frame_blur",
+    )
+
+    assert second["ok"] is True
+    second_plan = v2_harness.board.load("visual_plan")
+    assert isinstance(second_plan, VisualPlan)
+    assert second_plan.version > first_plan.version
+    assert second_plan.proposal_hash != first_plan.proposal_hash
+    assert second_plan.fps == 24.0
+    assert second_plan.voice_total_frames == 1080
+    assert v2_harness.board.load("cutlist") is None
+    assert versions_and_hashes(
+        v2_harness.board, "storyline", "script", "voice"
+    ) == narration_before
+
+
+def test_pending_v2_rebuilds_stale_voice_frame_projection(v2_harness: Harness) -> None:
+    start = tool(v2_harness, "start_visual_recut")
+    first = start(
+        user_request="same request with current Voice projection",
+        framing_mode="full_frame_blur",
+    )
+    assert first["ok"] is True
+    plan = v2_harness.board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    assert plan.voice_total_frames == 1350
+    v2_harness.board.save(
+        "visual_plan",
+        plan.model_copy(update={"voice_total_frames": 1349}),
+    )
+    stale = v2_harness.board.load("visual_plan")
+    assert isinstance(stale, VisualPlan)
+    narration_before = versions_and_hashes(
+        v2_harness.board, "storyline", "script", "voice"
+    )
+
+    second = start(
+        user_request="same request with current Voice projection",
+        framing_mode="full_frame_blur",
+    )
+
+    assert second["ok"] is True
+    refreshed = v2_harness.board.load("visual_plan")
+    assert isinstance(refreshed, VisualPlan)
+    assert refreshed.version > stale.version
+    assert refreshed.voice_total_frames == 1350
+    assert refreshed.fps == 30.0
+    assert v2_harness.board.load("cutlist") is None
+    assert versions_and_hashes(
+        v2_harness.board, "storyline", "script", "voice"
+    ) == narration_before
+
+
 def test_visual_cutlist_is_full_frame_and_uses_voice_segment_durations(
     harness: Harness,
 ) -> None:

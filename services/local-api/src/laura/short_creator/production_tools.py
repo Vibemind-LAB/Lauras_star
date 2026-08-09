@@ -2704,6 +2704,9 @@ def build_production_tool_specs(
             )
             current_request = board.load("visual_recut_request")
             current_plan = board.load("visual_plan")
+            current_v2_inputs: tuple[float, list[SceneMaterial], str | None, int] | None = (
+                None
+            )
             if (
                 isinstance(current_request, VisualRecutRequest)
                 and isinstance(current_plan, VisualPlan)
@@ -2711,27 +2714,63 @@ def build_production_tool_specs(
                 and current_request.model_dump(exclude={"version"})
                 == request.model_dump(exclude={"version"})
             ):
-                reply: dict[str, Any] = {
-                    "ok": True,
-                    "status": "awaiting_user_input",
-                    "proposal_id": current_plan.proposal_hash,
-                }
                 if current_plan.scene_choices:
-                    reply["scene_choices"] = [
-                        choice.model_dump() for choice in current_plan.scene_choices
-                    ]
+                    asset = repos.get_asset(db, asset_id)
+                    current_fps = _fps(db, asset) if asset is not None else 30.0
+                    current_materials = _scene_materials(
+                        db, asset_id, board.scene_reviews()
+                    )
+                    current_rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+                    current_total_frames = voice_total_frames(voice, current_fps)
+                    current_v2_inputs = (
+                        current_fps,
+                        current_materials,
+                        current_rough_cut_hash,
+                        current_total_frames,
+                    )
+                    expected_parents = {
+                        "visual_recut_request": _content_hash(request),
+                        "script": _content_hash(script),
+                        "voice": _content_hash(voice),
+                        "rough_cut": current_rough_cut_hash,
+                    }
+                    if (
+                        current_materials
+                        and current_rough_cut_hash is not None
+                        and current_plan.parents == expected_parents
+                        and current_plan.fps == current_fps
+                        and current_plan.voice_total_frames == current_total_frames
+                        and current_plan.rough_cut_scene_count
+                        == len(current_materials)
+                    ):
+                        return {
+                            "ok": True,
+                            "status": "awaiting_user_input",
+                            "proposal_id": current_plan.proposal_hash,
+                            "scene_choices": [
+                                choice.model_dump()
+                                for choice in current_plan.scene_choices
+                            ],
+                        }
                 else:
-                    reply["beats"] = [beat.model_dump() for beat in current_plan.beats]
-                return reply
-            asset = repos.get_asset(db, asset_id)
-            fps = _fps(db, asset) if asset is not None else 30.0
-            materials = _scene_materials(db, asset_id, board.scene_reviews())
+                    return {
+                        "ok": True,
+                        "status": "awaiting_user_input",
+                        "proposal_id": current_plan.proposal_hash,
+                        "beats": [beat.model_dump() for beat in current_plan.beats],
+                    }
+            if current_v2_inputs is None:
+                asset = repos.get_asset(db, asset_id)
+                fps = _fps(db, asset) if asset is not None else 30.0
+                materials = _scene_materials(db, asset_id, board.scene_reviews())
+                rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+                total_frames = voice_total_frames(voice, fps)
+            else:
+                fps, materials, rough_cut_hash, total_frames = current_v2_inputs
             if not materials:
                 return {"ok": False, "reason": "no rough-cut scene material available"}
-            rough_cut_hash = _rough_cut_source_hash(db, asset_id)
             if rough_cut_hash is None:
                 return {"ok": False, "reason": "no Rough-Cut source ranges available"}
-            total_frames = voice_total_frames(voice, fps)
             plan = build_rough_cut_visual_plan(
                 request=request,
                 scenes=materials,
