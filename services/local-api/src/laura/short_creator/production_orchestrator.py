@@ -819,6 +819,13 @@ def run_production(
     # longest archived suffix whose parent-instance hashes match the board. Runs BEFORE
     # build_production_task so the resume contract reads DONE for what came back — the
     # task-text lie that killed the single-link restore is structurally impossible here.
+    if _cancel_requested(deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=[],
+            expected_scenes=_expected_scene_numbers(db, asset_id),
+        )
     restored = board.restore_coherent_suffix()
     if restored and event_sink is not None:
         try:

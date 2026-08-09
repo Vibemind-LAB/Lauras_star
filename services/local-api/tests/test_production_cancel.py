@@ -221,16 +221,60 @@ def test_cancel_before_run_skips_board_restore(
     assert restore_calls == 0
 
 
+def test_cancel_from_config_warning_sink_stops_before_board_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel arriving through event delivery must win before restore mutates artifacts."""
+    db, asset_id, board = _seed_board(tmp_path)
+    cancelled = False
+    restore_calls = 0
+
+    def request_cancel(event: dict[str, Any]) -> None:
+        nonlocal cancelled
+        assert event["type"] == "config_warning"
+        cancelled = True
+
+    def forbidden_restore(self: Board) -> list[str]:
+        nonlocal restore_calls
+        restore_calls += 1
+        return []
+
+    monkeypatch.setattr(Board, "restore_coherent_suffix", forbidden_restore)
+    result = production_orchestrator.run_production(
+        db,
+        _config(),
+        asset_id=asset_id,
+        session_id="cancel-session",
+        task="cancel test",
+        deps=ProductionDeps(cancel_requested=lambda: cancelled),
+        event_sink=request_cancel,
+    )
+
+    assert result["status"] == "cancelled"
+    assert board.meta().status == "cancelled"
+    assert restore_calls == 0
+
+
 def test_cancel_immediately_before_stage_b_prevents_escalation(tmp_path: Path) -> None:
     """The boundary between Stage A classification and Stage B is another agent turn."""
     db, asset_id, _board = _seed_board(tmp_path)
-    requested = iter([False, False, True])
     stages: list[str] = []
+    stage_a_done = False
+    polls_after_stage_a = 0
+
+    def cancel_requested() -> bool:
+        nonlocal polls_after_stage_a
+        if not stage_a_done:
+            return False
+        polls_after_stage_a += 1
+        return polls_after_stage_a >= 2
 
     def execute(
         _db: Database, _config: AgentConfig, stage: Stage, _kind: TeamKind, _task: str
     ) -> StageOutcome:
+        nonlocal stage_a_done
         stages.append(stage)
+        stage_a_done = True
         return StageOutcome(
             status="hard_fail",
             weak=True,
@@ -246,7 +290,7 @@ def test_cancel_immediately_before_stage_b_prevents_escalation(tmp_path: Path) -
         session_id="cancel-session",
         task="cancel test",
         execute=execute,
-        deps=ProductionDeps(cancel_requested=lambda: next(requested, True)),
+        deps=ProductionDeps(cancel_requested=cancel_requested),
     )
 
     assert stages == ["A"]
