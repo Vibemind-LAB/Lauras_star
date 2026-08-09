@@ -291,6 +291,41 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     expect(screen.queryByText("approve_script")).toBeNull();
   });
 
+  it.each(["select_visuals", "approve_contact_sheet"])(
+    "%s chat confirmation follows its resume job and refreshes the finished board",
+    async (tool) => {
+      const getProductionEvents = vi
+        .fn()
+        .mockResolvedValue({ events: [], next: 1, done: true });
+      const getProductionStatus = vi.fn().mockResolvedValue(boardStatus());
+      const getJob = vi.fn().mockResolvedValue(job({ id: "j-confirm", status: "succeeded" }));
+      const c = client({ getProductionEvents, getProductionStatus, getJob });
+
+      renderWithQuery(
+        <ActionCard
+          message={actionMessage(
+            tool,
+            { session_id: "s1", job_id: "j-confirm" },
+            "running",
+          )}
+          client={c}
+        />,
+      );
+
+      expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(getJob).toHaveBeenCalledWith("j-confirm");
+      expect(getProductionEvents).toHaveBeenCalledWith("s1", 0);
+      expect(getProductionStatus).toHaveBeenCalledWith("s1");
+      expect(screen.getByText("Export: exp-1 · 82%")).toBeTruthy();
+      expect(screen.queryByText(tool)).toBeNull();
+    },
+  );
+
   it("advances the cursor and accumulates events across polls", async () => {
     const getProductionEvents = vi
       .fn()
