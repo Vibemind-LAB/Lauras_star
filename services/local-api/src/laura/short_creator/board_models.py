@@ -488,6 +488,84 @@ class VisualBeatPlan(BaseModel):
         return self
 
 
+class VisualSceneCandidate(BaseModel):
+    """One visual source window proposed for one rough-cut scene row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    rough_cut_order: int = Field(ge=0)
+    scene_number: int = Field(ge=1)
+    window_index: int = Field(ge=0)
+    src_start_frame: int = Field(ge=0)
+    src_end_frame_exclusive: int
+    thumb_frame: int = Field(ge=0)
+    max_duration_s: int = Field(ge=1, le=10)
+    description: str
+    transcript_snippet: str
+    rationale: str
+    score: float
+
+    @model_validator(mode="after")
+    def _frames_are_a_valid_source_window(self) -> VisualSceneCandidate:
+        if self.src_end_frame_exclusive <= self.src_start_frame:
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        if not self.src_start_frame <= self.thumb_frame < self.src_end_frame_exclusive:
+            raise ValueError("thumb_frame must lie inside the source frame range")
+        return self
+
+
+class VisualSceneSelection(BaseModel):
+    """One explicit visual decision for one rough-cut scene row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rough_cut_order: int = Field(ge=0)
+    candidate_id: str
+    included: bool
+    requested_duration_s: int = Field(ge=1, le=10)
+
+
+class VisualSceneChoice(BaseModel):
+    """Candidates and an optional user decision for one rough-cut scene row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rough_cut_order: int = Field(ge=0)
+    scene_number: int = Field(ge=1)
+    description: str
+    transcript: str
+    rationale: str
+    candidates: list[VisualSceneCandidate] = Field(min_length=1, max_length=4)
+    recommended_candidate_id: str
+    recommended_included: bool
+    recommended_duration_s: int = Field(ge=1, le=10)
+    selected_candidate_id: str | None = None
+    included: bool | None = None
+    requested_duration_s: int | None = Field(default=None, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _candidate_choices_belong_to_this_rough_cut_row(self) -> VisualSceneChoice:
+        candidate_ids = {candidate.candidate_id for candidate in self.candidates}
+        if len(candidate_ids) != len(self.candidates):
+            raise ValueError("duplicate candidate_ids")
+        if any(candidate.rough_cut_order != self.rough_cut_order for candidate in self.candidates):
+            raise ValueError("candidate rough_cut_order must match the containing scene choice")
+        if self.recommended_candidate_id not in candidate_ids:
+            raise ValueError("recommended_candidate_id must belong to the scene choice")
+        if (
+            self.selected_candidate_id is not None
+            and self.selected_candidate_id not in candidate_ids
+        ):
+            raise ValueError("selected_candidate_id must belong to the scene choice")
+        decisions = (self.selected_candidate_id, self.included, self.requested_duration_s)
+        if any(value is None for value in decisions) and not all(
+            value is None for value in decisions
+        ):
+            raise ValueError("selected candidate, included, and duration must be set together")
+        return self
+
+
 class VisualPlan(BaseModel):
     """Persisted visual proposal; confirmation is a user-only state transition."""
 
@@ -496,15 +574,50 @@ class VisualPlan(BaseModel):
     version: int = Field(default=1, ge=1)
     proposal_hash: str = Field(min_length=64, max_length=64)
     request_hash: str = Field(min_length=64, max_length=64)
-    beats: list[VisualBeatPlan] = Field(min_length=1)
+    beats: list[VisualBeatPlan] = Field(default_factory=list)
+    scene_choices: list[VisualSceneChoice] = Field(default_factory=list)
+    selection_hash: str | None = None
+    voice_total_frames: int | None = None
+    fps: float | None = None
     confirmed_utc: str | None = None
     parents: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _candidate_ids_are_unique_across_the_proposal(self) -> VisualPlan:
+    def _is_a_valid_plan_representation(self) -> VisualPlan:
+        has_beats = bool(self.beats)
+        has_scene_choices = bool(self.scene_choices)
+        if has_beats and has_scene_choices:
+            raise ValueError("visual plans must contain exactly one representation")
+        if not has_beats and not has_scene_choices:
+            # ``version`` is the persisted artifact revision, incremented by Board.save(),
+            # not a stable schema discriminator. It only makes this otherwise ambiguous
+            # empty-payload error actionable for callers constructing a v2 proposal.
+            if self.version == 2:
+                raise ValueError("v2 plans require non-empty scene_choices")
+            raise ValueError("v1 plans require non-empty beats")
+
+        if has_scene_choices:
+            if self.voice_total_frames is None or self.fps is None:
+                raise ValueError("v2 plans require voice_total_frames and fps")
+            rough_cut_orders = [choice.rough_cut_order for choice in self.scene_choices]
+            if len(rough_cut_orders) != len(set(rough_cut_orders)):
+                raise ValueError("duplicate rough_cut_order")
+            if self.confirmed_utc is not None and any(
+                choice.selected_candidate_id is None
+                or choice.included is None
+                or choice.requested_duration_s is None
+                for choice in self.scene_choices
+            ):
+                raise ValueError("confirmed v2 plan requires a selection for every scene choice")
+
         candidate_ids = [
             candidate.candidate_id for beat in self.beats for candidate in beat.candidates
         ]
+        candidate_ids.extend(
+            candidate.candidate_id
+            for choice in self.scene_choices
+            for candidate in choice.candidates
+        )
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("duplicate candidate_ids")
         return self

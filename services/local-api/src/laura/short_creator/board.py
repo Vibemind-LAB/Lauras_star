@@ -766,6 +766,13 @@ class Board:
             "beats": [beat.model_dump() for beat in visual_plan.beats]
             if isinstance(visual_plan, VisualPlan)
             else [],
+            "scene_choices": [choice.model_dump() for choice in visual_plan.scene_choices]
+            if isinstance(visual_plan, VisualPlan)
+            else [],
+            "voice_total_frames": visual_plan.voice_total_frames
+            if isinstance(visual_plan, VisualPlan)
+            else None,
+            "fps": visual_plan.fps if isinstance(visual_plan, VisualPlan) else None,
         }
         sheet = self.load("contact_sheet")
         current_sheet_hash = content_hash(sheet) if isinstance(sheet, ContactSheet) else None

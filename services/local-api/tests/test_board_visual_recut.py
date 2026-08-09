@@ -28,6 +28,9 @@ from laura.short_creator.board_models import (
     VisualBeatPlan,
     VisualPlan,
     VisualRecutRequest,
+    VisualSceneCandidate,
+    VisualSceneChoice,
+    VisualSceneSelection,
     VisualShotCandidate,
     VoiceArtifact,
     content_hash,
@@ -193,6 +196,86 @@ def _candidate(beat_id: str = "beat-1", candidate_id: str = "candidate-1") -> Vi
     )
 
 
+def _scene_candidate(
+    rough_cut_order: int, candidate_id: str | None = None, **overrides: object
+) -> VisualSceneCandidate:
+    base: dict[str, object] = {
+        "candidate_id": candidate_id or f"scene-candidate-{rough_cut_order}",
+        "rough_cut_order": rough_cut_order,
+        "scene_number": rough_cut_order + 1,
+        "window_index": 0,
+        "src_start_frame": rough_cut_order * 120,
+        "src_end_frame_exclusive": (rough_cut_order + 1) * 120,
+        "thumb_frame": rough_cut_order * 120 + 60,
+        "max_duration_s": 5,
+        "description": f"clear rough-cut scene {rough_cut_order}",
+        "transcript_snippet": "the approved narration",
+        "rationale": "matches this rough-cut row",
+        "score": 0.9,
+    }
+    base.update(overrides)
+    return VisualSceneCandidate(**base)  # type: ignore[arg-type]
+
+
+def v2_plan(
+    *,
+    scene_orders: list[int],
+    confirmed_utc: str | None = None,
+    selected: bool = False,
+) -> VisualPlan:
+    return VisualPlan(
+        version=2,
+        proposal_hash=_HASH_C,
+        request_hash=_HASH_A,
+        scene_choices=[
+            VisualSceneChoice(
+                rough_cut_order=order,
+                scene_number=order + 1,
+                description=f"rough-cut scene {order}",
+                transcript="the approved narration",
+                rationale="covers this rough-cut row",
+                candidates=[_scene_candidate(order)],
+                recommended_candidate_id=f"scene-candidate-{order}",
+                recommended_included=True,
+                recommended_duration_s=5,
+                selected_candidate_id=f"scene-candidate-{order}" if selected else None,
+                included=True if selected else None,
+                requested_duration_s=5 if selected else None,
+            )
+            for order in scene_orders
+        ],
+        voice_total_frames=960,
+        fps=24.0,
+        confirmed_utc=confirmed_utc,
+    )
+
+
+def legacy_visual_plan_payload() -> dict[str, object]:
+    return {
+        "version": 1,
+        "proposal_hash": _HASH_C,
+        "request_hash": _HASH_A,
+        "beats": [
+            {
+                "beat_id": "beat-1",
+                "voice_segment_index": 0,
+                "narration_text": "Start with the important workflow.",
+                "duration_s": 4.0,
+                "candidates": [_candidate().model_dump()],
+                "recommended_candidate_id": "candidate-1",
+            },
+            {
+                "beat_id": "beat-2",
+                "voice_segment_index": 1,
+                "narration_text": "Then see the result clearly.",
+                "duration_s": 4.0,
+                "candidates": [_candidate("beat-2", "candidate-2").model_dump()],
+                "recommended_candidate_id": "candidate-2",
+            },
+        ],
+    }
+
+
 def plan_fixture(*, confirmed_utc: str | None) -> VisualPlan:
     candidate = _candidate()
     return VisualPlan(
@@ -299,6 +382,84 @@ def test_visual_plan_rejects_duplicate_candidate_ids() -> None:
         )
 
 
+def test_v2_plan_has_one_choice_per_rough_cut_order() -> None:
+    plan = v2_plan(scene_orders=[0, 1, 2, 3])
+    assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1, 2, 3]
+
+    with pytest.raises(ValidationError, match="duplicate rough_cut_order"):
+        v2_plan(scene_orders=[0, 1, 1])
+
+
+def test_v1_beat_plan_still_loads_without_scene_choices() -> None:
+    payload = legacy_visual_plan_payload()
+    plan = VisualPlan.model_validate(payload)
+
+    assert plan.version == 1
+    assert len(plan.beats) == 2
+    assert plan.scene_choices == []
+
+
+def test_v2_candidate_ranges_and_duration_choices_are_bounded() -> None:
+    with pytest.raises(ValidationError, match="src_end_frame_exclusive"):
+        _scene_candidate(0, src_end_frame_exclusive=0)
+    with pytest.raises(ValidationError, match="thumb_frame"):
+        _scene_candidate(0, thumb_frame=120)
+    with pytest.raises(ValidationError, match="less than or equal to 10"):
+        _scene_candidate(0, max_duration_s=11)
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        VisualSceneSelection(
+            rough_cut_order=0,
+            candidate_id="scene-candidate-0",
+            included=True,
+            requested_duration_s=0,
+        )
+
+
+def test_v2_plan_requires_rough_cut_choices_and_voice_timing() -> None:
+    with pytest.raises(ValidationError, match="v2 plans require non-empty scene_choices"):
+        VisualPlan(
+            version=2,
+            proposal_hash=_HASH_C,
+            request_hash=_HASH_A,
+            voice_total_frames=960,
+            fps=24.0,
+        )
+    with pytest.raises(ValidationError, match="v2 plans require voice_total_frames and fps"):
+        VisualPlan(
+            version=2,
+            proposal_hash=_HASH_C,
+            request_hash=_HASH_A,
+            scene_choices=[
+                VisualSceneChoice(
+                    rough_cut_order=0,
+                    scene_number=1,
+                    description="rough-cut scene 0",
+                    transcript="the approved narration",
+                    rationale="covers this rough-cut row",
+                    candidates=[_scene_candidate(0)],
+                    recommended_candidate_id="scene-candidate-0",
+                    recommended_included=True,
+                    recommended_duration_s=5,
+                )
+            ],
+        )
+    with pytest.raises(ValidationError, match="v1 plans require non-empty beats"):
+        VisualPlan(version=1, proposal_hash=_HASH_C, request_hash=_HASH_A)
+
+
+def test_confirmed_v2_plan_requires_a_decision_for_each_rough_cut_row() -> None:
+    with pytest.raises(ValidationError, match="confirmed v2 plan requires a selection"):
+        v2_plan(scene_orders=[0, 1], confirmed_utc="2026-08-09T10:00:00+00:00")
+
+    confirmed = v2_plan(
+        scene_orders=[0, 1], confirmed_utc="2026-08-09T10:00:00+00:00", selected=True
+    )
+    assert [choice.selected_candidate_id for choice in confirmed.scene_choices] == [
+        "scene-candidate-0",
+        "scene-candidate-1",
+    ]
+
+
 def test_visual_beat_requires_its_recommended_candidate() -> None:
     with pytest.raises(ValidationError, match="recommended_candidate_id"):
         VisualBeatPlan(
@@ -375,6 +536,9 @@ def test_status_exposes_visual_selection_and_content_aware_contact_sheet_gate(bo
                 "candidates": [_candidate().model_dump()],
             }
         ],
+        "scene_choices": [],
+        "voice_total_frames": None,
+        "fps": None,
     }
     assert pending["contact_sheet_gate"]["enabled"] is True
     assert pending["contact_sheet_gate"]["approved"] is False
@@ -387,3 +551,16 @@ def test_status_exposes_visual_selection_and_content_aware_contact_sheet_gate(bo
     approved = board.status()["contact_sheet_gate"]
     assert approved["approved"] is True
     assert approved["pending"] is False
+
+
+def test_status_exposes_v2_rough_cut_visual_choices(board: Board) -> None:
+    board.save("visual_recut_request", request_fixture())
+    plan = v2_plan(scene_orders=[0, 1])
+    board.save("visual_plan", plan)
+
+    gate = board.status()["visual_selection_gate"]
+
+    assert gate["beats"] == []
+    assert gate["scene_choices"] == [choice.model_dump() for choice in plan.scene_choices]
+    assert gate["voice_total_frames"] == 960
+    assert gate["fps"] == 24.0

@@ -16,6 +16,11 @@ from laura.short_creator.board_models import (
     Script,
     ScriptLine,
     Storyline,
+    VisualBeatPlan,
+    VisualPlan,
+    VisualSceneCandidate,
+    VisualSceneChoice,
+    VisualShotCandidate,
     as_scene_window,
 )
 
@@ -216,3 +221,66 @@ def test_board_meta_defaults() -> None:
         target_seconds=60.0,
     )
     assert m.format == "insta" and m.status == "active"
+
+
+def test_v2_visual_plan_rejects_mixed_beat_and_rough_cut_representations() -> None:
+    candidate = VisualSceneCandidate(
+        candidate_id="candidate-0",
+        rough_cut_order=0,
+        scene_number=1,
+        window_index=0,
+        src_start_frame=0,
+        src_end_frame_exclusive=120,
+        thumb_frame=60,
+        max_duration_s=5,
+        description="clear interface",
+        transcript_snippet="the narrated step",
+        rationale="fits the rough-cut row",
+        score=0.9,
+    )
+    choice = VisualSceneChoice(
+        rough_cut_order=0,
+        scene_number=1,
+        description="clear interface",
+        transcript="the narrated step",
+        rationale="fits the rough-cut row",
+        candidates=[candidate],
+        recommended_candidate_id=candidate.candidate_id,
+        recommended_included=True,
+        recommended_duration_s=5,
+    )
+
+    with pytest.raises(ValidationError, match="exactly one representation"):
+        VisualPlan(
+            version=2,
+            proposal_hash="a" * 64,
+            request_hash="b" * 64,
+            beats=[
+                VisualBeatPlan(
+                    beat_id="beat-0",
+                    voice_segment_index=0,
+                    narration_text="the narrated step",
+                    duration_s=5.0,
+                    candidates=[
+                        VisualShotCandidate(
+                            candidate_id="beat-candidate-0",
+                            beat_id="beat-0",
+                            voice_segment_index=0,
+                            scene_number=1,
+                            window_index=0,
+                            src_start_frame=0,
+                            src_end_frame_exclusive=120,
+                            thumb_frame=60,
+                            description="clear interface",
+                            transcript_snippet="the narrated step",
+                            rationale="fits the beat",
+                            score=0.9,
+                        )
+                    ],
+                    recommended_candidate_id="beat-candidate-0",
+                )
+            ],
+            scene_choices=[choice],
+            voice_total_frames=120,
+            fps=24.0,
+        )
