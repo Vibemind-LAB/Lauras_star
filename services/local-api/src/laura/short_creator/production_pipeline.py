@@ -199,6 +199,10 @@ def run_tail_with_qa(
     )
     if not tail.ok:
         return tail, None
+    if board.resume_point(expected_scenes) not in {"qa_report", "done"}:
+        # A persisted user gate (notably contact_sheet_approval) is terminal for this
+        # orchestrator run. QA only judges a rendered export, never a pending contact sheet.
+        return tail, None
 
     from .orchestrator import _safe_execute
 

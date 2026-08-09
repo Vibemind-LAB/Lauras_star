@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 from ..db.database import Database
 from .agents import AgentSpec
 from .board import Board
-from .board_models import SceneSelection
+from .board_models import SceneSelection, VisualPlan
 from .production_tools import ProductionDeps, build_production_tool_specs
 from .providers import AgentConfig, Stage, build_model_client
 
@@ -50,6 +50,31 @@ def _new_pending_scene_selection(board: Board, initial_version: int | None) -> b
         and selection.confirmed_utc is None
         and selection.version != initial_version
     )
+
+
+def _visual_plan_version(board: Board) -> int | None:
+    plan = board.load("visual_plan")
+    return plan.version if isinstance(plan, VisualPlan) else None
+
+
+def _new_pending_visual_plan(board: Board, initial_version: int | None) -> bool:
+    plan = board.load("visual_plan")
+    return (
+        isinstance(plan, VisualPlan)
+        and plan.confirmed_utc is None
+        and plan.version != initial_version
+    )
+
+
+def _new_pending_user_proposal(
+    board: Board,
+    initial_scene_selection_version: int | None,
+    initial_visual_plan_version: int | None,
+) -> bool:
+    """Whether this team turn persisted a new unconfirmed user proposal."""
+    return _new_pending_scene_selection(
+        board, initial_scene_selection_version
+    ) or _new_pending_visual_plan(board, initial_visual_plan_version)
 
 
 def production_agent_specs(language: str = "German") -> list[AgentSpec]:
@@ -233,9 +258,10 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "save_contact_sheet -> render_production. save_contact_sheet is the user's "
                 "visual pre-render "
                 "checkpoint — NEVER skip it, and re-run it after EVERY build_cutlist call (a "
-                "cutlist save archives the current sheet). If the task or a user message says "
-                "to stop at the contact sheet, end after save_contact_sheet and report its "
-                "tiles instead of rendering. When the task or a user message "
+                "cutlist save archives the current sheet). When board_status reports the "
+                "contact-sheet gate enabled, STOP after save_contact_sheet and wait for the "
+                "user to approve that exact sheet before render_production. Gate-off legacy "
+                "boards continue through render as before. When the task or a user message "
                 "asks for the full frame / no tight zoom (e.g. 'zeig das volle Bild', 'kein "
                 "Zoom'), call build_cutlist with zoom=\"off\" — it drops every roi and zoom "
                 "timing regardless of the storyline's window references; the storyline does "
@@ -318,6 +344,7 @@ def build_production_team(
     stage: Stage = "A",
     deps: ProductionDeps | None = None,
     agent_names: tuple[str, ...] | None = None,
+    follow_up: bool = False,
 ) -> MagenticOneGroupChat:
     """Assemble the v2 production Magentic-One team (roster + orchestrator model client).
 
@@ -334,6 +361,10 @@ def build_production_team(
     a one-agent QA team cannot hold any write-capable creative tool. An unknown name is a
     programmer error (a caller misspelled a roster name), so it raises immediately rather than
     silently building a smaller-than-intended team.
+
+    A user follow-up caps the coding agent at one tool iteration. This returns control to the
+    team boundary immediately after a mutating recut tool, where the persisted gate termination
+    condition can stop the run before a second model call.
     """
     try:
         from autogen_agentchat.agents import AssistantAgent
@@ -375,7 +406,8 @@ def build_production_team(
             system_message=spec.system_message,
             max_tool_iterations=(
                 1
-                if board_meta.scene_gate and spec.name == "story_architect"
+                if (follow_up and spec.name == "coding_agent")
+                or (board_meta.scene_gate and spec.name == "story_architect")
                 else spec.max_tool_iterations
             ),
         )
@@ -383,12 +415,15 @@ def build_production_team(
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
     initial_scene_selection_version = _scene_selection_version(board)
-    scene_gate_termination = FunctionalTermination(
-        lambda _messages: _new_pending_scene_selection(board, initial_scene_selection_version)
+    initial_visual_plan_version = _visual_plan_version(board)
+    pending_user_gate_termination = FunctionalTermination(
+        lambda _messages: _new_pending_user_proposal(
+            board, initial_scene_selection_version, initial_visual_plan_version
+        )
     )
     return MagenticOneGroupChat(
         participants=agents,
         model_client=orchestrator,
-        termination_condition=scene_gate_termination,
+        termination_condition=pending_user_gate_termination,
         max_turns=MAX_TURNS,
     )

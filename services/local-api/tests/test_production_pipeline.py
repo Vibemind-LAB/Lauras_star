@@ -281,6 +281,47 @@ def test_run_tail_with_qa_skips_qa_when_chain_failed() -> None:
     assert not tail.ok and qa is None
 
 
+def test_tail_stops_after_contact_sheet_without_render_or_qa() -> None:
+    """A persisted contact-sheet gate is terminal for this run."""
+    board = _FakeBoard(["contact_sheet", "contact_sheet_approval"])
+    rec = _Recorder()
+    forbidden_calls: list[str] = []
+
+    from laura.short_creator.toolset import ToolSpec
+
+    def forbidden_render(**kwargs: Any) -> dict[str, Any]:
+        forbidden_calls.append("render")
+        raise AssertionError("render must not run before contact-sheet approval")
+
+    def forbidden_qa(*args: Any, **kwargs: Any) -> Any:
+        forbidden_calls.append("qa")
+        raise AssertionError("QA must not run before contact-sheet approval")
+
+    specs = [
+        ToolSpec(name="render_production", description="", func=forbidden_render)
+        if spec.name == "render_production"
+        else spec
+        for spec in _specs(board, rec)
+    ]
+
+    outcome, qa = run_tail_with_qa(
+        None,
+        board,
+        None,
+        asset_id="asset",
+        deps=None,
+        event_sink=None,
+        expected_scenes=[1, 2],
+        specs=specs,
+        qa_execute=forbidden_qa,
+    )
+
+    assert outcome.ok is True
+    assert board.resume_point([1, 2]) == "contact_sheet_approval"
+    assert qa is None
+    assert forbidden_calls == []
+
+
 def test_double_raising_tool_fails_with_exception_type_in_reason() -> None:
     """MINOR 2b: a tool that raises on both attempts must fail honestly, and the
     reason must carry the exception type name (not just its message) so a

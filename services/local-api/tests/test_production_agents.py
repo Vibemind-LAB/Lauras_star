@@ -37,7 +37,14 @@ from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
 from laura.short_creator import production_agents, providers
 from laura.short_creator.board import Board
-from laura.short_creator.board_models import BoardMeta, SceneCandidate, SceneSelection
+from laura.short_creator.board_models import (
+    BoardMeta,
+    SceneCandidate,
+    SceneSelection,
+    VisualBeatPlan,
+    VisualPlan,
+    VisualShotCandidate,
+)
 from laura.short_creator.production_tools import ProductionDeps, build_production_tool_specs
 
 FPS = 30
@@ -219,6 +226,166 @@ print(
 )
 """
 
+_AUTOGEN_075_VISUAL_GATE_CONTRACT = r"""
+import asyncio
+import json
+import sys
+from importlib.metadata import version
+from pathlib import Path
+
+from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.conditions import FunctionalTermination
+from autogen_agentchat.teams import MagenticOneGroupChat
+from autogen_core import FunctionCall
+from autogen_core.models import CreateResult, RequestUsage
+
+from laura.short_creator.board import Board
+from laura.short_creator.board_models import (
+    BoardMeta,
+    VisualBeatPlan,
+    VisualPlan,
+    VisualShotCandidate,
+)
+from laura.short_creator.production_agents import _new_pending_user_proposal
+
+assert version("autogen-agentchat") == "0.7.5"
+
+
+class ScriptedModel:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    @property
+    def model_info(self):
+        return {
+            "vision": False,
+            "function_calling": True,
+            "json_output": False,
+            "family": "unknown",
+            "structured_output": False,
+        }
+
+    async def create(self, *args, **kwargs):
+        self.calls += 1
+        if not self.responses:
+            raise AssertionError(f"forbidden model call {self.calls}")
+        return self.responses.pop(0)
+
+
+def result(content, finish_reason="stop"):
+    return CreateResult(
+        finish_reason=finish_reason,
+        content=content,
+        usage=RequestUsage(prompt_tokens=1, completion_tokens=1),
+        cached=False,
+    )
+
+
+def ledger(instruction):
+    return json.dumps(
+        {
+            "is_request_satisfied": {"reason": "visual proposal pending", "answer": False},
+            "is_progress_being_made": {"reason": "yes", "answer": True},
+            "is_in_loop": {"reason": "no", "answer": False},
+            "instruction_or_question": {"reason": "next step", "answer": instruction},
+            "next_speaker": {"reason": "only agent", "answer": "coding_agent"},
+        }
+    )
+
+
+board = Board.create(
+    Path(sys.argv[2]),
+    BoardMeta(
+        session_id="contract",
+        asset_id="asset",
+        created_utc="2026-08-08T00:00:00Z",
+        task="visual recut",
+        target_seconds=20,
+    ),
+)
+tool_calls = 0
+
+
+def start_visual_recut() -> str:
+    global tool_calls
+    tool_calls += 1
+    candidate = VisualShotCandidate(
+        candidate_id="candidate-1",
+        beat_id="beat-1",
+        voice_segment_index=0,
+        scene_number=1,
+        window_index=0,
+        src_start_frame=0,
+        src_end_frame_exclusive=150,
+        thumb_frame=75,
+        description="dashboard",
+        transcript_snippet="hallo welt",
+        rationale="hook",
+        score=1.0,
+    )
+    board.save(
+        "visual_plan",
+        VisualPlan(
+            proposal_hash="a" * 64,
+            request_hash="b" * 64,
+            beats=[
+                VisualBeatPlan(
+                    beat_id="beat-1",
+                    voice_segment_index=0,
+                    narration_text="Hallo Welt",
+                    duration_s=1.0,
+                    candidates=[candidate],
+                    recommended_candidate_id=candidate.candidate_id,
+                )
+            ],
+        ),
+    )
+    return "visual proposal persisted"
+
+
+agent_model = ScriptedModel(
+    [
+        result(
+            [FunctionCall(id="visual-1", arguments="{}", name="start_visual_recut")],
+            "function_calls",
+        )
+    ]
+)
+orchestrator_model = ScriptedModel(
+    [
+        result("facts"),
+        result("plan"),
+        result(ledger("Start the visual recut and stop.")),
+    ]
+)
+agent = AssistantAgent(
+    name="coding_agent",
+    model_client=agent_model,
+    tools=[start_visual_recut],
+    max_tool_iterations=int(sys.argv[1]),
+)
+team = MagenticOneGroupChat(
+    [agent],
+    model_client=orchestrator_model,
+    termination_condition=FunctionalTermination(
+        lambda _messages: _new_pending_user_proposal(board, None, None)
+    ),
+    max_turns=5,
+)
+run_result = asyncio.run(team.run(task="Start the visual recut and stop."))
+print(
+    json.dumps(
+        {
+            "agent_model_calls": agent_model.calls,
+            "orchestrator_model_calls": orchestrator_model.calls,
+            "tool_calls": tool_calls,
+            "stop_reason": run_result.stop_reason,
+        }
+    )
+)
+"""
+
 # name -> (tool_names, max_tool_iterations), per the Task-7 brief's roster table.
 EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
     "vision_reviewer": (
@@ -388,6 +555,39 @@ def _selection(*, confirmed: bool = False, description: str = "dashboard") -> Sc
     )
 
 
+def _visual_plan(*, confirmed: bool = False, description: str = "dashboard") -> VisualPlan:
+    candidate = VisualShotCandidate(
+        candidate_id="candidate-1",
+        beat_id="beat-1",
+        voice_segment_index=0,
+        scene_number=1,
+        window_index=0,
+        src_start_frame=0,
+        src_end_frame_exclusive=SCENE_FRAMES,
+        thumb_frame=SCENE_FRAMES // 2,
+        description=description,
+        transcript_snippet="hallo welt",
+        rationale="hook",
+        score=1.0,
+    )
+    return VisualPlan(
+        proposal_hash="a" * 64,
+        request_hash="b" * 64,
+        beats=[
+            VisualBeatPlan(
+                beat_id="beat-1",
+                voice_segment_index=0,
+                narration_text="Hallo Welt",
+                duration_s=1.0,
+                candidates=[candidate],
+                recommended_candidate_id=candidate.candidate_id,
+                selected_candidate_id=candidate.candidate_id if confirmed else None,
+            )
+        ],
+        confirmed_utc="2026-08-08T00:00:00+00:00" if confirmed else None,
+    )
+
+
 def test_scene_gate_termination_requires_a_new_unconfirmed_version(tmp_path: Path) -> None:
     _db, asset_id = _seed_scene(tmp_path)
     board = _board(tmp_path, asset_id, scene_gate=True)
@@ -410,6 +610,27 @@ def test_scene_gate_termination_ignores_gate_off_and_confirmed_boards(tmp_path: 
     confirmed = _board(tmp_path / "confirmed", asset_id, scene_gate=True)
     confirmed.save("scene_selection", _selection(confirmed=True))
     assert production_agents._new_pending_scene_selection(confirmed, None) is False
+
+
+def test_visual_gate_termination_requires_a_new_unconfirmed_version(tmp_path: Path) -> None:
+    _db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+
+    assert production_agents._visual_plan_version(board) is None
+    assert production_agents._new_pending_user_proposal(board, None, None) is False
+
+    board.save("visual_plan", _visual_plan())
+    assert production_agents._new_pending_user_proposal(board, None, None) is True
+    current = production_agents._visual_plan_version(board)
+    assert production_agents._new_pending_user_proposal(board, None, current) is False
+
+
+def test_visual_gate_termination_ignores_a_confirmed_plan(tmp_path: Path) -> None:
+    _db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    board.save("visual_plan", _visual_plan(confirmed=True))
+
+    assert production_agents._new_pending_user_proposal(board, None, None) is False
 
 
 # --- pure roster tests -----------------------------------------------------------------------
@@ -696,6 +917,29 @@ def test_gate_off_preserves_all_agent_iteration_limits(
     assert wired == {name: max_iters for name, (_tools, max_iters) in EXPECTED_ASSIGNMENTS.items()}
 
 
+def test_follow_up_caps_coding_agent_to_one_tool_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id, scene_gate=False)
+    created = _install_fake_autogen(monkeypatch)
+
+    production_agents.build_production_team(
+        db,
+        board,
+        providers.resolve_from_env({}),
+        asset_id=asset_id,
+        follow_up=True,
+    )
+
+    wired = {
+        cast(str, kwargs["name"]): kwargs["max_tool_iterations"]
+        for kwargs in cast(list[dict[str, object]], created["assistant_kwargs"])
+    }
+    assert wired["coding_agent"] == 1
+    assert wired["story_architect"] == 4
+
+
 def test_gate_on_story_architect_team_stops_after_second_turn_proposal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -736,6 +980,51 @@ def test_gate_on_story_architect_team_stops_after_second_turn_proposal(
         "tool_calls": {"get_reviews": 1, "propose_scene_selection": 1},
         "selected_speakers": [["story_architect"], ["story_architect"]],
         "selection_version": 1,
+        "stop_reason": "Functional termination condition met",
+    }
+
+
+def test_follow_up_coding_agent_stops_after_visual_plan_without_second_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if importlib.util.find_spec("autogen_agentchat") is None:
+        pytest.skip("requires the optional autoshort extra")
+
+    db, asset_id = _seed_scene(tmp_path)
+    board = _board(tmp_path, asset_id)
+    created = _install_fake_autogen(monkeypatch)
+    production_agents.build_production_team(
+        db,
+        board,
+        providers.resolve_from_env({}),
+        asset_id=asset_id,
+        follow_up=True,
+    )
+    wired = {
+        cast(str, kwargs["name"]): kwargs
+        for kwargs in cast(list[dict[str, object]], created["assistant_kwargs"])
+    }
+    configured_iterations = cast(int, wired["coding_agent"]["max_tool_iterations"])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _AUTOGEN_075_VISUAL_GATE_CONTRACT,
+            str(configured_iterations),
+            str(tmp_path / "autogen-visual-gate-board"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert configured_iterations == 1
+    assert json.loads(result.stdout) == {
+        "agent_model_calls": 1,
+        "orchestrator_model_calls": 3,
+        "tool_calls": 1,
         "stop_reason": "Functional termination condition met",
     }
 
