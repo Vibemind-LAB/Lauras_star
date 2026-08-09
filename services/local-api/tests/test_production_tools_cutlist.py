@@ -32,7 +32,14 @@ from laura.short_creator.board_models import (
     Script,
     ScriptLine,
     Storyline,
+    VisualPlan,
+    VisualRecutRequest,
+    VisualSceneCandidate,
+    VisualSceneChoice,
+    VisualSceneSelection,
     VoiceArtifact,
+    VoiceSegment,
+    content_hash,
 )
 from laura.short_creator.production_tools import (
     ProductionDeps,
@@ -45,13 +52,14 @@ from laura.short_creator.production_tools import (
     script_text,
 )
 from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
+from laura.short_creator.visual_timeline import apply_scene_selections
 
 FPS = 30
 SCENE_FRAMES = 300  # 300 frames @ 30fps = 10.0s per scene
 N_SCENES = 2
 
 
-def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
+def _seed_scenes(tmp_path: Path, *, scene_count: int) -> tuple[Database, str]:
     """Project + asset + a TWO-scene rough cut. One lane-0 clip spans both scenes 1:1
     (SOURCE == SEQUENCE, speed 1): scene 1 is source frames [0, SCENE_FRAMES), scene 2 is
     [SCENE_FRAMES, 2*SCENE_FRAMES)."""
@@ -85,9 +93,9 @@ def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
         timeline_id=timeline["id"],
         asset_id=asset["id"],
         src_in_frame=0,
-        src_out_frame_exclusive=SCENE_FRAMES * N_SCENES,
+        src_out_frame_exclusive=SCENE_FRAMES * scene_count,
         seq_in_frame=0,
-        seq_out_frame_exclusive=SCENE_FRAMES * N_SCENES,
+        seq_out_frame_exclusive=SCENE_FRAMES * scene_count,
         lane=0,
         role="base",
     )
@@ -95,9 +103,13 @@ def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
         db,
         project["id"],
         timeline["id"],
-        [(i * SCENE_FRAMES, (i + 1) * SCENE_FRAMES) for i in range(N_SCENES)],
+        [(i * SCENE_FRAMES, (i + 1) * SCENE_FRAMES) for i in range(scene_count)],
     )
     return db, str(asset["id"])
+
+
+def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
+    return _seed_scenes(tmp_path, scene_count=N_SCENES)
 
 
 def _board(tmp_path: Path, asset_id: str) -> Board:
@@ -394,6 +406,139 @@ def test_build_cutlist_requires_prereqs(tmp_path: Path) -> None:
     out = specs["build_cutlist"].func()
     assert out["ok"] is False
     assert "synthesize" in out["reason"]
+
+
+def test_v2_cutlist_uses_selected_lengths_and_exact_voice_frames(tmp_path: Path) -> None:
+    scene_count = 5
+    db, asset_id = _seed_scenes(tmp_path, scene_count=scene_count)
+    board = _board(tmp_path, asset_id)
+    storyline = Storyline(
+        red_thread="show every Rough-Cut step",
+        arc=[
+            Chapter(
+                chapter=1,
+                role="feature",
+                message="the complete workflow",
+                scene_numbers=list(range(1, scene_count + 1)),
+                target_seconds=45.0,
+            )
+        ],
+    )
+    script = Script(
+        language="de",
+        lines=[
+            ScriptLine(chapter=1, scene_number=scene, text=f"Schritt {scene}.")
+            for scene in range(1, scene_count + 1)
+        ],
+    )
+    board.save("storyline", storyline)
+    board.save("script", script)
+    voice = VoiceArtifact(
+        script_hash=script_hash(script.lines),
+        mp3_path="voice-v2.mp3",
+        segments=[
+            VoiceSegment(
+                scene_number=scene,
+                chapter=1,
+                line_hash=f"{scene}" * 64,
+                mp3_path=f"voice-{scene}.mp3",
+                duration_s=9.65 if scene < scene_count else 4.7,
+                offset_s=float((scene - 1) * 10),
+            )
+            for scene in range(1, scene_count + 1)
+        ],
+    )
+    board.save("voice", voice)
+    request = VisualRecutRequest(
+        user_request="all Rough-Cut scenes, keep Voice",
+        framing_mode="full_frame_blur",
+        script_version=script.version,
+        script_hash=content_hash(script),
+        voice_version=voice.version,
+        voice_hash=content_hash(voice),
+        parents={"script": content_hash(script), "voice": content_hash(voice)},
+    )
+    board.save("visual_recut_request", request)
+    pending = VisualPlan(
+        version=2,
+        proposal_hash="a" * 64,
+        request_hash="b" * 64,
+        scene_choices=[
+            VisualSceneChoice(
+                rough_cut_order=order,
+                scene_number=order + 1,
+                description=f"Rough-Cut scene {order + 1}",
+                transcript=f"Schritt {order + 1}",
+                rationale="keeps this scene in Rough-Cut order",
+                candidates=[
+                    VisualSceneCandidate(
+                        candidate_id=f"candidate-{order}",
+                        rough_cut_order=order,
+                        scene_number=order + 1,
+                        window_index=0,
+                        src_start_frame=order * SCENE_FRAMES,
+                        src_end_frame_exclusive=(order + 1) * SCENE_FRAMES,
+                        thumb_frame=order * SCENE_FRAMES + SCENE_FRAMES // 2,
+                        max_duration_s=10,
+                        description=f"Rough-Cut scene {order + 1}",
+                        transcript_snippet=f"Schritt {order + 1}",
+                        rationale="covers the selected source range",
+                        score=1.0,
+                    )
+                ],
+                recommended_candidate_id=f"candidate-{order}",
+                recommended_included=True,
+                recommended_duration_s=10,
+            )
+            for order in range(scene_count)
+        ],
+        rough_cut_scene_count=scene_count,
+        voice_total_frames=1350,
+        fps=30.0,
+        parents={
+            "visual_recut_request": content_hash(request),
+            "script": content_hash(script),
+            "voice": content_hash(voice),
+        },
+    )
+    confirmed = apply_scene_selections(
+        pending,
+        [
+            VisualSceneSelection(
+                rough_cut_order=order,
+                candidate_id=f"candidate-{order}",
+                included=True,
+                requested_duration_s=10,
+            )
+            for order in range(scene_count)
+        ],
+        "2026-08-09T10:00:00Z",
+    )
+    board.save("visual_plan", confirmed)
+    specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    result = specs["build_cutlist"].func()
+
+    assert result["ok"] is True, result
+    cutlist = board.load("cutlist")
+    assert isinstance(cutlist, Cutlist)
+    assert [
+        segment.end_frame_exclusive - segment.start_frame
+        for segment in cutlist.segments
+    ] == [300, 300, 300, 300, 150]
+    assert sum(
+        segment.end_frame_exclusive - segment.start_frame
+        for segment in cutlist.segments
+    ) == 1350
+    assert all(
+        segment.roi is None and segment.zoom_start_s is None
+        for segment in cutlist.segments
+    )
+    assert cutlist.parents == {
+        "script": content_hash(script),
+        "voice": content_hash(voice),
+        "visual_plan": content_hash(confirmed),
+    }
 
 
 def test_build_cutlist_deterministic_segments_and_zoom(

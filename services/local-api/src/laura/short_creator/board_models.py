@@ -681,6 +681,10 @@ class ContactSheetTile(BaseModel):
     src_end_frame_exclusive: int | None = None
     narration_excerpt: str = ""
     rationale: str = ""
+    rough_cut_order: int | None = Field(default=None, ge=0)
+    description: str | None = None
+    requested_duration_s: int | None = Field(default=None, ge=1, le=10)
+    final_duration_frames: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _optional_source_range_is_end_exclusive(self) -> ContactSheetTile:

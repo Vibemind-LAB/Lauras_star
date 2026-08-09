@@ -24,15 +24,20 @@ from laura.short_creator.board_models import (
     Script,
     ScriptLine,
     Storyline,
+    VisualBeatPlan,
     VisualPlan,
     VisualRecutRequest,
+    VisualSceneSelection,
+    VisualShotCandidate,
     VoiceArtifact,
     VoiceSegment,
     content_hash,
     lines_in_storyline_order,
     script_hash,
 )
+from laura.short_creator.production_pipeline import run_deterministic_tail
 from laura.short_creator.production_tools import ProductionDeps, build_production_tool_specs
+from laura.short_creator.visual_timeline import apply_scene_selections
 
 FPS = 30
 SCENE_FRAMES = 300
@@ -71,7 +76,7 @@ class FakeRenderer:
         return {"ok": True, "export_id": export["id"]}
 
 
-def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
+def _seed_two_scenes(tmp_path: Path, *, scene_count: int = 2) -> tuple[Database, str]:
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
     db: Database = SqliteDatabase(settings.db_path)
     db.migrate()
@@ -102,9 +107,9 @@ def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
         timeline_id=timeline["id"],
         asset_id=asset["id"],
         src_in_frame=0,
-        src_out_frame_exclusive=SCENE_FRAMES * 2,
+        src_out_frame_exclusive=SCENE_FRAMES * scene_count,
         seq_in_frame=0,
-        seq_out_frame_exclusive=SCENE_FRAMES * 2,
+        seq_out_frame_exclusive=SCENE_FRAMES * scene_count,
         lane=0,
         role="base",
     )
@@ -112,7 +117,10 @@ def _seed_two_scenes(tmp_path: Path) -> tuple[Database, str]:
         db,
         project["id"],
         timeline["id"],
-        [(0, SCENE_FRAMES), (SCENE_FRAMES, SCENE_FRAMES * 2)],
+        [
+            (index * SCENE_FRAMES, (index + 1) * SCENE_FRAMES)
+            for index in range(scene_count)
+        ],
     )
     return db, str(asset["id"])
 
@@ -224,6 +232,80 @@ def finished_harness(harness: Harness) -> Harness:
     return harness
 
 
+@pytest.fixture
+def v2_harness(tmp_path: Path) -> Harness:
+    scene_count = 5
+    db, asset_id = _seed_two_scenes(tmp_path, scene_count=scene_count)
+    board = Board.create(
+        tmp_path / "v2-board",
+        BoardMeta(
+            session_id="v2",
+            asset_id=asset_id,
+            created_utc="2026-08-09T08:00:00+00:00",
+            task="rough-cut visual recut",
+            target_seconds=45.0,
+        ),
+    )
+    for scene_number in range(1, scene_count + 1):
+        board.save_scene_review(
+            SceneReview(
+                scene_number=scene_number,
+                src_start_frame=(scene_number - 1) * SCENE_FRAMES,
+                src_end_frame_exclusive=scene_number * SCENE_FRAMES,
+                description=f"Rough-Cut scene {scene_number}",
+                whats_happening=f"workflow step {scene_number}",
+                hook_score=8,
+                best_window=BestWindow(offset_s=0.0, duration_s=10.0),
+                windows=[BestWindow(offset_s=0.0, duration_s=10.0)],
+            )
+        )
+    storyline = Storyline(
+        red_thread="keep every Rough-Cut scene available",
+        arc=[
+            Chapter(
+                chapter=1,
+                role="feature",
+                message="show the full workflow",
+                scene_numbers=list(range(1, scene_count + 1)),
+                target_seconds=45.0,
+            )
+        ],
+    )
+    script = Script(
+        language="de",
+        lines=[
+            ScriptLine(
+                chapter=1,
+                scene_number=scene_number,
+                text=f"Schritt {scene_number} bleibt unverändert.",
+            )
+            for scene_number in range(1, scene_count + 1)
+        ],
+    )
+    board.save("storyline", storyline)
+    board.save("script", script)
+    board.save(
+        "voice",
+        VoiceArtifact(
+            script_hash=script_hash(lines_in_storyline_order(script, storyline)),
+            mp3_path="voice-v2.mp3",
+            voice_s=45.0,
+            segments=[
+                VoiceSegment(
+                    scene_number=scene_number,
+                    chapter=1,
+                    line_hash=f"{scene_number}" * 64,
+                    mp3_path=f"voice-{scene_number}.mp3",
+                    duration_s=9.65 if scene_number < scene_count else 4.7,
+                    offset_s=float((scene_number - 1) * 10),
+                )
+                for scene_number in range(1, scene_count + 1)
+            ],
+        ),
+    )
+    return Harness(db=db, asset_id=asset_id, board=board)
+
+
 def versions(board: Board, *names: str) -> tuple[int, ...]:
     result: list[int] = []
     for name in names:
@@ -232,6 +314,17 @@ def versions(board: Board, *names: str) -> tuple[int, ...]:
         version = getattr(artifact, "version", None)
         assert isinstance(version, int)
         result.append(version)
+    return tuple(result)
+
+
+def versions_and_hashes(board: Board, *names: str) -> tuple[tuple[int, str], ...]:
+    result: list[tuple[int, str]] = []
+    for name in names:
+        artifact = board.load(name)
+        assert artifact is not None
+        version = getattr(artifact, "version", None)
+        assert isinstance(version, int)
+        result.append((version, content_hash(artifact)))
     return tuple(result)
 
 
@@ -249,23 +342,89 @@ def tool(
     return next(spec.func for spec in specs if spec.name == name)
 
 
-def confirm_visual_plan(board: Board) -> None:
-    plan = board.load("visual_plan")
-    assert isinstance(plan, VisualPlan)
+def save_confirmed_legacy_visual_plan(board: Board) -> None:
+    storyline = board.load("storyline")
+    script = board.load("script")
+    voice = board.load("voice")
+    assert isinstance(storyline, Storyline)
+    assert isinstance(script, Script)
+    assert isinstance(voice, VoiceArtifact)
+    assert voice.segments is not None
+    request = VisualRecutRequest(
+        user_request="legacy v1 visual recut",
+        framing_mode="full_frame_blur",
+        script_version=script.version,
+        script_hash=content_hash(script),
+        voice_version=voice.version,
+        voice_hash=content_hash(voice),
+        parents={"script": content_hash(script), "voice": content_hash(voice)},
+    )
+    board.save("visual_recut_request", request)
+    beats: list[VisualBeatPlan] = []
+    ordered_lines = lines_in_storyline_order(script, storyline)
+    for index, segment in enumerate(voice.segments):
+        beat_id = f"legacy-beat-{index}"
+        candidate_id = f"legacy-candidate-{index}"
+        candidate = VisualShotCandidate(
+            candidate_id=candidate_id,
+            beat_id=beat_id,
+            voice_segment_index=index,
+            scene_number=segment.scene_number,
+            window_index=0,
+            src_start_frame=index * SCENE_FRAMES,
+            src_end_frame_exclusive=(index + 1) * SCENE_FRAMES,
+            thumb_frame=index * SCENE_FRAMES + SCENE_FRAMES // 2,
+            description=f"scene {segment.scene_number}",
+            transcript_snippet=ordered_lines[index].text,
+            rationale="legacy v1 compatibility fixture",
+            score=1.0,
+        )
+        beats.append(
+            VisualBeatPlan(
+                beat_id=beat_id,
+                voice_segment_index=index,
+                narration_text=ordered_lines[index].text,
+                duration_s=segment.duration_s,
+                candidates=[candidate],
+                recommended_candidate_id=candidate_id,
+                selected_candidate_id=candidate_id,
+            )
+        )
     board.save(
         "visual_plan",
-        plan.model_copy(
-            update={
-                "beats": [
-                    beat.model_copy(
-                        update={"selected_candidate_id": beat.recommended_candidate_id}
-                    )
-                    for beat in plan.beats
-                ],
-                "confirmed_utc": "2026-08-08T10:00:00+00:00",
-            }
+        VisualPlan(
+            proposal_hash="a" * 64,
+            request_hash="b" * 64,
+            beats=beats,
+            confirmed_utc="2026-08-08T10:00:00+00:00",
+            parents={
+                "visual_recut_request": content_hash(request),
+                "script": content_hash(script),
+                "voice": content_hash(voice),
+            },
         ),
     )
+    board.clear_contact_sheet_approval(enable_gate=True)
+
+
+def confirm_v2_plan(board: Board, durations: list[int]) -> VisualPlan:
+    plan = board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    confirmed = apply_scene_selections(
+        plan,
+        [
+            VisualSceneSelection(
+                rough_cut_order=choice.rough_cut_order,
+                candidate_id=choice.recommended_candidate_id,
+                included=True,
+                requested_duration_s=durations[choice.rough_cut_order],
+            )
+            for choice in plan.scene_choices
+        ],
+        "2026-08-09T10:00:00+00:00",
+    )
+    board.save("visual_plan", confirmed)
+    return confirmed
 
 
 def _sheet(board: Board) -> ContactSheet:
@@ -290,17 +449,13 @@ def _sheet(board: Board) -> ContactSheet:
 
 
 def _start_and_confirm(harness: Harness) -> None:
-    result = tool(harness, "start_visual_recut")(
-        user_request="better pictures, keep voice", framing_mode="full_frame_blur"
-    )
-    assert result["ok"] is True
-    confirm_visual_plan(harness.board)
+    save_confirmed_legacy_visual_plan(harness.board)
 
 
-def test_start_visual_recut_preserves_script_and_voice_versions(
+def test_start_visual_recut_proposes_every_rough_cut_scene_and_preserves_narration(
     finished_harness: Harness,
 ) -> None:
-    before = versions(finished_harness.board, "storyline", "script", "voice")
+    before = versions_and_hashes(finished_harness.board, "storyline", "script", "voice")
 
     result = tool(finished_harness, "start_visual_recut")(
         user_request="better pictures, keep voice", framing_mode="full_frame_blur"
@@ -308,9 +463,94 @@ def test_start_visual_recut_preserves_script_and_voice_versions(
 
     assert result["ok"] is True
     assert result["status"] == "awaiting_user_input"
-    assert versions(finished_harness.board, "storyline", "script", "voice") == before
-    assert isinstance(finished_harness.board.load("visual_plan"), VisualPlan)
+    assert len(result["scene_choices"]) == 2
+    assert versions_and_hashes(
+        finished_harness.board, "storyline", "script", "voice"
+    ) == before
+    plan = finished_harness.board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1]
     assert finished_harness.board.meta().contact_sheet_gate is True
+
+
+def test_new_v2_selection_invalidates_finished_tail_and_rebuilds_contact_sheet(
+    v2_harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tool(v2_harness, "start_visual_recut")(
+        user_request="all Rough-Cut scenes",
+        framing_mode="full_frame_blur",
+    )
+    assert first["ok"] is True
+    confirm_v2_plan(v2_harness.board, [10, 10, 10, 10, 10])
+    assert tool(v2_harness, "build_cutlist")()["ok"] is True
+    first_cutlist = v2_harness.board.load("cutlist")
+    assert isinstance(first_cutlist, Cutlist)
+    first_sheet = _sheet(v2_harness.board)
+    v2_harness.board.save("contact_sheet", first_sheet)
+    v2_harness.board.clear_contact_sheet_approval(enable_gate=True)
+    v2_harness.board.set_contact_sheet_approved(
+        "2026-08-09T10:01:00+00:00", content_hash(first_sheet)
+    )
+    from laura.short_creator.board_models import QaReport, RenderReport
+
+    v2_harness.board.save(
+        "render_report",
+        RenderReport(export_id="old-export", video_s=45.0, width=1080, height=1920),
+    )
+    v2_harness.board.save("qa_report", QaReport(verdict="ship"))
+    v2_harness.board.set_status("complete")
+    old_versions: dict[str, int] = {}
+    for name in ("cutlist", "contact_sheet", "render_report", "qa_report"):
+        artifact = v2_harness.board.load(name)
+        assert artifact is not None
+        version = artifact.model_dump()["version"]
+        assert isinstance(version, int)
+        old_versions[name] = version
+    assert v2_harness.board.meta().status == "complete"
+
+    second = tool(v2_harness, "start_visual_recut")(
+        user_request="same scenes, different lengths",
+        framing_mode="full_frame_blur",
+    )
+    assert second["ok"] is True
+    confirm_v2_plan(v2_harness.board, [9, 10, 10, 10, 10])
+
+    for name, old_version in old_versions.items():
+        assert v2_harness.board.load(name) is None
+        assert old_version in v2_harness.board.versions(name)
+    assert v2_harness.board.resume_point([1, 2, 3, 4, 5]) == "cutlist"
+
+    from laura.short_creator import production_tools
+
+    monkeypatch.setattr(production_context, "_proxy_path", lambda *_args: "proxy.mp4")
+    monkeypatch.setattr(production_context, "_frame_rate", lambda *_args: (30, 1))
+    monkeypatch.setattr(production_tools, "_probe_video_dims", lambda _path: (1920, 1080))
+    monkeypatch.setattr(production_tools, "_find_fontfile", lambda: None)
+    monkeypatch.setattr(
+        production_tools,
+        "_extract_sheet_tiles",
+        lambda *_args, **_kwargs: (True, False, None),
+    )
+    monkeypatch.setattr(production_tools, "_compose_sheet_grid", lambda *_args: True)
+    specs = build_production_tool_specs(
+        v2_harness.db,
+        v2_harness.board,
+        asset_id=v2_harness.asset_id,
+    )
+
+    tail = run_deterministic_tail(
+        v2_harness.board,
+        specs,
+        expected_scenes=[1, 2, 3, 4, 5],
+    )
+
+    assert tail.ok is True
+    rebuilt = v2_harness.board.load("contact_sheet")
+    assert isinstance(rebuilt, ContactSheet)
+    assert rebuilt.version > old_versions["contact_sheet"]
+    assert v2_harness.board.resume_point([1, 2, 3, 4, 5]) == "contact_sheet_approval"
+    assert v2_harness.board.load("render_report") is None
+    assert v2_harness.board.load("qa_report") is None
 
 
 def test_start_visual_recut_rejects_other_framing_without_mutation(harness: Harness) -> None:
