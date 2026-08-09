@@ -44,6 +44,7 @@ from ..auth import Principal
 from ..config import Settings
 from ..db import repos
 from ..db.database import Database
+from ..short_creator.board_models import VisualSceneSelection
 from ..util import new_id
 from .router import RouterDecision, _compact_message
 
@@ -642,11 +643,26 @@ def _handle_select_visuals(
     session_id = _resolve_session_id(messages, "")
     if session_id is None:
         return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
-    candidate_ids = [str(value) for value in args["selected_candidate_ids"]]
     try:
-        out = confirm_visual_selection(
-            db, session_id, str(args["proposal_hash"]), candidate_ids
-        )
+        if "selections" in args:
+            selections = [
+                VisualSceneSelection.model_validate(value)
+                for value in args["selections"]
+            ]
+            out = confirm_visual_selection(
+                db,
+                session_id,
+                str(args["proposal_hash"]),
+                selections=selections,
+            )
+        else:
+            candidate_ids = [str(value) for value in args["selected_candidate_ids"]]
+            out = confirm_visual_selection(
+                db,
+                session_id,
+                str(args["proposal_hash"]),
+                selected_candidate_ids=candidate_ids,
+            )
     except HTTPException as exc:
         return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
 

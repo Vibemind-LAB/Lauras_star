@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from laura.chat.router import TOOLS, compose_context, run_router
 from laura.short_creator.providers import AgentConfig
 
@@ -253,6 +255,41 @@ def test_compose_context_appends_pending_visual_selection_with_recommendations()
     ) in ctx
 
 
+def _recommended_scene_selections() -> list[dict[str, object]]:
+    return [
+        {
+            "rough_cut_order": order,
+            "candidate_id": f"scene-{order}-candidate-0",
+            "included": True,
+            "requested_duration_s": 5,
+        }
+        for order in range(4)
+    ]
+
+
+def test_compose_context_appends_ordered_v2_visual_scene_decisions() -> None:
+    proposal_hash = "a" * 64
+    recommendations = _recommended_scene_selections()
+    ctx = compose_context(
+        project={"name": "P", "id": "p1"},
+        running_jobs=0,
+        messages=[],
+        active_session={
+            "id": "s1",
+            "state": "awaiting-approval",
+            "visual_selection_gate": {
+                "proposal_hash": proposal_hash,
+                "recommended_selections": recommendations,
+            },
+        },
+    )
+
+    assert (
+        f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+        f"empfohlene Szenenentscheidungen {recommendations}"
+    ) in ctx
+
+
 def test_compose_context_appends_pending_contact_sheet_hash() -> None:
     sheet_hash = "b" * 64
     ctx = compose_context(
@@ -489,6 +526,80 @@ def test_select_visuals_routes_current_recommendations() -> None:
         },
         "fallback": False,
     }
+
+
+def test_select_visuals_routes_current_recommended_scene_selections() -> None:
+    proposal_hash = "a" * 64
+    recommendations = _recommended_scene_selections()
+    reply = json.dumps(
+        {
+            "tool": "select_visuals",
+            "args": {"proposal_hash": proposal_hash, "selections": recommendations},
+        }
+    )
+
+    decision = run_router(
+        _config(),
+        context=(
+            f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+            f"empfohlene Szenenentscheidungen {recommendations}"
+        ),
+        user_text="die Auswahl passt",
+        runner=lambda _task: reply,
+    )
+
+    assert decision == {
+        "tool": "select_visuals",
+        "args": {"proposal_hash": proposal_hash, "selections": recommendations},
+        "fallback": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid_selections",
+    [
+        [],
+        [{"rough_cut_order": True, "candidate_id": "candidate-a", "included": True,
+          "requested_duration_s": 5}],
+        [{"rough_cut_order": 0, "candidate_id": "", "included": True,
+          "requested_duration_s": 5}],
+        [{"rough_cut_order": 0, "candidate_id": "candidate-a", "included": 1,
+          "requested_duration_s": 5}],
+        [{"rough_cut_order": 0, "candidate_id": "candidate-a", "included": True,
+          "requested_duration_s": 11}],
+    ],
+    ids=("empty", "bool-order", "empty-id", "non-bool-included", "duration-range"),
+)
+def test_select_visuals_requires_nonempty_strict_scene_selections(
+    invalid_selections: list[dict[str, object]],
+) -> None:
+    valid = {
+        "tool": "select_visuals",
+        "args": {
+            "proposal_hash": "a" * 64,
+            "selections": _recommended_scene_selections(),
+        },
+    }
+    replies = iter(
+        [
+            json.dumps(
+                {
+                    "tool": "select_visuals",
+                    "args": {
+                        "proposal_hash": "a" * 64,
+                        "selections": invalid_selections,
+                    },
+                }
+            ),
+            json.dumps(valid),
+        ]
+    )
+
+    decision = run_router(
+        _config(), context="", user_text="x", runner=lambda _task: next(replies)
+    )
+
+    assert decision == {**valid, "fallback": False}
 
 
 def test_select_visuals_requires_hash_and_nonempty_candidate_ids() -> None:

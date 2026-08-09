@@ -101,9 +101,10 @@ _SYSTEM_PROMPT = (
     "-> die Empfehlung unverändert.\n"
     "- select_visuals: der User bestätigt die aktuelle Visual-Auswahl. Nur wenn der Kontext "
     'eine Zeile "Visual-Auswahl offen" zeigt. args.proposal_hash muss exakt der dortige '
-    "64-stellige Hash sein und args.selected_candidate_ids ist die KOMPLETTE Auswahl mit "
-    "genau einem Kandidaten pro Beat. Bei 'deine Auswahl passt' die empfohlenen IDs aus dem "
-    "Kontext unverändert übernehmen.\n"
+    "64-stellige Hash sein. Bei Rough-Cut-Auswahlen ist args.selections die KOMPLETTE "
+    "geordnete Liste aus rough_cut_order, candidate_id, included und requested_duration_s; "
+    "bei alten Beat-Auswahlen bleibt args.selected_candidate_ids die komplette Auswahl. Bei "
+    "'deine Auswahl passt' die Empfehlungen aus dem Kontext unverändert übernehmen.\n"
     "- approve_contact_sheet: der User gibt den aktuellen Kontaktbogen frei. Nur wenn der "
     'Kontext eine Zeile "Kontaktbogen-Freigabe offen" zeigt. args.contact_sheet_hash muss '
     "exakt der dortige 64-stellige Hash sein.\n"
@@ -260,12 +261,20 @@ def compose_context(
         visual_gate = active_session.get("visual_selection_gate")
         if isinstance(visual_gate, dict):
             proposal_hash = visual_gate.get("proposal_hash")
-            recommended = visual_gate.get("recommended_candidate_ids") or []
             if isinstance(proposal_hash, str) and proposal_hash:
-                lines.append(
-                    f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
-                    f"empfohlen {recommended}"
-                )
+                recommended_selections = visual_gate.get("recommended_selections")
+                if isinstance(recommended_selections, list) and recommended_selections:
+                    lines.append(
+                        f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+                        "empfohlene Szenenentscheidungen "
+                        f"{recommended_selections}"
+                    )
+                else:
+                    recommended = visual_gate.get("recommended_candidate_ids") or []
+                    lines.append(
+                        f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+                        f"empfohlen {recommended}"
+                    )
         contact_sheet_gate = active_session.get("contact_sheet_gate")
         if isinstance(contact_sheet_gate, dict):
             contact_sheet_hash = contact_sheet_gate.get("contact_sheet_hash")
@@ -475,6 +484,47 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
         proposal_hash = args.get("proposal_hash")
         if not isinstance(proposal_hash, str) or len(proposal_hash) != 64:
             return "select_visuals.proposal_hash must be a 64-character string"
+        has_selections = "selections" in args
+        has_candidate_ids = "selected_candidate_ids" in args
+        if has_selections == has_candidate_ids:
+            return (
+                "select_visuals requires selections for v2 or selected_candidate_ids for v1"
+            )
+        if has_selections:
+            selections = args.get("selections")
+            if not isinstance(selections, list) or not selections:
+                return "select_visuals.selections is missing, not a list, or empty"
+            required = {
+                "rough_cut_order",
+                "candidate_id",
+                "included",
+                "requested_duration_s",
+            }
+            for selection in selections:
+                if not isinstance(selection, dict) or set(selection) != required:
+                    return "select_visuals.selections must contain exact scene decisions"
+                rough_cut_order = selection.get("rough_cut_order")
+                if (
+                    not isinstance(rough_cut_order, int)
+                    or isinstance(rough_cut_order, bool)
+                    or rough_cut_order < 0
+                ):
+                    return "select_visuals.selections rough_cut_order must be an integer >= 0"
+                candidate_id = selection.get("candidate_id")
+                if not isinstance(candidate_id, str) or not candidate_id:
+                    return "select_visuals.selections candidate_id must be a non-empty string"
+                if not isinstance(selection.get("included"), bool):
+                    return "select_visuals.selections included must be a boolean"
+                duration = selection.get("requested_duration_s")
+                if (
+                    not isinstance(duration, int)
+                    or isinstance(duration, bool)
+                    or not 1 <= duration <= 10
+                ):
+                    return (
+                        "select_visuals.selections requested_duration_s must be an integer 1-10"
+                    )
+            return None
         candidate_ids = args.get("selected_candidate_ids")
         if not isinstance(candidate_ids, list) or not candidate_ids:
             return (

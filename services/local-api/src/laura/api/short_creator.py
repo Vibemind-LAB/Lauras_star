@@ -12,11 +12,11 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, Any
+from typing import IO, TYPE_CHECKING, Annotated, Any, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..auth import Principal, require_permission
 from ..db import repos
@@ -32,6 +32,7 @@ from ..short_creator.board_models import (
     SceneSelection,
     VisualPlan,
     VisualRecutRequest,
+    VisualSceneSelection,
     content_hash,
 )
 
@@ -44,6 +45,7 @@ from ..short_creator.overview_build import build_overview
 from ..short_creator.overview_scout import OverviewDecision, run_overview_scout
 from ..short_creator.overview_windows import build_candidates, duration_seconds
 from ..short_creator.scout import ScoutDecision, run_scout
+from ..short_creator.visual_timeline import VisualSelectionError, apply_scene_selections
 from ..util import new_id
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -110,8 +112,17 @@ class SceneSelectionConfirmRequest(BaseModel):
 
 
 class VisualSelectionConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     proposal_hash: str = Field(min_length=64, max_length=64)
-    selected_candidate_ids: list[str] = Field(min_length=1)
+    selections: list[VisualSceneSelection] | None = None
+    selected_candidate_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_payload_shape(self) -> Self:
+        if (self.selections is None) == (self.selected_candidate_ids is None):
+            raise ValueError("provide selections for v2 or selected_candidate_ids for v1")
+        return self
 
 
 class ContactSheetConfirmRequest(BaseModel):
@@ -1058,9 +1069,11 @@ def confirm_visual_selection(
     db: Database,
     session_id: str,
     proposal_hash: str,
-    selected_candidate_ids: list[str],
+    *,
+    selections: list[VisualSceneSelection] | None = None,
+    selected_candidate_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Confirm exactly one candidate for every beat of the current visual proposal.
+    """Confirm the current v1 beat or v2 Rough-Cut visual proposal.
 
     The proposal hash is checked before any write, and this is the sole writer of visual-plan
     confirmation state for both HTTP and chat.  A matching re-confirm performs no board write
@@ -1084,6 +1097,44 @@ def confirm_visual_selection(
         if proposal_hash != plan.proposal_hash:
             raise HTTPException(status.HTTP_409_CONFLICT, "stale visual proposal")
 
+        if plan.scene_choices:
+            if selections is None or selected_candidate_ids is not None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "provide selections for a v2 visual proposal",
+                )
+            try:
+                updated_plan = apply_scene_selections(plan, selections, _utc_now_iso())
+            except VisualSelectionError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)
+                ) from exc
+
+            current_session = repos.get_production_session(db, session_id)
+            if current_session is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+            _guard_production_not_busy(
+                db, current_session, action="changing the visual selection"
+            )
+            already_current = (
+                plan.confirmed_utc is not None
+                and plan.selection_hash == updated_plan.selection_hash
+            )
+            if not already_current:
+                board.save("visual_plan", updated_plan)
+            v2_result: dict[str, Any] = {
+                "session_id": session_id,
+                "selection_hash": updated_plan.selection_hash,
+            }
+            if already_current:
+                v2_result["already_current"] = True
+            return {**v2_result, **run_production_resume(db, session_id)}
+
+        if selected_candidate_ids is None or selections is not None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "provide selected_candidate_ids for a v1 visual proposal",
+            )
         selected = list(selected_candidate_ids)
         if not selected:
             raise HTTPException(
@@ -1222,7 +1273,11 @@ def confirm_visual_selection_endpoint(
 ) -> dict[str, Any]:
     """Confirm the current hash-bound visual proposal and enqueue a pure resume."""
     return confirm_visual_selection(
-        _db(request), session_id, body.proposal_hash, body.selected_candidate_ids
+        _db(request),
+        session_id,
+        body.proposal_hash,
+        selections=body.selections,
+        selected_candidate_ids=body.selected_candidate_ids,
     )
 
 

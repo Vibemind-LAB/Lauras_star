@@ -503,6 +503,8 @@ def test_active_session_exposes_only_pending_visual_gates(tmp_path: Path) -> Non
         VisualBeatPlan,
         VisualPlan,
         VisualRecutRequest,
+        VisualSceneCandidate,
+        VisualSceneChoice,
         VisualShotCandidate,
         content_hash,
     )
@@ -587,6 +589,63 @@ def test_active_session_exposes_only_pending_visual_gates(tmp_path: Path) -> Non
         "recommended_candidate_ids": ["candidate-1"],
     }
     assert "contact_sheet_gate" not in visual
+
+    scene_choices = []
+    for order in range(3):
+        scene_candidate = VisualSceneCandidate(
+            candidate_id=f"scene-{order}-candidate-0",
+            rough_cut_order=order,
+            scene_number=order + 1,
+            window_index=0,
+            src_start_frame=order * 300,
+            src_end_frame_exclusive=(order + 1) * 300,
+            thumb_frame=order * 300 + 150,
+            max_duration_s=10,
+            description=f"Rough-Cut scene {order + 1}",
+            transcript_snippet=f"workflow step {order + 1}",
+            rationale="covers the scene",
+            score=1.0,
+        )
+        scene_choices.append(
+            VisualSceneChoice(
+                rough_cut_order=order,
+                scene_number=order + 1,
+                description=scene_candidate.description,
+                transcript=scene_candidate.transcript_snippet,
+                rationale=scene_candidate.rationale,
+                candidates=[scene_candidate],
+                recommended_candidate_id=scene_candidate.candidate_id,
+                recommended_included=True,
+                recommended_duration_s=5,
+            )
+        )
+    board.save(
+        "visual_plan",
+        VisualPlan(
+            version=2,
+            proposal_hash="e" * 64,
+            request_hash="d" * 64,
+            scene_choices=scene_choices,
+            rough_cut_scene_count=3,
+            voice_total_frames=450,
+            fps=30.0,
+        ),
+    )
+
+    visual_v2 = _active_session(db, messages)
+    assert visual_v2 is not None
+    assert visual_v2["visual_selection_gate"] == {
+        "proposal_hash": "e" * 64,
+        "recommended_selections": [
+            {
+                "rough_cut_order": order,
+                "candidate_id": f"scene-{order}-candidate-0",
+                "included": True,
+                "requested_duration_s": 5,
+            }
+            for order in range(3)
+        ],
+    }
 
     board.save(
         "visual_plan",

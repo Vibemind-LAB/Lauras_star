@@ -1961,6 +1961,63 @@ def test_select_visuals_delegates_to_service_and_cards_resumed_job(
     assert messages[1]["content"]["outcome"] == "running"
 
 
+def test_select_v2_visuals_delegates_all_decisions_to_shared_service(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    calls: list[tuple[str, str, list[dict[str, Any]]]] = []
+
+    def fake_confirm(
+        db: Database,
+        session_id: str,
+        proposal_hash: str,
+        *,
+        selections: list[Any] | None = None,
+        selected_candidate_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        assert selected_candidate_ids is None
+        assert selections is not None
+        calls.append(
+            (
+                session_id,
+                proposal_hash,
+                [selection.model_dump() for selection in selections],
+            )
+        )
+        return {"session_id": session_id, "job_id": "job-v2-visual", "warnings": []}
+
+    monkeypatch.setattr("laura.chat.executor.confirm_visual_selection", fake_confirm)
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    _seed_action(db, conversation_id, session_id="sess-v2-visual")
+    selections = [
+        {
+            "rough_cut_order": order,
+            "candidate_id": f"scene-{order}-candidate-0",
+            "included": True,
+            "requested_duration_s": 5,
+        }
+        for order in range(4)
+    ]
+
+    messages = execute_decision(
+        db,
+        settings,
+        conversation_id=conversation_id,
+        decision=_decision(
+            "select_visuals",
+            {"proposal_hash": "a" * 64, "selections": selections},
+        ),
+        now_utc=_NOW,
+    )
+
+    assert calls == [("sess-v2-visual", "a" * 64, selections)]
+    assert messages[1]["content"]["refs"] == {
+        "session_id": "sess-v2-visual",
+        "job_id": "job-v2-visual",
+    }
+    assert messages[1]["content"]["outcome"] == "running"
+
+
 def test_approve_contact_sheet_delegates_to_service_and_cards_resumed_job(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

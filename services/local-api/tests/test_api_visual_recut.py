@@ -11,7 +11,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -38,11 +38,15 @@ from laura.short_creator.board_models import (
     VisualBeatPlan,
     VisualPlan,
     VisualRecutRequest,
+    VisualSceneCandidate,
+    VisualSceneChoice,
+    VisualSceneSelection,
     VisualShotCandidate,
     VoiceArtifact,
     content_hash,
 )
 from laura.short_creator.production_orchestrator import board_root_for
+from laura.short_creator.visual_timeline import apply_scene_selections
 
 _NOW = "2026-08-08T12:00:00Z"
 _HASH_A = "a" * 64
@@ -90,6 +94,78 @@ def _plan(*, confirmed: bool = False) -> VisualPlan:
         beats=beats,
         confirmed_utc=_NOW if confirmed else None,
     )
+
+
+def _scene_candidate(
+    order: int, choice: int = 0, *, max_duration_s: int = 10
+) -> VisualSceneCandidate:
+    start = order * 900 + choice * 330
+    return VisualSceneCandidate(
+        candidate_id=f"scene-{order}-candidate-{choice}",
+        rough_cut_order=order,
+        scene_number=order + 1,
+        window_index=choice,
+        src_start_frame=start,
+        src_end_frame_exclusive=start + max_duration_s * 30,
+        thumb_frame=start + max_duration_s * 15,
+        max_duration_s=max_duration_s,
+        description=f"Rough-Cut scene {order + 1}",
+        transcript_snippet=f"workflow step {order + 1}",
+        rationale="covers the Rough-Cut row",
+        score=1.0 - choice / 10,
+    )
+
+
+def _v2_plan(
+    *, scene_count: int = 4, voice_frames: int = 600, max_duration_s: int = 10
+) -> VisualPlan:
+    return VisualPlan(
+        version=2,
+        proposal_hash=_HASH_A,
+        request_hash=_HASH_B,
+        scene_choices=[
+            VisualSceneChoice(
+                rough_cut_order=order,
+                scene_number=order + 1,
+                description=f"Rough-Cut scene {order + 1}",
+                transcript=f"workflow step {order + 1}",
+                rationale="keeps the Rough-Cut row available",
+                candidates=[
+                    _scene_candidate(order, choice, max_duration_s=max_duration_s)
+                    for choice in range(2)
+                ],
+                recommended_candidate_id=f"scene-{order}-candidate-0",
+                recommended_included=True,
+                recommended_duration_s=max_duration_s,
+            )
+            for order in range(scene_count)
+        ],
+        rough_cut_scene_count=scene_count,
+        voice_total_frames=voice_frames,
+        fps=30.0,
+    )
+
+
+def _scene_selections(
+    durations: list[int],
+    *,
+    included: list[bool] | None = None,
+    first_choice: int = 0,
+) -> list[VisualSceneSelection]:
+    include_flags = included if included is not None else [True] * len(durations)
+    return [
+        VisualSceneSelection(
+            rough_cut_order=order,
+            candidate_id=f"scene-{order}-candidate-{first_choice if order == 0 else 0}",
+            included=include_flags[order],
+            requested_duration_s=duration,
+        )
+        for order, duration in enumerate(durations)
+    ]
+
+
+def _selection_json(selections: list[VisualSceneSelection]) -> list[dict[str, Any]]:
+    return [selection.model_dump() for selection in selections]
 
 
 def _sheet() -> ContactSheet:
@@ -257,6 +333,206 @@ def _production_job_count(db: Database) -> int:
     return sum(job["kind"] == "production.run" for job in repos.list_jobs(db))
 
 
+def test_confirm_v2_visual_selection_binds_candidate_inclusion_and_duration(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="v2-pending", plan=_v2_plan())
+    chosen = _scene_selections([5, 5, 5, 5])
+
+    response = client.post(
+        "/production/v2-pending/visual-selection:confirm",
+        json={"proposal_hash": _HASH_A, "selections": _selection_json(chosen)},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 202, response.text
+    saved = cast(VisualPlan, board.load("visual_plan"))
+    assert saved.selection_hash is not None
+    assert [choice.selected_candidate_id for choice in saved.scene_choices] == [
+        f"scene-{order}-candidate-0" for order in range(4)
+    ]
+    assert [choice.included for choice in saved.scene_choices] == [True] * 4
+    assert [choice.requested_duration_s for choice in saved.scene_choices] == [5] * 4
+    assert _latest_job_id(db, "v2-pending") == response.json()["job_id"]
+
+
+def test_confirm_v2_visual_selection_rejects_stale_hash_without_job(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="v2-stale", plan=_v2_plan())
+    before = cast(VisualPlan, board.load("visual_plan")).model_dump_json()
+
+    response = client.post(
+        "/production/v2-stale/visual-selection:confirm",
+        json={
+            "proposal_hash": "0" * 64,
+            "selections": _selection_json(_scene_selections([5, 5, 5, 5])),
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert "stale visual proposal" in response.text
+    assert _latest_job_id(db, "v2-stale") is None
+    assert cast(VisualPlan, board.load("visual_plan")).model_dump_json() == before
+
+
+@pytest.mark.parametrize(
+    ("plan", "chosen", "detail"),
+    [
+        (_v2_plan(), _scene_selections([5, 5, 5]), "exactly once"),
+        (
+            _v2_plan(),
+            _scene_selections([5, 5, 5, 5])[:-1]
+            + [_scene_selections([5, 5, 5, 5])[0]],
+            "exactly once",
+        ),
+        (
+            _v2_plan(),
+            _scene_selections(
+                [5, 5, 5, 5], included=[True, True, False, False]
+            ),
+            "at least three",
+        ),
+        (_v2_plan(voice_frames=900), _scene_selections([5, 5, 5, 5]), "cover the Voice"),
+        (
+            _v2_plan(max_duration_s=4),
+            _scene_selections([5, 5, 5, 5]),
+            "candidate capacity",
+        ),
+    ],
+    ids=("missing-row", "duplicate-row", "too-few-included", "undercoverage", "capacity"),
+)
+def test_confirm_v2_visual_selection_rejects_invalid_decisions_without_job(
+    tmp_path: Path,
+    monkeypatch: Any,
+    plan: VisualPlan,
+    chosen: list[VisualSceneSelection],
+    detail: str,
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="v2-invalid", plan=plan)
+    before = cast(VisualPlan, board.load("visual_plan")).model_dump_json()
+
+    response = client.post(
+        "/production/v2-invalid/visual-selection:confirm",
+        json={"proposal_hash": _HASH_A, "selections": _selection_json(chosen)},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert detail in response.text
+    assert _latest_job_id(db, "v2-invalid") is None
+    assert cast(VisualPlan, board.load("visual_plan")).model_dump_json() == before
+
+
+def test_confirm_v2_visual_selection_requires_exactly_one_payload_shape(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _seed_board(db, tmp_path, session_id="v2-shape", plan=_v2_plan())
+    selected = _selection_json(_scene_selections([5, 5, 5, 5]))
+
+    neither = client.post(
+        "/production/v2-shape/visual-selection:confirm",
+        json={"proposal_hash": _HASH_A},
+        headers=_HEADERS,
+    )
+    both = client.post(
+        "/production/v2-shape/visual-selection:confirm",
+        json={
+            "proposal_hash": _HASH_A,
+            "selections": selected,
+            "selected_candidate_ids": ["scene-0-candidate-0"],
+        },
+        headers=_HEADERS,
+    )
+
+    assert neither.status_code == 422
+    assert both.status_code == 422
+    assert _latest_job_id(db, "v2-shape") is None
+
+
+def test_v2_visual_reconfirm_is_idempotent_and_heals_missing_resume(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    chosen = _scene_selections([5, 5, 5, 5])
+    confirmed = apply_scene_selections(_v2_plan(), chosen, _NOW)
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="v2-confirmed", plan=confirmed)
+    version = cast(VisualPlan, board.load("visual_plan")).version
+
+    response = client.post(
+        "/production/v2-confirmed/visual-selection:confirm",
+        json={"proposal_hash": _HASH_A, "selections": _selection_json(chosen)},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["already_current"] is True
+    assert response.json()["job_id"] == _latest_job_id(db, "v2-confirmed")
+    assert cast(VisualPlan, board.load("visual_plan")).version == version
+    assert _production_job_count(db) == 1
+
+
+def test_changed_v2_confirmation_reopens_completed_visual_tail_only(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    original = _scene_selections([5, 5, 5, 5])
+    confirmed = apply_scene_selections(_v2_plan(), original, _NOW)
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(
+        db,
+        tmp_path,
+        session_id="v2-complete",
+        plan=confirmed,
+        sheet=_sheet(),
+        contact_sheet_gate=True,
+    )
+    board.set_status("complete")
+    core_before = _unchanged_core(board)
+    changed = _scene_selections([5, 5, 5, 5], first_choice=1)
+
+    response = client.post(
+        "/production/v2-complete/visual-selection:confirm",
+        json={"proposal_hash": _HASH_A, "selections": _selection_json(changed)},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 202, response.text
+    saved = cast(VisualPlan, board.load("visual_plan"))
+    assert saved.scene_choices[0].selected_candidate_id == "scene-0-candidate-1"
+    assert board.load("contact_sheet") is None
+    assert _latest_job_id(db, "v2-complete") == response.json()["job_id"]
+    assert _production_job_count(db) == 1
+    assert _unchanged_core(board) == core_before
+
+
+def test_parallel_v2_visual_submit_enqueues_exactly_one_resume(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    db = _client(tmp_path, monkeypatch)[1]
+    _seed_board(db, tmp_path, session_id="parallel-v2", plan=_v2_plan())
+    _synchronize_first_board_open(monkeypatch)
+    chosen = _scene_selections([5, 5, 5, 5])
+
+    outcomes = _parallel_outcomes(
+        [
+            lambda: confirm_visual_selection(
+                db, "parallel-v2", _HASH_A, selections=chosen
+            ),
+            lambda: confirm_visual_selection(
+                db, "parallel-v2", _HASH_A, selections=chosen
+            ),
+        ]
+    )
+
+    assert outcomes == [("error", 409), ("ok", None)]
+    assert _production_job_count(db) == 1
+
+
 def test_confirm_visual_selection_rejects_stale_proposal(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -366,10 +642,16 @@ def test_parallel_visual_reconfirm_enqueues_exactly_one_resume(
     outcomes = _parallel_outcomes(
         [
             lambda: confirm_visual_selection(
-                db, "parallel-visual", _HASH_A, selected
+                db,
+                "parallel-visual",
+                _HASH_A,
+                selected_candidate_ids=selected,
             ),
             lambda: confirm_visual_selection(
-                db, "parallel-visual", _HASH_A, selected
+                db,
+                "parallel-visual",
+                _HASH_A,
+                selected_candidate_ids=selected,
             ),
         ]
     )

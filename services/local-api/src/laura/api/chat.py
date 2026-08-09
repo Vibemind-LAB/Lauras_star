@@ -141,15 +141,33 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, A
             visual_gate.get("proposal_id"), str
         ):
             beats = visual_gate.get("beats") or []
-            result["visual_selection_gate"] = {
-                "proposal_hash": visual_gate["proposal_id"],
-                "recommended_candidate_ids": [
-                    str(beat["recommended_candidate_id"])
-                    for beat in beats
-                    if isinstance(beat, dict)
-                    and isinstance(beat.get("recommended_candidate_id"), str)
-                ],
-            }
+            scene_choices = visual_gate.get("scene_choices") or []
+            if scene_choices:
+                result["visual_selection_gate"] = {
+                    "proposal_hash": visual_gate["proposal_id"],
+                    "recommended_selections": [
+                        {
+                            "rough_cut_order": int(choice["rough_cut_order"]),
+                            "candidate_id": str(choice["recommended_candidate_id"]),
+                            "included": bool(choice["recommended_included"]),
+                            "requested_duration_s": int(
+                                choice["recommended_duration_s"]
+                            ),
+                        }
+                        for choice in scene_choices
+                        if isinstance(choice, dict)
+                    ],
+                }
+            else:
+                result["visual_selection_gate"] = {
+                    "proposal_hash": visual_gate["proposal_id"],
+                    "recommended_candidate_ids": [
+                        str(beat["recommended_candidate_id"])
+                        for beat in beats
+                        if isinstance(beat, dict)
+                        and isinstance(beat.get("recommended_candidate_id"), str)
+                    ],
+                }
         if contact_sheet_gate.get("pending") and isinstance(
             contact_sheet_gate.get("current_sheet_hash"), str
         ):
