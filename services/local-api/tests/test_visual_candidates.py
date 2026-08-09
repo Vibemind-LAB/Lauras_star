@@ -20,6 +20,7 @@ from laura.short_creator.visual_candidates import (
     SceneMaterial,
     TranscriptSpan,
     _recommend,
+    build_rough_cut_visual_plan,
     build_visual_plan,
     coverage_windows,
 )
@@ -153,6 +154,172 @@ def scenes() -> list[SceneMaterial]:
             ),
         ),
     ]
+
+
+def rough_cut_scenes(count: int) -> list[SceneMaterial]:
+    return [
+        SceneMaterial(
+            scene_number=index + 1,
+            src_start_frame=index * 600,
+            src_end_frame_exclusive=(index + 1) * 600,
+            description=f"rough-cut scene {index + 1}",
+            transcript=f"workflow step {index + 1}",
+            transcript_spans=(),
+            review=None,
+        )
+        for index in range(count)
+    ]
+
+
+def test_every_rough_cut_scene_appears_once_in_order() -> None:
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=rough_cut_scenes(8),
+        narration_text="organize files and draft mail",
+        voice_total_frames=1350,
+        fps=30.0,
+    )
+
+    assert [choice.rough_cut_order for choice in plan.scene_choices] == list(range(8))
+    assert [choice.scene_number for choice in plan.scene_choices] == list(range(1, 9))
+
+
+def test_long_degraded_scene_offers_distributed_windows() -> None:
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=[degraded_scene(start=0, end_exclusive=3533, fps=_FPS)],
+        narration_text="Rowboat UI",
+        voice_total_frames=300,
+        fps=30.0,
+    )
+
+    starts = [candidate.src_start_frame for candidate in plan.scene_choices[0].candidates]
+    assert len(starts) == 4
+    assert starts[0] == 0
+    assert any(start >= 1766 for start in starts)
+    assert all(candidate.description for candidate in plan.scene_choices[0].candidates)
+    assert all(candidate.rationale for candidate in plan.scene_choices[0].candidates)
+    assert all(candidate.transcript_snippet for candidate in plan.scene_choices[0].candidates)
+    assert all(
+        candidate.max_duration_s
+        == min(
+            10,
+            (candidate.src_end_frame_exclusive - candidate.src_start_frame) // 30,
+        )
+        for candidate in plan.scene_choices[0].candidates
+    )
+
+
+def test_scene_candidates_expose_grounding_and_frame_derived_capacity() -> None:
+    scene = SceneMaterial(
+        scene_number=4,
+        src_start_frame=900,
+        src_end_frame_exclusive=1200,
+        description="",
+        transcript="typing a concise project update",
+        transcript_spans=(),
+        review=SceneReview(
+            scene_number=4,
+            src_start_frame=900,
+            src_end_frame_exclusive=1200,
+            description="project update editor",
+            whats_happening="a status update is being typed",
+            hook_score=8,
+            best_window=BestWindow(offset_s=0.0, duration_s=2.9),
+        ),
+    )
+
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=[scene],
+        narration_text="draft the project update",
+        voice_total_frames=60,
+        fps=30.0,
+    )
+
+    candidate = plan.scene_choices[0].candidates[0]
+    assert candidate.description == "project update editor"
+    assert candidate.rationale
+    assert candidate.transcript_snippet == "typing a concise project update"
+    assert candidate.max_duration_s == 2
+
+
+def test_scene_candidate_uses_a_deterministic_non_empty_fallback_label() -> None:
+    scene = SceneMaterial(
+        scene_number=7,
+        src_start_frame=0,
+        src_end_frame_exclusive=300,
+        description="",
+        transcript="",
+        transcript_spans=(),
+        review=None,
+    )
+
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=[scene],
+        narration_text="show the workflow",
+        voice_total_frames=30,
+        fps=30.0,
+    )
+
+    assert plan.scene_choices[0].description == "Rough-Cut scene 7"
+    assert all(
+        candidate.description == "Rough-Cut scene 7"
+        for candidate in plan.scene_choices[0].candidates
+    )
+
+
+def test_default_includes_all_scenes_when_one_second_each_fits() -> None:
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=rough_cut_scenes(8),
+        narration_text="organize files and draft mail",
+        voice_total_frames=1350,
+        fps=30.0,
+    )
+
+    assert all(choice.recommended_included for choice in plan.scene_choices)
+    assert sum(choice.recommended_duration_s for choice in plan.scene_choices) >= 45
+
+
+def test_recommendation_uses_a_candidate_that_can_hold_its_duration() -> None:
+    short_best_window = BestWindow(offset_s=0.0, duration_s=2.0)
+    scene = SceneMaterial(
+        scene_number=1,
+        src_start_frame=0,
+        src_end_frame_exclusive=600,
+        description="workflow",
+        transcript="relevant workflow",
+        transcript_spans=(TranscriptSpan(0, 60, "relevant workflow"),),
+        review=SceneReview(
+            scene_number=1,
+            src_start_frame=0,
+            src_end_frame_exclusive=600,
+            description="workflow",
+            whats_happening="the workflow progresses",
+            hook_score=9,
+            best_window=short_best_window,
+            windows=[short_best_window, BestWindow(offset_s=3.0, duration_s=10.0)],
+        ),
+    )
+
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=[scene],
+        narration_text="relevant workflow",
+        voice_total_frames=300,
+        fps=30.0,
+    )
+
+    choice = plan.scene_choices[0]
+    recommended = next(
+        candidate
+        for candidate in choice.candidates
+        if candidate.candidate_id == choice.recommended_candidate_id
+    )
+    assert choice.recommended_duration_s == 10
+    assert recommended.max_duration_s >= choice.recommended_duration_s
 
 
 def test_degraded_117_second_scene_covers_late_material() -> None:

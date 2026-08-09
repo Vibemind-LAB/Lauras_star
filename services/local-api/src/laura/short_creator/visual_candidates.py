@@ -14,6 +14,8 @@ from laura.short_creator.board_models import (
     VisualBeatPlan,
     VisualPlan,
     VisualRecutRequest,
+    VisualSceneCandidate,
+    VisualSceneChoice,
     VisualShotCandidate,
     VoiceArtifact,
 )
@@ -21,6 +23,7 @@ from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
 _DEFAULT_FPS = 30.0
 _MAX_CANDIDATES_PER_BEAT = 4
+_MAX_SCENE_DURATION_S = 10
 _TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
 
@@ -104,6 +107,267 @@ def _deduplicate(windows: list[CandidateWindow]) -> list[CandidateWindow]:
             seen.add(frame_range)
             unique.append(window)
     return unique
+
+
+def _scene_description(scene: SceneMaterial) -> str:
+    review_description = scene.review.description.strip() if scene.review is not None else ""
+    return (
+        review_description
+        or scene.description.strip()
+        or scene.transcript.strip()
+        or f"Rough-Cut scene {scene.scene_number}"
+    )
+
+
+def _window_transcript(scene: SceneMaterial, window: CandidateWindow) -> str:
+    overlapping = [
+        span
+        for span in scene.transcript_spans
+        if span.start_frame < window.end_frame_exclusive
+        and span.end_frame_exclusive > window.start_frame
+    ]
+    if not overlapping:
+        return scene.transcript.strip()
+    return max(
+        overlapping,
+        key=lambda span: (
+            _overlap(window.transcript_snippet, span.text),
+            -span.start_frame,
+        ),
+    ).text.strip()
+
+
+def _scene_windows(
+    scene: SceneMaterial,
+    *,
+    narration_text: str,
+    fps: float,
+) -> list[CandidateWindow]:
+    if fps <= 0 or scene.src_end_frame_exclusive <= scene.src_start_frame:
+        return []
+    review = scene.review
+    if review is not None and not review.degraded:
+        reviewed = [
+            CandidateWindow(
+                start_frame=max(
+                    scene.src_start_frame,
+                    scene.src_start_frame + floor(review_window.offset_s * fps),
+                ),
+                end_frame_exclusive=min(
+                    scene.src_end_frame_exclusive,
+                    scene.src_start_frame
+                    + floor((review_window.offset_s + review_window.duration_s) * fps),
+                ),
+                window_index=index,
+                transcript_snippet=narration_text,
+            )
+            for index, review_window in enumerate(
+                review.windows[:_MAX_CANDIDATES_PER_BEAT]
+            )
+        ]
+        valid_reviewed = [
+            window
+            for window in reviewed
+            if window.end_frame_exclusive - window.start_frame >= fps
+        ]
+        if valid_reviewed:
+            return _deduplicate(valid_reviewed)
+
+    scene_length = scene.src_end_frame_exclusive - scene.src_start_frame
+    window_length = min(scene_length, floor(_MAX_SCENE_DURATION_S * fps))
+    if window_length < fps:
+        return []
+    latest_start = scene.src_end_frame_exclusive - window_length
+    windows = [
+        CandidateWindow(
+            start_frame=(
+                latest_start
+                if anchor_fraction == 1.0
+                else scene.src_start_frame
+                + floor((latest_start - scene.src_start_frame) * anchor_fraction)
+            ),
+            end_frame_exclusive=(
+                latest_start
+                if anchor_fraction == 1.0
+                else scene.src_start_frame
+                + floor((latest_start - scene.src_start_frame) * anchor_fraction)
+            )
+            + window_length,
+            window_index=index,
+            transcript_snippet=narration_text,
+        )
+        for index, anchor_fraction in enumerate((0.0, 0.33, 0.67, 1.0))
+    ]
+    return _deduplicate(windows)
+
+
+def _scene_choice(
+    *,
+    rough_cut_order: int,
+    scene: SceneMaterial,
+    narration_text: str,
+    fps: float,
+) -> VisualSceneChoice:
+    description = _scene_description(scene)
+    candidates: list[VisualSceneCandidate] = []
+    for window in _scene_windows(scene, narration_text=narration_text, fps=fps):
+        transcript_snippet = _window_transcript(scene, window)
+        max_duration_s = min(
+            _MAX_SCENE_DURATION_S,
+            floor((window.end_frame_exclusive - window.start_frame) / fps),
+        )
+        score = round(
+            0.8 * _overlap(narration_text, f"{description} {transcript_snippet}")
+            + 0.2 * (scene.review.hook_score / 10.0 if scene.review is not None else 0.5),
+            6,
+        )
+        candidate_id = _canonical_hash(
+            {
+                "rough_cut_order": rough_cut_order,
+                "scene_number": scene.scene_number,
+                "src_end_frame_exclusive": window.end_frame_exclusive,
+                "src_start_frame": window.start_frame,
+            }
+        )
+        candidates.append(
+            VisualSceneCandidate(
+                candidate_id=candidate_id,
+                rough_cut_order=rough_cut_order,
+                scene_number=scene.scene_number,
+                window_index=window.window_index,
+                src_start_frame=window.start_frame,
+                src_end_frame_exclusive=window.end_frame_exclusive,
+                thumb_frame=window.start_frame
+                + (window.end_frame_exclusive - window.start_frame) // 2,
+                max_duration_s=max_duration_s,
+                description=description,
+                transcript_snippet=transcript_snippet,
+                rationale="covers this Rough-Cut scene with source-grounded visual evidence",
+                score=score,
+            )
+        )
+    candidates.sort(key=lambda candidate: (-candidate.score, candidate.window_index))
+    if not candidates:
+        raise InsufficientVisualCandidates(
+            f"Rough-Cut scene {scene.scene_number} has no one-second source window"
+        )
+    recommended = candidates[0]
+    return VisualSceneChoice(
+        rough_cut_order=rough_cut_order,
+        scene_number=scene.scene_number,
+        description=description,
+        transcript=scene.transcript.strip(),
+        rationale="keeps this Rough-Cut scene available for the visual decision",
+        candidates=candidates,
+        recommended_candidate_id=recommended.candidate_id,
+        recommended_included=False,
+        recommended_duration_s=1,
+    )
+
+
+def _recommend_scene_coverage(
+    choices: list[VisualSceneChoice],
+    *,
+    voice_total_frames: int,
+    fps: float,
+) -> list[VisualSceneChoice]:
+    target_seconds = ceil(voice_total_frames / fps)
+    capacities = [
+        max(candidate.max_duration_s for candidate in choice.candidates)
+        for choice in choices
+    ]
+    if sum(capacities) < target_seconds:
+        raise InsufficientVisualCandidates("Rough-Cut scenes cannot cover the Voice")
+
+    included_count = len(choices) if target_seconds >= len(choices) else min(3, len(choices))
+    durations = [1] * len(choices)
+    remaining = target_seconds - included_count
+    for index in range(included_count):
+        capacity = capacities[index] - durations[index]
+        allocated = min(max(remaining, 0), capacity)
+        durations[index] += allocated
+        remaining -= allocated
+    if remaining > 0:
+        for index in range(included_count, len(choices)):
+            included_count = index + 1
+            capacity = capacities[index] - 1
+            allocated = min(remaining, capacity)
+            durations[index] += allocated
+            remaining -= allocated
+            if remaining == 0:
+                break
+
+    return [
+        choice.model_copy(
+            update={
+                "recommended_candidate_id": next(
+                    candidate.candidate_id
+                    for candidate in choice.candidates
+                    if candidate.max_duration_s >= durations[index]
+                ),
+                "recommended_included": index < included_count,
+                "recommended_duration_s": durations[index],
+            }
+        )
+        for index, choice in enumerate(choices)
+    ]
+
+
+def build_rough_cut_visual_plan(
+    *,
+    request: VisualRecutRequest,
+    scenes: list[SceneMaterial],
+    narration_text: str,
+    voice_total_frames: int,
+    fps: float,
+) -> VisualPlan:
+    """Build one decision row per Rough-Cut scene without changing scene order."""
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+    if voice_total_frames <= 0:
+        raise ValueError("voice_total_frames must be positive")
+    request_hash = _canonical_hash(request.model_dump(mode="json", exclude={"version"}))
+    choices = [
+        _scene_choice(
+            rough_cut_order=order,
+            scene=scene,
+            narration_text=narration_text,
+            fps=fps,
+        )
+        for order, scene in enumerate(scenes)
+    ]
+    recommended = _recommend_scene_coverage(
+        choices,
+        voice_total_frames=voice_total_frames,
+        fps=fps,
+    )
+    proposal_hash = _canonical_hash(
+        {
+            "request_hash": request_hash,
+            "scene_choices": [
+                {
+                    "rough_cut_order": choice.rough_cut_order,
+                    "candidate_ids": [
+                        candidate.candidate_id for candidate in choice.candidates
+                    ],
+                    "recommended_candidate_id": choice.recommended_candidate_id,
+                    "recommended_included": choice.recommended_included,
+                    "recommended_duration_s": choice.recommended_duration_s,
+                }
+                for choice in recommended
+            ],
+        }
+    )
+    return VisualPlan(
+        version=2,
+        proposal_hash=proposal_hash,
+        request_hash=request_hash,
+        beats=[],
+        scene_choices=recommended,
+        rough_cut_scene_count=len(scenes),
+        voice_total_frames=voice_total_frames,
+        fps=fps,
+    )
 
 
 def coverage_windows(
