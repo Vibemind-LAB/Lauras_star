@@ -908,7 +908,11 @@ def run_production(
             board,
             session_id=session_id,
             restored=restored,
-            status="ok" if ok else "hard_fail",
+            status=(
+                "awaiting_user_input"
+                if tail_pending_gate is not None
+                else "ok" if ok else "hard_fail"
+            ),
             stage="A",
             team="magentic",  # cosmetic result field; cards read summary/status.
             weak=_qa_weak(board),

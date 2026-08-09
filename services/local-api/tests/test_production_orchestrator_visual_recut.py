@@ -10,7 +10,7 @@ import pytest
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
-from laura.short_creator import production_orchestrator, providers
+from laura.short_creator import production_orchestrator, production_tools, providers
 from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BestWindow,
@@ -35,13 +35,19 @@ from laura.short_creator.board_models import (
     script_hash,
 )
 from laura.short_creator.orchestrator import StageOutcome
+from laura.short_creator.toolset import ToolSpec
 
 FPS = 30
 SCENE_FRAMES = 300
 PROPOSAL_HASH = "a" * 64
 
 
-def _seed_board(tmp_path: Path, *, session_id: str = "visual-run") -> tuple[Database, str, Board]:
+def _seed_board(
+    tmp_path: Path,
+    *,
+    session_id: str = "visual-run",
+    script_gate: bool = False,
+) -> tuple[Database, str, Board]:
     settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
     db: Database = SqliteDatabase(settings.db_path)
     db.migrate()
@@ -108,6 +114,7 @@ def _seed_board(tmp_path: Path, *, session_id: str = "visual-run") -> tuple[Data
             created_utc="2026-08-08T00:00:00+00:00",
             task="visual recut",
             target_seconds=10.0,
+            script_gate=script_gate,
         ),
     )
     board.save_scene_review(
@@ -158,6 +165,8 @@ def _seed_board(tmp_path: Path, *, session_id: str = "visual-run") -> tuple[Data
     board.save("storyline", storyline)
     board.save("script", script)
     board.save("voice", voice)
+    if script_gate:
+        board.set_script_approved("2026-08-08T00:30:00+00:00", content_hash(script))
     return db, asset_id, board
 
 
@@ -297,6 +306,74 @@ def test_plain_resume_at_contact_sheet_gate_builds_no_team(
     assert result["gate"] == "contact_sheet"
     assert result["contact_sheet_hash"] == sheet_hash
     assert result["required_action"] == "confirm_contact_sheet"
+
+
+def test_deterministic_tail_reports_new_contact_sheet_gate_as_awaiting_user_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate may open inside this run, after save_contact_sheet advances the board."""
+    db, asset_id, board = _seed_board(tmp_path, script_gate=True)
+    plan = _pending_visual(board)
+    board.save(
+        "visual_plan",
+        plan.model_copy(
+            update={
+                "beats": [
+                    beat.model_copy(
+                        update={"selected_candidate_id": beat.recommended_candidate_id}
+                    )
+                    for beat in plan.beats
+                ],
+                "confirmed_utc": "2026-08-08T01:00:00+00:00",
+            }
+        ),
+    )
+    cutlist = Cutlist(
+        segments=[
+            CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=30)
+        ]
+    )
+    board.save("cutlist", cutlist)
+    render_calls = 0
+
+    def save_contact_sheet() -> dict[str, Any]:
+        board.save(
+            "contact_sheet",
+            ContactSheet(
+                png_path="sheet.png",
+                cols=1,
+                rows=1,
+                tiles=[ContactSheetTile(order=0, scene_number=1, frame=15, label="0 S1")],
+                parents={"cutlist": content_hash(cutlist)},
+            ),
+        )
+        return {"ok": True}
+
+    def forbidden_render() -> dict[str, Any]:
+        nonlocal render_calls
+        render_calls += 1
+        raise AssertionError("render must wait for contact-sheet approval")
+
+    specs = [
+        ToolSpec(name="save_contact_sheet", description="", func=save_contact_sheet),
+        ToolSpec(name="render_production", description="", func=forbidden_render),
+    ]
+    monkeypatch.setattr(
+        production_tools,
+        "build_production_tool_specs",
+        lambda *args, **kwargs: specs,
+    )
+
+    result = _run(db, asset_id, board)
+    sheet = board.load("contact_sheet")
+    assert isinstance(sheet, ContactSheet)
+
+    assert result["status"] == "awaiting_user_input"
+    assert result["complete"] is False
+    assert result["gate"] == "contact_sheet"
+    assert result["contact_sheet_hash"] == content_hash(sheet)
+    assert result["required_action"] == "confirm_contact_sheet"
+    assert render_calls == 0
 
 
 def test_new_visual_gate_suppresses_stage_b_and_uses_board_summary(tmp_path: Path) -> None:
