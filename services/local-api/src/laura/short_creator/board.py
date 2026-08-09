@@ -769,6 +769,9 @@ class Board:
             "scene_choices": [choice.model_dump() for choice in visual_plan.scene_choices]
             if isinstance(visual_plan, VisualPlan)
             else [],
+            "rough_cut_scene_count": visual_plan.rough_cut_scene_count
+            if isinstance(visual_plan, VisualPlan)
+            else None,
             "voice_total_frames": visual_plan.voice_total_frames
             if isinstance(visual_plan, VisualPlan)
             else None,

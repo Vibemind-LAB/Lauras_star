@@ -577,6 +577,7 @@ class VisualPlan(BaseModel):
     beats: list[VisualBeatPlan] = Field(default_factory=list)
     scene_choices: list[VisualSceneChoice] = Field(default_factory=list)
     selection_hash: str | None = None
+    rough_cut_scene_count: int | None = Field(default=None, ge=1)
     voice_total_frames: int | None = None
     fps: float | None = None
     confirmed_utc: str | None = None
@@ -596,12 +597,19 @@ class VisualPlan(BaseModel):
                 raise ValueError("v2 plans require non-empty scene_choices")
             raise ValueError("v1 plans require non-empty beats")
 
-        if has_scene_choices:
+        if has_beats:
+            if self.rough_cut_scene_count is not None:
+                raise ValueError("v1 plans require rough_cut_scene_count to be None")
+        else:
+            if self.rough_cut_scene_count is None:
+                raise ValueError("v2 plans require rough_cut_scene_count")
             if self.voice_total_frames is None or self.fps is None:
                 raise ValueError("v2 plans require voice_total_frames and fps")
             rough_cut_orders = [choice.rough_cut_order for choice in self.scene_choices]
             if len(rough_cut_orders) != len(set(rough_cut_orders)):
                 raise ValueError("duplicate rough_cut_order")
+            if rough_cut_orders != list(range(self.rough_cut_scene_count)):
+                raise ValueError("rough_cut_order sequence must match rough_cut_scene_count")
             if self.confirmed_utc is not None and any(
                 choice.selected_candidate_id is None
                 or choice.included is None

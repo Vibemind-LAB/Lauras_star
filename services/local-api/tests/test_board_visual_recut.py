@@ -222,6 +222,7 @@ def v2_plan(
     scene_orders: list[int],
     confirmed_utc: str | None = None,
     selected: bool = False,
+    rough_cut_scene_count: int | None = None,
 ) -> VisualPlan:
     return VisualPlan(
         version=2,
@@ -244,6 +245,9 @@ def v2_plan(
             )
             for order in scene_orders
         ],
+        rough_cut_scene_count=(
+            len(scene_orders) if rough_cut_scene_count is None else rough_cut_scene_count
+        ),
         voice_total_frames=960,
         fps=24.0,
         confirmed_utc=confirmed_utc,
@@ -390,6 +394,25 @@ def test_v2_plan_has_one_choice_per_rough_cut_order() -> None:
         v2_plan(scene_orders=[0, 1, 1])
 
 
+@pytest.mark.parametrize(
+    ("scene_orders", "rough_cut_scene_count"),
+    [
+        ([0, 2], 3),  # gap
+        ([1, 2], 2),  # starts after zero
+        ([1, 0], 2),  # same members, wrong order
+        ([0, 1], 3),  # count mismatch
+    ],
+)
+def test_v2_plan_requires_the_authoritative_rough_cut_sequence(
+    scene_orders: list[int], rough_cut_scene_count: int
+) -> None:
+    with pytest.raises(ValidationError, match="rough_cut_order sequence"):
+        v2_plan(
+            scene_orders=scene_orders,
+            rough_cut_scene_count=rough_cut_scene_count,
+        )
+
+
 def test_v1_beat_plan_still_loads_without_scene_choices() -> None:
     payload = legacy_visual_plan_payload()
     plan = VisualPlan.model_validate(payload)
@@ -397,6 +420,14 @@ def test_v1_beat_plan_still_loads_without_scene_choices() -> None:
     assert plan.version == 1
     assert len(plan.beats) == 2
     assert plan.scene_choices == []
+
+
+def test_v1_beat_plan_rejects_a_rough_cut_scene_count() -> None:
+    payload = legacy_visual_plan_payload()
+    payload["rough_cut_scene_count"] = 2
+
+    with pytest.raises(ValidationError, match="v1 plans require rough_cut_scene_count to be None"):
+        VisualPlan.model_validate(payload)
 
 
 def test_v2_candidate_ranges_and_duration_choices_are_bounded() -> None:
@@ -442,6 +473,7 @@ def test_v2_plan_requires_rough_cut_choices_and_voice_timing() -> None:
                     recommended_duration_s=5,
                 )
             ],
+            rough_cut_scene_count=1,
         )
     with pytest.raises(ValidationError, match="v1 plans require non-empty beats"):
         VisualPlan(version=1, proposal_hash=_HASH_C, request_hash=_HASH_A)
@@ -537,6 +569,7 @@ def test_status_exposes_visual_selection_and_content_aware_contact_sheet_gate(bo
             }
         ],
         "scene_choices": [],
+        "rough_cut_scene_count": None,
         "voice_total_frames": None,
         "fps": None,
     }
@@ -562,5 +595,6 @@ def test_status_exposes_v2_rough_cut_visual_choices(board: Board) -> None:
 
     assert gate["beats"] == []
     assert gate["scene_choices"] == [choice.model_dump() for choice in plan.scene_choices]
+    assert gate["rough_cut_scene_count"] == 2
     assert gate["voice_total_frames"] == 960
     assert gate["fps"] == 24.0
