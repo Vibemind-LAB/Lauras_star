@@ -273,6 +273,7 @@ EXPECTED_ASSIGNMENTS: dict[str, tuple[tuple[str, ...], int]] = {
             # any work on a possibly misaligned storyline.
             "suggest_scenes_for_script",
             "synthesize_script_voice",
+            "start_visual_recut",
             "build_cutlist",
             "save_contact_sheet",
             "render_production",
@@ -499,6 +500,21 @@ def test_coding_agent_knows_the_zoom_off_lever() -> None:
     assert 'zoom="off"' in msg
     assert "full frame" in msg.lower()
     assert "storyline" in msg  # ... does NOT need a re-save for a framing change
+
+
+def test_coding_agent_prioritizes_preserved_narration_visual_recut() -> None:
+    by_name = {s.name: s for s in production_agents.production_agent_specs()}
+    msg = by_name["coding_agent"].system_message
+
+    preserve_start = msg.index("PRESERVE-NARRATION BRANCH")
+    normal_start = msg.index("NORMAL PRODUCTION BRANCH")
+    preserve_contract = msg[preserve_start:normal_start]
+
+    assert preserve_start < normal_start
+    assert "NEVER call synthesize_script_voice" in preserve_contract
+    assert "start_visual_recut exactly once" in preserve_contract
+    assert "STOP" in preserve_contract
+    assert "new production or the board has no voice" in msg[normal_start:]
 
 
 # --- build_production_team ---------------------------------------------------------------------

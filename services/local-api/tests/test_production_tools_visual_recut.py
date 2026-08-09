@@ -400,6 +400,60 @@ def test_visual_cutlist_refuses_stale_request_hashes(harness: Harness) -> None:
     assert harness.board.load("cutlist") is None
 
 
+def test_visual_cutlist_refuses_beats_out_of_voice_order(harness: Harness) -> None:
+    _start_and_confirm(harness)
+    plan = harness.board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    harness.board.save(
+        "visual_plan",
+        plan.model_copy(update={"beats": list(reversed(plan.beats))}),
+    )
+
+    result = tool(harness, "build_cutlist")()
+
+    assert result == {
+        "ok": False,
+        "reason": "visual plan beats must follow voice segment order",
+    }
+    assert harness.board.load("cutlist") is None
+
+
+def test_visual_cutlist_refuses_candidate_from_another_voice_beat(
+    harness: Harness,
+) -> None:
+    _start_and_confirm(harness)
+    plan = harness.board.load("visual_plan")
+    assert isinstance(plan, VisualPlan)
+    first = plan.beats[0]
+    selected_id = first.selected_candidate_id
+    assert selected_id is not None
+    mismatched_candidates = [
+        candidate.model_copy(update={"voice_segment_index": 1})
+        if candidate.candidate_id == selected_id
+        else candidate
+        for candidate in first.candidates
+    ]
+    harness.board.save(
+        "visual_plan",
+        plan.model_copy(
+            update={
+                "beats": [
+                    first.model_copy(update={"candidates": mismatched_candidates}),
+                    *plan.beats[1:],
+                ]
+            }
+        ),
+    )
+
+    result = tool(harness, "build_cutlist")()
+
+    assert result == {
+        "ok": False,
+        "reason": "selected visual candidate does not match its beat",
+    }
+    assert harness.board.load("cutlist") is None
+
+
 def test_render_refuses_before_current_sheet_approval(harness: Harness) -> None:
     _start_and_confirm(harness)
     assert tool(harness, "build_cutlist")()["ok"] is True

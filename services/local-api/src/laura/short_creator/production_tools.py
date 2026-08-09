@@ -2828,10 +2828,10 @@ def build_production_tool_specs(
                         ),
                     }
                 voice_indices = [beat.voice_segment_index for beat in visual_plan.beats]
-                if sorted(voice_indices) != list(range(len(voice.segments))):
+                if voice_indices != list(range(len(voice.segments))):
                     return {
                         "ok": False,
-                        "reason": "visual plan must contain one beat per voice segment",
+                        "reason": "visual plan beats must follow voice segment order",
                     }
                 visual_segments: list[CutSegment] = []
                 for order, beat in enumerate(visual_plan.beats):
@@ -2847,6 +2847,14 @@ def build_production_tool_specs(
                     )
                     if selected is None:
                         return {"ok": False, "reason": "selected visual candidate is missing"}
+                    if (
+                        selected.beat_id != beat.beat_id
+                        or selected.voice_segment_index != beat.voice_segment_index
+                    ):
+                        return {
+                            "ok": False,
+                            "reason": "selected visual candidate does not match its beat",
+                        }
                     voice_segment = voice.segments[beat.voice_segment_index]
                     contains_last_clip = beat.voice_segment_index == len(voice.segments) - 1
                     duration_s = voice_segment.duration_s
