@@ -11,6 +11,7 @@ import pytest
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database, SqliteDatabase
+from laura.short_creator import context as production_context
 from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BestWindow,
@@ -224,7 +225,14 @@ def finished_harness(harness: Harness) -> Harness:
 
 
 def versions(board: Board, *names: str) -> tuple[int, ...]:
-    return tuple(board.load(name).version for name in names)
+    result: list[int] = []
+    for name in names:
+        artifact = board.load(name)
+        assert artifact is not None
+        version = getattr(artifact, "version", None)
+        assert isinstance(version, int)
+        result.append(version)
+    return tuple(result)
 
 
 def tool(
@@ -365,9 +373,13 @@ def test_visual_cutlist_is_full_frame_and_uses_voice_segment_durations(
 
     cutlist = harness.board.load("cutlist")
     plan = harness.board.load("visual_plan")
+    script = harness.board.load("script")
+    voice = harness.board.load("voice")
     assert result["ok"] is True
     assert isinstance(cutlist, Cutlist)
     assert isinstance(plan, VisualPlan)
+    assert isinstance(script, Script)
+    assert isinstance(voice, VoiceArtifact)
     assert all(
         segment.roi is None and segment.zoom_start_s is None
         for segment in cutlist.segments
@@ -376,8 +388,8 @@ def test_visual_cutlist_is_full_frame_and_uses_voice_segment_durations(
         segment.end_frame_exclusive - segment.start_frame for segment in cutlist.segments
     ] == [40, 54]
     assert cutlist.parents == {
-        "script": content_hash(harness.board.load("script")),
-        "voice": content_hash(harness.board.load("voice")),
+        "script": content_hash(script),
+        "voice": content_hash(voice),
         "visual_plan": content_hash(plan),
     }
 
@@ -515,8 +527,8 @@ def test_save_contact_sheet_emits_visual_plan_metadata(
     assert tool(harness, "build_cutlist")()["ok"] is True
     from laura.short_creator import production_tools
 
-    monkeypatch.setattr(production_tools.context, "_proxy_path", lambda *_args: "proxy.mp4")
-    monkeypatch.setattr(production_tools.context, "_frame_rate", lambda *_args: (30, 1))
+    monkeypatch.setattr(production_context, "_proxy_path", lambda *_args: "proxy.mp4")
+    monkeypatch.setattr(production_context, "_frame_rate", lambda *_args: (30, 1))
     monkeypatch.setattr(production_tools, "_probe_video_dims", lambda _path: (1920, 1080))
     monkeypatch.setattr(production_tools, "_find_fontfile", lambda: None)
     monkeypatch.setattr(

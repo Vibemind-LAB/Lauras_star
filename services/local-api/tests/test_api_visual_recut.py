@@ -17,7 +17,11 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from laura.api.short_creator import confirm_contact_sheet, confirm_visual_selection
+from laura.api.short_creator import (
+    confirm_contact_sheet,
+    confirm_visual_selection,
+    run_production_resume,
+)
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import Database
@@ -401,9 +405,7 @@ def test_visual_confirm_keeps_stamp_after_resume_failure_then_heals_forward(
 ) -> None:
     client, db = _client(tmp_path, monkeypatch)
     _, board = _seed_board(db, tmp_path, session_id="pending", plan=_plan())
-    real_resume = __import__(
-        "laura.api.short_creator", fromlist=["run_production_resume"]
-    ).run_production_resume
+    real_resume = run_production_resume
     calls = 0
 
     def flaky_resume(db: Database, session_id: str) -> dict[str, Any]:

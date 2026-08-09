@@ -249,8 +249,12 @@ def test_visual_request_invalidates_only_visual_downstream(board_with_finished_f
     board_with_finished_film.save("visual_recut_request", visual_request(script, voice))
 
     assert board_with_finished_film.load("storyline") is not None
-    assert board_with_finished_film.load("script").version == script_version
-    assert board_with_finished_film.load("voice").version == voice_version
+    preserved_script = board_with_finished_film.load("script")
+    preserved_voice = board_with_finished_film.load("voice")
+    assert isinstance(preserved_script, Script)
+    assert isinstance(preserved_voice, VoiceArtifact)
+    assert preserved_script.version == script_version
+    assert preserved_voice.version == voice_version
     assert board_with_finished_film.load("cutlist") is None
     assert board_with_finished_film.load("contact_sheet") is None
     assert board_with_finished_film.load("render_report") is None
