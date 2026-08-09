@@ -800,6 +800,81 @@ export interface SceneGateStatus {
   selected?: number[];
 }
 
+/** One source window proposed for a spoken beat in a visual-only recut. Frame ranges are
+ * integer and end-exclusive, matching the backend's persisted `VisualShotCandidate`. */
+export interface VisualShotCandidate {
+  candidate_id: string;
+  beat_id: string;
+  voice_segment_index: number;
+  scene_number: number;
+  window_index: number;
+  src_start_frame: number;
+  src_end_frame_exclusive: number;
+  thumb_frame: number;
+  description: string;
+  transcript_snippet: string;
+  rationale: string;
+  score: number;
+}
+
+/** Candidate choices for exactly one spoken beat. */
+export interface VisualBeatPlan {
+  beat_id: string;
+  voice_segment_index: number;
+  narration_text: string;
+  duration_s: number;
+  candidates: VisualShotCandidate[];
+  recommended_candidate_id: string;
+  selected_candidate_id: string | null;
+}
+
+/** Hash-bound visual selection checkpoint. `proposal_id` is null until a proposal exists. */
+export interface VisualSelectionGateStatus {
+  enabled: boolean;
+  approved: boolean;
+  pending: boolean;
+  proposal_id: string | null;
+  beats: VisualBeatPlan[];
+}
+
+/** One contact-sheet row's approval metadata. The PNG itself stays in `ChatPreview`. */
+export interface ContactSheetTileStatus {
+  order: number;
+  scene_number: number;
+  frame: number;
+  label: string;
+  src_start_frame: number | null;
+  src_end_frame_exclusive: number | null;
+  narration_excerpt: string;
+  rationale: string;
+}
+
+/** Hash-bound pre-render contact-sheet checkpoint. */
+export interface ContactSheetGateStatus {
+  enabled: boolean;
+  approved: boolean;
+  pending: boolean;
+  current_sheet_hash: string | null;
+  tiles: ContactSheetTileStatus[];
+}
+
+export type ProductionArtifactName =
+  | "scene_selection"
+  | "visual_recut_request"
+  | "visual_plan"
+  | "storyline"
+  | "script"
+  | "voice"
+  | "cutlist"
+  | "contact_sheet"
+  | "render_report"
+  | "qa_report";
+
+type LegacyProductionArtifactName = Exclude<
+  ProductionArtifactName,
+  "visual_recut_request" | "visual_plan"
+>;
+
 /** GET /production/{sessionId} when the board exists: full board status + liveness. */
 export interface ProductionBoardStatus {
   board_ready: true;
@@ -819,17 +894,10 @@ export interface ProductionBoardStatus {
     degraded_count: number;
     degraded_scenes: number[];
   };
-  artifacts: Record<
-    | "scene_selection"
-    | "storyline"
-    | "script"
-    | "voice"
-    | "cutlist"
-    | "contact_sheet"
-    | "render_report"
-    | "qa_report",
-    ProductionArtifactState
-  >;
+  artifacts: Record<LegacyProductionArtifactName, ProductionArtifactState> &
+    Partial<
+      Record<"visual_recut_request" | "visual_plan", ProductionArtifactState>
+    >;
   resume_point: string;
   /** Gate B (script checkpoint): whether the gate is active for this session, and its current
    * decision state. Optional — older backends that predate the gate never send this field. */
@@ -841,6 +909,10 @@ export interface ProductionBoardStatus {
    * candidates the user picks from. Optional for the same reason as `script_gate`: older
    * backends that predate the gate (or gate-off boards) never send it. */
   scene_gate?: SceneGateStatus;
+  /** Optional for safe rendering of pre-visual-recut boards. */
+  visual_selection_gate?: VisualSelectionGateStatus;
+  /** Optional for safe rendering of boards created before contact-sheet approval existed. */
+  contact_sheet_gate?: ContactSheetGateStatus;
 }
 
 /** GET /production/{sessionId} before a board exists — queued, or died before building one.
@@ -1004,6 +1076,35 @@ export class LauraClient {
       `/production/${sessionId}/scene-selection:confirm`,
       { method: "POST", body: JSON.stringify({ scene_numbers: sceneNumbers }) },
     );
+  }
+
+  /** Confirm one candidate per spoken beat against the exact proposal currently displayed. */
+  confirmVisualSelection(
+    sessionId: string,
+    proposalId: string,
+    selectedCandidateIds: string[],
+  ): Promise<ProductionCreated> {
+    return this.request<ProductionCreated>(
+      `/production/${sessionId}/visual-selection:confirm`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          proposal_hash: proposalId,
+          selected_candidate_ids: selectedCandidateIds,
+        }),
+      },
+    );
+  }
+
+  /** Approve the exact contact-sheet content currently displayed in the preview. */
+  confirmContactSheet(
+    sessionId: string,
+    contactSheetHash: string,
+  ): Promise<ProductionCreated> {
+    return this.request<ProductionCreated>(`/production/${sessionId}/contact-sheet:confirm`, {
+      method: "POST",
+      body: JSON.stringify({ contact_sheet_hash: contactSheetHash }),
+    });
   }
 
   /**

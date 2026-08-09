@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { LauraClient, type ProductionStatus } from "./api";
+import {
+  LauraClient,
+  type ContactSheetGateStatus,
+  type ProductionBoardStatus,
+  type VisualSelectionGateStatus,
+} from "./api";
 
 function mockFetch(json: unknown) {
   const fn = vi.fn().mockResolvedValue({
@@ -26,7 +31,7 @@ function mockFetchError(status: number, text: string) {
 
 afterEach(() => vi.restoreAllMocks());
 
-const status: ProductionStatus = {
+const status: ProductionBoardStatus = {
   board_ready: true,
   job: null,
   meta: {
@@ -150,6 +155,110 @@ describe("production session client methods", () => {
     mockFetchError(404, "session not found");
     const c = new LauraClient("http://h", "tok");
     await expect(c.getProductionStatus("missing")).rejects.toThrow("404: session not found");
+  });
+
+  it("confirms a visual proposal with its exact id and selected candidates", async () => {
+    const fn = mockFetch({ session_id: "s1", job_id: "j2" });
+    const c = new LauraClient("http://h", "tok");
+    const proposalId = "a".repeat(64);
+
+    const out = await c.confirmVisualSelection("s1", proposalId, ["candidate-1"]);
+
+    expect(out).toEqual({ session_id: "s1", job_id: "j2" });
+    expect(fn).toHaveBeenCalledWith(
+      expect.stringContaining("/production/s1/visual-selection:confirm"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          proposal_hash: proposalId,
+          selected_candidate_ids: ["candidate-1"],
+        }),
+      }),
+    );
+  });
+
+  it("confirms the currently displayed contact-sheet hash", async () => {
+    const fn = mockFetch({ session_id: "s1", job_id: "j3" });
+    const c = new LauraClient("http://h", "tok");
+    const contactSheetHash = "b".repeat(64);
+
+    const out = await c.confirmContactSheet("s1", contactSheetHash);
+
+    expect(out).toEqual({ session_id: "s1", job_id: "j3" });
+    expect(fn).toHaveBeenCalledWith(
+      expect.stringContaining("/production/s1/contact-sheet:confirm"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ contact_sheet_hash: contactSheetHash }),
+      }),
+    );
+  });
+
+  it("maps both optional visual gates while older status payloads remain valid", async () => {
+    const visualGate: VisualSelectionGateStatus = {
+      enabled: true,
+      approved: false,
+      pending: true,
+      proposal_id: "a".repeat(64),
+      beats: [
+        {
+          beat_id: "beat-1",
+          voice_segment_index: 0,
+          narration_text: "Rowboat ordnet Dateien.",
+          duration_s: 2.5,
+          recommended_candidate_id: "candidate-1",
+          selected_candidate_id: null,
+          candidates: [
+            {
+              candidate_id: "candidate-1",
+              beat_id: "beat-1",
+              voice_segment_index: 0,
+              scene_number: 2,
+              window_index: 1,
+              src_start_frame: 120,
+              src_end_frame_exclusive: 240,
+              thumb_frame: 180,
+              description: "Dateiliste",
+              transcript_snippet: "organize files",
+              rationale: "Passt zum Sprechertext",
+              score: 0.9,
+            },
+          ],
+        },
+      ],
+    };
+    const contactGate: ContactSheetGateStatus = {
+      enabled: true,
+      approved: false,
+      pending: true,
+      current_sheet_hash: "b".repeat(64),
+      tiles: [
+        {
+          order: 0,
+          scene_number: 2,
+          frame: 180,
+          label: "0 S2",
+          src_start_frame: 120,
+          src_end_frame_exclusive: 240,
+          narration_excerpt: "Rowboat ordnet Dateien.",
+          rationale: "Passt zum Sprechertext",
+        },
+      ],
+    };
+    const current: ProductionBoardStatus = {
+      ...status,
+      visual_selection_gate: visualGate,
+      contact_sheet_gate: contactGate,
+    };
+    mockFetch(current);
+    const c = new LauraClient("http://h", "tok");
+
+    const out = await c.getProductionStatus("s1");
+
+    expect(out.board_ready && out.visual_selection_gate?.proposal_id).toBe("a".repeat(64));
+    expect(out.board_ready && out.contact_sheet_gate?.current_sheet_hash).toBe("b".repeat(64));
+    expect(status.visual_selection_gate).toBeUndefined();
+    expect(status.contact_sheet_gate).toBeUndefined();
   });
 });
 

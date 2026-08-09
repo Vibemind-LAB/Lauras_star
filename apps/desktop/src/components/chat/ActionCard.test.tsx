@@ -153,6 +153,68 @@ function sceneGate(
   };
 }
 
+function visualGate(
+  overrides: Partial<NonNullable<ProductionBoardStatus["visual_selection_gate"]>> = {},
+): NonNullable<ProductionBoardStatus["visual_selection_gate"]> {
+  return {
+    enabled: true,
+    approved: false,
+    pending: true,
+    proposal_id: "a".repeat(64),
+    beats: [
+      {
+        beat_id: "beat-1",
+        voice_segment_index: 0,
+        narration_text: "Rowboat organisiert Dateien.",
+        duration_s: 2.5,
+        candidates: [
+          {
+            candidate_id: "candidate-1",
+            beat_id: "beat-1",
+            voice_segment_index: 0,
+            scene_number: 2,
+            window_index: 0,
+            src_start_frame: 10,
+            src_end_frame_exclusive: 70,
+            thumb_frame: 40,
+            description: "Dateiliste",
+            transcript_snippet: "organize files",
+            rationale: "Belegt den Beat",
+            score: 0.9,
+          },
+        ],
+        recommended_candidate_id: "candidate-1",
+        selected_candidate_id: null,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function contactSheetGate(
+  overrides: Partial<NonNullable<ProductionBoardStatus["contact_sheet_gate"]>> = {},
+): NonNullable<ProductionBoardStatus["contact_sheet_gate"]> {
+  return {
+    enabled: true,
+    approved: false,
+    pending: true,
+    current_sheet_hash: "b".repeat(64),
+    tiles: [
+      {
+        order: 0,
+        scene_number: 2,
+        frame: 40,
+        label: "0 S2",
+        src_start_frame: 10,
+        src_end_frame_exclusive: 70,
+        narration_excerpt: "Rowboat organisiert Dateien.",
+        rationale: "Belegt den Beat",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function client(overrides: Partial<LauraClient> = {}): LauraClient {
   return {
     getProductionEvents: vi.fn(),
@@ -760,6 +822,7 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     const getProductionStatus = vi.fn().mockResolvedValue(
       boardStatus({
         script_gate: { enabled: true, approved: false, pending: true },
+        contact_sheet_gate: contactSheetGate(),
         script_lines: [
           { chapter: 1, scene_number: 1, text: "Erste Zeile" },
           { chapter: 1, scene_number: 2, text: "Zweite Zeile" },
@@ -788,6 +851,7 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
     // The adjustment hint is part of the export result block, not the pending-gate block.
     expect(screen.queryByText(/Weiter anpassen/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
   });
 
   it("an approved (non-pending) script_gate falls through to the normal result line", async () => {
@@ -870,6 +934,7 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
         // scene selection runs BEFORE the script in the pipeline, so it must win the ternary,
         // same "priority over the ordinary result row" contract script_gate itself has above.
         script_gate: { enabled: true, approved: false, pending: true },
+        contact_sheet_gate: contactSheetGate(),
         script_lines: [{ chapter: 1, scene_number: 1, text: "sollte nicht erscheinen" }],
       }),
     );
@@ -890,6 +955,7 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
     expect(screen.getByTestId("scene-tile-2").getAttribute("data-selected")).toBe("true");
     expect(screen.getByTestId("scene-tile-5").getAttribute("data-selected")).toBe("false");
     expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
     expect(screen.queryByText(/Export:/)).toBeNull();
   });
 
@@ -955,6 +1021,187 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
     expect(getProductionEvents).toHaveBeenCalledWith("s1", 0);
+  });
+});
+
+describe("ActionCard — visual recut checkpoints", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("prioritizes visual selection ahead of scene, script, contact sheet and export", async () => {
+    const getProductionEvents = vi.fn().mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(
+      boardStatus({
+        visual_selection_gate: visualGate(),
+        scene_gate: sceneGate(),
+        script_gate: { enabled: true, approved: false, pending: true },
+        script_lines: [{ chapter: 1, scene_number: 1, text: "später" }],
+        contact_sheet_gate: contactSheetGate(),
+      }),
+    );
+    const c = client({
+      getProductionEvents,
+      getProductionStatus,
+      getJob: vi.fn().mockResolvedValue(job({ status: "succeeded" })),
+    });
+
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("Bildauswahl prüfen")).toBeTruthy();
+    expect(screen.queryByText(/Szenen-Auswahl/)).toBeNull();
+    expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
+    expect(screen.queryByText(/Export:/)).toBeNull();
+  });
+
+  it("shows contact-sheet approval after the earlier gates are clear", async () => {
+    const getProductionEvents = vi.fn().mockResolvedValue({ events: [], next: 0, done: true });
+    const getProductionStatus = vi.fn().mockResolvedValue(
+      boardStatus({
+        visual_selection_gate: visualGate({ approved: true, pending: false }),
+        scene_gate: sceneGate({ confirmed: true, pending: false, selected: [2] }),
+        script_gate: { enabled: true, approved: true, pending: false },
+        contact_sheet_gate: contactSheetGate(),
+      }),
+    );
+    const c = client({
+      getProductionEvents,
+      getProductionStatus,
+      getJob: vi.fn().mockResolvedValue(job({ status: "succeeded" })),
+    });
+
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByRole("button", { name: "Kontaktbogen freigeben" })).toBeTruthy();
+    expect(screen.getByText("In 10 · Out 70")).toBeTruthy();
+    expect(screen.queryByText(/Export:/)).toBeNull();
+  });
+
+  it("visual confirm refreshes through the shared status path and tracks the resumed job", async () => {
+    const getProductionEvents = vi.fn().mockResolvedValue({ events: [], next: 0, done: true });
+    const resumed = boardStatus({
+      visual_selection_gate: visualGate({ approved: true, pending: false }),
+      job: {
+        id: "j2",
+        status: "running",
+        attempt: 1,
+        updated_at: "2026-01-01T00:01:00Z",
+        lease_expires_at: null,
+        finished_at: null,
+      },
+    });
+    const getProductionStatus = vi
+      .fn()
+      .mockResolvedValueOnce(boardStatus({ visual_selection_gate: visualGate() }))
+      .mockResolvedValueOnce(resumed);
+    const getJob = vi
+      .fn()
+      .mockImplementation((id: string) =>
+        Promise.resolve(job({ id, status: id === "j1" ? "succeeded" : "running" })),
+      );
+    const confirmVisualSelection = vi
+      .fn()
+      .mockResolvedValue({ session_id: "s1", job_id: "j2" });
+    const c = client({
+      getProductionEvents,
+      getProductionStatus,
+      getJob,
+      confirmVisualSelection,
+    });
+
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), ["candidate-1"]);
+    expect(getProductionStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Bildauswahl prüfen")).toBeNull();
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+  });
+
+  it("contact-sheet confirm uses the same refresh path and tracks its resumed job", async () => {
+    const getProductionEvents = vi.fn().mockResolvedValue({ events: [], next: 0, done: true });
+    const resumed = boardStatus({
+      contact_sheet_gate: contactSheetGate({ approved: true, pending: false }),
+      job: {
+        id: "j3",
+        status: "queued",
+        attempt: 1,
+        updated_at: "2026-01-01T00:01:00Z",
+        lease_expires_at: null,
+        finished_at: null,
+      },
+    });
+    const getProductionStatus = vi
+      .fn()
+      .mockResolvedValueOnce(boardStatus({ contact_sheet_gate: contactSheetGate() }))
+      .mockResolvedValueOnce(resumed);
+    const getJob = vi
+      .fn()
+      .mockImplementation((id: string) =>
+        Promise.resolve(job({ id, status: id === "j1" ? "succeeded" : "queued" })),
+      );
+    const confirmContactSheet = vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j3" });
+    const c = client({
+      getProductionEvents,
+      getProductionStatus,
+      getJob,
+      confirmContactSheet,
+    });
+
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j1" })}
+        client={c}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Kontaktbogen freigeben" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(confirmContactSheet).toHaveBeenCalledWith("s1", "b".repeat(64));
+    expect(getProductionStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
   });
 });
 

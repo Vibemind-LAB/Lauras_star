@@ -10,9 +10,11 @@ import type {
 import { parseJobError, useJobStatus } from "../../hooks/useJobStatus";
 import { log } from "../../shared/log";
 import { CardErrorBoundary } from "./CardErrorBoundary";
+import { ContactSheetApprovalCard } from "./ContactSheetApprovalCard";
 import { EventLine } from "./EventLine";
 import { SceneSelectionCard } from "./SceneSelectionCard";
 import { parseRevertError, SessionChips, sessionArtifactLabel } from "./SessionChips";
+import { VisualSelectionCard } from "./VisualSelectionCard";
 
 /** Same cadence the pre-chat production panel used for its board/job poll — kept in step so a
  * chat thread narrating a session feels like the rest of the app, not a separate rhythm. */
@@ -206,6 +208,40 @@ function narrowPendingSceneGate(
   return { gate, assetId: status.meta.asset_id };
 }
 
+/** Visual-only recut checkpoint. A pending request without a proposal identity cannot be
+ * confirmed safely, so malformed/in-progress payloads do not render an actionable card. */
+function narrowPendingVisualGate(
+  status: ProductionStatus | null,
+): {
+  gate: NonNullable<ProductionBoardStatus["visual_selection_gate"]>;
+  assetId: string;
+} | null {
+  if (status === null || !status.board_ready) return null;
+  const gate = status.visual_selection_gate;
+  if (
+    gate === undefined ||
+    !gate.pending ||
+    typeof gate.proposal_id !== "string" ||
+    gate.beats.length === 0
+  ) {
+    return null;
+  }
+  return { gate, assetId: status.meta.asset_id };
+}
+
+/** Contact-sheet checkpoint. The card approves only a concrete content hash; the PNG itself
+ * remains in the normal `ChatPreview` lane. */
+function narrowPendingContactSheetGate(
+  status: ProductionStatus | null,
+): NonNullable<ProductionBoardStatus["contact_sheet_gate"]> | null {
+  if (status === null || !status.board_ready) return null;
+  const gate = status.contact_sheet_gate;
+  if (gate === undefined || !gate.pending || typeof gate.current_sheet_hash !== "string") {
+    return null;
+  }
+  return gate;
+}
+
 /** Statuses `useJobStatus` (and the backend jobs runner) consider terminal-non-success:
  * `failed` outright, or `cancelled` — a job someone/something killed never writes its own
  * "done" event line either, so it must finalize the card the same way a `failed` job does
@@ -249,10 +285,9 @@ function ProductionActionCard({
   );
   const [showAll, setShowAll] = useState(false);
   const [status, setStatus] = useState<ProductionStatus | null>(null);
-  // The job this card is currently tracking. Starts as the prop (`refs.job_id`), but a Gate-S
-  // confirm from the embedded `SceneSelectionCard` (see `refreshAfterConfirm` below) can hand it
-  // a NEW job id — the resume the confirm itself enqueued — so the card keeps narrating live
-  // instead of going stale the moment the tile pick is submitted.
+  // The job this card is currently tracking. Starts as the prop (`refs.job_id`), but any
+  // persisted gate confirm (see `refreshAfterConfirm` below) can hand it a NEW job id — the
+  // resume the confirm itself enqueued — so the card keeps narrating live.
   const [activeJobId, setActiveJobId] = useState<string | null>(jobId);
   // Set once the events reader itself has returned a `done` batch — see the module doc above.
   // Only meaningful when `activeJobId` is non-null; the null-jobId path finalizes straight off
@@ -304,16 +339,14 @@ function ProductionActionCard({
   // around afterward (never re-nulled) so the failed-render below still has a reason to show.
   const { jobStatus } = useJobStatus(client, activeJobId);
 
-  // Gate S's "refresh callback": re-fetches this session's status after a `SceneSelectionCard`
-  // confirm. Always updates `status` (so `narrowPendingSceneGate` below stops finding a pending
-  // gate and the tile card disappears); additionally resumes live narration if the confirm's
-  // resume run is still queued/running, by pointing the events/job polls at its job id.
+  // Shared gate refresh: always replaces the board snapshot (so a confirmed card disappears)
+  // and resumes live narration when that confirmation enqueued a queued/running job.
   const refreshAfterConfirm = async (): Promise<void> => {
     let fresh: ProductionStatus | null = null;
     try {
       fresh = await client.getProductionStatus(sessionId);
     } catch (e) {
-      log.warn("ActionCard: status refresh after scene-selection confirm failed", e);
+      log.warn("ActionCard: status refresh after gate confirm failed", e);
       return;
     }
     setStatus(fresh);
@@ -405,8 +438,10 @@ function ProductionActionCard({
 
   const shown = showAll ? events : events.slice(-EVENT_PREVIEW_COUNT);
   const result = narrowProductionResult(status);
+  const pendingVisualGate = narrowPendingVisualGate(status);
   const pendingSceneGate = narrowPendingSceneGate(status);
   const pendingScript = narrowPendingScript(status);
+  const pendingContactSheetGate = narrowPendingContactSheetGate(status);
   const failReason = jobStatus !== null ? parseJobError(jobStatus) ?? "unbekannter Fehler" : "unbekannter Fehler";
 
   return (
@@ -463,7 +498,15 @@ function ProductionActionCard({
         </div>
       )}
       {phase === "done" &&
-        (pendingSceneGate !== null ? (
+        (pendingVisualGate !== null ? (
+          <VisualSelectionCard
+            gate={pendingVisualGate.gate}
+            assetId={pendingVisualGate.assetId}
+            sessionId={sessionId}
+            client={client}
+            onConfirmed={refreshAfterConfirm}
+          />
+        ) : pendingSceneGate !== null ? (
           <SceneSelectionCard
             gate={pendingSceneGate.gate}
             assetId={pendingSceneGate.assetId}
@@ -483,6 +526,13 @@ function ProductionActionCard({
               Antworte {"‚Script freigeben’"} oder nenne Änderungen.
             </div>
           </div>
+        ) : pendingContactSheetGate !== null ? (
+          <ContactSheetApprovalCard
+            gate={pendingContactSheetGate}
+            sessionId={sessionId}
+            client={client}
+            onConfirmed={refreshAfterConfirm}
+          />
         ) : result.exportId !== null ? (
           <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1">
             <div className="text-content-strong">
