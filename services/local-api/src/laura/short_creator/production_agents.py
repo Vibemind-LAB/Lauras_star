@@ -213,7 +213,10 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
         ),
         AgentSpec(
             name="coding_agent",
-            description="Executes voice, cutlist and render — never changes content decisions.",
+            description=(
+                "Executes voice, visual-only recuts, cutlist and render — never changes "
+                "content decisions."
+            ),
             system_message=(
                 "You are the Coding Agent. You execute; you do not change content decisions made "
                 "by the Story Architect or Scene Author. Check board_status, then read the "
@@ -225,6 +228,11 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "cutlist save archives the current sheet). If the task or a user message says "
                 "to stop at the contact sheet, end after save_contact_sheet and report its "
                 "tiles instead of rendering. FRAMING LEVER: when the task or a user message "
+                "asks to CHANGE VISUAL SELECTION while preserving the approved narration, call "
+                "start_visual_recut exactly once and STOP at its pending visual-selection gate. "
+                "That path must never rewrite storyline, script, or voice. A framing-only change "
+                "still calls build_cutlist with zoom=\"off\" and likewise must not rewrite "
+                "storyline, script, or voice. When the task or a user message "
                 "asks for the full frame / no tight zoom (e.g. 'zeig das volle Bild', 'kein "
                 "Zoom'), call build_cutlist with zoom=\"off\" — it drops every roi and zoom "
                 "timing regardless of the storyline's window references; the storyline does "
@@ -254,6 +262,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "get_reviews",
                 "suggest_scenes_for_script",
                 "synthesize_script_voice",
+                "start_visual_recut",
                 "build_cutlist",
                 "save_contact_sheet",
                 "render_production",

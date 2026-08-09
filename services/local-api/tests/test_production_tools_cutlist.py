@@ -396,7 +396,9 @@ def test_build_cutlist_requires_prereqs(tmp_path: Path) -> None:
     assert "synthesize" in out["reason"]
 
 
-def test_build_cutlist_deterministic_segments_and_zoom(tmp_path: Path) -> None:
+def test_build_cutlist_deterministic_segments_and_zoom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)
     _review(
@@ -428,6 +430,15 @@ def test_build_cutlist_deterministic_segments_and_zoom(tmp_path: Path) -> None:
         ],
     )
     specs = {s.name: s for s in build_production_tool_specs(db, board, asset_id=asset_id)}
+
+    real_load = board.load
+
+    def legacy_load(name: str) -> Any:
+        if name == "visual_plan":
+            raise AssertionError("legacy cutlist path must not consult a visual plan")
+        return real_load(name)
+
+    monkeypatch.setattr(board, "load", legacy_load)
 
     out = specs["build_cutlist"].func()
 
