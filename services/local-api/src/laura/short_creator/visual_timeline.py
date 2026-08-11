@@ -99,11 +99,10 @@ def apply_scene_selections(
         raise VisualSelectionError("v2 visual plan required")
     expected_orders = list(range(plan.rough_cut_scene_count))
     selected_orders = [selection.rough_cut_order for selection in selections]
-    if (
-        len(selected_orders) != len(set(selected_orders))
-        or sorted(selected_orders) != expected_orders
-    ):
-        raise VisualSelectionError("every Rough-Cut row must be selected exactly once")
+    if selected_orders != expected_orders:
+        raise VisualSelectionError(
+            "every Rough-Cut row must be selected exactly once and in Rough-Cut order"
+        )
 
     by_order = {selection.rough_cut_order: selection for selection in selections}
     included_frames: list[int] = []

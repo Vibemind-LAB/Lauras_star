@@ -482,8 +482,11 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
 
     if tool == "select_visuals":
         proposal_hash = args.get("proposal_hash")
-        if not isinstance(proposal_hash, str) or len(proposal_hash) != 64:
-            return "select_visuals.proposal_hash must be a 64-character string"
+        if (
+            not isinstance(proposal_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", proposal_hash) is None
+        ):
+            return "select_visuals.proposal_hash must be a lowercase hexadecimal SHA-256 hash"
         has_selections = "selections" in args
         has_candidate_ids = "selected_candidate_ids" in args
         if has_selections == has_candidate_ids:

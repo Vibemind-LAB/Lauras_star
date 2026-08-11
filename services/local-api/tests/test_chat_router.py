@@ -618,6 +618,37 @@ def test_select_visuals_requires_hash_and_nonempty_candidate_ids() -> None:
     assert decision["tool"] == "select_visuals" and decision["fallback"] is False
 
 
+@pytest.mark.parametrize("invalid_hash", ["A" * 64, "g" * 64], ids=("uppercase", "nonhex"))
+def test_select_visuals_requires_lowercase_sha256_hash(invalid_hash: str) -> None:
+    valid = {
+        "tool": "select_visuals",
+        "args": {
+            "proposal_hash": "a" * 64,
+            "selections": _recommended_scene_selections(),
+        },
+    }
+    replies = iter(
+        [
+            json.dumps(
+                {
+                    "tool": "select_visuals",
+                    "args": {
+                        "proposal_hash": invalid_hash,
+                        "selections": _recommended_scene_selections(),
+                    },
+                }
+            ),
+            json.dumps(valid),
+        ]
+    )
+
+    decision = run_router(
+        _config(), context="", user_text="x", runner=lambda _task: next(replies)
+    )
+
+    assert decision == {**valid, "fallback": False}
+
+
 def test_approve_contact_sheet_routes_current_hash() -> None:
     sheet_hash = "b" * 64
     reply = json.dumps({

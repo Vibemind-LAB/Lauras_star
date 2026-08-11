@@ -380,6 +380,136 @@ def test_confirm_v2_visual_selection_rejects_stale_hash_without_job(
 
 
 @pytest.mark.parametrize(
+    "order",
+    [[3, 2, 1, 0], [1, 0, 3, 2]],
+    ids=("reversed", "shuffled"),
+)
+def test_http_v2_visual_selection_requires_exact_rough_cut_order_without_mutation(
+    tmp_path: Path, monkeypatch: Any, order: list[int]
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(
+        db,
+        tmp_path,
+        session_id="v2-http-order",
+        plan=_v2_plan(),
+        sheet=_sheet(),
+    )
+    before_plan = cast(VisualPlan, board.load("visual_plan"))
+    before_sheet = cast(ContactSheet, board.load("contact_sheet")).model_dump_json()
+    chosen = _scene_selections([5, 5, 5, 5])
+
+    response = client.post(
+        "/production/v2-http-order/visual-selection:confirm",
+        json={
+            "proposal_hash": _HASH_A,
+            "selections": _selection_json([chosen[index] for index in order]),
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert "Rough-Cut order" in response.text
+    after_plan = cast(VisualPlan, board.load("visual_plan"))
+    assert after_plan.version == before_plan.version
+    assert after_plan.selection_hash == before_plan.selection_hash
+    assert after_plan.model_dump_json() == before_plan.model_dump_json()
+    assert cast(ContactSheet, board.load("contact_sheet")).model_dump_json() == before_sheet
+    assert _latest_job_id(db, "v2-http-order") is None
+    assert _production_job_count(db) == 0
+
+
+@pytest.mark.parametrize(
+    "order",
+    [[3, 2, 1, 0], [2, 0, 3, 1]],
+    ids=("reversed", "shuffled"),
+)
+def test_shared_v2_visual_service_requires_exact_rough_cut_order_without_mutation(
+    tmp_path: Path, monkeypatch: Any, order: list[int]
+) -> None:
+    db = _client(tmp_path, monkeypatch)[1]
+    _, board = _seed_board(
+        db,
+        tmp_path,
+        session_id="v2-service-order",
+        plan=_v2_plan(),
+        sheet=_sheet(),
+    )
+    before_plan = cast(VisualPlan, board.load("visual_plan"))
+    before_sheet = cast(ContactSheet, board.load("contact_sheet")).model_dump_json()
+    chosen = _scene_selections([5, 5, 5, 5])
+
+    with pytest.raises(HTTPException, match="Rough-Cut order") as exc_info:
+        confirm_visual_selection(
+            db,
+            "v2-service-order",
+            _HASH_A,
+            selections=[chosen[index] for index in order],
+        )
+
+    assert exc_info.value.status_code == 422
+    after_plan = cast(VisualPlan, board.load("visual_plan"))
+    assert after_plan.version == before_plan.version
+    assert after_plan.selection_hash == before_plan.selection_hash
+    assert after_plan.model_dump_json() == before_plan.model_dump_json()
+    assert cast(ContactSheet, board.load("contact_sheet")).model_dump_json() == before_sheet
+    assert _latest_job_id(db, "v2-service-order") is None
+    assert _production_job_count(db) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("rough_cut_order", "0"),
+        ("included", 1),
+        ("requested_duration_s", "5"),
+    ],
+)
+def test_http_v2_visual_selection_rejects_coercible_nested_scalars_without_mutation(
+    tmp_path: Path, monkeypatch: Any, field: str, invalid_value: object
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="v2-strict", plan=_v2_plan())
+    before = cast(VisualPlan, board.load("visual_plan")).model_dump_json()
+    selected = _selection_json(_scene_selections([5, 5, 5, 5]))
+    selected[0][field] = invalid_value
+
+    response = client.post(
+        "/production/v2-strict/visual-selection:confirm",
+        json={"proposal_hash": _HASH_A, "selections": selected},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert cast(VisualPlan, board.load("visual_plan")).model_dump_json() == before
+    assert _latest_job_id(db, "v2-strict") is None
+    assert _production_job_count(db) == 0
+
+
+@pytest.mark.parametrize("invalid_hash", ["A" * 64, "g" * 64], ids=("uppercase", "nonhex"))
+def test_http_visual_selection_requires_lowercase_sha256_without_mutation(
+    tmp_path: Path, monkeypatch: Any, invalid_hash: str
+) -> None:
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="v2-hash", plan=_v2_plan())
+    before = cast(VisualPlan, board.load("visual_plan")).model_dump_json()
+
+    response = client.post(
+        "/production/v2-hash/visual-selection:confirm",
+        json={
+            "proposal_hash": invalid_hash,
+            "selections": _selection_json(_scene_selections([5, 5, 5, 5])),
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert cast(VisualPlan, board.load("visual_plan")).model_dump_json() == before
+    assert _latest_job_id(db, "v2-hash") is None
+    assert _production_job_count(db) == 0
+
+
+@pytest.mark.parametrize(
     ("plan", "chosen", "detail"),
     [
         (_v2_plan(), _scene_selections([5, 5, 5]), "exactly once"),

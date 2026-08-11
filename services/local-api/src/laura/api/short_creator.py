@@ -111,11 +111,22 @@ class SceneSelectionConfirmRequest(BaseModel):
     scene_numbers: list[int]
 
 
+class VisualSceneSelectionRequest(BaseModel):
+    """Strict HTTP transport shape for one v2 Rough-Cut decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rough_cut_order: int = Field(ge=0, strict=True)
+    candidate_id: str = Field(min_length=1, strict=True)
+    included: bool = Field(strict=True)
+    requested_duration_s: int = Field(ge=1, le=10, strict=True)
+
+
 class VisualSelectionConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    proposal_hash: str = Field(min_length=64, max_length=64)
-    selections: list[VisualSceneSelection] | None = None
+    proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selections: list[VisualSceneSelectionRequest] | None = None
     selected_candidate_ids: list[str] | None = None
 
     @model_validator(mode="after")
@@ -1276,7 +1287,11 @@ def confirm_visual_selection_endpoint(
         _db(request),
         session_id,
         body.proposal_hash,
-        selections=body.selections,
+        selections=(
+            [VisualSceneSelection.model_validate(item.model_dump()) for item in body.selections]
+            if body.selections is not None
+            else None
+        ),
         selected_candidate_ids=body.selected_candidate_ids,
     )
 
