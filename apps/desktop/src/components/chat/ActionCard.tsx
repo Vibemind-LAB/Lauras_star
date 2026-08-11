@@ -222,7 +222,8 @@ function narrowPendingVisualGate(
     gate === undefined ||
     !gate.pending ||
     typeof gate.proposal_id !== "string" ||
-    gate.beats.length === 0
+    (gate.beats?.length ?? 0) === 0 &&
+      (gate.scene_choices?.length ?? 0) === 0
   ) {
     return null;
   }

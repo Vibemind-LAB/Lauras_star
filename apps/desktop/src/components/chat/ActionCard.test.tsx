@@ -1137,8 +1137,49 @@ describe("ActionCard — visual recut checkpoints", () => {
 
   it("visual confirm refreshes through the shared status path and tracks the resumed job", async () => {
     const getProductionEvents = vi.fn().mockResolvedValue({ events: [], next: 0, done: true });
+    const decisions = [0, 1, 2].map((roughCutOrder) => ({
+      rough_cut_order: roughCutOrder,
+      candidate_id: `scene-${roughCutOrder}-candidate-0`,
+      included: true,
+      requested_duration_s: 5,
+    }));
+    const sceneChoices = decisions.map((decision) => ({
+      rough_cut_order: decision.rough_cut_order,
+      scene_number: decision.rough_cut_order + 1,
+      description: `Scene ${decision.rough_cut_order + 1}`,
+      transcript: "Rowboat UI",
+      rationale: "Rough-Cut coverage",
+      candidates: [
+        {
+          candidate_id: decision.candidate_id,
+          rough_cut_order: decision.rough_cut_order,
+          scene_number: decision.rough_cut_order + 1,
+          window_index: 0,
+          src_start_frame: decision.rough_cut_order * 300,
+          src_end_frame_exclusive: decision.rough_cut_order * 300 + 300,
+          thumb_frame: decision.rough_cut_order * 300 + 150,
+          max_duration_s: 10,
+          description: "Rowboat",
+          transcript_snippet: "Rowboat UI",
+          rationale: "Coverage",
+          score: 1,
+        },
+      ],
+      recommended_candidate_id: decision.candidate_id,
+      recommended_included: true,
+      recommended_duration_s: 5,
+      selected_candidate_id: null,
+      included: null,
+      requested_duration_s: null,
+    }));
+    const v2Gate = visualGate({
+      beats: [],
+      scene_choices: sceneChoices,
+      voice_total_frames: 450,
+      fps: 30,
+    });
     const resumed = boardStatus({
-      visual_selection_gate: visualGate({ approved: true, pending: false }),
+      visual_selection_gate: { ...v2Gate, approved: true, pending: false },
       job: {
         id: "j2",
         status: "running",
@@ -1150,7 +1191,7 @@ describe("ActionCard — visual recut checkpoints", () => {
     });
     const getProductionStatus = vi
       .fn()
-      .mockResolvedValueOnce(boardStatus({ visual_selection_gate: visualGate() }))
+      .mockResolvedValueOnce(boardStatus({ visual_selection_gate: v2Gate }))
       .mockResolvedValueOnce(resumed);
     const getJob = vi
       .fn()
@@ -1182,7 +1223,7 @@ describe("ActionCard — visual recut checkpoints", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), ["candidate-1"]);
+    expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), decisions);
     expect(getProductionStatus).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Bildauswahl prüfen")).toBeNull();
     expect(screen.getByText("⚙ läuft …")).toBeTruthy();

@@ -828,6 +828,52 @@ export interface VisualBeatPlan {
   selected_candidate_id: string | null;
 }
 
+/** One bounded source window for a Rough-Cut scene. Frame ranges are integer and end-exclusive. */
+export interface VisualSceneCandidate {
+  candidate_id: string;
+  rough_cut_order: number;
+  scene_number: number;
+  window_index: number;
+  src_start_frame: number;
+  src_end_frame_exclusive: number;
+  thumb_frame: number;
+  max_duration_s: number;
+  description: string;
+  transcript_snippet: string;
+  rationale: string;
+  score: number;
+}
+
+/** One fixed-position Rough-Cut row and its persisted recommendation/current decision. */
+export interface VisualSceneChoice {
+  rough_cut_order: number;
+  scene_number: number;
+  description: string;
+  transcript: string;
+  rationale: string;
+  candidates: VisualSceneCandidate[];
+  recommended_candidate_id: string;
+  recommended_included: boolean;
+  recommended_duration_s: number;
+  selected_candidate_id: string | null;
+  included: boolean | null;
+  requested_duration_s: number | null;
+}
+
+/** Complete identity-bound user decision for one Rough-Cut row. */
+export interface VisualSceneSelection {
+  rough_cut_order: number;
+  candidate_id: string;
+  included: boolean;
+  requested_duration_s: number;
+}
+
+function isStringArray(
+  values: VisualSceneSelection[] | string[],
+): values is string[] {
+  return values.every((value) => typeof value === "string");
+}
+
 /** Hash-bound visual selection checkpoint. `proposal_id` is null until a proposal exists. */
 export interface VisualSelectionGateStatus {
   enabled: boolean;
@@ -835,6 +881,9 @@ export interface VisualSelectionGateStatus {
   pending: boolean;
   proposal_id: string | null;
   beats: VisualBeatPlan[];
+  scene_choices?: VisualSceneChoice[];
+  voice_total_frames?: number | null;
+  fps?: number | null;
 }
 
 /** One contact-sheet row's approval metadata. The PNG itself stays in `ChatPreview`. */
@@ -1078,19 +1127,22 @@ export class LauraClient {
     );
   }
 
-  /** Confirm one candidate per spoken beat against the exact proposal currently displayed. */
+  /** Confirm a complete v2 Rough-Cut decision set or a legacy candidate-per-beat selection. */
   confirmVisualSelection(
     sessionId: string,
     proposalId: string,
-    selectedCandidateIds: string[],
+    selections: VisualSceneSelection[] | string[],
   ): Promise<ProductionCreated> {
+    const decisionBody = isStringArray(selections)
+      ? { selected_candidate_ids: selections }
+      : { selections };
     return this.request<ProductionCreated>(
       `/production/${sessionId}/visual-selection:confirm`,
       {
         method: "POST",
         body: JSON.stringify({
           proposal_hash: proposalId,
-          selected_candidate_ids: selectedCandidateIds,
+          ...decisionBody,
         }),
       },
     );

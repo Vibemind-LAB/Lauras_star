@@ -4,6 +4,7 @@ import {
   LauraClient,
   type ContactSheetGateStatus,
   type ProductionBoardStatus,
+  type VisualSceneSelection,
   type VisualSelectionGateStatus,
 } from "./api";
 
@@ -177,6 +178,27 @@ describe("production session client methods", () => {
     );
   });
 
+  it("confirms ordered rough-cut decisions with the exact proposal hash", async () => {
+    const fn = mockFetch({ session_id: "s1", job_id: "j2" });
+    const c = new LauraClient("http://h", "tok");
+    const proposalId = "a".repeat(64);
+    const selections: VisualSceneSelection[] = [
+      { rough_cut_order: 0, candidate_id: "c0", included: true, requested_duration_s: 5 },
+      { rough_cut_order: 1, candidate_id: "c1", included: true, requested_duration_s: 6 },
+      { rough_cut_order: 2, candidate_id: "c2", included: true, requested_duration_s: 4 },
+    ];
+
+    await c.confirmVisualSelection("s1", proposalId, selections);
+
+    expect(fn).toHaveBeenCalledWith(
+      expect.stringContaining("/production/s1/visual-selection:confirm"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ proposal_hash: proposalId, selections }),
+      }),
+    );
+  });
+
   it("confirms the currently displayed contact-sheet hash", async () => {
     const fn = mockFetch({ session_id: "s1", job_id: "j3" });
     const c = new LauraClient("http://h", "tok");
@@ -226,6 +248,39 @@ describe("production session client methods", () => {
           ],
         },
       ],
+      scene_choices: [
+        {
+          rough_cut_order: 0,
+          scene_number: 2,
+          description: "Rowboat dashboard",
+          transcript: "Draft an email",
+          rationale: "Belegt den Rough Cut",
+          candidates: [
+            {
+              candidate_id: "scene-0-candidate-0",
+              rough_cut_order: 0,
+              scene_number: 2,
+              window_index: 0,
+              src_start_frame: 120,
+              src_end_frame_exclusive: 420,
+              thumb_frame: 270,
+              max_duration_s: 10,
+              description: "Dashboard",
+              transcript_snippet: "Draft an email",
+              rationale: "Passt zur Szene",
+              score: 0.95,
+            },
+          ],
+          recommended_candidate_id: "scene-0-candidate-0",
+          recommended_included: true,
+          recommended_duration_s: 5,
+          selected_candidate_id: null,
+          included: null,
+          requested_duration_s: null,
+        },
+      ],
+      voice_total_frames: 1350,
+      fps: 30,
     };
     const contactGate: ContactSheetGateStatus = {
       enabled: true,

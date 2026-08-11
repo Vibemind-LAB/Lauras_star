@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { LauraClient, VisualSelectionGateStatus } from "../../api";
+import type {
+  LauraClient,
+  VisualSceneChoice,
+  VisualSelectionGateStatus,
+} from "../../api";
 import { VisualSelectionCard } from "./VisualSelectionCard";
 
 type VisualSelectionClient = Pick<
@@ -57,6 +61,66 @@ const gate: VisualSelectionGateStatus = {
     },
   ],
 };
+
+function sceneChoice(
+  roughCutOrder: number,
+  options: {
+    included?: boolean;
+    duration?: number;
+    maxDuration?: number;
+    candidateCount?: number;
+    startFrame?: number;
+  } = {},
+): VisualSceneChoice {
+  const sceneNumber = roughCutOrder + 1;
+  const startFrame = options.startFrame ?? roughCutOrder * 300;
+  const candidateCount = options.candidateCount ?? 1;
+  return {
+    rough_cut_order: roughCutOrder,
+    scene_number: sceneNumber,
+    description:
+      roughCutOrder === 0 ? "Rowboat dashboard and file organizer" : `Rough-Cut scene ${sceneNumber}`,
+    transcript: roughCutOrder === 0 ? "recognized UI: Draft an email" : `Transcript ${sceneNumber}`,
+    rationale: `Relevant für Rough Cut ${roughCutOrder + 1}`,
+    candidates: Array.from({ length: candidateCount }, (_, windowIndex) => ({
+      candidate_id: `scene-${roughCutOrder}-candidate-${windowIndex}`,
+      rough_cut_order: roughCutOrder,
+      scene_number: sceneNumber,
+      window_index: windowIndex,
+      src_start_frame: startFrame + windowIndex * 300,
+      src_end_frame_exclusive: startFrame + windowIndex * 300 + 300,
+      thumb_frame: startFrame + windowIndex * 300 + 150,
+      max_duration_s: options.maxDuration ?? 10,
+      description: `Fenster ${windowIndex + 1}`,
+      transcript_snippet:
+        roughCutOrder === 0 ? "recognized UI: Draft an email" : `Transcript ${sceneNumber}`,
+      rationale: `Kandidat ${windowIndex + 1}`,
+      score: 1 - windowIndex / 10,
+    })),
+    recommended_candidate_id: `scene-${roughCutOrder}-candidate-0`,
+    recommended_included: options.included ?? true,
+    recommended_duration_s: options.duration ?? 10,
+    selected_candidate_id: null,
+    included: null,
+    requested_duration_s: null,
+  };
+}
+
+function sceneGate(
+  overrides: Partial<VisualSelectionGateStatus> = {},
+): VisualSelectionGateStatus {
+  return {
+    enabled: true,
+    approved: false,
+    pending: true,
+    proposal_id: "a".repeat(64),
+    beats: [],
+    scene_choices: Array.from({ length: 5 }, (_, index) => sceneChoice(index)),
+    voice_total_frames: 1350,
+    fps: 30,
+    ...overrides,
+  };
+}
 
 function client(
   overrides: Partial<VisualSelectionClient> = {},
@@ -148,5 +212,161 @@ describe("VisualSelectionCard", () => {
 
     expect(confirm.disabled).toBe(true);
     expect((screen.getByTestId("visual-candidate-candidate-1") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("shows every rough-cut scene once in received order with decision metadata", () => {
+    const choices = [
+      sceneChoice(2),
+      sceneChoice(0, { candidateCount: 4, startFrame: 1766 }),
+      sceneChoice(1),
+      sceneChoice(3),
+      sceneChoice(4),
+      sceneChoice(5),
+      sceneChoice(6),
+      sceneChoice(7),
+    ];
+    const assetFrameUrl = vi.fn().mockReturnValue(new Promise<string>(() => undefined));
+
+    render(
+      <VisualSelectionCard
+        gate={sceneGate({ scene_choices: choices, voice_total_frames: 2400 })}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client({ assetFrameUrl })}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    const rows = screen.getAllByRole("group", { name: /Szene/ });
+    expect(rows).toHaveLength(8);
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+      "Szene 3 · Rough Cut 3",
+      "Szene 1 · Rough Cut 1",
+      "Szene 2 · Rough Cut 2",
+      "Szene 4 · Rough Cut 4",
+      "Szene 5 · Rough Cut 5",
+      "Szene 6 · Rough Cut 6",
+      "Szene 7 · Rough Cut 7",
+      "Szene 8 · Rough Cut 8",
+    ]);
+    expect(screen.getByText("Rowboat dashboard and file organizer")).toBeTruthy();
+    expect(screen.getByText("recognized UI: Draft an email")).toBeTruthy();
+    expect(screen.getByText("Frames 1766–2066")).toBeTruthy();
+    expect(assetFrameUrl).toHaveBeenCalledTimes(11);
+    expect(screen.getAllByRole("radio")).toHaveLength(11);
+  });
+
+  it("uses recommendations, supports skip and duration presets, and submits every ordered decision", async () => {
+    const confirmVisualSelection = vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j2" });
+    const choices = [
+      sceneChoice(0, { duration: 5, candidateCount: 2 }),
+      sceneChoice(1, { duration: 5 }),
+      sceneChoice(2, { duration: 5 }),
+      sceneChoice(3, { included: false, duration: 5 }),
+    ];
+    render(
+      <VisualSelectionCard
+        gate={sceneGate({ scene_choices: choices, voice_total_frames: 600 })}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client({ confirmVisualSelection })}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    expect((screen.getByTestId("visual-scene-use-0") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId("visual-scene-use-3") as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Szene 1: 6 Sekunden" }));
+    fireEvent.click(screen.getByTestId("visual-scene-use-3"));
+    fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+
+    await waitFor(() => expect(confirmVisualSelection).toHaveBeenCalledTimes(1));
+    expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), [
+      { rough_cut_order: 0, candidate_id: "scene-0-candidate-1", included: true, requested_duration_s: 6 },
+      { rough_cut_order: 1, candidate_id: "scene-1-candidate-0", included: true, requested_duration_s: 5 },
+      { rough_cut_order: 2, candidate_id: "scene-2-candidate-0", included: true, requested_duration_s: 5 },
+      { rough_cut_order: 3, candidate_id: "scene-3-candidate-0", included: true, requested_duration_s: 5 },
+    ]);
+  });
+
+  it("blocks undercoverage and previews the frame-exact final trim", () => {
+    const choices = Array.from({ length: 5 }, (_, index) =>
+      sceneChoice(index, { included: index < 4, duration: 10 }),
+    );
+    render(
+      <VisualSelectionCard
+        gate={sceneGate({ scene_choices: choices })}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client()}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    const confirm = screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    expect(screen.getByText("Gewählt: 40,0 s · Voice: 45,0 s")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("visual-scene-use-4"));
+    expect(confirm.disabled).toBe(false);
+    expect(screen.getByText("Letzte Szene final: 5,0 s")).toBeTruthy();
+  });
+
+  it("blocks a final trim below one second with a concrete conflict", () => {
+    render(
+      <VisualSelectionCard
+        gate={sceneGate({
+          scene_choices: [sceneChoice(0), sceneChoice(1), sceneChoice(2)],
+          voice_total_frames: 450,
+        })}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client()}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    expect(
+      (screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(screen.getByText("Die früheren Szenen lassen weniger als 1,0 s für die letzte Szene.")).toBeTruthy();
+  });
+
+  it("bounds duration buttons by the selected candidate capacity", () => {
+    const choice = sceneChoice(0, { maxDuration: 4, candidateCount: 2 });
+    choice.candidates[1] = { ...choice.candidates[1], max_duration_s: 7 };
+    render(
+      <VisualSelectionCard
+        gate={sceneGate({ scene_choices: [choice, sceneChoice(1), sceneChoice(2)] })}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client()}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Szene 1: 4 Sekunden" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Szene 1: 5 Sekunden" })).toBeNull();
+    fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-1"));
+    expect(screen.getByRole("button", { name: "Szene 1: 7 Sekunden" })).toBeTruthy();
+  });
+
+  it("keeps stale confirmation errors visible and does not refresh", async () => {
+    const onConfirmed = vi.fn();
+    const confirmVisualSelection = vi.fn().mockRejectedValue(new Error("409: proposal stale"));
+    render(
+      <VisualSelectionCard
+        gate={sceneGate()}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client({ confirmVisualSelection })}
+        onConfirmed={onConfirmed}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("409: proposal stale");
+    expect(onConfirmed).not.toHaveBeenCalled();
   });
 });
