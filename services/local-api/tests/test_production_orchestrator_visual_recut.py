@@ -27,6 +27,8 @@ from laura.short_creator.board_models import (
     VisualBeatPlan,
     VisualPlan,
     VisualRecutRequest,
+    VisualSceneCandidate,
+    VisualSceneChoice,
     VisualShotCandidate,
     VoiceArtifact,
     VoiceSegment,
@@ -216,6 +218,58 @@ def _pending_visual(board: Board) -> VisualPlan:
     return plan
 
 
+def _pending_v2_visual(board: Board) -> VisualPlan:
+    script = board.load("script")
+    voice = board.load("voice")
+    assert isinstance(script, Script)
+    assert isinstance(voice, VoiceArtifact)
+    request = VisualRecutRequest(
+        user_request="all Rough-Cut scenes",
+        script_version=script.version,
+        script_hash=content_hash(script),
+        voice_version=voice.version,
+        voice_hash=content_hash(voice),
+    )
+    candidate = VisualSceneCandidate(
+        candidate_id="scene-candidate-1",
+        rough_cut_order=0,
+        scene_number=1,
+        window_index=0,
+        src_start_frame=0,
+        src_end_frame_exclusive=90,
+        thumb_frame=45,
+        max_duration_s=3,
+        description="dashboard",
+        transcript_snippet="show the dashboard",
+        rationale="matches narration",
+        score=1.0,
+    )
+    plan = VisualPlan(
+        proposal_hash=PROPOSAL_HASH,
+        request_hash=content_hash(request),
+        scene_choices=[
+            VisualSceneChoice(
+                rough_cut_order=0,
+                scene_number=1,
+                description="dashboard workflow",
+                transcript="show the dashboard workflow",
+                rationale="covers the current Rough-Cut scene",
+                candidates=[candidate],
+                recommended_candidate_id=candidate.candidate_id,
+                recommended_included=True,
+                recommended_duration_s=1,
+            )
+        ],
+        rough_cut_scene_count=1,
+        voice_total_frames=30,
+        fps=30.0,
+    )
+    board.save("visual_recut_request", request)
+    board.save("visual_plan", plan)
+    board.clear_contact_sheet_approval(enable_gate=True)
+    return plan
+
+
 def _pending_contact_sheet(board: Board) -> str:
     plan = _pending_visual(board)
     confirmed = plan.model_copy(
@@ -287,6 +341,26 @@ def test_plain_resume_at_visual_gate_builds_no_team(
     assert result["gate"] == "visual_selection"
     assert result["proposal_hash"] == PROPOSAL_HASH
     assert result["required_action"] == "confirm_visual_selection"
+
+
+def test_plain_resume_at_v2_visual_gate_builds_no_team_and_returns_scene_choices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, asset_id, board = _seed_board(tmp_path)
+    plan = _pending_v2_visual(board)
+    monkeypatch.setattr(
+        production_orchestrator,
+        "build_production_team",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not build team")),
+    )
+
+    result = _run(db, asset_id, board)
+
+    assert result["status"] == "awaiting_user_input"
+    assert result["gate"] == "visual_selection"
+    assert result["proposal_hash"] == PROPOSAL_HASH
+    assert result["required_action"] == "confirm_visual_selection"
+    assert result["scene_choices"] == [choice.model_dump() for choice in plan.scene_choices]
 
 
 def test_plain_resume_at_contact_sheet_gate_builds_no_team(
@@ -459,6 +533,10 @@ def test_task_contract_names_structural_visual_and_contact_sheet_gates(tmp_path:
     assert "VISUAL-SELECTION GATE" in task
     assert "CONTACT-SHEET APPROVAL GATE" in task
     assert "start_visual_recut exactly once" in task
+    assert "every current Rough-Cut scene" in task
+    assert "Rough-Cut order" in task
+    assert "1-10 second recommendations" in task
+    assert "tool receipt" in task
     assert "STOP" in task
     assert "never re-save storyline, script, or voice" in task
     assert "CONTACT-SHEET CHECKPOINT (known pattern, no extra session state)" not in task

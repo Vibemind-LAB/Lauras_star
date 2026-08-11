@@ -288,8 +288,10 @@ def build_production_task(
         "5) MANDATORY ORDER: reviews -> storyline -> script -> voice+cutlist -> contact sheet "
         "-> render (coding_agent) -> qa. Do not skip or reorder a stage.\n"
         "   VISUAL-SELECTION GATE (structural): for a visual-only recut that preserves the "
-        "approved narration, coding_agent must call start_visual_recut exactly once and STOP "
-        "after the tool persists the Visual Plan. While visual_recut_request is active, never "
+        "approved narration, coding_agent must call start_visual_recut exactly once. The "
+        "persisted proposal must contain every current Rough-Cut scene in Rough-Cut order, "
+        "with 1-10 second recommendations. STOP immediately after the Visual Plan tool receipt. "
+        "While visual_recut_request is active, never "
         "re-save storyline, script, or voice and never synthesize the voice again. Continue "
         "only after the user confirms the current proposal_hash.\n"
         "   CONTACT-SHEET APPROVAL GATE (structural): call save_contact_sheet immediately after "
@@ -580,6 +582,9 @@ def _gate_metadata(board: Board, gate: PendingUserGate) -> dict[str, Any]:
         plan = board.load("visual_plan")
         if isinstance(plan, VisualPlan):
             metadata["proposal_hash"] = plan.proposal_hash
+            metadata["scene_choices"] = [
+                choice.model_dump() for choice in plan.scene_choices
+            ]
     elif gate == "contact_sheet":
         sheet = board.load("contact_sheet")
         if isinstance(sheet, ContactSheet):

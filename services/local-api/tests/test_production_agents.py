@@ -242,9 +242,9 @@ from autogen_core.models import CreateResult, RequestUsage
 from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BoardMeta,
-    VisualBeatPlan,
     VisualPlan,
-    VisualShotCandidate,
+    VisualSceneCandidate,
+    VisualSceneChoice,
 )
 from laura.short_creator.production_agents import _new_pending_user_proposal
 
@@ -310,15 +310,15 @@ tool_calls = 0
 def start_visual_recut() -> str:
     global tool_calls
     tool_calls += 1
-    candidate = VisualShotCandidate(
+    candidate = VisualSceneCandidate(
         candidate_id="candidate-1",
-        beat_id="beat-1",
-        voice_segment_index=0,
+        rough_cut_order=0,
         scene_number=1,
         window_index=0,
         src_start_frame=0,
         src_end_frame_exclusive=150,
         thumb_frame=75,
+        max_duration_s=5,
         description="dashboard",
         transcript_snippet="hallo welt",
         rationale="hook",
@@ -329,16 +329,22 @@ def start_visual_recut() -> str:
         VisualPlan(
             proposal_hash="a" * 64,
             request_hash="b" * 64,
-            beats=[
-                VisualBeatPlan(
-                    beat_id="beat-1",
-                    voice_segment_index=0,
-                    narration_text="Hallo Welt",
-                    duration_s=1.0,
+            scene_choices=[
+                VisualSceneChoice(
+                    rough_cut_order=0,
+                    scene_number=1,
+                    description="dashboard",
+                    transcript="hallo welt",
+                    rationale="hook",
                     candidates=[candidate],
                     recommended_candidate_id=candidate.candidate_id,
+                    recommended_included=True,
+                    recommended_duration_s=1,
                 )
             ],
+            rough_cut_scene_count=1,
+            voice_total_frames=30,
+            fps=30.0,
         ),
     )
     return "visual proposal persisted"
@@ -734,6 +740,10 @@ def test_coding_agent_prioritizes_preserved_narration_visual_recut() -> None:
     assert preserve_start < normal_start
     assert "NEVER call synthesize_script_voice" in preserve_contract
     assert "start_visual_recut exactly once" in preserve_contract
+    assert "every current Rough-Cut scene" in preserve_contract
+    assert "Rough-Cut order" in preserve_contract
+    assert "1-10 second recommendations" in preserve_contract
+    assert "tool receipt" in preserve_contract
     assert "STOP" in preserve_contract
     assert "new production or the board has no voice" in msg[normal_start:]
 
