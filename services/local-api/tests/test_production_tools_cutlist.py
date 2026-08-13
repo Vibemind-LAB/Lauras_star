@@ -52,8 +52,8 @@ from laura.short_creator.production_tools import (
     script_hash,
     script_text,
 )
-from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 from laura.short_creator.visual_timeline import apply_scene_selections
+from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
 FPS = 30
 SCENE_FRAMES = 300  # 300 frames @ 30fps = 10.0s per scene
@@ -460,6 +460,8 @@ def test_v2_cutlist_uses_selected_lengths_and_exact_voice_frames(tmp_path: Path)
         parents={"script": content_hash(script), "voice": content_hash(voice)},
     )
     board.save("visual_recut_request", request)
+    rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+    assert rough_cut_hash is not None
     pending = VisualPlan(
         version=2,
         proposal_hash="a" * 64,
@@ -500,7 +502,7 @@ def test_v2_cutlist_uses_selected_lengths_and_exact_voice_frames(tmp_path: Path)
             "visual_recut_request": content_hash(request),
             "script": content_hash(script),
             "voice": content_hash(voice),
-            "rough_cut": _rough_cut_source_hash(db, asset_id),
+            "rough_cut": rough_cut_hash,
         },
     )
     confirmed = apply_scene_selections(
