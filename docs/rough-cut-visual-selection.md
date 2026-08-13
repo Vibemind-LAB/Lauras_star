@@ -1,6 +1,6 @@
 # Rough-Cut-basierte Visual-Auswahl
 
-Stand: 13. August 2026  
+Stand: 13. August 2026
 Branch: `codex/scene-gate-hard-stop`
 
 ## Ergebnis

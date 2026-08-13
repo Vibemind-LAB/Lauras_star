@@ -1,6 +1,6 @@
 # Rough-Cut-basierte Visual-Auswahl
 
-**Status:** Vom User am 2026-08-09 im Chat freigegeben  
+**Status:** Vom User am 2026-08-09 im Chat freigegeben
 **Erweitert:** `2026-08-08-visual-recut-full-frame-design.md`
 
 ## Problem
