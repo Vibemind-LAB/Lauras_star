@@ -453,24 +453,24 @@ def _start_and_confirm(harness: Harness) -> None:
 
 
 def test_start_visual_recut_proposes_every_rough_cut_scene_and_preserves_narration(
-    finished_harness: Harness,
+    v2_harness: Harness,
 ) -> None:
-    before = versions_and_hashes(finished_harness.board, "storyline", "script", "voice")
+    before = versions_and_hashes(v2_harness.board, "storyline", "script", "voice")
 
-    result = tool(finished_harness, "start_visual_recut")(
+    result = tool(v2_harness, "start_visual_recut")(
         user_request="better pictures, keep voice", framing_mode="full_frame_blur"
     )
 
     assert result["ok"] is True
     assert result["status"] == "awaiting_user_input"
-    assert len(result["scene_choices"]) == 2
+    assert len(result["scene_choices"]) == 5
     assert versions_and_hashes(
-        finished_harness.board, "storyline", "script", "voice"
+        v2_harness.board, "storyline", "script", "voice"
     ) == before
-    plan = finished_harness.board.load("visual_plan")
+    plan = v2_harness.board.load("visual_plan")
     assert isinstance(plan, VisualPlan)
-    assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1]
-    assert finished_harness.board.meta().contact_sheet_gate is True
+    assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1, 2, 3, 4]
+    assert v2_harness.board.meta().contact_sheet_gate is True
 
 
 def test_new_v2_selection_invalidates_finished_tail_and_rebuilds_contact_sheet(
@@ -730,17 +730,17 @@ def test_start_visual_recut_refuses_legacy_voice_without_mutation(harness: Harne
 
 
 def test_start_visual_recut_is_idempotent_while_same_proposal_is_pending(
-    harness: Harness,
+    v2_harness: Harness,
 ) -> None:
-    start = tool(harness, "start_visual_recut")
+    start = tool(v2_harness, "start_visual_recut")
     first = start(user_request="better pictures", framing_mode="full_frame_blur")
-    before = versions(harness.board, "visual_recut_request", "visual_plan")
+    before = versions(v2_harness.board, "visual_recut_request", "visual_plan")
 
     second = start(user_request="better pictures", framing_mode="full_frame_blur")
 
     assert first["ok"] is True
     assert second == first
-    assert versions(harness.board, "visual_recut_request", "visual_plan") == before
+    assert versions(v2_harness.board, "visual_recut_request", "visual_plan") == before
 
 
 def test_pending_v2_rebuilds_after_rough_cut_drift(v2_harness: Harness) -> None:

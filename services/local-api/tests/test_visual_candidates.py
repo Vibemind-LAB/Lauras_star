@@ -281,14 +281,14 @@ def test_proposal_hash_binds_voice_frames_and_canonical_fps() -> None:
         request=request(),
         scenes=fps_scenes,
         narration_text="same narration",
-        voice_total_frames=29,
+        voice_total_frames=90,
         fps=30.0,
     )
     fps_2997 = build_rough_cut_visual_plan(
         request=request(),
         scenes=fps_scenes,
         narration_text="same narration",
-        voice_total_frames=29,
+        voice_total_frames=90,
         fps=29.97,
     )
 
@@ -330,7 +330,7 @@ def test_subset_recommendation_uses_score_then_rough_cut_order() -> None:
 
 @pytest.mark.parametrize(
     ("voice_total_frames", "expected_included"),
-    [(96, 3), (120, 4)],
+    [(90, 3), (96, 3), (120, 4)],
 )
 def test_recommended_one_second_scene_baseline_is_frame_exact_and_confirmable(
     voice_total_frames: int,
@@ -356,6 +356,24 @@ def test_recommended_one_second_scene_baseline_is_frame_exact_and_confirmable(
     )
 
 
+@pytest.mark.parametrize(
+    ("scene_count", "voice_total_frames"),
+    [(2, 60), (4, 89)],
+)
+def test_plan_rejects_inputs_that_cannot_keep_three_one_second_scenes(
+    scene_count: int,
+    voice_total_frames: int,
+) -> None:
+    with pytest.raises(InsufficientVisualCandidates):
+        build_rough_cut_visual_plan(
+            request=request(),
+            scenes=scored_rough_cut_scenes([5] * scene_count),
+            narration_text="relevant narration",
+            voice_total_frames=voice_total_frames,
+            fps=_FPS,
+        )
+
+
 def test_one_second_subset_expansion_is_directly_confirmable() -> None:
     plan = build_rough_cut_visual_plan(
         request=request(),
@@ -377,7 +395,10 @@ def test_one_second_subset_expansion_is_directly_confirmable() -> None:
 def test_long_degraded_scene_offers_distributed_windows() -> None:
     plan = build_rough_cut_visual_plan(
         request=request(),
-        scenes=[degraded_scene(start=0, end_exclusive=3533, fps=_FPS)],
+        scenes=[
+            degraded_scene(start=0, end_exclusive=3533, fps=_FPS),
+            *rough_cut_scenes(3)[1:],
+        ],
         narration_text="Rowboat UI",
         voice_total_frames=300,
         fps=30.0,
@@ -421,9 +442,9 @@ def test_scene_candidates_expose_grounding_and_frame_derived_capacity() -> None:
 
     plan = build_rough_cut_visual_plan(
         request=request(),
-        scenes=[scene],
+        scenes=[scene, *rough_cut_scenes(2)],
         narration_text="draft the project update",
-        voice_total_frames=60,
+        voice_total_frames=90,
         fps=30.0,
     )
 
@@ -447,9 +468,9 @@ def test_scene_candidate_uses_a_deterministic_non_empty_fallback_label() -> None
 
     plan = build_rough_cut_visual_plan(
         request=request(),
-        scenes=[scene],
+        scenes=[scene, *rough_cut_scenes(2)],
         narration_text="show the workflow",
-        voice_total_frames=30,
+        voice_total_frames=90,
         fps=30.0,
     )
 
@@ -476,14 +497,14 @@ def test_default_includes_all_scenes_when_one_second_each_fits() -> None:
 def test_recommendation_uses_a_candidate_that_can_hold_its_duration() -> None:
     short_best_window = BestWindow(offset_s=0.0, duration_s=2.0)
     scene = SceneMaterial(
-        scene_number=1,
+        scene_number=3,
         src_start_frame=0,
         src_end_frame_exclusive=600,
         description="workflow",
         transcript="relevant workflow",
         transcript_spans=(TranscriptSpan(0, 60, "relevant workflow"),),
         review=SceneReview(
-            scene_number=1,
+            scene_number=3,
             src_start_frame=0,
             src_end_frame_exclusive=600,
             description="workflow",
@@ -496,19 +517,19 @@ def test_recommendation_uses_a_candidate_that_can_hold_its_duration() -> None:
 
     plan = build_rough_cut_visual_plan(
         request=request(),
-        scenes=[scene],
+        scenes=[*rough_cut_scenes(2), scene],
         narration_text="relevant workflow",
         voice_total_frames=300,
         fps=30.0,
     )
 
-    choice = plan.scene_choices[0]
+    choice = plan.scene_choices[-1]
     recommended = next(
         candidate
         for candidate in choice.candidates
         if candidate.candidate_id == choice.recommended_candidate_id
     )
-    assert choice.recommended_duration_s == 10
+    assert choice.recommended_duration_s == 8
     assert recommended.max_duration_s >= choice.recommended_duration_s
 
 

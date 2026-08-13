@@ -280,6 +280,16 @@ def _recommend_scene_coverage(
     voice_total_frames: int,
     fps: float,
 ) -> list[VisualSceneChoice]:
+    one_second_frames = _scene_duration_frames(1, fps)
+    if len(choices) < 3:
+        raise InsufficientVisualCandidates(
+            "visual selection requires at least three Rough-Cut scenes"
+        )
+    if voice_total_frames < 3 * one_second_frames:
+        raise InsufficientVisualCandidates(
+            "Voice cannot keep three Rough-Cut scenes at one second each"
+        )
+
     capacities = [
         max(candidate.max_duration_s for candidate in choice.candidates)
         for choice in choices
@@ -297,7 +307,6 @@ def _recommend_scene_coverage(
             choices[index].rough_cut_order,
         ),
     )
-    one_second_frames = _scene_duration_frames(1, fps)
     if one_second_frames * len(choices) <= voice_total_frames:
         included_indices = list(ranked_indices)
     else:
