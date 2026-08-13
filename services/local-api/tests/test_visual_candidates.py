@@ -328,6 +328,34 @@ def test_subset_recommendation_uses_score_then_rough_cut_order() -> None:
     assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1, 2, 3, 4]
 
 
+@pytest.mark.parametrize(
+    ("voice_total_frames", "expected_included"),
+    [(96, 3), (120, 4)],
+)
+def test_recommended_one_second_scene_baseline_is_frame_exact_and_confirmable(
+    voice_total_frames: int,
+    expected_included: int,
+) -> None:
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=scored_rough_cut_scenes([5] * 4),
+        narration_text="relevant narration",
+        voice_total_frames=voice_total_frames,
+        fps=_FPS,
+    )
+
+    assert sum(choice.recommended_included for choice in plan.scene_choices) == expected_included
+    confirmed = apply_scene_selections(
+        plan,
+        recommended_selections(plan),
+        "2026-08-09T12:00:00Z",
+    )
+    assert (
+        sum(shot.final_frames for shot in resolve_selected_shots(confirmed))
+        == voice_total_frames
+    )
+
+
 def test_one_second_subset_expansion_is_directly_confirmable() -> None:
     plan = build_rough_cut_visual_plan(
         request=request(),

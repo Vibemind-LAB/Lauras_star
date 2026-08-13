@@ -83,6 +83,10 @@ def _capacity_frames(beat_duration_s: float, fps: float) -> int:
     return ceil(max(4.0, beat_duration_s + INTER_SCENE_GAP_S) * fps)
 
 
+def _scene_duration_frames(duration_s: int, fps: float) -> int:
+    return max(1, round(duration_s * fps))
+
+
 def _window_from_start(
     scene: SceneMaterial,
     start_frame: int,
@@ -276,12 +280,14 @@ def _recommend_scene_coverage(
     voice_total_frames: int,
     fps: float,
 ) -> list[VisualSceneChoice]:
-    target_seconds = ceil(voice_total_frames / fps)
     capacities = [
         max(candidate.max_duration_s for candidate in choice.candidates)
         for choice in choices
     ]
-    if sum(capacities) < target_seconds:
+    capacity_frames = [
+        _scene_duration_frames(capacity, fps) for capacity in capacities
+    ]
+    if sum(capacity_frames) < voice_total_frames:
         raise InsufficientVisualCandidates("Rough-Cut scenes cannot cover the Voice")
 
     ranked_indices = sorted(
@@ -291,13 +297,15 @@ def _recommend_scene_coverage(
             choices[index].rough_cut_order,
         ),
     )
-    if target_seconds >= len(choices):
+    one_second_frames = _scene_duration_frames(1, fps)
+    if one_second_frames * len(choices) <= voice_total_frames:
         included_indices = list(ranked_indices)
     else:
         included_indices = list(ranked_indices[: min(3, len(choices))])
         next_rank = len(included_indices)
         while (
-            sum(capacities[index] for index in included_indices) < target_seconds
+            sum(capacity_frames[index] for index in included_indices)
+            < voice_total_frames
             and next_rank < len(ranked_indices)
         ):
             included_indices.append(ranked_indices[next_rank])
@@ -305,7 +313,7 @@ def _recommend_scene_coverage(
 
     included_index_set = set(included_indices)
     durations = [1] * len(choices)
-    remaining = max(0, target_seconds - len(included_indices))
+    requested_frames = one_second_frames * len(included_indices)
     final_timeline_index = max(
         included_indices,
         key=lambda index: choices[index].rough_cut_order,
@@ -317,13 +325,18 @@ def _recommend_scene_coverage(
     for index in allocation_order:
         if index not in included_index_set:
             continue
-        capacity = capacities[index] - durations[index]
-        allocated = min(remaining, capacity)
-        durations[index] += allocated
-        remaining -= allocated
-        if remaining == 0:
+        while (
+            requested_frames < voice_total_frames
+            and durations[index] < capacities[index]
+        ):
+            previous_frames = _scene_duration_frames(durations[index], fps)
+            durations[index] += 1
+            requested_frames += (
+                _scene_duration_frames(durations[index], fps) - previous_frames
+            )
+        if requested_frames >= voice_total_frames:
             break
-    if remaining > 0:
+    if requested_frames < voice_total_frames:
         raise InsufficientVisualCandidates("Rough-Cut scenes cannot cover the Voice")
 
     return [
