@@ -580,7 +580,7 @@
 - Consumes: Task 3 Draft im ProductionStatus und PUT-Vertrag.
 - Produces: `VisualSelectionDraft`, `OpenProductionSession`, `LauraApiError`, `saveVisualSelectionDraft`, `listOpenProductionSessions` und `useVisualSelectionDraft`.
 
-- [ ] **Step 1: Client-Wire-RED schreiben**
+- [x] **Step 1: Client-Wire-RED schreiben**
 
   Ergänze API-Tests für den exakten PUT-Body und Open-Sessions-GET:
 
@@ -603,13 +603,13 @@
 
   Prüfe zusätzlich, dass ein 409-JSON-Body als `LauraApiError` mit `status` und `body: unknown` erhalten bleibt, während `message` weiterhin mit `"409: "` beginnt.
 
-- [ ] **Step 2: Client-RED ausführen**
+- [x] **Step 2: Client-RED ausführen**
 
   Run: `cd apps/desktop && pnpm test -- src/api.production.test.ts`
 
   Expected: FAIL mit fehlenden Typen/Methoden.
 
-- [ ] **Step 3: Strikte Wire-Typen und Clientmethoden implementieren**
+- [x] **Step 3: Strikte Wire-Typen und Clientmethoden implementieren**
 
   ```typescript
   export interface VisualSelectionDraft {
@@ -641,7 +641,7 @@
 
   `ProductionBoardStatus.visual_selection_gate` erhält `draft?: VisualSelectionDraft`. Keine bestehenden optionalen Felder werden verpflichtend.
 
-- [ ] **Step 4: Autosave-Hook-RED schreiben**
+- [x] **Step 4: Autosave-Hook-RED schreiben**
 
   Mit deferred Promises prüft der Hook:
 
@@ -667,11 +667,11 @@
   } = useVisualSelectionDraft({ client, sessionId, gate });
   ```
 
-- [ ] **Step 5: Hook minimal implementieren**
+- [x] **Step 5: Hook minimal implementieren**
 
   Der Hook besitzt `revisionRef`, `queueRef`, `latestSelectionsRef` und einen Generation-Guard für Gate-/Session-Wechsel. Er hängt jeden Save an die bestehende Promise-Kette, statt Debounce-Timer zu verwenden. Damit ist jede Nutzeränderung unmittelbar durable, aber Requests bleiben geordnet.
 
-- [ ] **Step 6: Kartenintegration-RED schreiben**
+- [x] **Step 6: Kartenintegration-RED schreiben**
 
   Ergänze Komponenten-Tests:
 
@@ -682,11 +682,11 @@
   - unvollständige Coverage speichert, bleibt aber nicht confirmierbar;
   - Legacy-v1-Karte ruft keinen Draft-Endpoint auf.
 
-- [ ] **Step 7: `VisualSelectionCard` auf den Hook umstellen**
+- [x] **Step 7: `VisualSelectionCard` auf den Hook umstellen**
 
   Ersetze für v2 die lokale `useState(initialSceneDecisions(gate))`-Quelle durch den Hook. Jede bestehende `setDecisions`-Stelle ruft `updateDecision(next)` auf. Rendere Speicher-/Fehler-/Konflikt-/Stale-Status und die Aktionen `Erneut speichern` beziehungsweise `Serverstand laden`.
 
-- [ ] **Step 8: Desktop-Autosave-GREEN ausführen**
+- [x] **Step 8: Desktop-Autosave-GREEN ausführen**
 
   Run: `cd apps/desktop && pnpm test -- src/api.production.test.ts src/components/chat/useVisualSelectionDraft.test.tsx src/components/chat/VisualSelectionCard.test.tsx`
 
@@ -696,7 +696,7 @@
 
   Expected: alle Befehle Exit 0.
 
-- [ ] **Step 9: Task 5 committen**
+- [x] **Step 9: Task 5 committen**
 
   ```bash
   git add apps/desktop/src/api.ts apps/desktop/src/api.production.test.ts apps/desktop/src/components/chat/useVisualSelectionDraft.ts apps/desktop/src/components/chat/useVisualSelectionDraft.test.tsx apps/desktop/src/components/chat/VisualSelectionCard.tsx apps/desktop/src/components/chat/VisualSelectionCard.test.tsx

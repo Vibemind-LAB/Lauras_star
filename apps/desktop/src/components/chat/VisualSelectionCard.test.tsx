@@ -10,7 +10,7 @@ import { VisualSelectionCard } from "./VisualSelectionCard";
 
 type VisualSelectionClient = Pick<
   LauraClient,
-  "assetFrameUrl" | "confirmVisualSelection"
+  "assetFrameUrl" | "confirmVisualSelection" | "saveVisualSelectionDraft"
 >;
 
 function candidate(
@@ -128,6 +128,17 @@ function client(
   return {
     assetFrameUrl: vi.fn().mockReturnValue(new Promise<string>(() => undefined)),
     confirmVisualSelection: vi.fn().mockResolvedValue({ session_id: "s1", job_id: "j2" }),
+    saveVisualSelectionDraft: vi.fn().mockImplementation((sessionId, request) =>
+      Promise.resolve({
+        session_id: sessionId,
+        proposal_hash: request.proposal_hash,
+        selections: request.selections,
+        revision: (request.expected_revision ?? 0) + 1,
+        updated_utc: "2026-08-17T10:00:00+00:00",
+        stale: false,
+        stale_reason: null,
+      }),
+    ),
     ...overrides,
   };
 }
@@ -166,6 +177,99 @@ describe("VisualSelectionCard", () => {
       "candidate-2",
       "candidate-3",
     ]);
+    expect(c.saveVisualSelectionDraft).not.toHaveBeenCalled();
+  });
+
+  it("restores the persisted rough-cut draft and autosaves every complete decision change", async () => {
+    const choices = [
+      sceneChoice(0, { candidateCount: 2, duration: 5 }),
+      sceneChoice(1, { duration: 5 }),
+      sceneChoice(2, { duration: 5 }),
+      sceneChoice(3, { duration: 5 }),
+    ];
+    const serverSelections = choices.map((choice) => ({
+      rough_cut_order: choice.rough_cut_order,
+      candidate_id:
+        choice.rough_cut_order === 0
+          ? "scene-0-candidate-1"
+          : choice.recommended_candidate_id,
+      included: choice.rough_cut_order !== 3,
+      requested_duration_s: choice.rough_cut_order === 0 ? 6 : 5,
+    }));
+    const saveVisualSelectionDraft = vi.fn().mockImplementation((sessionId, request) =>
+      Promise.resolve({
+        session_id: sessionId,
+        proposal_hash: request.proposal_hash,
+        selections: request.selections,
+        revision: (request.expected_revision ?? 7) + 1,
+        updated_utc: "2026-08-17T10:05:00+00:00",
+        stale: false,
+        stale_reason: null,
+      }),
+    );
+    const withDraft = sceneGate({
+      scene_choices: choices,
+      voice_total_frames: 600,
+      draft: {
+        session_id: "s1",
+        proposal_hash: "a".repeat(64),
+        selections: serverSelections,
+        revision: 7,
+        updated_utc: "2026-08-17T09:00:00+00:00",
+        stale: false,
+        stale_reason: null,
+      },
+    });
+
+    render(
+      <VisualSelectionCard
+        gate={withDraft}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client({ saveVisualSelectionDraft })}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    expect(
+      (screen.getByTestId("visual-scene-candidate-scene-0-candidate-1") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect((screen.getByTestId("visual-scene-use-3") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText("Gespeichert")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-0"));
+    fireEvent.click(screen.getByTestId("visual-scene-use-3"));
+    fireEvent.click(screen.getByRole("button", { name: "Szene 1: 7 Sekunden" }));
+
+    await waitFor(() => expect(saveVisualSelectionDraft).toHaveBeenCalledTimes(3));
+    expect(saveVisualSelectionDraft.mock.calls[2]?.[1].selections).toEqual([
+      { rough_cut_order: 0, candidate_id: "scene-0-candidate-0", included: true, requested_duration_s: 7 },
+      { rough_cut_order: 1, candidate_id: "scene-1-candidate-0", included: true, requested_duration_s: 5 },
+      { rough_cut_order: 2, candidate_id: "scene-2-candidate-0", included: true, requested_duration_s: 5 },
+      { rough_cut_order: 3, candidate_id: "scene-3-candidate-0", included: true, requested_duration_s: 5 },
+    ]);
+    await waitFor(() => expect(screen.getByText("Gespeichert")).toBeTruthy());
+  });
+
+  it("blocks confirmation after a draft save error and offers an explicit retry", async () => {
+    const saveVisualSelectionDraft = vi.fn().mockRejectedValue(new Error("offline"));
+    render(
+      <VisualSelectionCard
+        gate={sceneGate()}
+        assetId="asset-1"
+        sessionId="s1"
+        client={client({ saveVisualSelectionDraft })}
+        onConfirmed={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("visual-scene-use-4"));
+    expect(await screen.findByRole("button", { name: "Erneut speichern" })).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("keeps confirm disabled while a beat is incomplete", () => {
@@ -279,6 +383,7 @@ describe("VisualSelectionCard", () => {
     fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-1"));
     fireEvent.click(screen.getByRole("button", { name: "Szene 1: 6 Sekunden" }));
     fireEvent.click(screen.getByTestId("visual-scene-use-3"));
+    await screen.findByText("Gespeichert");
     fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
 
     await waitFor(() => expect(confirmVisualSelection).toHaveBeenCalledTimes(1));
@@ -290,7 +395,7 @@ describe("VisualSelectionCard", () => {
     ]);
   });
 
-  it("blocks undercoverage and previews the frame-exact final trim", () => {
+  it("blocks undercoverage and previews the frame-exact final trim", async () => {
     const choices = Array.from({ length: 5 }, (_, index) =>
       sceneChoice(index, { included: index < 4, duration: 10 }),
     );
@@ -308,6 +413,7 @@ describe("VisualSelectionCard", () => {
     expect(confirm.disabled).toBe(true);
     expect(screen.getByText("Gewählt: 40,0 s · Voice: 45,0 s")).toBeTruthy();
     fireEvent.click(screen.getByTestId("visual-scene-use-4"));
+    await screen.findByText("Gespeichert");
     expect(confirm.disabled).toBe(false);
     expect(screen.getByText("Letzte Szene final: 5,0 s")).toBeTruthy();
   });
@@ -333,7 +439,7 @@ describe("VisualSelectionCard", () => {
     expect(screen.getByText("Die früheren Szenen lassen weniger als 1,0 s für die letzte Szene.")).toBeTruthy();
   });
 
-  it("bounds duration buttons by the selected candidate capacity", () => {
+  it("bounds duration buttons by the selected candidate capacity", async () => {
     const choice = sceneChoice(0, { maxDuration: 4, candidateCount: 2 });
     choice.candidates[1] = { ...choice.candidates[1], max_duration_s: 7 };
     render(
@@ -349,6 +455,7 @@ describe("VisualSelectionCard", () => {
     expect(screen.getByRole("button", { name: "Szene 1: 4 Sekunden" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Szene 1: 5 Sekunden" })).toBeNull();
     fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-1"));
+    await screen.findByText("Gespeichert");
     expect(screen.getByRole("button", { name: "Szene 1: 7 Sekunden" })).toBeTruthy();
   });
 

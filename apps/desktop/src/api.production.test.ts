@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  LauraApiError,
   LauraClient,
   type ContactSheetGateStatus,
   type ProductionBoardStatus,
   type VisualSceneSelection,
+  type SaveVisualSelectionDraftRequest,
   type VisualSelectionGateStatus,
 } from "./api";
 
@@ -197,6 +199,91 @@ describe("production session client methods", () => {
         body: JSON.stringify({ proposal_hash: proposalId, selections }),
       }),
     );
+  });
+
+  it("saves the complete visual-selection draft with its expected revision", async () => {
+    const response = {
+      session_id: "s1",
+      proposal_hash: "a".repeat(64),
+      selections: [
+        { rough_cut_order: 0, candidate_id: "c0", included: true, requested_duration_s: 5 },
+      ],
+      revision: 3,
+      updated_utc: "2026-08-17T10:00:00+00:00",
+      stale: false,
+      stale_reason: null,
+    };
+    const fn = mockFetch(response);
+    const c = new LauraClient("http://h", "tok");
+    const request: SaveVisualSelectionDraftRequest = {
+      proposal_hash: "a".repeat(64),
+      expected_revision: 2,
+      selections: response.selections,
+    };
+
+    await expect(c.saveVisualSelectionDraft("s1", request)).resolves.toEqual(response);
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/production/s1/visual-selection/draft",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify(request) }),
+    );
+  });
+
+  it("lists open production sessions", async () => {
+    const rows = [
+      {
+        session_id: "s1",
+        conversation_id: "c1",
+        project_id: "p1",
+        asset_id: "a1",
+        asset_display_name: "Rough Cut",
+        brief_preview: "Build the visual cut",
+        resume_point: "visual_selection",
+        state: "awaiting-approval",
+        updated_utc: "2026-08-17T10:00:00+00:00",
+        draft_updated_utc: "2026-08-17T09:59:00+00:00",
+        latest_job_id: "j1",
+        stale: false,
+        stale_reason: null,
+      },
+    ];
+    const fn = mockFetch(rows);
+    const c = new LauraClient("http://h", "tok");
+
+    await expect(c.listOpenProductionSessions()).resolves.toEqual(rows);
+    expect(fn).toHaveBeenCalledWith(
+      "http://h/production-sessions/open",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+  });
+
+  it("preserves a structured 409 response in LauraApiError", async () => {
+    const body = {
+      detail: {
+        code: "revision_conflict",
+        current: { revision: 3, selections: [] },
+      },
+    };
+    const text = JSON.stringify(body);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 409, text: async () => text }),
+    );
+    const c = new LauraClient("http://h", "tok");
+
+    let caught: unknown;
+    try {
+      await c.saveVisualSelectionDraft("s1", {
+        proposal_hash: "a".repeat(64),
+        expected_revision: 2,
+        selections: [],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(LauraApiError);
+    expect((caught as LauraApiError).status).toBe(409);
+    expect((caught as LauraApiError).body).toEqual(body);
+    expect((caught as Error).message.startsWith("409: ")).toBe(true);
   });
 
   it("confirms the currently displayed contact-sheet hash", async () => {

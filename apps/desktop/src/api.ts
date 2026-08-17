@@ -868,6 +868,23 @@ export interface VisualSceneSelection {
   requested_duration_s: number;
 }
 
+/** Autosaved, revision-bound Rough-Cut decisions returned by the production status/API. */
+export interface VisualSelectionDraft {
+  session_id: string;
+  proposal_hash: string;
+  selections: VisualSceneSelection[];
+  revision: number | null;
+  updated_utc: string | null;
+  stale: boolean;
+  stale_reason: string | null;
+}
+
+export interface SaveVisualSelectionDraftRequest {
+  proposal_hash: string;
+  expected_revision: number | null;
+  selections: VisualSceneSelection[];
+}
+
 function isStringArray(
   values: VisualSceneSelection[] | string[],
 ): values is string[] {
@@ -884,6 +901,7 @@ export interface VisualSelectionGateStatus {
   scene_choices?: VisualSceneChoice[];
   voice_total_frames?: number | null;
   fps?: number | null;
+  draft?: VisualSelectionDraft;
 }
 
 /** One contact-sheet row's approval metadata. The PNG itself stays in `ChatPreview`. */
@@ -977,6 +995,23 @@ export interface ProductionPendingStatus {
 /** Read-only status for a v2 production session (GET /production/{sessionId}). */
 export type ProductionStatus = ProductionBoardStatus | ProductionPendingStatus;
 
+/** One resumable production listed in the desktop's explicit open-sessions entry point. */
+export interface OpenProductionSession {
+  session_id: string;
+  conversation_id: string | null;
+  project_id: string | null;
+  asset_id: string;
+  asset_display_name: string;
+  brief_preview: string;
+  resume_point: string | null;
+  state: string;
+  updated_utc: string;
+  draft_updated_utc: string | null;
+  latest_job_id: string | null;
+  stale: boolean;
+  stale_reason: string | null;
+}
+
 /** Accepted response from creating a v2 production session or posting a follow-up message. */
 export interface ProductionCreated {
   session_id: string;
@@ -1032,6 +1067,17 @@ export interface ProductionEvents {
   done: boolean;
 }
 
+export class LauraApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+    message: string,
+  ) {
+    super(message);
+    this.name = "LauraApiError";
+  }
+}
+
 export class LauraClient {
   constructor(
     private readonly baseUrl: string,
@@ -1048,7 +1094,14 @@ export class LauraClient {
       },
     });
     if (!res.ok) {
-      throw new Error(`${res.status}: ${await res.text()}`);
+      const text = await res.text();
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text) as unknown;
+      } catch {
+        // Plain-text FastAPI/proxy responses remain available as-is.
+      }
+      throw new LauraApiError(res.status, body, `${res.status}: ${text}`);
     }
     return (await res.json()) as T;
   }
@@ -1166,6 +1219,20 @@ export class LauraClient {
    */
   getProductionStatus(sessionId: string): Promise<ProductionStatus> {
     return this.request<ProductionStatus>(`/production/${sessionId}`);
+  }
+
+  saveVisualSelectionDraft(
+    sessionId: string,
+    body: SaveVisualSelectionDraftRequest,
+  ): Promise<VisualSelectionDraft> {
+    return this.request<VisualSelectionDraft>(
+      `/production/${sessionId}/visual-selection/draft`,
+      { method: "PUT", body: JSON.stringify(body) },
+    );
+  }
+
+  listOpenProductionSessions(): Promise<OpenProductionSession[]> {
+    return this.request<OpenProductionSession[]>("/production-sessions/open");
   }
 
   /** Topic in, cross-video montage out: builds an overview sequence over the whole project
