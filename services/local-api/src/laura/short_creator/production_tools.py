@@ -163,6 +163,11 @@ from .visual_candidates import (
     TranscriptSpan,
     build_rough_cut_visual_plan,
 )
+from .visual_selection_state import (
+    SourceMediaStaleError,
+    capture_source_media_snapshot,
+    validate_source_media_snapshot,
+)
 from .visual_timeline import resolve_selected_shots, voice_total_frames
 from .voice import VoiceBackend, resolve_voice_backend
 from .voice_concat import (
@@ -2728,30 +2733,44 @@ def build_production_tool_specs(
                         current_rough_cut_hash,
                         current_total_frames,
                     )
-                    expected_parents = {
-                        "visual_recut_request": _content_hash(request),
-                        "script": _content_hash(script),
-                        "voice": _content_hash(voice),
-                        "rough_cut": current_rough_cut_hash,
-                    }
-                    if (
-                        current_materials
-                        and current_rough_cut_hash is not None
-                        and current_plan.parents == expected_parents
-                        and current_plan.fps == current_fps
-                        and current_plan.voice_total_frames == current_total_frames
-                        and current_plan.rough_cut_scene_count
-                        == len(current_materials)
-                    ):
-                        return {
-                            "ok": True,
-                            "status": "awaiting_user_input",
-                            "proposal_id": current_plan.proposal_hash,
-                            "scene_choices": [
-                                choice.model_dump()
-                                for choice in current_plan.scene_choices
-                            ],
-                        }
+                    if current_rough_cut_hash is not None:
+                        current_source = capture_source_media_snapshot(
+                            db,
+                            asset_id=asset_id,
+                            rough_cut_hash=current_rough_cut_hash,
+                            fps=current_fps,
+                            voice_hash=_content_hash(voice),
+                            voice_total_frames=current_total_frames,
+                            script_hash=_content_hash(script),
+                            request_hash=_content_hash(request),
+                            strong=True,
+                        )
+                        if current_source.strong_hash is not None:
+                            expected_parents = {
+                                "visual_recut_request": _content_hash(request),
+                                "script": _content_hash(script),
+                                "voice": _content_hash(voice),
+                                "rough_cut": current_rough_cut_hash,
+                                "source_media": current_source.strong_hash,
+                                "source_media_quick": current_source.quick_hash,
+                            }
+                            if (
+                                current_materials
+                                and current_plan.parents == expected_parents
+                                and current_plan.fps == current_fps
+                                and current_plan.voice_total_frames == current_total_frames
+                                and current_plan.rough_cut_scene_count
+                                == len(current_materials)
+                            ):
+                                return {
+                                    "ok": True,
+                                    "status": "awaiting_user_input",
+                                    "proposal_id": current_plan.proposal_hash,
+                                    "scene_choices": [
+                                        choice.model_dump()
+                                        for choice in current_plan.scene_choices
+                                    ],
+                                }
                 else:
                     return {
                         "ok": True,
@@ -2771,21 +2790,34 @@ def build_production_tool_specs(
                 return {"ok": False, "reason": "no rough-cut scene material available"}
             if rough_cut_hash is None:
                 return {"ok": False, "reason": "no Rough-Cut source ranges available"}
+            source_snapshot = capture_source_media_snapshot(
+                db,
+                asset_id=asset_id,
+                rough_cut_hash=rough_cut_hash,
+                fps=fps,
+                voice_hash=_content_hash(voice),
+                voice_total_frames=total_frames,
+                script_hash=_content_hash(script),
+                request_hash=_content_hash(request),
+                strong=True,
+            )
+            if source_snapshot.strong_hash is None:
+                return {"ok": False, "reason": "source media identity is unavailable"}
+            plan_parents = {
+                "visual_recut_request": _content_hash(request),
+                "script": _content_hash(script),
+                "voice": _content_hash(voice),
+                "rough_cut": rough_cut_hash,
+                "source_media": source_snapshot.strong_hash,
+                "source_media_quick": source_snapshot.quick_hash,
+            }
             plan = build_rough_cut_visual_plan(
                 request=request,
                 scenes=materials,
                 narration_text=" ".join(line.text for line in ordered_lines),
                 voice_total_frames=total_frames,
                 fps=fps,
-            ).model_copy(
-                update={
-                    "parents": {
-                        "visual_recut_request": _content_hash(request),
-                        "script": _content_hash(script),
-                        "voice": _content_hash(voice),
-                        "rough_cut": rough_cut_hash,
-                    }
-                }
+                proposal_parents=plan_parents,
             )
             board.save("visual_recut_request", request)
             board.save("visual_plan", plan)
@@ -2926,7 +2958,10 @@ def build_production_tool_specs(
                             "reason": "current Rough-Cut source ranges are unavailable",
                         }
                     expected_plan_parents["rough_cut"] = current_rough_cut_hash
-                if visual_plan.parents != expected_plan_parents:
+                if any(
+                    visual_plan.parents.get(name) != parent_hash
+                    for name, parent_hash in expected_plan_parents.items()
+                ):
                     return {
                         "ok": False,
                         "reason": (
@@ -2951,6 +2986,36 @@ def build_production_tool_specs(
                                 "visual plan Voice frame projection is stale; "
                                 "start_visual_recut again"
                             ),
+                        }
+                    source_quick_hash = visual_plan.parents.get("source_media_quick")
+                    source_strong_hash = visual_plan.parents.get("source_media")
+                    assert current_rough_cut_hash is not None
+                    if source_quick_hash is None or source_strong_hash is None:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                "visual plan has no current source-media identity; "
+                                "start_visual_recut again"
+                            ),
+                        }
+                    try:
+                        validate_source_media_snapshot(
+                            db,
+                            asset_id=asset_id,
+                            rough_cut_hash=current_rough_cut_hash,
+                            fps=fps,
+                            voice_hash=current_voice_hash,
+                            voice_total_frames=current_voice_total_frames,
+                            script_hash=current_script_hash,
+                            request_hash=_content_hash(visual_request),
+                            expected_quick_hash=source_quick_hash,
+                            expected_strong_hash=source_strong_hash,
+                            strong=True,
+                        )
+                    except SourceMediaStaleError as exc:
+                        return {
+                            "ok": False,
+                            "reason": f"visual source is stale: {exc.reason}",
                         }
                     resolved_shots = resolve_selected_shots(visual_plan)
                     v2_segments: list[CutSegment] = []

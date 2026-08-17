@@ -422,7 +422,11 @@ def test_message_turn_context_carries_active_session_line(tmp_path: Path) -> Non
     )
     session_id = "sess-1"
     repos.create_production_session(
-        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW,
+        db,
+        session_id=session_id,
+        asset_id=asset["id"],
+        created_utc=_NOW,
+        brief_text="Baue einen 45-Sekunden-Short mit allen Rough-Cut-Szenen",
     )
     root = board_root_for(db, asset["id"], session_id)
     meta = BoardMeta(
@@ -457,6 +461,10 @@ def test_message_turn_context_carries_active_session_line(tmp_path: Path) -> Non
     assert resp.status_code == 202
     assert len(calls) == 1, "the router runs exactly once for a plain reply"
     assert f"Active production session: {session_id} (awaiting-approval)" in calls[0]
+    assert (
+        "Original production brief: Baue einen 45-Sekunden-Short mit allen "
+        "Rough-Cut-Szenen"
+    ) in calls[0]
 
 
 def test_message_turn_context_skips_session_line_for_broken_board(tmp_path: Path) -> None:

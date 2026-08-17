@@ -30,9 +30,11 @@ from ..short_creator.board_models import (
     ContactSheet,
     Format,
     SceneSelection,
+    Script,
     VisualPlan,
     VisualRecutRequest,
     VisualSceneSelection,
+    VoiceArtifact,
     content_hash,
 )
 
@@ -45,6 +47,17 @@ from ..short_creator.overview_build import build_overview
 from ..short_creator.overview_scout import OverviewDecision, run_overview_scout
 from ..short_creator.overview_windows import build_candidates, duration_seconds
 from ..short_creator.scout import ScoutDecision, run_scout
+from ..short_creator.visual_selection_drafts import (
+    VisualDraftValidationError,
+    VisualSelectionDraftView,
+    default_visual_selections,
+    draft_view_from_row,
+    validate_draft_selections,
+)
+from ..short_creator.visual_selection_state import (
+    SourceMediaStaleError,
+    validate_source_media_snapshot,
+)
 from ..short_creator.visual_timeline import VisualSelectionError, apply_scene_selections
 from ..util import new_id
 
@@ -134,6 +147,14 @@ class VisualSelectionConfirmRequest(BaseModel):
         if (self.selections is None) == (self.selected_candidate_ids is None):
             raise ValueError("provide selections for v2 or selected_candidate_ids for v1")
         return self
+
+
+class VisualSelectionDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    selections: list[VisualSceneSelectionRequest]
 
 
 class ContactSheetConfirmRequest(BaseModel):
@@ -433,7 +454,11 @@ def _create_production_session(
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
-        db, session_id=session_id, asset_id=asset_id, created_utc=created_utc
+        db,
+        session_id=session_id,
+        asset_id=asset_id,
+        created_utc=created_utc,
+        brief_text=task,
     )
     payload: dict[str, Any] = {
         "asset_id": asset_id,
@@ -1076,6 +1101,174 @@ def confirm_scene_selection(
     return {**confirm_result, **run_production_resume(db, session_id)}
 
 
+def _pending_v2_visual_plan(board: Board, proposal_hash: str | None = None) -> VisualPlan:
+    request = board.load("visual_recut_request")
+    plan = board.load("visual_plan")
+    if not isinstance(request, VisualRecutRequest) or not isinstance(plan, VisualPlan):
+        raise HTTPException(status.HTTP_409_CONFLICT, "visual selection gate is not enabled")
+    if not plan.scene_choices or plan.confirmed_utc is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "no pending v2 visual proposal")
+    if proposal_hash is not None and proposal_hash != plan.proposal_hash:
+        raise HTTPException(status.HTTP_409_CONFLICT, "stale visual proposal")
+    return plan
+
+
+def _visual_draft_source_fingerprint(
+    db: Database,
+    *,
+    asset_id: str,
+    board: Board,
+    plan: VisualPlan,
+    strong: bool,
+) -> str:
+    from ..short_creator.production_tools import _fps, _rough_cut_source_hash
+    from ..short_creator.visual_timeline import voice_total_frames
+
+    request = board.load("visual_recut_request")
+    script = board.load("script")
+    voice = board.load("voice")
+    if not isinstance(request, VisualRecutRequest):
+        raise SourceMediaStaleError("visual_request_missing")
+    if not isinstance(script, Script):
+        raise SourceMediaStaleError("script_missing")
+    if not isinstance(voice, VoiceArtifact):
+        raise SourceMediaStaleError("voice_missing")
+    rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+    if rough_cut_hash is None:
+        raise SourceMediaStaleError("rough_cut_missing")
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise SourceMediaStaleError("asset_missing")
+    fps = _fps(db, asset)
+    current_voice_frames = voice_total_frames(voice, fps)
+    current_parents = {
+        "visual_recut_request": content_hash(request),
+        "script": content_hash(script),
+        "voice": content_hash(voice),
+        "rough_cut": rough_cut_hash,
+    }
+    for name, parent_hash in current_parents.items():
+        if plan.parents.get(name) != parent_hash:
+            raise SourceMediaStaleError(f"{name}_changed")
+    if plan.fps != fps:
+        raise SourceMediaStaleError("frame_rate_changed")
+    if plan.voice_total_frames != current_voice_frames:
+        raise SourceMediaStaleError("voice_projection_changed")
+    quick_hash = plan.parents.get("source_media_quick")
+    strong_hash = plan.parents.get("source_media")
+    if quick_hash is None or strong_hash is None:
+        raise SourceMediaStaleError("source_identity_missing")
+    snapshot = validate_source_media_snapshot(
+        db,
+        asset_id=asset_id,
+        rough_cut_hash=rough_cut_hash,
+        fps=fps,
+        voice_hash=content_hash(voice),
+        voice_total_frames=current_voice_frames,
+        script_hash=content_hash(script),
+        request_hash=content_hash(request),
+        expected_quick_hash=quick_hash,
+        expected_strong_hash=strong_hash,
+        strong=strong,
+    )
+    return (
+        snapshot.strong_hash
+        if strong and snapshot.strong_hash is not None
+        else snapshot.quick_hash
+    )
+
+
+def _draft_view_for_session(
+    db: Database,
+    session_id: str,
+    *,
+    board: Board | None = None,
+) -> VisualSelectionDraftView:
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    active_board = board or _open_board_or_404(db, str(session["asset_id"]), session_id)
+    plan = _pending_v2_visual_plan(active_board)
+    row = repos.get_visual_selection_draft(db, session_id)
+    if row is None:
+        view = VisualSelectionDraftView(
+            session_id=session_id,
+            proposal_hash=plan.proposal_hash,
+            selections=default_visual_selections(plan),
+            revision=None,
+            updated_utc=None,
+        )
+    else:
+        view = draft_view_from_row(row)
+        if view.proposal_hash != plan.proposal_hash:
+            return view.model_copy(
+                update={"stale": True, "stale_reason": "stale_visual_proposal"}
+            )
+    try:
+        _visual_draft_source_fingerprint(
+            db,
+            asset_id=str(session["asset_id"]),
+            board=active_board,
+            plan=plan,
+            strong=False,
+        )
+    except SourceMediaStaleError as exc:
+        return view.model_copy(update={"stale": True, "stale_reason": exc.reason})
+    return view
+
+
+def _save_draft_for_session(
+    db: Database,
+    session_id: str,
+    body: VisualSelectionDraftRequest,
+) -> VisualSelectionDraftView:
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    selections = [
+        VisualSceneSelection.model_validate(item.model_dump()) for item in body.selections
+    ]
+    with board.transaction():
+        plan = _pending_v2_visual_plan(board, body.proposal_hash)
+        try:
+            validate_draft_selections(plan, selections)
+            source_fingerprint = _visual_draft_source_fingerprint(
+                db,
+                asset_id=str(session["asset_id"]),
+                board=board,
+                plan=plan,
+                strong=False,
+            )
+        except VisualDraftValidationError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        except SourceMediaStaleError as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"code": "stale_visual_selection", "reason": exc.reason},
+            ) from exc
+        try:
+            row = repos.save_visual_selection_draft(
+                db,
+                session_id=session_id,
+                proposal_hash=body.proposal_hash,
+                source_fingerprint=source_fingerprint,
+                selections=[selection.model_dump(mode="json") for selection in selections],
+                expected_revision=body.expected_revision,
+                updated_utc=_utc_now_iso(),
+            )
+        except repos.DraftRevisionConflict as exc:
+            current = draft_view_from_row(exc.current) if exc.current is not None else None
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {
+                    "code": "revision_conflict",
+                    "current": current.model_dump(mode="json") if current is not None else None,
+                },
+            ) from exc
+    return draft_view_from_row(row)
+
+
 def confirm_visual_selection(
     db: Database,
     session_id: str,
@@ -1115,6 +1308,19 @@ def confirm_visual_selection(
                     "provide selections for a v2 visual proposal",
                 )
             try:
+                _visual_draft_source_fingerprint(
+                    db,
+                    asset_id=str(session["asset_id"]),
+                    board=board,
+                    plan=plan,
+                    strong=True,
+                )
+            except SourceMediaStaleError as exc:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    {"code": "stale_visual_selection", "reason": exc.reason},
+                ) from exc
+            try:
                 updated_plan = apply_scene_selections(plan, selections, _utc_now_iso())
             except VisualSelectionError as exc:
                 raise HTTPException(
@@ -1133,6 +1339,7 @@ def confirm_visual_selection(
             )
             if not already_current:
                 board.save("visual_plan", updated_plan)
+            repos.delete_visual_selection_draft(db, session_id)
             v2_result: dict[str, Any] = {
                 "session_id": session_id,
                 "selection_hash": updated_plan.selection_hash,
@@ -1296,6 +1503,27 @@ def confirm_visual_selection_endpoint(
     )
 
 
+@router.get("/production/{session_id}/visual-selection/draft")
+def get_visual_selection_draft_endpoint(
+    session_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("read"))],
+) -> dict[str, Any]:
+    """Read the persisted v2 draft or deterministic recommendations without mutation."""
+    return _draft_view_for_session(_db(request), session_id).model_dump(mode="json")
+
+
+@router.put("/production/{session_id}/visual-selection/draft")
+def put_visual_selection_draft_endpoint(
+    session_id: str,
+    body: VisualSelectionDraftRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Persist one complete intermediate v2 decision set with revision CAS."""
+    return _save_draft_for_session(_db(request), session_id, body).model_dump(mode="json")
+
+
 @router.post(
     "/production/{session_id}/contact-sheet:confirm",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1336,6 +1564,15 @@ def _production_status_payload(
     result["resume_point"] = board.resume_point(_expected_scenes_for(db, asset_id))
     result["job"] = job_view
     result["board_ready"] = True
+    visual_gate = result.get("visual_selection_gate")
+    if (
+        isinstance(visual_gate, dict)
+        and visual_gate.get("pending")
+        and visual_gate.get("scene_choices")
+    ):
+        visual_gate["draft"] = _draft_view_for_session(
+            db, board.meta().session_id, board=board
+        ).model_dump(mode="json")
     sheet = board.load("contact_sheet")
     if isinstance(sheet, ContactSheet):
         result["artifacts"]["contact_sheet"].update(
@@ -1344,6 +1581,107 @@ def _production_status_payload(
             tiles=[t.model_dump() for t in sheet.tiles],
         )
     return result
+
+
+def _brief_preview(value: Any, *, limit: int = 160) -> str:
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
+def _open_production_session_views(db: Database) -> list[dict[str, Any]]:
+    """Return resumable sessions without mutating boards, drafts, or jobs."""
+    from ..short_creator.board import Board
+    from ..short_creator.production_orchestrator import board_root_for
+
+    views: list[dict[str, Any]] = []
+    for session in repos.list_production_sessions_by_updated(db):
+        session_id = str(session["session_id"])
+        asset_id = str(session["asset_id"])
+        asset = repos.get_asset(db, asset_id)
+        project_id = str(asset["project_id"]) if asset is not None else None
+        display_name = str(asset["display_name"]) if asset is not None else "Missing asset"
+        job_id = str(session["latest_job_id"]) if session.get("latest_job_id") else None
+        job = repos.get_job(db, job_id) if job_id is not None else None
+        job_status = str(job["status"]) if job is not None else None
+        running = job_status in ("queued", "running")
+        draft = repos.get_visual_selection_draft(db, session_id)
+        resume_point: str | None = None
+        stale = False
+        stale_reason: str | None = None
+
+        try:
+            if asset is None:
+                raise ValueError("asset_missing")
+            board = Board.open(board_root_for(db, asset_id, session_id))
+            status_payload = board.status()
+            resume_point = board.resume_point(_expected_scenes_for(db, asset_id))
+            visual_gate = status_payload.get("visual_selection_gate") or {}
+            if (
+                visual_gate.get("pending")
+                and visual_gate.get("scene_choices")
+            ):
+                draft_view = _draft_view_for_session(db, session_id, board=board)
+                stale = draft_view.stale
+                stale_reason = draft_view.stale_reason
+
+            if running:
+                state = "running"
+            elif any(
+                (status_payload.get(name) or {}).get("pending")
+                for name in (
+                    "script_gate",
+                    "scene_gate",
+                    "visual_selection_gate",
+                    "contact_sheet_gate",
+                )
+            ):
+                state = "awaiting-approval"
+            elif board.meta().status in ("complete", "failed", "cancelled"):
+                continue
+            else:
+                state = "in-progress"
+        except (FileNotFoundError, ValueError):
+            if running:
+                state = "running"
+            else:
+                state = "needs-attention"
+                stale = True
+                stale_reason = "board_unavailable"
+        except Exception:  # noqa: BLE001 - one corrupt session must not hide the rest
+            logger.warning("open production session could not be inspected", exc_info=True)
+            state = "needs-attention"
+            stale = True
+            stale_reason = "board_unreadable"
+
+        views.append(
+            {
+                "session_id": session_id,
+                "conversation_id": session.get("conversation_id"),
+                "project_id": project_id,
+                "asset_id": asset_id,
+                "asset_display_name": display_name,
+                "brief_preview": _brief_preview(session.get("brief_text")),
+                "resume_point": resume_point,
+                "state": state,
+                "updated_utc": str(session["updated_utc"]),
+                "draft_updated_utc": str(draft["updated_utc"]) if draft is not None else None,
+                "latest_job_id": job_id,
+                "stale": stale,
+                "stale_reason": stale_reason,
+            }
+        )
+    return views
+
+
+@router.get("/production-sessions/open")
+def list_open_production_sessions(
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("read"))],
+) -> list[dict[str, Any]]:
+    """List running, resumable, and diagnostic production sessions newest first."""
+    return _open_production_session_views(_db(request))
 
 
 @router.get("/production/{session_id}")

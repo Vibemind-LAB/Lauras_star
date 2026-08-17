@@ -88,12 +88,14 @@ def _seed_two_scenes(tmp_path: Path, *, scene_count: int = 2) -> tuple[Database,
         drop_frame=False,
         workspace_root=str(tmp_path / "ws" / "proj"),
     )
+    source_path = tmp_path / "a.mp4"
+    source_path.write_bytes(b"visual-source")
     asset = repos.create_asset(
         db,
         project_id=project["id"],
         type="video",
         display_name="a.mp4",
-        source_path=str(tmp_path / "a.mp4"),
+        source_path=str(source_path),
     )
     timeline = repos.create_timeline(
         db,
@@ -470,6 +472,12 @@ def test_start_visual_recut_proposes_every_rough_cut_scene_and_preserves_narrati
     plan = v2_harness.board.load("visual_plan")
     assert isinstance(plan, VisualPlan)
     assert [choice.rough_cut_order for choice in plan.scene_choices] == [0, 1, 2, 3, 4]
+    assert len(plan.parents["source_media"]) == 64
+    assert len(plan.parents["source_media_quick"]) == 64
+    asset = repos.get_asset(v2_harness.db, v2_harness.asset_id)
+    assert asset is not None
+    assert isinstance(asset["sha256"], str)
+    assert len(asset["sha256"]) == 64
     assert v2_harness.board.meta().contact_sheet_gate is True
 
 

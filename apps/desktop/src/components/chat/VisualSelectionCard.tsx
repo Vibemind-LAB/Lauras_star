@@ -3,13 +3,13 @@ import { type ReactElement, useEffect, useMemo, useState } from "react";
 import type {
   LauraClient,
   VisualSceneCandidate,
-  VisualSceneSelection,
   VisualSelectionGateStatus,
 } from "../../api";
+import { useVisualSelectionDraft } from "./useVisualSelectionDraft";
 
 type VisualSelectionClient = Pick<
   LauraClient,
-  "assetFrameUrl" | "confirmVisualSelection"
+  "assetFrameUrl" | "confirmVisualSelection" | "saveVisualSelectionDraft"
 >;
 
 function CandidateThumb({
@@ -188,26 +188,6 @@ interface SceneDecision {
   durationS: number;
 }
 
-function initialSceneDecisions(gate: VisualSelectionGateStatus): Record<number, SceneDecision> {
-  const decisions: Record<number, SceneDecision> = {};
-  for (const choice of gate.scene_choices ?? []) {
-    const preferredCandidateId =
-      choice.selected_candidate_id ?? choice.recommended_candidate_id;
-    const candidate = choice.candidates.find(
-      (entry) => entry.candidate_id === preferredCandidateId,
-    );
-    if (candidate === undefined) continue;
-    const preferredDuration =
-      choice.requested_duration_s ?? choice.recommended_duration_s;
-    decisions[choice.rough_cut_order] = {
-      candidateId: preferredCandidateId,
-      included: choice.included ?? choice.recommended_included,
-      durationS: Math.max(1, Math.min(preferredDuration, candidate.max_duration_s)),
-    };
-  }
-  return decisions;
-}
-
 function selectedCandidate(
   candidates: VisualSceneCandidate[],
   decision: SceneDecision | undefined,
@@ -227,33 +207,29 @@ function RoughCutVisualSelectionCard({
   onConfirmed,
 }: VisualSelectionCardProps): ReactElement {
   const choices = gate.scene_choices ?? [];
-  const [decisions, setDecisions] = useState<Record<number, SceneDecision>>(() =>
-    initialSceneDecisions(gate),
-  );
+  const {
+    decisions: selections,
+    updateDecision,
+    saveState,
+    flush,
+    retry,
+    loadServerDraft,
+  } = useVisualSelectionDraft({ client, sessionId, gate });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDecisions(initialSceneDecisions(gate));
-    setError(null);
-  }, [gate]);
-
-  const selections = useMemo<VisualSceneSelection[]>(
+  const decisions = useMemo<Record<number, SceneDecision>>(
     () =>
-      choices.flatMap((choice) => {
-        const decision = decisions[choice.rough_cut_order];
-        const candidate = selectedCandidate(choice.candidates, decision);
-        if (decision === undefined || candidate === undefined) return [];
-        return [
+      Object.fromEntries(
+        selections.map((selection) => [
+          selection.rough_cut_order,
           {
-            rough_cut_order: choice.rough_cut_order,
-            candidate_id: candidate.candidate_id,
-            included: decision.included,
-            requested_duration_s: decision.durationS,
+            candidateId: selection.candidate_id,
+            included: selection.included,
+            durationS: selection.requested_duration_s,
           },
-        ];
-      }),
-    [choices, decisions],
+        ]),
+      ),
+    [selections],
   );
 
   const fps = typeof gate.fps === "number" && gate.fps > 0 ? gate.fps : null;
@@ -293,25 +269,32 @@ function RoughCutVisualSelectionCard({
     roughCutOrder: number,
     candidate: VisualSceneCandidate,
   ): void => {
-    setDecisions((current) => {
-      const previous = current[roughCutOrder];
-      if (previous === undefined) return current;
-      return {
-        ...current,
-        [roughCutOrder]: {
-          ...previous,
-          candidateId: candidate.candidate_id,
-          durationS: Math.min(previous.durationS, candidate.max_duration_s),
-        },
-      };
-    });
+    updateDecision(
+      selections.map((selection) =>
+        selection.rough_cut_order === roughCutOrder
+          ? {
+              ...selection,
+              candidate_id: candidate.candidate_id,
+              requested_duration_s: Math.min(
+                selection.requested_duration_s,
+                candidate.max_duration_s,
+              ),
+            }
+          : selection,
+      ),
+    );
   };
 
+  const saveBlocksConfirm = ["saving", "error", "conflict", "stale"].includes(
+    saveState,
+  );
+
   const submit = async (): Promise<void> => {
-    if (!complete || busy || gate.proposal_id === null) return;
+    if (!complete || busy || saveBlocksConfirm || gate.proposal_id === null) return;
     setBusy(true);
     setError(null);
     try {
+      await flush();
       await client.confirmVisualSelection(sessionId, gate.proposal_id, selections);
       await onConfirmed();
     } catch (err) {
@@ -364,17 +347,13 @@ function RoughCutVisualSelectionCard({
                     checked={decision?.included ?? false}
                     disabled={busy || decision === undefined}
                     onChange={(event) =>
-                      setDecisions((current) => {
-                        const previous = current[choice.rough_cut_order];
-                        if (previous === undefined) return current;
-                        return {
-                          ...current,
-                          [choice.rough_cut_order]: {
-                            ...previous,
-                            included: event.target.checked,
-                          },
-                        };
-                      })
+                      updateDecision(
+                        selections.map((selection) =>
+                          selection.rough_cut_order === choice.rough_cut_order
+                            ? { ...selection, included: event.target.checked }
+                            : selection,
+                        ),
+                      )
                     }
                   />
                   Verwenden
@@ -425,14 +404,13 @@ function RoughCutVisualSelectionCard({
                         aria-label={`Szene ${choice.scene_number}: ${duration} Sekunden`}
                         disabled={busy || decision?.included === false}
                         onClick={() =>
-                          setDecisions((current) => {
-                            const previous = current[choice.rough_cut_order];
-                            if (previous === undefined) return current;
-                            return {
-                              ...current,
-                              [choice.rough_cut_order]: { ...previous, durationS: duration },
-                            };
-                          })
+                          updateDecision(
+                            selections.map((selection) =>
+                              selection.rough_cut_order === choice.rough_cut_order
+                                ? { ...selection, requested_duration_s: duration }
+                                : selection,
+                            ),
+                          )
                         }
                         className={`rounded border px-1 py-0.5 ${
                           decision?.durationS === duration
@@ -450,6 +428,33 @@ function RoughCutVisualSelectionCard({
           );
         })}
       </div>
+      {saveState === "saving" ? (
+        <div className="mt-1 text-content-muted">Speichert …</div>
+      ) : null}
+      {saveState === "saved" ? (
+        <div className="mt-1 text-status-ok">Gespeichert</div>
+      ) : null}
+      {saveState === "error" ? (
+        <div className="mt-1 text-status-err" role="alert">
+          Entwurf konnte nicht gespeichert werden.{" "}
+          <button type="button" onClick={retry} className="underline">
+            Erneut speichern
+          </button>
+        </div>
+      ) : null}
+      {saveState === "conflict" ? (
+        <div className="mt-1 text-status-err" role="alert">
+          Der Entwurf wurde an anderer Stelle geändert.{" "}
+          <button type="button" onClick={loadServerDraft} className="underline">
+            Serverstand laden
+          </button>
+        </div>
+      ) : null}
+      {saveState === "stale" ? (
+        <div className="mt-1 text-status-err" role="alert">
+          Quelldatei oder Vorschlag hat sich geändert. Bitte Auswahl neu öffnen.
+        </div>
+      ) : null}
       {error !== null ? (
         <div className="mt-1 text-status-err" role="alert">
           {error}
@@ -457,7 +462,7 @@ function RoughCutVisualSelectionCard({
       ) : null}
       <button
         type="button"
-        disabled={!complete || busy}
+        disabled={!complete || busy || saveBlocksConfirm}
         onClick={() => void submit()}
         className="mt-1 rounded bg-accent px-2 py-1 font-medium text-accent-ink disabled:opacity-40"
       >

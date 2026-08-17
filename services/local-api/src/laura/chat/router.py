@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Wall-clock cap on the real router's single model call (mirrors scout._SCOUT_TIMEOUT_S, but a
 # router turn has no tools to iterate on, so the cap can be tighter).
 _ROUTER_TIMEOUT_S = 30.0
+_MAX_BRIEF_CONTEXT_CHARS = 600
 
 TOOLS: frozenset[str] = frozenset(
     {
@@ -251,6 +252,11 @@ def compose_context(
             f"Active production session: {active_session['id']} "
             f"({active_session['state']})"
         )
+        brief = " ".join(str(active_session.get("brief") or "").split())
+        if brief:
+            lines.append(
+                "Original production brief: " + brief[:_MAX_BRIEF_CONTEXT_CHARS]
+            )
         scene_gate = active_session.get("scene_gate")
         if isinstance(scene_gate, dict):
             recommended = scene_gate.get("recommended") or []

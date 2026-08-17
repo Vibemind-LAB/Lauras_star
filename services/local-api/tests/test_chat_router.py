@@ -192,6 +192,32 @@ def test_compose_context_renders_active_session_line() -> None:
     assert lines[videos_idx + 1] == "Active production session: s1 (awaiting-approval)"
 
 
+def test_compose_context_keeps_the_persisted_brief_outside_the_last_twenty_messages() -> None:
+    messages = [
+        {"role": "user", "kind": "text", "content": {"text": f"later message {i}"}}
+        for i in range(25)
+    ]
+    context = compose_context(
+        project={"name": "P", "id": "p1"},
+        running_jobs=0,
+        messages=messages,
+        active_session={
+            "id": "s1",
+            "state": "awaiting-approval",
+            "brief": "Baue einen 45-Sekunden-Short\nmit allen Rough-Cut-Szenen",
+        },
+    )
+
+    assert "later message 4" not in context
+    assert (
+        "Original production brief: Baue einen 45-Sekunden-Short mit allen "
+        "Rough-Cut-Szenen"
+    ) in context
+    assert len(
+        [line for line in context.splitlines() if line.startswith("Original production brief:")]
+    ) == 1
+
+
 def test_compose_context_omits_session_line_when_none() -> None:
     ctx = compose_context(project={"name": "P", "id": "p1"}, running_jobs=0, messages=[])
     assert "Active production session" not in ctx

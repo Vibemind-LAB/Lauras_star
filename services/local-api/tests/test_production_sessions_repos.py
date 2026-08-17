@@ -55,9 +55,9 @@ def _seed_project_and_asset(db: SqliteDatabase, tmp_path: Path, asset_id: str) -
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_32_after_migrate(tmp_path: Path) -> None:
+def test_schema_version_includes_resumable_visual_selection(tmp_path: Path) -> None:
     db = _db(tmp_path)
-    assert db.schema_version() >= 32
+    assert db.schema_version() >= 36
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +78,102 @@ def test_create_and_get_production_session(tmp_path: Path) -> None:
     assert session["session_id"] == "sess_001"
     assert session["asset_id"] == asset_id
     assert session["created_utc"] == "2026-07-14T10:00:00.000Z"
+
+
+def test_production_session_persists_brief_conversation_and_updated_time(
+    tmp_path: Path,
+) -> None:
+    """Catches losing the resumable session's brief or chat link on restart."""
+    db = _db(tmp_path)
+    _, asset_id = _seed_project_and_asset(db, tmp_path, "asset_1")
+    repos.create_conversation(
+        db,
+        conversation_id="conversation-1",
+        created_utc="2026-08-17T08:00:00+00:00",
+    )
+
+    repos.create_production_session(
+        db,
+        session_id="session-1",
+        asset_id=asset_id,
+        created_utc="2026-08-17T08:00:00+00:00",
+        brief_text="Baue den Rough Cut weiter",
+    )
+    repos.link_production_session_conversation(
+        db,
+        "session-1",
+        "conversation-1",
+        updated_utc="2026-08-17T08:01:00+00:00",
+    )
+
+    session = repos.get_production_session(db, "session-1")
+    assert session is not None
+    assert session["brief_text"] == "Baue den Rough Cut weiter"
+    assert session["conversation_id"] == "conversation-1"
+    assert session["updated_utc"] == "2026-08-17T08:01:00+00:00"
+    conversation = repos.get_conversation(db, "conversation-1")
+    assert conversation is not None
+    assert conversation["updated_at"] == "2026-08-17T08:01:00+00:00"
+
+
+def test_list_production_sessions_by_updated_includes_all_assets(tmp_path: Path) -> None:
+    """Catches the resume list being scoped to one asset or sorted by creation time."""
+    db = _db(tmp_path)
+    _, first_asset_id = _seed_project_and_asset(db, tmp_path, "asset_1")
+    _, second_asset_id = _seed_project_and_asset(db, tmp_path, "asset_2")
+    repos.create_production_session(
+        db,
+        session_id="older-created-but-recently-edited",
+        asset_id=first_asset_id,
+        created_utc="2026-08-17T08:00:00+00:00",
+    )
+    repos.create_production_session(
+        db,
+        session_id="newer-created",
+        asset_id=second_asset_id,
+        created_utc="2026-08-17T09:00:00+00:00",
+    )
+    repos.touch_production_session(
+        db,
+        "older-created-but-recently-edited",
+        "2026-08-17T10:00:00+00:00",
+    )
+
+    rows = repos.list_production_sessions_by_updated(db)
+
+    assert [row["session_id"] for row in rows] == [
+        "older-created-but-recently-edited",
+        "newer-created",
+    ]
+
+
+def test_deleting_conversation_keeps_session_and_clears_link(tmp_path: Path) -> None:
+    """Catches a deleted chat making its resumable production session disappear."""
+    db = _db(tmp_path)
+    _, asset_id = _seed_project_and_asset(db, tmp_path, "asset_1")
+    repos.create_conversation(
+        db,
+        conversation_id="conversation-1",
+        created_utc="2026-08-17T08:00:00+00:00",
+    )
+    repos.create_production_session(
+        db,
+        session_id="session-1",
+        asset_id=asset_id,
+        created_utc="2026-08-17T08:00:00+00:00",
+    )
+    repos.link_production_session_conversation(
+        db,
+        "session-1",
+        "conversation-1",
+        updated_utc="2026-08-17T08:01:00+00:00",
+    )
+
+    repos.delete_conversation(db, "conversation-1")
+
+    session = repos.get_production_session(db, "session-1")
+    assert session is not None
+    assert session["conversation_id"] is None
 
 
 # ---------------------------------------------------------------------------

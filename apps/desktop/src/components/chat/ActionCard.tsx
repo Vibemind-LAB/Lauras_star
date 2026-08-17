@@ -269,19 +269,23 @@ const JOB_TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
  * A `null` jobId (an old message from before this backstop existed, or a tool that never wrote
  * one) behaves exactly as before: `done` finalizes immediately, no job cross-check.
  */
-function ProductionActionCard({
-  client,
-  sessionId,
-  jobId,
-  initialOutcome,
-  onFocus,
-}: {
+export interface ProductionSessionCardProps {
   client: LauraClient;
   sessionId: string;
   jobId: string | null;
   initialOutcome: string;
+  loadInitialStatus?: boolean;
   onFocus?: () => void;
-}): ReactElement {
+}
+
+export function ProductionSessionCard({
+  client,
+  sessionId,
+  jobId,
+  initialOutcome,
+  loadInitialStatus = false,
+  onFocus,
+}: ProductionSessionCardProps): ReactElement {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [phase, setPhase] = useState<"running" | "done" | "failed">(
     initialOutcome === "running" ? "running" : "done",
@@ -313,6 +317,22 @@ function ProductionActionCard({
   const [revertStatus, setRevertStatus] = useState<ProductionStatus | null>(null);
   const [revertHint, setRevertHint] = useState<string | null>(null);
   const effectiveStatus = revertStatus ?? status;
+
+  useEffect(() => {
+    if (!loadInitialStatus || phase === "running" || status !== null) return;
+    let cancelled = false;
+    void client
+      .getProductionStatus(sessionId)
+      .then((nextStatus) => {
+        if (!cancelled) setStatus(nextStatus);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) log.warn("ActionCard: initial production status fetch failed", e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, loadInitialStatus, phase, sessionId, status]);
 
   useEffect(() => {
     setRevertStatus(null);
@@ -676,7 +696,7 @@ export function ActionCard({ message, client, onFocus }: ActionCardProps): React
     if (sessionId === null) return <UnknownActionLine tool={tool} />;
     const jobId = typeof refs.job_id === "string" ? refs.job_id : null;
     return (
-      <ProductionActionCard
+      <ProductionSessionCard
         client={client}
         sessionId={sessionId}
         jobId={jobId}

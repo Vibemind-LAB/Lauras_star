@@ -6,6 +6,7 @@ import type {
   ChatTurnResult,
   ConversationSummary,
   LauraClient,
+  OpenProductionSession,
   ProductionBoardStatus,
 } from "../../api";
 import { renderWithQuery } from "../../test-utils";
@@ -13,6 +14,27 @@ import { ChatStage } from "./ChatStage";
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return { id: "c1", title: "Erster Chat", updated_at: "2026-08-03T00:00:00Z", ...overrides };
+}
+
+function openSession(
+  overrides: Partial<OpenProductionSession> = {},
+): OpenProductionSession {
+  return {
+    session_id: "s1",
+    conversation_id: "c1",
+    project_id: "p1",
+    asset_id: "a1",
+    asset_display_name: "Rough Cut",
+    brief_preview: "Baue den visuellen Schnitt weiter",
+    resume_point: "visual_selection",
+    state: "awaiting-approval",
+    updated_utc: "2026-08-17T10:00:00+00:00",
+    draft_updated_utc: "2026-08-17T09:59:00+00:00",
+    latest_job_id: "j1",
+    stale: false,
+    stale_reason: null,
+    ...overrides,
+  };
 }
 
 function textMessage(
@@ -108,6 +130,7 @@ function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): Production
 function client(overrides: Partial<LauraClient> = {}): LauraClient {
   return {
     listConversations: vi.fn().mockResolvedValue([]),
+    listOpenProductionSessions: vi.fn().mockResolvedValue([]),
     createConversation: vi.fn(),
     getConversation: vi.fn(),
     deleteConversation: vi.fn(),
@@ -126,6 +149,61 @@ beforeEach(() => {
 });
 
 describe("ChatStage", () => {
+  it("loads open sessions without opening one until the user clicks", async () => {
+    const getConversation = vi.fn();
+    const c = client({
+      listOpenProductionSessions: vi.fn().mockResolvedValue([openSession()]),
+      getConversation,
+    });
+    renderWithQuery(<ChatStage client={c} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Fortsetzen" })).toBeTruthy());
+    expect(getConversation).not.toHaveBeenCalled();
+    expect(c.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("resumes the linked conversation without creating a chat turn", async () => {
+    const action = actionMessage("m-action", 1, "start_short", {
+      session_id: "s1",
+    }, "done");
+    const getConversation = vi.fn().mockResolvedValue({
+      id: "c1",
+      title: "Production",
+      active_project_id: "p1",
+      messages: [action],
+    });
+    const c = client({
+      listConversations: vi.fn().mockResolvedValue([summary()]),
+      listOpenProductionSessions: vi.fn().mockResolvedValue([openSession()]),
+      getConversation,
+      getProductionStatus: vi.fn().mockResolvedValue(boardStatus()),
+    });
+    renderWithQuery(<ChatStage client={c} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fortsetzen" }));
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith("c1"));
+    expect(c.createConversation).not.toHaveBeenCalled();
+    expect(c.sendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("resumes an orphan session read-only with its brief and production card", async () => {
+    const getProductionStatus = vi.fn().mockResolvedValue(boardStatus());
+    const c = client({
+      listOpenProductionSessions: vi.fn().mockResolvedValue([
+        openSession({ conversation_id: null, latest_job_id: null }),
+      ]),
+      getProductionStatus,
+    });
+    renderWithQuery(<ChatStage client={c} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fortsetzen" }));
+    expect(await screen.findByText("Ursprünglicher Auftrag:")).toBeTruthy();
+    await waitFor(() => expect(getProductionStatus).toHaveBeenCalledWith("s1"));
+    expect(c.getConversation).not.toHaveBeenCalled();
+    expect(c.createConversation).not.toHaveBeenCalled();
+    expect(c.sendChatMessage).not.toHaveBeenCalled();
+  });
+
   it("loads the conversation list on mount", async () => {
     const items = [
       summary({ id: "c1", title: "Erster Chat" }),

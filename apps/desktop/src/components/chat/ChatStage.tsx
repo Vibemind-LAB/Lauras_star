@@ -1,11 +1,18 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
-import type { ChatMessage, ChatTurnResult, ConversationSummary, LauraClient } from "../../api";
+import type {
+  ChatMessage,
+  ChatTurnResult,
+  ConversationSummary,
+  LauraClient,
+  OpenProductionSession,
+} from "../../api";
 import { log } from "../../shared/log";
 import { ChatComposer } from "./ChatComposer";
 import { ChatPreview, type PreviewTarget } from "./ChatPreview";
 import { ChatThread } from "./ChatThread";
 import { ConversationList } from "./ConversationList";
+import { ProductionSessionCard } from "./ActionCard";
 
 /** The load-bearing facts of an `action` message needed to derive a preview target — same
  * narrowing as `ActionCard.tsx`'s `narrowActionContent`, kept local (not shared) since the two
@@ -116,7 +123,9 @@ export interface ChatStageProps {
  */
 export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [openSessions, setOpenSessions] = useState<OpenProductionSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [resumedOrphan, setResumedOrphan] = useState<OpenProductionSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // True while EITHER onSend's or onDecide's turn is in flight — the composer must stay locked
   // for both, not just a text send (Finding 1: a pending approval decision is still a turn).
@@ -142,9 +151,21 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
     }
   }, [client]);
 
+  const reloadOpenSessions = useCallback(async (): Promise<void> => {
+    try {
+      setOpenSessions(await client.listOpenProductionSessions());
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, [client]);
+
   useEffect(() => {
-    void reloadConversations();
-  }, [reloadConversations]);
+    void Promise.all([reloadConversations(), reloadOpenSessions()]);
+    const intervalId = window.setInterval(() => {
+      void reloadOpenSessions();
+    }, 2500);
+    return () => window.clearInterval(intervalId);
+  }, [reloadConversations, reloadOpenSessions]);
 
   // Load the active conversation's thread whenever it changes. Cancelled-guarded: switching
   // conversations again before this settles must not let the stale response win. Also the one
@@ -195,6 +216,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
   }, [client, messages, manualPreview]);
 
   const onNew = useCallback((): void => {
+    setResumedOrphan(null);
     void (async () => {
       try {
         const { id } = await client.createConversation(projectId ?? undefined);
@@ -205,6 +227,24 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
       }
     })();
   }, [client, projectId, reloadConversations]);
+
+  const onSelectConversation = useCallback((id: string): void => {
+    setResumedOrphan(null);
+    setActiveId(id);
+  }, []);
+
+  const onResume = useCallback((session: OpenProductionSession): void => {
+    setError(null);
+    setManualPreview(false);
+    if (session.conversation_id !== null) {
+      setResumedOrphan(null);
+      setActiveId(session.conversation_id);
+      return;
+    }
+    setActiveId(null);
+    setMessages([]);
+    setResumedOrphan(session);
+  }, []);
 
   const onDelete = useCallback(
     (id: string): void => {
@@ -311,9 +351,11 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
         <ConversationList
           items={conversations}
           activeId={activeId}
-          onSelect={setActiveId}
+          onSelect={onSelectConversation}
           onNew={onNew}
           onDelete={onDelete}
+          openSessions={openSessions}
+          onResume={onResume}
         />
       </aside>
 
@@ -326,13 +368,31 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
             {error}
           </div>
         )}
-        <ChatThread
-          messages={messages}
-          client={client}
-          onDecide={onDecide}
-          onFocusAction={onFocusAction}
-        />
-        <ChatComposer disabled={activeId === null || turnInFlight} onSend={onSend} />
+        {resumedOrphan !== null ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <div className="mb-1 text-[11px] text-content-muted">
+              <span className="font-medium text-content-strong">Ursprünglicher Auftrag:</span>{" "}
+              {resumedOrphan.brief_preview}
+            </div>
+            <ProductionSessionCard
+              client={client}
+              sessionId={resumedOrphan.session_id}
+              jobId={resumedOrphan.latest_job_id}
+              initialOutcome={resumedOrphan.state === "running" ? "running" : "done"}
+              loadInitialStatus
+            />
+          </div>
+        ) : (
+          <>
+            <ChatThread
+              messages={messages}
+              client={client}
+              onDecide={onDecide}
+              onFocusAction={onFocusAction}
+            />
+            <ChatComposer disabled={activeId === null || turnInFlight} onSend={onSend} />
+          </>
+        )}
       </section>
 
       <section aria-label="Vorschau" className="flex min-h-0 flex-col overflow-hidden bg-surface-0">

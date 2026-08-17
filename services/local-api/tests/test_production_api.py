@@ -24,9 +24,15 @@ from fastapi.testclient import TestClient
 from laura.config import Settings
 from laura.db import repos
 from laura.db.database import SqliteDatabase
+from laura.jobs import enqueue
 from laura.main import create_app
 from laura.short_creator.board import Board
-from laura.short_creator.board_models import BoardMeta, ContactSheet, ContactSheetTile
+from laura.short_creator.board_models import (
+    BoardMeta,
+    BoardStatus,
+    ContactSheet,
+    ContactSheetTile,
+)
 from laura.short_creator.production_orchestrator import board_root_for
 
 _TOKEN = "test-token"
@@ -110,6 +116,7 @@ def test_create_production_enqueues_job_and_creates_session(
     session = repos.get_production_session(db, body["session_id"])
     assert session is not None
     assert session["asset_id"] == asset_id
+    assert session["brief_text"] == "Make a 30s recap"
 
     # Job row exists, correct kind, payload carries session_id + the rest of the request.
     job = repos.get_job(db, body["job_id"])
@@ -124,6 +131,134 @@ def test_create_production_enqueues_job_and_creates_session(
         "format": "insta",  # the reel stays the default when the request omits a format
         "language": "German",  # ...and so does the language this workspace ships
     }
+
+
+def test_list_open_production_sessions_is_sorted_read_only_and_resilient(
+    tmp_path: Path,
+) -> None:
+    client, db = _app(tmp_path)
+    project = repos.create_project(
+        db,
+        name="Drive VibeMind",
+        rate_num=30,
+        rate_den=1,
+        drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "project"),
+    )
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="Rough Cut Source",
+        source_path=str(tmp_path / "rough-cut.mp4"),
+    )
+
+    def seed_board(
+        session_id: str,
+        *,
+        status: BoardStatus,
+        updated_utc: str,
+        contact_sheet_gate: bool = False,
+    ) -> Board:
+        repos.create_production_session(
+            db,
+            session_id=session_id,
+            asset_id=asset["id"],
+            created_utc="2026-08-17T08:00:00+00:00",
+            brief_text=f"Brief for {session_id}",
+        )
+        repos.touch_production_session(db, session_id, updated_utc)
+        board = Board.create(
+            board_root_for(db, asset["id"], session_id),
+            BoardMeta(
+                session_id=session_id,
+                asset_id=asset["id"],
+                created_utc="2026-08-17T08:00:00+00:00",
+                task=f"Brief for {session_id}",
+                target_seconds=45.0,
+                contact_sheet_gate=contact_sheet_gate,
+            ),
+        )
+        board.set_status(status)
+        return board
+
+    seed_board("open-board", status="active", updated_utc="2026-08-17T10:00:00+00:00")
+    contact_board = seed_board(
+        "contact-board",
+        status="active",
+        updated_utc="2026-08-17T10:30:00+00:00",
+        contact_sheet_gate=True,
+    )
+    contact_board.save(
+        "contact_sheet",
+        ContactSheet(
+            png_path=str(tmp_path / "contact.png"),
+            cols=1,
+            rows=1,
+            tiles=[ContactSheetTile(order=0, scene_number=1, frame=30, label="0 S1")],
+        ),
+    )
+    seed_board("complete-board", status="complete", updated_utc="2026-08-17T12:00:00+00:00")
+    seed_board("failed-board", status="failed", updated_utc="2026-08-17T11:00:00+00:00")
+
+    repos.create_conversation(db, conversation_id="deleted-chat", created_utc="2026-08-17")
+    repos.link_production_session_conversation(
+        db,
+        "open-board",
+        "deleted-chat",
+        updated_utc="2026-08-17T10:00:00+00:00",
+    )
+    repos.delete_conversation(db, "deleted-chat")
+
+    repos.create_production_session(
+        db,
+        session_id="running-no-board",
+        asset_id=asset["id"],
+        created_utc="2026-08-17T08:00:00+00:00",
+        brief_text="Keep the full original production brief",
+    )
+    repos.touch_production_session(db, "running-no-board", "2026-08-17T13:00:00+00:00")
+    job_id = enqueue(
+        db,
+        queue="production",
+        kind="production.run",
+        payload={"session_id": "running-no-board"},
+        max_attempts=1,
+    )
+    repos.set_production_session_job(db, "running-no-board", job_id)
+
+    before_sessions = repos.list_production_sessions_by_updated(db)
+    before_jobs = repos.list_jobs(db, limit=50)
+    response = client.get("/production-sessions/open", headers=_H)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert [row["session_id"] for row in rows] == [
+        "running-no-board",
+        "contact-board",
+        "open-board",
+    ]
+    assert rows[0] == {
+        "session_id": "running-no-board",
+        "conversation_id": None,
+        "project_id": project["id"],
+        "asset_id": asset["id"],
+        "asset_display_name": "Rough Cut Source",
+        "brief_preview": "Keep the full original production brief",
+        "resume_point": None,
+        "state": "running",
+        "updated_utc": "2026-08-17T13:00:00+00:00",
+        "draft_updated_utc": None,
+        "latest_job_id": job_id,
+        "stale": False,
+        "stale_reason": None,
+    }
+    assert rows[1]["state"] == "awaiting-approval"
+    assert rows[2]["state"] == "in-progress"
+    assert rows[2]["resume_point"]
+    assert rows[2]["conversation_id"] is None
+    assert repos.list_production_sessions_by_updated(db) == before_sessions
+    assert repos.list_jobs(db, limit=50) == before_jobs
 
 
 def test_create_production_carries_the_requested_format_to_the_job(

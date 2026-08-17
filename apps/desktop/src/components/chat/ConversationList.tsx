@@ -1,6 +1,7 @@
 import { type ReactElement, useState } from "react";
 
-import type { ConversationSummary } from "../../api";
+import type { ConversationSummary, OpenProductionSession } from "../../api";
+import { OpenSessionsPanel } from "./OpenSessionsPanel";
 
 export interface ConversationListProps {
   items: ConversationSummary[];
@@ -8,6 +9,8 @@ export interface ConversationListProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  openSessions?: OpenProductionSession[];
+  onResume?: (session: OpenProductionSession) => void;
 }
 
 const rowBase =
@@ -104,9 +107,12 @@ export function ConversationList({
   onSelect,
   onNew,
   onDelete,
+  openSessions = [],
+  onResume = () => undefined,
 }: ConversationListProps): ReactElement {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1 p-1.5">
+      <OpenSessionsPanel sessions={openSessions} onResume={onResume} />
       <button
         type="button"
         onClick={onNew}

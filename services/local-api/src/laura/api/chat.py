@@ -128,7 +128,11 @@ def _active_session(db: Database, messages: list[dict[str, Any]]) -> dict[str, A
             state = "done+export"
         else:
             state = "in-progress"
-        result: dict[str, Any] = {"id": session_id, "state": state}
+        result: dict[str, Any] = {
+            "id": session_id,
+            "state": state,
+            "brief": str(session.get("brief_text") or ""),
+        }
         scene_gate = status_payload.get("scene_gate") or {}
         if scene_gate.get("pending"):
             result["scene_gate"] = {

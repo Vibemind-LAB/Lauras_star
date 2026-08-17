@@ -720,3 +720,25 @@ durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
       AutoGen-Contracts bestanden (2 Warnings); voller Backend-Pytest: 2713 bestanden,
       12 übersprungen, 2 Warnings; Mypy strict prüfte 528 Dateien und Ruff war sauber.
       CI-YAML geparst; der Backend-Sync installiert `scene`, `otel` und `autoshort`.
+
+## Wiederaufnehmbare Rough-Cut-Auswahl  `[~]`  (2026-08-17)
+- [x] Draft-Persistenz mit Proposal-Hash, Szenenentscheidungen, Revision und
+      Compare-and-Swap-Konfliktschutz.
+- [x] Electron-Autosave ohne Produktionsjob oder LLM-Aufruf; sichtbarer
+      Speicher-, Konflikt- und Stale-Status.
+- [x] `Offene Sessions` mit explizitem Resume in den verknüpften Chat oder eine
+      schreibgeschützte Orphan-Ansicht.
+- [x] Automatisierter Datei-SQLite-Neustart nach sieben Tagen stellt Draft und
+      Proposal exakt wieder her und bestätigt anschließend genau einmal.
+- [x] Drive-/Rough-Cut-Fingerprints blockieren Metadaten- und Inhaltsdrift
+      fail-closed vor Draft-Save beziehungsweise finaler Bestätigung.
+- [x] Vollständige Backend-/Desktop-Abschlussgates: Backend 2.893 passed/12
+      skipped, Mypy 543 Dateien und Ruff grün; Desktop 72 Dateien/498 Tests,
+      Typecheck und Token-Lint grün. `pnpm run lint` bleibt am bekannten
+      fehlenden ESLint-Binary blockiert.
+- [x] Live-Neustart mit dem vorhandenen Drive-Workspace: offene Session blieb
+      nach Backend-/Electron-Neustart auffindbar und ließ sich ohne Chat-Turn
+      öffnen; dabei Schema-Pin 35→36 live gefunden und behoben.
+- [ ] Live-Autosave/Confirm/Render mit einer tatsächlich pending Visual-v2-
+      Auswahl bleibt offen, weil der Workspace keine solche offene Auswahl
+      enthielt. Kein Erfolg für `gpt-5.6-luna` oder Medien-Render behauptet.

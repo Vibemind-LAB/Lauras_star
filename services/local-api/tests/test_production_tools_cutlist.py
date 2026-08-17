@@ -52,6 +52,7 @@ from laura.short_creator.production_tools import (
     script_hash,
     script_text,
 )
+from laura.short_creator.visual_selection_state import capture_source_media_snapshot
 from laura.short_creator.visual_timeline import apply_scene_selections
 from laura.short_creator.voice_concat import INTER_SCENE_GAP_S
 
@@ -462,6 +463,21 @@ def test_v2_cutlist_uses_selected_lengths_and_exact_voice_frames(tmp_path: Path)
     board.save("visual_recut_request", request)
     rough_cut_hash = _rough_cut_source_hash(db, asset_id)
     assert rough_cut_hash is not None
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    Path(str(asset["source_path"])).write_bytes(b"rough-cut-source")
+    source = capture_source_media_snapshot(
+        db,
+        asset_id=asset_id,
+        rough_cut_hash=rough_cut_hash,
+        fps=30.0,
+        voice_hash=content_hash(voice),
+        voice_total_frames=1350,
+        script_hash=content_hash(script),
+        request_hash=content_hash(request),
+        strong=True,
+    )
+    assert source.strong_hash is not None
     pending = VisualPlan(
         version=2,
         proposal_hash="a" * 64,
@@ -503,6 +519,8 @@ def test_v2_cutlist_uses_selected_lengths_and_exact_voice_frames(tmp_path: Path)
             "script": content_hash(script),
             "voice": content_hash(voice),
             "rough_cut": rough_cut_hash,
+            "source_media": source.strong_hash,
+            "source_media_quick": source.quick_hash,
         },
     )
     confirmed = apply_scene_selections(
