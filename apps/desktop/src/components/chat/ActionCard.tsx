@@ -248,6 +248,8 @@ function narrowPendingContactSheetGate(
  * "done" event line either, so it must finalize the card the same way a `failed` job does
  * (see the job-status backstop below). */
 const JOB_TERMINAL_FAILURE = new Set(["failed", "cancelled"]);
+/** Every job state that means "no work is in flight" — the spinner's honest stop condition. */
+const JOB_TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
 /**
  * `start_short` / `follow_up`: narrates the live run via the production session's event log
@@ -415,26 +417,50 @@ function ProductionActionCard({
   // The job-status backstop: a failure finalizes unconditionally (fixes the dead-job case); a
   // success only finalizes once the events log has ALSO said done (fixes the stale-log case) —
   // a job can flip to "succeeded" before its own run's events poll has caught up.
+  //
+  // The third case is the SESSION moving on without us (live 2026-08-17): this card's own job
+  // succeeded at a gate, the user confirmed, and the resume job that followed died. The card
+  // tracks only its own job id, and the events log — whose last run was killed — never says
+  // done, so the card sat on "⚙ läuft …" for a session that had been dead for an hour. The
+  // session's own job view is the authority: once it reports a terminal job that is not ours,
+  // this card must stop claiming work is in flight.
   useEffect(() => {
     if (phase !== "running" || activeJobId === null || jobStatus === null) return;
     if (JOB_TERMINAL_FAILURE.has(jobStatus.status)) {
       setPhase("failed");
       return;
     }
-    if (jobStatus.status === "succeeded" && eventsDone) {
-      if (finalizingRef.current) return;
-      finalizingRef.current = true;
-      void (async () => {
-        let finalStatus: ProductionStatus | null = null;
-        try {
-          finalStatus = await client.getProductionStatus(sessionId);
-        } catch (e) {
-          log.warn("ActionCard: final production status fetch failed", e);
-        }
-        setStatus(finalStatus);
-        setPhase("done");
-      })();
-    }
+    if (jobStatus.status !== "succeeded") return;
+    if (finalizingRef.current) return;
+    finalizingRef.current = true;
+    void (async () => {
+      let finalStatus: ProductionStatus | null = null;
+      try {
+        finalStatus = await client.getProductionStatus(sessionId);
+      } catch (e) {
+        log.warn("ActionCard: final production status fetch failed", e);
+      }
+      const sessionJob = finalStatus?.job ?? null;
+      const sessionMovedOn = sessionJob !== null && sessionJob.id !== activeJobId;
+      const sessionBusy =
+        sessionJob !== null && !JOB_TERMINAL.has(sessionJob.status) && sessionMovedOn;
+      if (sessionBusy) {
+        // A newer run is genuinely in flight — keep the spinner honest and re-check later.
+        finalizingRef.current = false;
+        return;
+      }
+      if (!eventsDone && !sessionMovedOn) {
+        // Our own run's events are still catching up; wait for them, as before.
+        finalizingRef.current = false;
+        return;
+      }
+      setStatus(finalStatus);
+      setPhase(
+        sessionMovedOn && sessionJob !== null && JOB_TERMINAL_FAILURE.has(sessionJob.status)
+          ? "failed"
+          : "done",
+      );
+    })();
   }, [client, sessionId, activeJobId, jobStatus, phase, eventsDone]);
 
   const shown = showAll ? events : events.slice(-EVENT_PREVIEW_COUNT);

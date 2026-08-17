@@ -67,6 +67,18 @@ class AgentConfig:
     unknown_escalate_provider: str | None = None
 
 
+def needs_reasoning_effort_none(model: str) -> bool:
+    """Whether this model refuses function tools unless ``reasoning_effort='none'`` is sent.
+
+    Live 400 (2026-08-07): "Function tools with reasoning_effort are not supported for
+    gpt-5.6-luna in /v1/chat/completions ... set reasoning_effort to 'none'". Matched as a
+    SUBSTRING, not a prefix: the same model reaches us as ``gpt-5.6-luna`` direct and as
+    ``openai/gpt-5.6-luna`` through OpenRouter, and a prefix check silently misses the
+    routed id — the 400 would come back the moment the base_url changes.
+    """
+    return "gpt-5.6" in model.lower()
+
+
 @dataclass(frozen=True)
 class ClientSpec:
     """Provider-agnostic description of one model client to build."""
@@ -435,7 +447,7 @@ def build_model_client(
             # reasoning_effort is explicitly "none" (live 400, 2026-08-07: "To use function
             # tools, use /v1/responses or set reasoning_effort to 'none'"). Sent only for
             # models that demand it — other models would reject the unknown parameter.
-            if pool_model.startswith("gpt-5.6"):
+            if needs_reasoning_effort_none(pool_model):
                 client_kwargs["reasoning_effort"] = "none"
             clients.append(RetryingChatClient(OpenAIChatCompletionClient(**client_kwargs)))
         if len(clients) == 1:

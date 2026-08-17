@@ -326,6 +326,64 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     },
   );
 
+  it("stops claiming work is in flight once the session's own job died", async () => {
+    // Live 2026-08-17: this card's start job succeeded at the scene gate, the user confirmed,
+    // and the resume job that followed was killed. The card tracked only its own job id and
+    // the events log — whose last run never wrote `done` — so it sat on "⚙ läuft …" for a
+    // session that had been dead for an hour. The session's job view is the authority.
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 1, done: false });
+    const getProductionStatus = vi
+      .fn()
+      .mockResolvedValue(
+        boardStatus({ job: { ...boardStatus().job!, id: "j-resume", status: "failed" } }),
+      );
+    const getJob = vi.fn().mockResolvedValue(job({ id: "j-start", status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j-start" }, "running")}
+        client={c}
+      />,
+    );
+
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.queryByText("⚙ läuft …")).toBeNull();
+  });
+
+  it("keeps the spinner while a newer run is genuinely in flight", async () => {
+    const getProductionEvents = vi
+      .fn()
+      .mockResolvedValue({ events: [], next: 1, done: false });
+    const getProductionStatus = vi
+      .fn()
+      .mockResolvedValue(
+        boardStatus({ job: { ...boardStatus().job!, id: "j-resume", status: "running" } }),
+      );
+    const getJob = vi.fn().mockResolvedValue(job({ id: "j-start", status: "succeeded" }));
+    const c = client({ getProductionEvents, getProductionStatus, getJob });
+
+    renderWithQuery(
+      <ActionCard
+        message={actionMessage("start_short", { session_id: "s1", job_id: "j-start" }, "running")}
+        client={c}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+  });
+
   it("advances the cursor and accumulates events across polls", async () => {
     const getProductionEvents = vi
       .fn()

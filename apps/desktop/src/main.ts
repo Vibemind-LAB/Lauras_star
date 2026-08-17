@@ -9,6 +9,7 @@ import started from "electron-squirrel-startup";
 import { startService } from "./service";
 import type { ServiceInfo } from "./shared/ipc";
 import { log } from "./shared/log";
+import { ensureVlmBackend } from "./vlm";
 
 const MEDIA_EXTS = new Set([
   ".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm", ".mxf", ".mpg", ".mpeg",
@@ -130,6 +131,11 @@ function createWindow(): void {
 app
   .whenReady()
   .then(async () => {
+    // Vision first, and deliberately not awaited into the critical path: the daemon needs a
+    // few seconds to listen, the first scene review is minutes away, and a missing ollama
+    // must never delay or fail the app's start (reviews degrade, as they always did).
+    void ensureVlmBackend();
+
     try {
       const svc = await startService();
       serviceInfo = svc.info;

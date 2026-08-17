@@ -427,3 +427,17 @@ def test_build_model_client_agent_role_uses_pool_orchestrator_does_not(
     # Verify the model passed (should be orch).
     assert len(all_openai_constructions) == 1
     assert all_openai_constructions[0]["model"] == "orch"
+
+
+def test_reasoning_effort_none_matches_routed_ids_too() -> None:
+    """Live 2026-08-07: the gpt-5.6 family refuses function tools unless
+    reasoning_effort='none' is sent. The same model arrives as a bare id directly and as
+    'openai/gpt-5.6-luna' via OpenRouter — a prefix check would silently miss the routed
+    form and the 400 would return the moment the base_url changes."""
+    from laura.short_creator.providers import needs_reasoning_effort_none
+
+    assert needs_reasoning_effort_none("gpt-5.6-luna")
+    assert needs_reasoning_effort_none("openai/gpt-5.6-luna")
+    assert needs_reasoning_effort_none("openai/GPT-5.6-Sol")
+    assert not needs_reasoning_effort_none("gpt-4o")
+    assert not needs_reasoning_effort_none("nvidia/nemotron-3-ultra-550b-a55b:free")
