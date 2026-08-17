@@ -28,14 +28,14 @@ function session(
 describe("OpenSessionsPanel", () => {
   it("stays compact without a false resume action when no session is open", () => {
     render(<OpenSessionsPanel sessions={[]} onResume={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: /Fortsetzen/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Resume/ })).toBeNull();
   });
 
   it("shows one prominent resumable session with brief and saved time", () => {
     render(<OpenSessionsPanel sessions={[session()]} onResume={vi.fn()} />);
     expect(screen.getByText("Continuing the visual cut")).toBeTruthy();
-    expect(screen.getByText(/Gespeichert.*2026-08-17T09:59/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Fortsetzen" })).toBeTruthy();
+    expect(screen.getByText(/Saved.*2026-08-17T09:59/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
   });
 
   it("sorts multiple sessions newest first and exposes their state", () => {
@@ -53,7 +53,7 @@ describe("OpenSessionsPanel", () => {
         onResume={vi.fn()}
       />,
     );
-    const buttons = screen.getAllByRole("button", { name: /Fortsetzen/ });
+    const buttons = screen.getAllByRole("button", { name: /Resume/ });
     expect(buttons[0].textContent).toContain("Neu");
     expect(buttons[0].textContent).toContain("running");
     expect(buttons[1].textContent).toContain("Alt");
@@ -65,7 +65,7 @@ describe("OpenSessionsPanel", () => {
     render(<OpenSessionsPanel sessions={[stale]} onResume={onResume} />);
 
     expect(screen.getByText(/The source file or the proposal changed/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Fortsetzen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect(onResume).toHaveBeenCalledWith(stale);
   });
 });

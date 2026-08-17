@@ -43,7 +43,7 @@ describe("ConversationList", () => {
         onResume={onResume}
       />,
     );
-    const resume = screen.getByRole("button", { name: "Fortsetzen" });
+    const resume = screen.getByRole("button", { name: "Resume" });
     const newChat = screen.getByRole("button", { name: "New chat" });
     expect(resume.compareDocumentPosition(newChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(resume);

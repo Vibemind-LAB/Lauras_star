@@ -17,16 +17,16 @@ export function OpenSessionsPanel({
   );
 
   return (
-    <section aria-label="Offene Produktionen" className="rounded border border-bezel bg-surface-1 p-1">
+    <section aria-label="Open productions" className="rounded border border-bezel bg-surface-1 p-1">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-content-faint">
-        Offene Produktionen
+        Open productions
       </div>
       <div className="space-y-1">
         {sorted.map((session) => (
           <button
             key={session.session_id}
             type="button"
-            aria-label="Fortsetzen"
+            aria-label="Resume"
             onClick={() => onResume(session)}
             className="block w-full rounded border border-bezel px-1.5 py-1 text-left text-[11px] hover:bg-surface-2"
           >
@@ -37,14 +37,14 @@ export function OpenSessionsPanel({
               {session.asset_display_name} · {session.state}
             </span>
             <span className="block text-content-faint">
-              Gespeichert {session.draft_updated_utc ?? session.updated_utc}
+              Saved {session.draft_updated_utc ?? session.updated_utc}
             </span>
             {session.stale ? (
               <span className="mt-0.5 block text-status-warn">
                 The source file or the proposal changed — check before approving.
               </span>
             ) : null}
-            <span className="mt-0.5 block font-medium text-accent">Fortsetzen</span>
+            <span className="mt-0.5 block font-medium text-accent">Resume</span>
           </button>
         ))}
       </div>

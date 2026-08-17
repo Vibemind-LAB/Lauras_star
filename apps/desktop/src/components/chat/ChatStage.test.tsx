@@ -157,7 +157,7 @@ describe("ChatStage", () => {
     });
     renderWithQuery(<ChatStage client={c} />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Fortsetzen" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy());
     expect(getConversation).not.toHaveBeenCalled();
     expect(c.createConversation).not.toHaveBeenCalled();
   });
@@ -180,7 +180,7 @@ describe("ChatStage", () => {
     });
     renderWithQuery(<ChatStage client={c} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Fortsetzen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith("c1"));
     expect(c.createConversation).not.toHaveBeenCalled();
     expect(c.sendChatMessage).not.toHaveBeenCalled();
@@ -196,7 +196,7 @@ describe("ChatStage", () => {
     });
     renderWithQuery(<ChatStage client={c} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Fortsetzen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
     expect(await screen.findByText("Original brief:")).toBeTruthy();
     await waitFor(() => expect(getProductionStatus).toHaveBeenCalledWith("s1"));
     expect(c.getConversation).not.toHaveBeenCalled();
