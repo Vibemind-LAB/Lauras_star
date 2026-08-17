@@ -100,7 +100,7 @@ function SceneCard({
         <button
           type="button"
           onClick={() => onSeek(scene.seq_in_frame)}
-          title="Zur Szene springen"
+          title="Jump to scene"
           className="truncate text-left text-xs font-medium text-content-strong hover:underline"
         >
           {scene.name}
@@ -109,7 +109,7 @@ function SceneCard({
           {splitAt !== null && (
             <button
               type="button"
-              title="Szene teilen"
+              title="Split scene"
               onClick={() => onSplit(scene.id, splitAt)}
               className="rounded px-1 text-xs text-content-muted hover:bg-surface-2"
             >
@@ -119,7 +119,7 @@ function SceneCard({
           {canMerge && (
             <button
               type="button"
-              title="Mit nächster Szene zusammenführen"
+              title="Merge with next scene"
               onClick={() => onMerge(scene.id)}
               className="rounded px-1 text-xs text-content-muted hover:bg-surface-2"
             >
@@ -184,7 +184,7 @@ export function SceneStrip({
   if (scenes.length === 0) {
     return (
       <div className="flex h-24 items-center justify-center text-xs text-content-faint">
-        Noch keine Szenen — wähle ein Asset und erzeuge Szenen.
+        No scenes yet — pick an asset and create them.
       </div>
     );
   }
@@ -211,7 +211,7 @@ export function SceneStrip({
         })}
       </div>
       {/* Asset transcript: searchable + inline-editable (✎). Surfaced here so transcript fixes
-          happen in the Rough Cut stage, not only in Zusammenfügen. */}
+          happen in the Rough Cut stage, not only in Assemble. */}
       {segs.length > 0 && (
         <TranscriptBar
           client={client}

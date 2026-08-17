@@ -89,7 +89,7 @@ describe("MediaSidebar", () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText(/Keine Videos/)).toBeTruthy();
+    expect(screen.getByText(/No videos/)).toBeTruthy();
   });
 
   it("shows the asset count in the header", () => {
@@ -102,7 +102,7 @@ describe("MediaSidebar", () => {
         onSelect={vi.fn()}
       />,
     );
-    // The count badge sits next to "Projekt-Medien"
+    // The count badge sits next to "Project media"
     expect(screen.getByText("2")).toBeTruthy();
   });
 
@@ -136,7 +136,7 @@ describe("MediaSidebar", () => {
     expect(onSelect).toHaveBeenCalledWith("a1");
   });
 
-  it("calls startAnalysis with the correct assetId and options when Analysieren is clicked", async () => {
+  it("calls startAnalysis with the correct assetId and options when Analyse is clicked", async () => {
     const startAnalysis = vi.fn().mockResolvedValue({ analysis_run_id: "run-42" });
     const client = makeClient({ startAnalysis });
     const { findAllByRole } = render(
@@ -147,8 +147,8 @@ describe("MediaSidebar", () => {
         onSelect={vi.fn()}
       />,
     );
-    // getLatestAnalysis resolves null → items render "Analysieren" buttons; wait for them
-    const buttons = await findAllByRole("button", { name: "Analysieren" });
+    // getLatestAnalysis resolves null → items render "Analyse" buttons; wait for them
+    const buttons = await findAllByRole("button", { name: "Analyse" });
     // Click the first item's Analysieren button
     fireEvent.click(buttons[0]);
     expect(startAnalysis).toHaveBeenCalledWith("a1", {
@@ -187,7 +187,7 @@ describe("MediaSidebar", () => {
       await act(async () => {
         await Promise.resolve();
       });
-      const btn = screen.getByRole("button", { name: "Analysieren" });
+      const btn = screen.getByRole("button", { name: "Analyse" });
       await act(async () => {
         fireEvent.click(btn);
         // Advance far past the old 180s cap so >120 poll iterations elapse.
@@ -195,7 +195,7 @@ describe("MediaSidebar", () => {
       });
 
       expect(screen.queryByText(/Timeout/)).toBeNull();
-      expect(screen.getByText("✓ analysiert")).toBeTruthy();
+      expect(screen.getByText("✓ analysed")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -225,14 +225,14 @@ describe("MediaSidebar", () => {
       await act(async () => {
         await Promise.resolve();
       });
-      expect(screen.queryByRole("button", { name: "Analysieren" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Analyse" })).toBeNull();
       expect(screen.getByText("running…")).toBeTruthy();
 
       // Advance so the poll observes "succeeded".
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000);
       });
-      expect(screen.getByText("✓ analysiert")).toBeTruthy();
+      expect(screen.getByText("✓ analysed")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -312,7 +312,7 @@ describe("MediaSidebar", () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.queryAllByTitle("Medium löschen")).toHaveLength(0);
+    expect(screen.queryAllByTitle("Delete medium")).toHaveLength(0);
   });
 
   it("calls onDelete with the asset id when × is confirmed (and not onSelect)", () => {
@@ -330,7 +330,7 @@ describe("MediaSidebar", () => {
           onDelete={onDelete}
         />,
       );
-      const buttons = screen.getAllByTitle("Medium löschen");
+      const buttons = screen.getAllByTitle("Delete medium");
       expect(buttons).toHaveLength(2);
       fireEvent.click(buttons[1]);
       expect(onDelete).toHaveBeenCalledWith("a2");
@@ -355,7 +355,7 @@ describe("MediaSidebar", () => {
           onDelete={onDelete}
         />,
       );
-      fireEvent.click(screen.getAllByTitle("Medium löschen")[0]);
+      fireEvent.click(screen.getAllByTitle("Delete medium")[0]);
       expect(onDelete).not.toHaveBeenCalled();
     } finally {
       confirmSpy.mockRestore();

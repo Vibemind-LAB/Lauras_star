@@ -19,7 +19,7 @@ afterEach(cleanup);
 
 const asset = { id: "a", rate_num: 30, rate_den: 1, display_name: "a" } as unknown as Asset;
 const emptyRc: Timeline = { id: "tl", project_id: "p", name: "rc", kind: "rough_cut", created_at: "", clips: [] };
-const SCENE: Scene = { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Szene 1",
+const SCENE: Scene = { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Scene 1",
   order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 30 };
 
 function buildResult(over: Partial<BuildFromShotsResult> = {}): BuildFromShotsResult {
@@ -56,7 +56,7 @@ describe("RoughCutView", () => {
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
       { wrapper: queryWrapper() },
     );
-    fireEvent.click(getByText("Szenen erzeugen"));
+    fireEvent.click(getByText("Create scenes"));
     await waitFor(() => expect(c.generateScenes).toHaveBeenCalledTimes(2));
     // Builds with the default cut_bias forwarded as the 4th argument.
     expect(c.buildRoughCutFromShots).toHaveBeenCalledWith("p", "a", "tl", {
@@ -73,7 +73,7 @@ describe("RoughCutView", () => {
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
       { wrapper: queryWrapper() },
     );
-    fireEvent.click(getByText("Szenen erzeugen"));
+    fireEvent.click(getByText("Create scenes"));
     await waitFor(() => expect(c.generateScenes).toHaveBeenCalledWith("tl", "a"));
     expect(c.buildRoughCutFromShots).not.toHaveBeenCalled();
   });
@@ -90,7 +90,7 @@ describe("RoughCutView", () => {
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
       { wrapper: queryWrapper() },
     );
-    fireEvent.click(getByText("Szenen erzeugen"));
+    fireEvent.click(getByText("Create scenes"));
     await waitFor(() => expect(c.generateScenes).toHaveBeenCalled());
     expect(c.buildRoughCutFromShots).not.toHaveBeenCalled();
   });
@@ -103,7 +103,7 @@ describe("RoughCutView", () => {
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
       { wrapper: queryWrapper() },
     );
-    const slider = getByLabelText(/Schnitt-Bias/);
+    const slider = getByLabelText(/Cut bias/);
     fireEvent.change(slider, { target: { value: "0.8" } });
     await waitFor(() =>
       // A fresh timeline (timelineId omitted) at the new bias.
@@ -138,7 +138,7 @@ describe("RoughCutView", () => {
         seek={null} currentFrame={0} onSeek={vi.fn()} onFrame={vi.fn()} />,
       { wrapper: queryWrapper() },
     );
-    fireEvent.click(getByText("Szenen erzeugen"));
+    fireEvent.click(getByText("Create scenes"));
     await waitFor(() => expect(getByTestId("quality-panel")).toBeTruthy());
     expect(getByTestId("quality-panel").textContent).toContain("82%");
     expect(getByTestId("quality-panel").textContent).toContain("2 Split-Cuts empfohlen");

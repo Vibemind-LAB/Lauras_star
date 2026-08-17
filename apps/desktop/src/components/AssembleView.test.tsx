@@ -15,18 +15,18 @@ vi.mock("./SequencePlayer", () => ({
 }));
 
 const scenes: Scene[] = [
-  { id: "s1", project_id: "p", source_timeline_id: "rc", name: "Szene 1", order_index: 0,
+  { id: "s1", project_id: "p", source_timeline_id: "rc", name: "Scene 1", order_index: 0,
     seq_in_frame: 0, seq_out_frame_exclusive: 30 },
-  { id: "s2", project_id: "p", source_timeline_id: "rc", name: "Szene 2", order_index: 1,
+  { id: "s2", project_id: "p", source_timeline_id: "rc", name: "Scene 2", order_index: 1,
     seq_in_frame: 30, seq_out_frame_exclusive: 60 }];
 const seq: Sequence = { timeline_id: "seq", project_id: "p",
-  items: [{ id: "i1", scene_id: "s1", scene_name: "Szene 1", order_index: 0,
+  items: [{ id: "i1", scene_id: "s1", scene_name: "Scene 1", order_index: 0,
     transition_after_kind: "hard", transition_after_frames: 0 }] };
 const seqTwo: Sequence = { timeline_id: "seq", project_id: "p",
   items: [
-    { id: "i1", scene_id: "s1", scene_name: "Szene 1", order_index: 0,
+    { id: "i1", scene_id: "s1", scene_name: "Scene 1", order_index: 0,
       transition_after_kind: "hard", transition_after_frames: 0 },
-    { id: "i2", scene_id: "s2", scene_name: "Szene 2", order_index: 1,
+    { id: "i2", scene_id: "s2", scene_name: "Scene 2", order_index: 1,
       transition_after_kind: "hard", transition_after_frames: 0 },
   ] };
 const transcript = [{
@@ -88,18 +88,18 @@ describe("AssembleView", () => {
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.getProjectSequence).toHaveBeenCalledWith("p"));
     await waitFor(() => expect(c.listProjectScenes).toHaveBeenCalledWith("p"));
-    fireEvent.click(getByTitle(/Szene 2.*Reihenfolge anhängen/));
+    fireEvent.click(getByTitle(/Scene 2.*to the order/));
     await waitFor(() => expect(c.setSequenceScenes).toHaveBeenCalledWith("seq", ["s1", "s2"]));
   });
 
-  it("appends every scene of a group in one click (+ alle)", async () => {
+  it("appends every scene of a group in one click (+ all)", async () => {
     const c = client({
       getProjectSequence: vi.fn().mockResolvedValue({ timeline_id: "seq", project_id: "p", items: [] }),
     });
     const { getByTitle } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
     await waitFor(() => expect(c.listProjectScenes).toHaveBeenCalledWith("p"));
-    fireEvent.click(getByTitle(/Alle 2 Szenen/));
+    fireEvent.click(getByTitle(/Append all 2 scenes/));
     await waitFor(() => expect(c.setSequenceScenes).toHaveBeenCalledWith("seq", ["s1", "s2"]));
   });
 
@@ -109,7 +109,7 @@ describe("AssembleView", () => {
     const { findByLabelText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
-    fireEvent.change(await findByLabelText("Transition nach Szene 1"), {
+    fireEvent.change(await findByLabelText("Transition after scene 1"), {
       target: { value: "dip_black" },
     });
 
@@ -128,8 +128,8 @@ describe("AssembleView", () => {
 
     // Left column is the merged Anordnung (arrangement + collapsible scene-add source).
     expect(getByLabelText("Anordnung")).toBeTruthy();
-    expect(getByLabelText("Sequenz-Arbeitsfläche")).toBeTruthy();
-    expect(getByLabelText("Transkript und Werkzeuge")).toBeTruthy();
+    expect(getByLabelText("Sequence canvas")).toBeTruthy();
+    expect(getByLabelText("Transcript and tools")).toBeTruthy();
   });
 
   it("edits a sequence transcript block and starts realignment for its source asset", async () => {
@@ -139,7 +139,7 @@ describe("AssembleView", () => {
 
     const input = await findByDisplayValue("Original line");
     fireEvent.change(input, { target: { value: "Better line" } });
-    fireEvent.click(getByRole("button", { name: "Speichern + neu ausrichten" }));
+    fireEvent.click(getByRole("button", { name: "Save + re-align" }));
 
     await waitFor(() =>
       expect(c.updateTranscriptSegment).toHaveBeenCalledWith("seg-1", { text: "Better line" }));
@@ -161,7 +161,7 @@ describe("AssembleView", () => {
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByText("Alignment fehlgeschlagen")).toBeTruthy();
-    expect(await findByText("Sprache: de")).toBeTruthy();
+    expect(await findByText("Language: de")).toBeTruthy();
     expect(await findByText("no audio_mono16k extracted; cannot realign transcript")).toBeTruthy();
   });
 
@@ -172,7 +172,7 @@ describe("AssembleView", () => {
     const { findByText, queryByText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
-    expect(await findByText("Sequenz-Transkript ist noch nicht verfügbar.")).toBeTruthy();
+    expect(await findByText("The sequence transcript is not available yet.")).toBeTruthy();
     expect(queryByText(/"detail":"Not Found"/)).toBeNull();
   });
 
@@ -185,31 +185,31 @@ describe("AssembleView", () => {
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     fireEvent.change(await findByDisplayValue("Original line"), { target: { value: "Better line" } });
-    fireEvent.click(getByRole("button", { name: "Speichern + neu ausrichten" }));
+    fireEvent.click(getByRole("button", { name: "Save + re-align" }));
 
     expect(await findByText("Re-Alignment abgeschlossen.")).toBeTruthy();
     expect(c.getJob).toHaveBeenCalledWith("job-1");
   });
 
-  it("keeps only sequence tools in Zusammenfügen — no VO/Lipsync/Reenact", async () => {
+  it("keeps only sequence tools in Assemble — no VO/Lipsync/Reenact", async () => {
     const c = client({});
     const { queryByText, findByRole } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId={null} onSeekScene={vi.fn()} />,
     );
     fireEvent.click(await findByRole("button", { name: "Tools" }));
-    expect(queryByText("Reenact (Identitäts-Ebene)")).toBeNull();
+    expect(queryByText("Reenact (identity layer)")).toBeNull();
     expect(queryByText("Lipsync (Deepfake)")).toBeNull();
     // Sequenz-Tools bleiben:
     expect(queryByText("Demo-Draft")).not.toBeNull();
   });
 
-  it("transcript rail in Zusammenfügen has no voiceover button", async () => {
+  it("transcript rail in Assemble has no voiceover button", async () => {
     const c = client({});
     const { queryByRole, findByText } = renderWithQuery(
       <AssembleView client={c} projectId="p" roughCutId={null} onSeekScene={vi.fn()} />,
     );
-    await findByText(/Szenen-Bin/);
-    expect(queryByRole("button", { name: "Stimme erzeugen" })).toBeNull();
+    await findByText(/Scene bin/);
+    expect(queryByRole("button", { name: "Generate voice" })).toBeNull();
   });
 
   it("lets editors hide the caption preview overlay without disabling transcript editing", async () => {
@@ -218,10 +218,10 @@ describe("AssembleView", () => {
       <AssembleView client={c} projectId="p" roughCutId="rc" onSeekScene={vi.fn()} />);
 
     expect(await findByLabelText("Caption-Preview")).toBeTruthy();
-    fireEvent.click(getByRole("button", { name: "Caption-Preview aus" }));
+    fireEvent.click(getByRole("button", { name: "Caption preview off" }));
 
     expect(queryByLabelText("Caption-Preview")).toBeNull();
-    expect(await findByLabelText("Sequenz-Transcript-Text")).toBeTruthy();
+    expect(await findByLabelText("Sequence transcript text")).toBeTruthy();
   });
 
   it("passes loaded audio clips and frame rate to the SequencePlayer", async () => {
@@ -284,7 +284,7 @@ describe("AssembleView", () => {
     expect(queryByDisplayValue("Block B")).toBeNull();
 
     // Click the second storyboard card → transcript switches to Block B.
-    fireEvent.click(getByText("2. Szene 2"));
+    fireEvent.click(getByText("2. Scene 2"));
 
     expect(await findByDisplayValue("Block B")).toBeTruthy();
     await waitFor(() => expect(queryByDisplayValue("Block A")).toBeNull());

@@ -29,10 +29,10 @@ function jobChipClass(status: string): string {
 }
 
 function jobChipLabel(status: string): string {
-  if (status === "succeeded") return "Fertig ✓";
+  if (status === "succeeded") return "Done ✓";
   if (status === "failed") return "Fehlgeschlagen";
   if (status === "cancelled") return "Abgebrochen";
-  if (status === "running" || status === "leased") return "Läuft…";
+  if (status === "running" || status === "leased") return "Running…";
   if (status === "queued") return "In Warteschlange";
   return status;
 }
@@ -176,7 +176,7 @@ export function ReenactPanel({
     <div className="flex flex-col gap-3 rounded-md border border-bezel bg-surface-0/60 p-3">
       {/* Heading */}
       <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-300">
-        Reenact (Identitäts-Ebene)
+        Reenact (identity layer)
       </span>
 
       {/* ── Consent step ── */}
@@ -189,7 +189,7 @@ export function ReenactPanel({
 
         {confirmedLabel !== null ? (
           <div className="text-xs text-status-ok">
-            ✓ Consent für <span className="font-semibold">{confirmedLabel}</span>
+            ✓ Consent for <span className="font-semibold">{confirmedLabel}</span>
           </div>
         ) : (
           <div className="flex items-center gap-2">
@@ -199,7 +199,7 @@ export function ReenactPanel({
               value={subjectLabel}
               onChange={(e) => setSubjectLabel(e.target.value)}
               disabled={consentBusy}
-              aria-label="Subjekt-Label für Consent"
+              aria-label="Subject label for consent"
               className="min-w-0 flex-1 rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-50"
             />
             <button
@@ -208,7 +208,7 @@ export function ReenactPanel({
               disabled={consentBusy || !projectId || !subjectLabel.trim()}
               className="shrink-0 rounded bg-amber-700 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-40"
             >
-              {consentBusy ? "…" : "Consent bestätigen"}
+              {consentBusy ? "…" : "Confirm consent"}
             </button>
           </div>
         )}
@@ -259,11 +259,11 @@ export function ReenactPanel({
             value={portraitAssetId}
             onChange={(e) => setPortraitAssetId(e.target.value)}
             disabled={reenactBusy || isRunning || assets.length === 0}
-            aria-label="Portrait-Asset auswählen"
+            aria-label="Choose portrait asset"
             className="min-w-0 flex-1 truncate rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
           >
             {assets.length === 0 ? (
-              <option value="">— keine Assets —</option>
+              <option value="">— no assets —</option>
             ) : (
               assets.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -277,7 +277,7 @@ export function ReenactPanel({
             value={backend}
             onChange={(e) => setBackend(e.target.value === "liveportrait" ? "liveportrait" : "stub")}
             disabled={reenactBusy || isRunning}
-            aria-label="Reenact-Backend auswählen"
+            aria-label="Choose reenact backend"
             className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
           >
             <option value="stub">Stub</option>
@@ -345,10 +345,10 @@ export function ReenactPanel({
             type="button"
             onClick={() => void submitReenact()}
             disabled={reenactDisabled}
-            title={!consentId ? "Zuerst Consent bestätigen (Schritt 1)" : undefined}
+            title={!consentId ? "Confirm consent first (step 1)" : undefined}
             className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
           >
-            {reenactBusy ? "…" : isRunning ? "Läuft…" : backend === "liveportrait" ? "Reenact (LivePortrait)" : "Reenact (stub)"}
+            {reenactBusy ? "…" : isRunning ? "Running…" : backend === "liveportrait" ? "Reenact (LivePortrait)" : "Reenact (stub)"}
           </button>
         </div>
       </div>

@@ -65,9 +65,9 @@ export function DropZone({ onImport }: { onImport: (r: ResolvedImport) => void }
       }`}
     >
       <div className="rounded-2xl border-2 border-dashed border-accent/60 px-12 py-10 text-center">
-        <div className="text-lg text-content-strong">Dateien, Ordner oder Link hier ablegen</div>
+        <div className="text-lg text-content-strong">Drop files, folders or a link here</div>
         <div className="mt-1 text-sm text-content-faint">
-          Video-Dateien · ganze Ordner · http(s)/Magnet-Links
+          Video files · whole folders · http(s)/magnet links
         </div>
       </div>
     </div>

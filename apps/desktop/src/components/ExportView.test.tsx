@@ -55,7 +55,7 @@ describe("ExportView", () => {
   });
 
   it("defaults to the first non-empty source (skips the empty assembled sequence)", async () => {
-    const SEQ: ExportTarget = { id: "seq1", label: "Sequenz (Zusammenfügen)", kind: "sequence" };
+    const SEQ: ExportTarget = { id: "seq1", label: "Sequence (Assemble)", kind: "sequence" };
     const RC: ExportTarget = { id: "rc1", label: "Rough Cut: video.mp4", kind: "rough_cut" };
     // The sequence resolves via /flattened (empty); the rough cut carries clips directly.
     const getTimeline = vi.fn(async (id: string) => ({
@@ -72,7 +72,7 @@ describe("ExportView", () => {
       const rc = screen.getByRole("radio", { name: /Rough Cut/ }) as HTMLInputElement;
       expect(rc.checked).toBe(true);
     });
-    expect((screen.getByRole("radio", { name: /Sequenz/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("radio", { name: /Sequence/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("sends caption direction options for reel export", async () => {
@@ -105,7 +105,7 @@ describe("ExportView", () => {
     const renderReel = vi.fn().mockResolvedValue({ export_id: "e", job_id: "j" });
     const client = mkClient({ renderReel });
     render(<ExportView client={client} projectId="p1" project={null} exportTargets={[TARGET]} />);
-    fireEvent.change(screen.getByLabelText("Max. Dauer (Sek.)"), { target: { value: "60" } });
+    fireEvent.change(screen.getByLabelText("Max duration (sec)"), { target: { value: "60" } });
     fireEvent.click(screen.getByRole("button", { name: /Reel 9:16/i }));
     await waitFor(() =>
       expect(renderReel).toHaveBeenCalledWith("t1", expect.objectContaining({ maxDurationSeconds: 60 })));

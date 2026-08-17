@@ -44,7 +44,7 @@ export function ApprovalCard({ message, onDecide }: ApprovalCardProps): ReactEle
 
   return (
     <div className="mb-1.5 rounded-md border border-bezel bg-surface-2 px-1.5 py-1 text-[11px]">
-      <div className="mb-1 font-medium text-content-strong">Import bestätigen</div>
+      <div className="mb-1 font-medium text-content-strong">Confirm import</div>
       <ul className="mb-1 flex flex-col gap-0.5">
         {urls.map((url) => (
           <li key={url} className="truncate text-content-muted" title={url}>
@@ -70,10 +70,10 @@ export function ApprovalCard({ message, onDecide }: ApprovalCardProps): ReactEle
           </button>
         </div>
       ) : status === "approved" ? (
-        <div className="text-status-warn">⏳ freigegeben — Ausführung unterbrochen</div>
+        <div className="text-status-warn">⏳ approved — execution interrupted</div>
       ) : (
         <div className={status === "executed" ? "text-status-ok" : "text-status-err"}>
-          {status === "executed" ? "✓ freigegeben & ausgeführt" : "✗ abgelehnt"}
+          {status === "executed" ? "✓ approved & executed" : "✗ rejected"}
         </div>
       )}
     </div>

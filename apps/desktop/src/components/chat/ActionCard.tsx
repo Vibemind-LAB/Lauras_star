@@ -104,11 +104,11 @@ function ReviewTranscriptCard({ message }: { message: ChatMessage }): ReactEleme
   return (
     <div className="mb-1.5 rounded-md border border-bezel bg-surface-2 px-1.5 py-1 text-[11px]">
       <div className="mb-1 flex items-center justify-between gap-1">
-        <span className="font-medium text-content-strong">Transkript prüfen</span>
+        <span className="font-medium text-content-strong">Review transcript</span>
         {confirmedAt !== null ? (
-          <span className="text-status-ok">✓ bestätigt</span>
+          <span className="text-status-ok">✓ confirmed</span>
         ) : (
-          <span className="text-content-faint">unbestätigt</span>
+          <span className="text-content-faint">unconfirmed</span>
         )}
       </div>
       <div className="mb-1 max-h-64 overflow-y-auto">
@@ -118,7 +118,7 @@ function ReviewTranscriptCard({ message }: { message: ChatMessage }): ReactEleme
           </div>
         ))}
       </div>
-      {rest > 0 && <div className="mb-1 text-content-faint">… und {rest} weitere Segmente</div>}
+      {rest > 0 && <div className="mb-1 text-content-faint">… and {rest} more segments</div>}
       <div className="text-content-faint">
         Korrigieren per Nachricht: {"‚ersetze in Segment 3 …’"}
       </div>
@@ -347,13 +347,13 @@ export function ProductionSessionCard({
         setRevertStatus(response.status);
         if (response.restored.length > 0) {
           setRevertHint(
-            `♻️ Wiederhergestellt: ${response.restored.map(sessionArtifactLabel).join(", ")}`,
+            `♻️ Restored: ${response.restored.map(sessionArtifactLabel).join(", ")}`,
           );
         }
       })
       .catch((e: unknown) => {
         const { code, detail } = parseRevertError(e);
-        setRevertHint(code === 409 ? "Lauf aktiv — warte, bis der Job fertig ist" : detail);
+        setRevertHint(code === 409 ? "A run is active — wait for the job to finish" : detail);
       });
   };
 
@@ -441,7 +441,7 @@ export function ProductionSessionCard({
   // The third case is the SESSION moving on without us (live 2026-08-17): this card's own job
   // succeeded at a gate, the user confirmed, and the resume job that followed died. The card
   // tracks only its own job id, and the events log — whose last run was killed — never says
-  // done, so the card sat on "⚙ läuft …" for a session that had been dead for an hour. The
+  // done, so the card sat on "⚙ running …" for a session that had been dead for an hour. The
   // session's own job view is the authority: once it reports a terminal job that is not ours,
   // this card must stop claiming work is in flight.
   useEffect(() => {
@@ -489,7 +489,7 @@ export function ProductionSessionCard({
   const pendingSceneGate = narrowPendingSceneGate(status);
   const pendingScript = narrowPendingScript(status);
   const pendingContactSheetGate = narrowPendingContactSheetGate(status);
-  const failReason = jobStatus !== null ? parseJobError(jobStatus) ?? "unbekannter Fehler" : "unbekannter Fehler";
+  const failReason = jobStatus !== null ? parseJobError(jobStatus) ?? "unknown error" : "unknown error";
 
   return (
     <div className="mb-1.5 rounded-md border border-bezel bg-surface-2 px-1.5 py-1 text-[11px]">
@@ -502,7 +502,7 @@ export function ProductionSessionCard({
           key={i}
           fallback={
             <div className="mb-1 text-content-faint">
-              ⚠ Diese Zeile konnte nicht angezeigt werden.
+              ⚠ This line could not be displayed.
             </div>
           }
         >
@@ -515,7 +515,7 @@ export function ProductionSessionCard({
           onClick={() => setShowAll(true)}
           className="mb-1 block text-[10px] text-accent hover:underline"
         >
-          alle anzeigen
+          show all
         </button>
       )}
       {/* Board chips (artifact chain versions, staleness/checks warnings, scene-review count,
@@ -536,12 +536,12 @@ export function ProductionSessionCard({
       )}
       {phase === "running" && (
         <div className="animate-pulse text-content-faint" role="status">
-          ⚙ läuft …
+          ⚙ running …
         </div>
       )}
       {phase === "failed" && (
         <div className="mt-0.5 text-status-err" role="alert">
-          ✗ fehlgeschlagen: {failReason}
+          ✗ failed: {failReason}
         </div>
       )}
       {phase === "done" &&
@@ -563,14 +563,14 @@ export function ProductionSessionCard({
           />
         ) : pendingScript !== null ? (
           <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1">
-            <div className="text-content-strong">📝 Sprechertext wartet auf Freigabe</div>
+            <div className="text-content-strong">📝 Narration is waiting for approval</div>
             {pendingScript.map((line) => (
               <div key={`${line.chapter}-${line.scene_number}`} className="mt-0.5 text-content-muted">
-                Kapitel {line.chapter} · Szene {line.scene_number} · {line.text}
+                Chapter {line.chapter} · scene {line.scene_number} · {line.text}
               </div>
             ))}
             <div className="mt-0.5 text-content-faint">
-              Antworte {"‚Script freigeben’"} oder nenne Änderungen.
+              Reply {"‘approve script’"} or name the changes.
             </div>
           </div>
         ) : pendingContactSheetGate !== null ? (
@@ -601,14 +601,14 @@ export function ProductionSessionCard({
               onClick={onFocus}
               className="mt-0.5 text-accent hover:underline"
             >
-              ▶ ansehen
+              ▶ watch
             </button>
             <div className="mt-0.5 text-content-faint">
-              Weiter anpassen: sag z. B. ‚mach den Hook kürzer' — oder frag einfach.
+              Keep adjusting: say e.g. 'make the hook shorter' — or just ask.
             </div>
           </div>
         ) : (
-          <div className="mt-0.5 text-content-faint">Kein Export erzeugt.</div>
+          <div className="mt-0.5 text-content-faint">No export produced.</div>
         ))}
     </div>
   );
@@ -623,16 +623,16 @@ function JobActionCard({ client, jobId }: { client: LauraClient; jobId: string }
   if (isRunning) {
     return (
       <div className="text-content-faint animate-pulse" role="status">
-        ⚙ läuft
+        ⚙ running
       </div>
     );
   }
   if (jobStatus?.status === "succeeded") {
-    return <div className="text-status-ok">✓ fertig</div>;
+    return <div className="text-status-ok">✓ done</div>;
   }
   return (
     <div className="text-status-err" role="alert">
-      ✗ fehlgeschlagen: {error ?? "unbekannter Fehler"}
+      ✗ failed: {error ?? "unknown error"}
     </div>
   );
 }
@@ -649,11 +649,11 @@ function SelectScenesLine({ outcome }: { outcome: string }): ReactElement {
   if (outcome === "running") {
     return (
       <div className="animate-pulse text-content-faint" role="status">
-        ⚙ Auswahl wird angewendet …
+        ⚙ Applying the selection …
       </div>
     );
   }
-  return <div className="text-status-ok">✓ Auswahl übernommen</div>;
+  return <div className="text-status-ok">✓ Selection applied</div>;
 }
 
 /** Fallback for a tool this card does not (yet) know how to narrate — never crashes on an

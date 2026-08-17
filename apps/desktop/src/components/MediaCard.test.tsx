@@ -21,7 +21,7 @@ describe("MediaCard", () => {
     render(<MediaCard title="Clip B" status={dl({ downloaded_bytes: 50, total_bytes: 100, speed_bps: 10 })} onClick={vi.fn()} onRetry={vi.fn()} />);
     expect(screen.getByText(/50%/)).toBeTruthy();
   });
-  it("calls onCancel when Abbrechen is clicked on an active card", () => {
+  it("calls onCancel when Cancel is clicked on an active card", () => {
     const cancelImport = vi.fn().mockResolvedValue(undefined);
     const fakeClient = { cancelImport } as unknown as LauraClient;
     const onCancel = () => void fakeClient.cancelImport("asset-1");
@@ -34,7 +34,7 @@ describe("MediaCard", () => {
         onCancel={onCancel}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /abbrechen/i }));
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(cancelImport).toHaveBeenCalledWith("asset-1");
   });
   it("shows Abgebrochen state when phase is cancelled", () => {

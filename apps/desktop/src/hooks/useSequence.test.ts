@@ -12,7 +12,7 @@ function client(over: Partial<LauraClient>): LauraClient {
     getProjectSequence: vi.fn().mockResolvedValue(SEQ),
     setSequenceScenes: vi.fn().mockResolvedValue({
       ...SEQ,
-      items: [{ id: "i1", scene_id: "s2", scene_name: "Szene 2", order_index: 0 }],
+      items: [{ id: "i1", scene_id: "s2", scene_name: "Scene 2", order_index: 0 }],
     }),
     ...over,
   } as unknown as LauraClient;

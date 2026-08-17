@@ -2019,7 +2019,7 @@ export class LauraClient {
 
   /** Start a new conversation, optionally pre-bound to a project (the UI-selected project at
    *  creation time, so a fresh chat inherits the top bar's selection instead of starting
-   *  unbound until an explicit "Wechsle zum Projekt X" chat message — live incident
+   *  unbound until an explicit "Switch to project X" chat message — live incident
    *  2026-08-07). POST /conversations {project_id?} -> 200 { id }. */
   createConversation(projectId?: string): Promise<{ id: string }> {
     const body: Record<string, unknown> = {};

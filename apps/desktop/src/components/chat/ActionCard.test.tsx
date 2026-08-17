@@ -165,7 +165,7 @@ function visualGate(
       {
         beat_id: "beat-1",
         voice_segment_index: 0,
-        narration_text: "Rowboat organisiert Dateien.",
+        narration_text: "Rowboat organises files.",
         duration_s: 2.5,
         candidates: [
           {
@@ -179,7 +179,7 @@ function visualGate(
             thumb_frame: 40,
             description: "Dateiliste",
             transcript_snippet: "organize files",
-            rationale: "Belegt den Beat",
+            rationale: "Backs the beat",
             score: 0.9,
           },
         ],
@@ -207,8 +207,8 @@ function contactSheetGate(
         label: "0 S2",
         src_start_frame: 10,
         src_end_frame_exclusive: 70,
-        narration_excerpt: "Rowboat organisiert Dateien.",
-        rationale: "Belegt den Beat",
+        narration_excerpt: "Rowboat organises files.",
+        rationale: "Backs the beat",
       },
     ],
     ...overrides,
@@ -312,7 +312,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
         />,
       );
 
-      expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+      expect(screen.getByText("⚙ running …")).toBeTruthy();
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2500);
@@ -329,7 +329,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
   it("stops claiming work is in flight once the session's own job died", async () => {
     // Live 2026-08-17: this card's start job succeeded at the scene gate, the user confirmed,
     // and the resume job that followed was killed. The card tracked only its own job id and
-    // the events log — whose last run never wrote `done` — so it sat on "⚙ läuft …" for a
+    // the events log — whose last run never wrote `done` — so it sat on "⚙ running …" for a
     // session that had been dead for an hour. The session's job view is the authority.
     const getProductionEvents = vi
       .fn()
@@ -349,13 +349,13 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
       />,
     );
 
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.queryByText("⚙ läuft …")).toBeNull();
+    expect(screen.queryByText("⚙ running …")).toBeNull();
   });
 
   it("keeps the spinner while a newer run is genuinely in flight", async () => {
@@ -381,7 +381,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
   });
 
   it("advances the cursor and accumulates events across polls", async () => {
@@ -415,7 +415,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     expect(screen.getByText(/erste Runde/)).toBeTruthy();
   });
 
-  it("only shows the last 5 events until 'alle anzeigen' is clicked", async () => {
+  it("only shows the last 5 events until 'show all' is clicked", async () => {
     const events: AgentEvent[] = Array.from({ length: 7 }, (_, i) => ({
       type: "agent",
       agent: "scout",
@@ -434,7 +434,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
 
     expect(screen.queryByText("Nachricht 1")).toBeNull();
     expect(screen.getByText("Nachricht 7")).toBeTruthy();
-    const expander = screen.getByText("alle anzeigen");
+    const expander = screen.getByText("show all");
 
     fireEvent.click(expander);
     expect(screen.getByText("Nachricht 1")).toBeTruthy();
@@ -476,12 +476,12 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
     expect(
       screen.getByText(
-        "Weiter anpassen: sag z. B. ‚mach den Hook kürzer' — oder frag einfach.",
+        "Keep adjusting: say e.g. 'make the hook shorter' — or just ask.",
       ),
     ).toBeTruthy();
   });
 
-  it("'▶ ansehen' fires onFocus", async () => {
+  it("'▶ watch' fires onFocus", async () => {
     const c = client({
       getProductionEvents: vi.fn().mockResolvedValue({ events: [], next: 0, done: true }),
       getProductionStatus: vi.fn().mockResolvedValue(boardStatus()),
@@ -500,7 +500,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     });
     expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "▶ ansehen" }));
+    fireEvent.click(screen.getByRole("button", { name: "▶ watch" }));
     expect(onFocus).toHaveBeenCalledOnce();
   });
 
@@ -575,7 +575,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     });
 
     // A stale "done" events log must not finalize the card while its own job is still running.
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
     expect(screen.queryByText(/Export:/)).toBeNull();
     expect(getProductionStatus).not.toHaveBeenCalled();
 
@@ -597,7 +597,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
     const getJob = vi
       .fn()
       .mockResolvedValue(
-        job({ status: "failed", error_json: JSON.stringify({ error: "Agent-Team abgestürzt" }) }),
+        job({ status: "failed", error_json: JSON.stringify({ error: "agent team crashed" }) }),
       );
     const c = client({ getProductionEvents, getProductionStatus, getJob });
     renderWithQuery(
@@ -611,7 +611,7 @@ describe("ActionCard — production tools (start_short / follow_up)", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(screen.getByText("✗ fehlgeschlagen: Agent-Team abgestürzt")).toBeTruthy();
+    expect(screen.getByText("✗ failed: agent team crashed")).toBeTruthy();
     expect(getProductionStatus).not.toHaveBeenCalled();
     // The adjustment hint belongs to the done+export card only, not a failed run.
     expect(screen.queryByText(/Weiter anpassen/)).toBeNull();
@@ -700,7 +700,7 @@ describe("ActionCard — board chips (artifact chain + revert)", () => {
     expect(screen.getByText("script v1")).toBeTruthy();
     expect(screen.getByText("voice v1")).toBeTruthy();
     expect(screen.getByText("cutlist v1")).toBeTruthy();
-    expect(screen.getByText("Bogen v1")).toBeTruthy();
+    expect(screen.getByText("sheet v1")).toBeTruthy();
     expect(screen.getByText("QA v1")).toBeTruthy();
     // render_report's chip carries its own ratio annotation, distinct from the result block's
     // "Export: exp-1 · 82%" line (pinned by exact string above).
@@ -737,7 +737,7 @@ describe("ActionCard — board chips (artifact chain + revert)", () => {
     expect(screen.getByRole("button", { name: "v2" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "v1" }));
-    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Roll back" }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
@@ -779,17 +779,17 @@ describe("ActionCard — board chips (artifact chain + revert)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
     fireEvent.click(screen.getByRole("button", { name: "v1" }));
-    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Roll back" }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
     expect(screen.getByText("cutlist v1")).toBeTruthy();
-    expect(screen.getByText("Bogen v2")).toBeTruthy();
-    expect(screen.getByText(/♻️ Wiederhergestellt: Bogen/)).toBeTruthy();
+    expect(screen.getByText("sheet v2")).toBeTruthy();
+    expect(screen.getByText(/♻️ Restored: sheet/)).toBeTruthy();
   });
 
-  it("a 409 (run in progress) revert response shows the 'Lauf aktiv' hint, not the raw detail", async () => {
+  it("a 409 (run in progress) revert response shows the 'run is active' hint, not the raw detail", async () => {
     const status = boardStatus({
       artifacts: { ...boardStatus().artifacts, cutlist: { version: 3, archived_versions: [1, 2] } },
     });
@@ -811,12 +811,12 @@ describe("ActionCard — board chips (artifact chain + revert)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /cutlist v3/ }));
     fireEvent.click(screen.getByRole("button", { name: "v1" }));
-    fireEvent.click(screen.getByRole("button", { name: "Zurückdrehen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Roll back" }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(screen.getByText(/Lauf aktiv/)).toBeTruthy();
+    expect(screen.getByText(/run is active/)).toBeTruthy();
   });
 
   it("a resume that restored artifacts shows the ♻️ chip with a friendly-label tooltip", async () => {
@@ -844,7 +844,7 @@ describe("ActionCard — board chips (artifact chain + revert)", () => {
     });
 
     const chip = screen.getByText("♻️ 2");
-    expect(chip.getAttribute("title")).toBe("Wiederhergestellt: voice, Bogen");
+    expect(chip.getAttribute("title")).toBe("Restored: voice, sheet");
   });
 
   it("running (post Gate-S confirm) shows chips but suppresses the revert button", async () => {
@@ -886,11 +886,11 @@ describe("ActionCard — board chips (artifact chain + revert)", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Apply selection/ }));
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
     // The chip is visible (chips show across running too) …
     const chip = screen.getByText("cutlist v3");
     // … but as a plain read-only pill, not the revert-capable button variant.
@@ -908,7 +908,7 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     vi.useRealTimers();
   });
 
-  it("a pending script_gate shows the checkpoint block with both lines and no '▶ ansehen'", async () => {
+  it("a pending script_gate shows the checkpoint block with both lines and no '▶ watch'", async () => {
     const getProductionEvents = vi
       .fn()
       .mockResolvedValue({ events: [], next: 0, done: true });
@@ -935,13 +935,13 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.getByText("📝 Sprechertext wartet auf Freigabe")).toBeTruthy();
+    expect(screen.getByText("📝 Narration is waiting for approval")).toBeTruthy();
     expect(screen.getByText(/Erste Zeile/)).toBeTruthy();
     expect(screen.getByText(/Zweite Zeile/)).toBeTruthy();
     // Priority over the ordinary result row — even though the fixture job still carries an
     // export id from a prior run, the pending gate must win, not the export line/button.
     expect(screen.queryByText(/Export:/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "▶ watch" })).toBeNull();
     // The adjustment hint is part of the export result block, not the pending-gate block.
     expect(screen.queryByText(/Weiter anpassen/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
@@ -968,7 +968,7 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     });
 
     expect(screen.getByText(/Export: exp-1/)).toBeTruthy();
-    expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+    expect(screen.queryByText("📝 Narration is waiting for approval")).toBeNull();
   });
 
   it("a script_gate without an explicit 'pending' field falls back to enabled && !approved", async () => {
@@ -985,7 +985,7 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
     const getProductionStatus = vi.fn().mockResolvedValue(
       boardStatus({
         script_gate: gate,
-        script_lines: [{ chapter: 1, scene_number: 1, text: "Nur eine Zeile" }],
+        script_lines: [{ chapter: 1, scene_number: 1, text: "Only one line" }],
       }),
     );
     const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
@@ -1001,9 +1001,9 @@ describe("ActionCard — Gate B (script checkpoint)", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.getByText("📝 Sprechertext wartet auf Freigabe")).toBeTruthy();
-    expect(screen.getByText(/Nur eine Zeile/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "▶ ansehen" })).toBeNull();
+    expect(screen.getByText("📝 Narration is waiting for approval")).toBeTruthy();
+    expect(screen.getByText(/Only one line/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "▶ watch" })).toBeNull();
   });
 });
 
@@ -1028,7 +1028,7 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
         // same "priority over the ordinary result row" contract script_gate itself has above.
         script_gate: { enabled: true, approved: false, pending: true },
         contact_sheet_gate: contactSheetGate(),
-        script_lines: [{ chapter: 1, scene_number: 1, text: "sollte nicht erscheinen" }],
+        script_lines: [{ chapter: 1, scene_number: 1, text: "should not appear" }],
       }),
     );
     const getJob = vi.fn().mockResolvedValue(job({ status: "succeeded" }));
@@ -1044,10 +1044,10 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.getByText(/Szenen-Auswahl/)).toBeTruthy();
+    expect(screen.getByText(/Scene selection/)).toBeTruthy();
     expect(screen.getByTestId("scene-tile-2").getAttribute("data-selected")).toBe("true");
     expect(screen.getByTestId("scene-tile-5").getAttribute("data-selected")).toBe("false");
-    expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+    expect(screen.queryByText("📝 Narration is waiting for approval")).toBeNull();
     expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
     expect(screen.queryByText(/Export:/)).toBeNull();
   });
@@ -1092,10 +1092,10 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
-    expect(screen.getByText(/Szenen-Auswahl/)).toBeTruthy();
+    expect(screen.getByText(/Scene selection/)).toBeTruthy();
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Apply selection/ }));
       await vi.advanceTimersByTimeAsync(0);
     });
 
@@ -1106,8 +1106,8 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
     expect(getProductionStatus).toHaveBeenCalledTimes(2);
     // The tile picker is gone (scene_gate.pending is now false) and the card resumed narrating
     // live for the NEW job the confirm's resume enqueued, instead of going stale.
-    expect(screen.queryByText(/Szenen-Auswahl/)).toBeNull();
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.queryByText(/Scene selection/)).toBeNull();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
 
     getProductionEvents.mockClear();
     await act(async () => {
@@ -1133,7 +1133,7 @@ describe("ActionCard — visual recut checkpoints", () => {
         visual_selection_gate: visualGate(),
         scene_gate: sceneGate(),
         script_gate: { enabled: true, approved: false, pending: true },
-        script_lines: [{ chapter: 1, scene_number: 1, text: "später" }],
+        script_lines: [{ chapter: 1, scene_number: 1, text: "later" }],
         contact_sheet_gate: contactSheetGate(),
       }),
     );
@@ -1154,9 +1154,9 @@ describe("ActionCard — visual recut checkpoints", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.getByText("Bildauswahl prüfen")).toBeTruthy();
-    expect(screen.queryByText(/Szenen-Auswahl/)).toBeNull();
-    expect(screen.queryByText("📝 Sprechertext wartet auf Freigabe")).toBeNull();
+    expect(screen.getByText("Review the picture selection")).toBeTruthy();
+    expect(screen.queryByText(/Scene selection/)).toBeNull();
+    expect(screen.queryByText("📝 Narration is waiting for approval")).toBeNull();
     expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
     expect(screen.queryByText(/Export:/)).toBeNull();
   });
@@ -1277,14 +1277,14 @@ describe("ActionCard — visual recut checkpoints", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+      fireEvent.click(screen.getByRole("button", { name: "Apply the picture selection" }));
       await vi.advanceTimersByTimeAsync(0);
     });
 
     expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), decisions);
     expect(getProductionStatus).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("Bildauswahl prüfen")).toBeNull();
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.queryByText("Review the picture selection")).toBeNull();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
   });
 
   it("contact-sheet confirm uses the same refresh path and tracks its resumed job", async () => {
@@ -1335,7 +1335,7 @@ describe("ActionCard — visual recut checkpoints", () => {
     expect(confirmContactSheet).toHaveBeenCalledWith("s1", "b".repeat(64));
     expect(getProductionStatus).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("button", { name: "Kontaktbogen freigeben" })).toBeNull();
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
   });
 });
 
@@ -1352,7 +1352,7 @@ describe("ActionCard — select_scenes (Gate S chat path)", () => {
         client={c}
       />,
     );
-    expect(screen.getByText("⚙ Auswahl wird angewendet …")).toBeTruthy();
+    expect(screen.getByText("⚙ Applying the selection …")).toBeTruthy();
     expect(screen.queryByText("select_scenes")).toBeNull();
   });
 
@@ -1364,13 +1364,13 @@ describe("ActionCard — select_scenes (Gate S chat path)", () => {
         client={c}
       />,
     );
-    expect(screen.getByText("✓ Auswahl übernommen")).toBeTruthy();
+    expect(screen.getByText("✓ Selection applied")).toBeTruthy();
     expect(screen.queryByText("select_scenes")).toBeNull();
   });
 });
 
 describe("ActionCard — review_transcript (Gate A)", () => {
-  it("renders the segment list and an 'unbestätigt' badge when not yet confirmed", () => {
+  it("renders the segment list and an 'unconfirmed' badge when not yet confirmed", () => {
     const c = client();
     renderWithQuery(
       <ActionCard
@@ -1387,15 +1387,15 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
-    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
-    expect(screen.getByText("unbestätigt")).toBeTruthy();
+    expect(screen.getByText("Review transcript")).toBeTruthy();
+    expect(screen.getByText("unconfirmed")).toBeTruthy();
     expect(screen.getByText(/#1 · 1s · Erstes Segment/)).toBeTruthy();
     expect(screen.getByText(/#2 · 2s · Zweites Segment/)).toBeTruthy();
     expect(screen.getByText(/#3 · 3s · Drittes Segment/)).toBeTruthy();
     expect(screen.getByText(/Korrigieren per Nachricht/)).toBeTruthy();
   });
 
-  it("shows a '✓ bestätigt' badge once confirmed_at is set", () => {
+  it("shows a '✓ confirmed' badge once confirmed_at is set", () => {
     const c = client();
     renderWithQuery(
       <ActionCard
@@ -1408,8 +1408,8 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
-    expect(screen.getByText("✓ bestätigt")).toBeTruthy();
-    expect(screen.queryByText("unbestätigt")).toBeNull();
+    expect(screen.getByText("✓ confirmed")).toBeTruthy();
+    expect(screen.queryByText("unconfirmed")).toBeNull();
   });
 
   it("shows a remainder line when total exceeds the shown segments", () => {
@@ -1425,7 +1425,7 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
-    expect(screen.getByText("… und 5 weitere Segmente")).toBeTruthy();
+    expect(screen.getByText("… and 5 more segments")).toBeTruthy();
   });
 
   it("shows no remainder line when total matches the shown segments", () => {
@@ -1459,8 +1459,8 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
-    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
-    expect(screen.getByText("unbestätigt")).toBeTruthy();
+    expect(screen.getByText("Review transcript")).toBeTruthy();
+    expect(screen.getByText("unconfirmed")).toBeTruthy();
     expect(screen.queryByText(/#\d+ · /)).toBeNull();
     expect(screen.queryByText(/weitere Segmente/)).toBeNull();
     expect(screen.getByText(/Korrigieren per Nachricht/)).toBeTruthy();
@@ -1479,8 +1479,8 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
-    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
-    expect(screen.getByText("unbestätigt")).toBeTruthy();
+    expect(screen.getByText("Review transcript")).toBeTruthy();
+    expect(screen.getByText("unconfirmed")).toBeTruthy();
     expect(screen.queryByText(/#\d+ · /)).toBeNull();
   });
 
@@ -1494,20 +1494,20 @@ describe("ActionCard — review_transcript (Gate A)", () => {
           // `typeof null === "object"` is true (the classic JS gotcha), so `typeof raw ===
           // "object"` alone would let `null` through as `row`, and `row.index` below would throw
           // — only the `&& raw !== null` half prevents that.
-          segments: ["not-an-object", null, { text: "Nur Text vorhanden, sonst nichts" }],
+          segments: ["not-an-object", null, { text: "Only text, nothing else" }],
           total: 3,
         })}
         client={c}
       />,
     );
 
-    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText("Review transcript")).toBeTruthy();
     // First entry: not an object at all — every field falls back (index 1, empty text).
     expect(screen.getByText(/#1 · 0s ·/)).toBeTruthy();
     // Second entry: null — same full fallback (index 2, empty text), not a crash.
     expect(screen.getByText(/#2 · 0s ·/)).toBeTruthy();
     // Third entry: an object, but only `text` is present — the rest fall back, text survives.
-    expect(screen.getByText(/#3 · 0s · Nur Text vorhanden, sonst nichts/)).toBeTruthy();
+    expect(screen.getByText(/#3 · 0s · Only text, nothing else/)).toBeTruthy();
   });
 
   // The two `total`-fallback cases below are asserted directly against
@@ -1559,7 +1559,7 @@ describe("ActionCard — review_transcript (Gate A)", () => {
       />,
     );
 
-    expect(screen.getByText("Transkript prüfen")).toBeTruthy();
+    expect(screen.getByText("Review transcript")).toBeTruthy();
     expect(screen.getByText(/#1 · 1s · Eins/)).toBeTruthy();
     expect(screen.getByText(/#2 · 2s · Zwei/)).toBeTruthy();
     expect(screen.queryByText(/weitere Segmente/)).toBeNull();
@@ -1573,7 +1573,7 @@ describe("ActionCard — job tools (start_overview / import_urls)", () => {
       <ActionCard message={actionMessage("import_urls", { job_ids: ["j1"] })} client={c} />,
     );
 
-    await waitFor(() => expect(screen.getByText("⚙ läuft")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("⚙ running")).toBeTruthy());
   });
 
   it("done shows the success line", async () => {
@@ -1582,13 +1582,13 @@ describe("ActionCard — job tools (start_overview / import_urls)", () => {
       <ActionCard message={actionMessage("start_overview", { job_id: "j1" })} client={c} />,
     );
 
-    await waitFor(() => expect(screen.getByText("✓ fertig")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("✓ done")).toBeTruthy());
   });
 
   it("failed import shows the reason", async () => {
     const c = client({
       getJob: vi.fn().mockResolvedValue(
-        job({ status: "failed", error_json: JSON.stringify({ error: "Video nicht gefunden" }) }),
+        job({ status: "failed", error_json: JSON.stringify({ error: "video not found" }) }),
       ),
     });
     renderWithQuery(
@@ -1596,7 +1596,7 @@ describe("ActionCard — job tools (start_overview / import_urls)", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByText("✗ fehlgeschlagen: Video nicht gefunden")).toBeTruthy(),
+      expect(screen.getByText("✗ failed: video not found")).toBeTruthy(),
     );
   });
 

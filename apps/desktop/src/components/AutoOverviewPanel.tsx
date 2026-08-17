@@ -36,10 +36,10 @@ function RenderJobLine({ client, jobId }: { client: LauraClient; jobId: string }
   return (
     <div className="text-[11px] text-content-muted" role="status">
       {done
-        ? "✓ Render fertig — der Film liegt im Export-Tab."
+        ? "✓ Render done — the film is in the Export tab."
         : status === "failed"
-          ? "✗ Render fehlgeschlagen — Details im Jobs-Panel."
-          : `⚙ Render läuft (${status}) … der Film erscheint im Export-Tab.`}
+          ? "✗ Render failed — details in the Jobs panel."
+          : `⚙ Render running (${status}) … the film shows up in the Export tab.`}
     </div>
   );
 }
@@ -85,19 +85,19 @@ export function AutoOverviewPanel({
 
   return (
     <section
-      aria-label="Auto-Übersicht"
+      aria-label="Auto overview"
       className="mb-3 rounded-lg border border-bezel bg-surface-1 p-3 text-xs"
     >
       <div className="mb-1 font-semibold text-content-strong">
-        🎬 Auto-Übersicht — ein Film über mehrere Videos
+        🎬 Auto overview — one film across several videos
       </div>
       <p className="mb-2 text-content-faint">
-        Thema rein, Laura sucht projektweit passende Momente und schneidet daraus eine Montage
-        (eigene Sequenz + Render, Original-Ton).
+        Give it a topic; Laura searches the whole project for fitting moments and cuts them into a
+        montage (its own sequence + render, original audio).
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <input
-          aria-label="Übersichts-Thema"
+          aria-label="Overview topic"
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           placeholder="z. B. Tour durch meine Spaces"
@@ -107,7 +107,7 @@ export function AutoOverviewPanel({
         <label className="flex items-center gap-1 text-content-muted">
           Ziel (s)
           <input
-            aria-label="Ziellänge in Sekunden"
+            aria-label="Target length in seconds"
             type="number"
             min={10}
             max={1800}
@@ -123,12 +123,12 @@ export function AutoOverviewPanel({
           disabled={running || topic.trim() === ""}
           className="rounded bg-accent px-3 py-1 font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
         >
-          Übersicht erstellen
+          Create overview
         </button>
       </div>
       {running && (
         <div className="mt-2 animate-pulse text-content-faint">
-          ⚙ Scout wählt Szenen über alle Videos …
+          ⚙ Scout is picking scenes across all videos …
         </div>
       )}
       {error !== null && (

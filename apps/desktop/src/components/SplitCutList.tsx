@@ -89,7 +89,7 @@ export function SplitCutList({
           disabled={busy || !projectId || !timelineId}
           className="rounded bg-accent px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
         >
-          Alle übernehmen
+          Apply all
         </button>
       </div>
       <ul className="space-y-1">
@@ -103,7 +103,7 @@ export function SplitCutList({
             >
               <span className="min-w-0 truncate">
                 <span className="font-medium text-content-muted">{kindLabel(sc.kind)}</span>{" "}
-                Bild {sc.video_frame} · Ton {sc.audio_frame} ({sc.offset > 0 ? "+" : ""}
+                Picture {sc.video_frame} · audio {sc.audio_frame} ({sc.offset > 0 ? "+" : ""}
                 {sc.offset})
               </span>
               {on ? (
@@ -120,7 +120,7 @@ export function SplitCutList({
                     disabled={busy}
                     className="rounded border border-bezel px-1.5 py-0.5 text-content-muted disabled:opacity-40"
                   >
-                    Zurücknehmen
+                    Take back
                   </button>
                 </span>
               ) : (
@@ -130,7 +130,7 @@ export function SplitCutList({
                   disabled={busy || !projectId || !timelineId}
                   className="shrink-0 rounded bg-accent px-2 py-0.5 text-white disabled:opacity-40"
                 >
-                  Übernehmen
+                  Apply
                 </button>
               )}
             </li>
@@ -142,8 +142,8 @@ export function SplitCutList({
           accepted — the L/J lives in the OTIO/exported NLE project, not the hard-cut editing
           timeline. Full 2-lane editing here is a deferred step. */}
       <p className="mt-1.5 border-t border-bezel pt-1.5 text-[9px] leading-snug text-content-faint">
-        Übernommene Splits erscheinen im OTIO-Export und im NLE-Projekt (Premiere/FCP). Die interne
-        Schnitt-Timeline bleibt hart geschnitten — 2-Spur-Bearbeitung folgt später.
+        Accepted splits show up in the OTIO export and in the NLE project (Premiere/FCP). The
+        internal editing timeline stays hard-cut — two-lane editing comes later.
       </p>
     </div>
   );

@@ -45,7 +45,7 @@ export interface EditorialToolsBarProps {
  * VO + lipsync happen automatically on a transcript edit (no toggles here). Smooth is
  * offered one-tap only when a same-source jump-cut was auto-marked; Reenact is a manual
  * creative action. The synthetic-content disclosure line is always on (spec §7).
- * The "Das bin ich" consent inspector (spec §11) lets the subject create/revoke consent
+ * The "That's me" consent inspector (spec §11) lets the subject create/revoke consent
  * records without leaving the edit view.
  */
 export function EditorialToolsBar({
@@ -79,7 +79,7 @@ export function EditorialToolsBar({
 
   const effectsLabel = syntheticEffects.length
     ? syntheticEffects.join(", ")
-    : "keine";
+    : "none";
   const subjectsLabel = active.length
     ? active.map((c) => c.subject_label).join(", ")
     : "—";
@@ -91,10 +91,10 @@ export function EditorialToolsBar({
           type="button"
           onClick={onUndo ?? (() => undefined)}
           disabled={!canUndo}
-          title={undoLabel ? `Rückgängig: ${undoLabel}` : "Rückgängig"}
+          title={undoLabel ? `Undo: ${undoLabel}` : "Undo"}
           className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
         >
-          ↶ Rückgängig
+          ↶ Undo
         </button>
         <button
           type="button"
@@ -107,9 +107,9 @@ export function EditorialToolsBar({
         </button>
         <span className="mx-0.5 h-5 w-px self-center bg-bezel/60" aria-hidden="true" />
         <label className="flex items-center gap-1 text-content-muted">
-          <span className="text-[10px] uppercase tracking-wide">Stimme</span>
+          <span className="text-[10px] uppercase tracking-wide">Voice</span>
           <select
-            aria-label="Stimme"
+            aria-label="Voice"
             value={voiceId ?? ""}
             disabled={busy}
             onChange={(e) => onVoiceChange?.(e.target.value === "" ? null : e.target.value)}
@@ -126,19 +126,19 @@ export function EditorialToolsBar({
           type="button"
           onClick={onSmooth ?? (() => undefined)}
           disabled={busy || pendingEdge === null}
-          title="Markierte Schnittkante mit einer kurzen Blende glätten"
+          title="Smooth the selected cut with a short dissolve"
           className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
         >
-          Übergang glätten
+          Smooth transition
         </button>
         <button
           type="button"
           onClick={onAutoTransitions ?? (() => undefined)}
           disabled={busy}
-          title="Alle passenden Schnittkanten automatisch mit kurzen Blenden glätten"
+          title="Smooth every suitable cut automatically with short dissolves"
           className="rounded border border-bezel bg-surface-1 px-3 py-1 text-[11px] text-content-strong hover:border-accent disabled:opacity-40"
         >
-          Alle Übergänge glätten
+          Smooth all transitions
         </button>
         <button
           type="button"
@@ -171,18 +171,18 @@ export function EditorialToolsBar({
       {/* Always-on synthetic-content disclosure (spec §7 — no off-switch). */}
       <div className="flex items-center gap-2 text-[11px] text-content-muted">
         <span>
-          Enthält synthetische Inhalte: {effectsLabel} · Einwilligung: {subjectsLabel}
+          Contains synthetic content: {effectsLabel} · consent: {subjectsLabel}
         </span>
       </div>
 
-      {/* "Das bin ich" consent inspector — collapsible, in-strip (spec §11). */}
+      {/* "That's me" consent inspector — collapsible, in-strip (spec §11). */}
       <details className="text-[11px] text-content-muted">
-        <summary className="cursor-pointer select-none">Das bin ich (Einwilligung)</summary>
+        <summary className="cursor-pointer select-none">That's me (consent)</summary>
         <div className="mt-1 flex items-center gap-2">
           <input
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
-            placeholder="Name der Person"
+            placeholder="Person's name"
             className="rounded border border-bezel bg-surface-2 px-2 py-1 text-xs text-content-strong"
           />
           <button
@@ -194,7 +194,7 @@ export function EditorialToolsBar({
             }}
             className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
           >
-            Bestätigen
+            Confirm
           </button>
         </div>
         {consentError && (

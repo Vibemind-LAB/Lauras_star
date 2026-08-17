@@ -6,9 +6,9 @@ import { type CutWord } from "../shared/transcriptProjection";
 import { type Scene } from "../api";
 
 const scenes: Scene[] = [
-  { id: "s1", project_id: "p", source_timeline_id: "t", name: "Szene 1",
+  { id: "s1", project_id: "p", source_timeline_id: "t", name: "Scene 1",
     order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 100 },
-  { id: "s2", project_id: "p", source_timeline_id: "t", name: "Szene 2",
+  { id: "s2", project_id: "p", source_timeline_id: "t", name: "Scene 2",
     order_index: 1, seq_in_frame: 100, seq_out_frame_exclusive: 200 },
 ];
 const words: CutWord[] = [
@@ -24,8 +24,8 @@ describe("ContinuousTranscript", () => {
         onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
         onCutAt={vi.fn()} onSeek={vi.fn()} />,
     );
-    expect(screen.getByText("Szene 1")).toBeTruthy();
-    expect(screen.getByText("Szene 2")).toBeTruthy();
+    expect(screen.getByText("Scene 1")).toBeTruthy();
+    expect(screen.getByText("Scene 2")).toBeTruthy();
     expect(screen.getByText("hallo")).toBeTruthy();
     expect(screen.getByText("zwei")).toBeTruthy();
   });
@@ -75,29 +75,29 @@ describe("ContinuousTranscript", () => {
         onSelectionChange={vi.fn()} onDeleteSelection={onDeleteSelection}
         onCutAt={vi.fn()} onSeek={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /löschen/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Delete/i }));
     expect(onDeleteSelection).toHaveBeenCalledWith("w1", "w2");
   });
 
-  it("'Text ersetzen' button is not rendered when onReplaceText is absent", () => {
+  it("'Replace text' button is not rendered when onReplaceText is absent", () => {
     render(
       <ContinuousTranscript words={words} scenes={scenes}
         selection={{ startWordId: "w1", endWordId: "w2" }}
         onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
         onCutAt={vi.fn()} onSeek={vi.fn()} />,
     );
-    expect(screen.queryByRole("button", { name: /ersetzen/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Replace text/i })).toBeNull();
   });
 
-  it("'Text ersetzen' opens an inline input prefilled with the selected words' text", () => {
+  it("'Replace text' opens an inline input prefilled with the selected words' text", () => {
     render(
       <ContinuousTranscript words={words} scenes={scenes}
         selection={{ startWordId: "w1", endWordId: "w2" }}
         onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
         onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={vi.fn()} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
-    const input = screen.getByRole("textbox", { name: /neuer text/i }) as HTMLInputElement;
+    fireEvent.click(screen.getByRole("button", { name: /Replace text/i }));
+    const input = screen.getByRole("textbox", { name: /new text/i }) as HTMLInputElement;
     expect(input.value).toBe("hallo welt");
   });
 
@@ -110,8 +110,8 @@ describe("ContinuousTranscript", () => {
         onSelectionChange={onSelectionChange} onDeleteSelection={vi.fn()}
         onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={onReplaceText} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
-    const input = screen.getByRole("textbox", { name: /neuer text/i });
+    fireEvent.click(screen.getByRole("button", { name: /Replace text/i }));
+    const input = screen.getByRole("textbox", { name: /new text/i });
     fireEvent.change(input, { target: { value: "neuer text" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onReplaceText).toHaveBeenCalledWith("w1", "w2", "neuer text");
@@ -127,8 +127,8 @@ describe("ContinuousTranscript", () => {
         onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
         onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={onReplaceText} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
-    const input = screen.getByRole("textbox", { name: /neuer text/i });
+    fireEvent.click(screen.getByRole("button", { name: /Replace text/i }));
+    const input = screen.getByRole("textbox", { name: /new text/i });
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onReplaceText).not.toHaveBeenCalled();
@@ -142,11 +142,11 @@ describe("ContinuousTranscript", () => {
         onSelectionChange={vi.fn()} onDeleteSelection={vi.fn()}
         onCutAt={vi.fn()} onSeek={vi.fn()} onReplaceText={onReplaceText} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /ersetzen/i }));
-    fireEvent.keyDown(screen.getByRole("textbox", { name: /neuer text/i }), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: /Replace text/i }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /new text/i }), { key: "Escape" });
     expect(onReplaceText).not.toHaveBeenCalled();
     // editor is gone; delete button reappears
-    expect(screen.queryByRole("textbox", { name: /neuer text/i })).toBeNull();
-    expect(screen.getByRole("button", { name: /löschen/i })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: /new text/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /Delete/i })).toBeTruthy();
   });
 });

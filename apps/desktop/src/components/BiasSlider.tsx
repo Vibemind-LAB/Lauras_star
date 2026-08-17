@@ -8,8 +8,8 @@ import { type ReactElement, useId } from "react";
 export const DEFAULT_CUT_BIAS = 0.4;
 
 function label(bias: number): string {
-  if (bias <= 0.2) return "bild-genau";
-  if (bias >= 0.8) return "schnitt-sauber";
+  if (bias <= 0.2) return "frame-accurate";
+  if (bias >= 0.8) return "cut-clean";
   return "ausgewogen";
 }
 
@@ -33,14 +33,14 @@ export function BiasSlider({
     <div className="flex flex-col gap-0.5">
       <div className="flex items-baseline justify-between gap-2">
         <label htmlFor={id} className="text-[10px] uppercase tracking-wide text-content-faint">
-          Schnitt-Bias
+          Cut bias
         </label>
         <span className="text-[10px] text-content-muted tabular-nums" data-testid="bias-readout">
           {display} · {value.toFixed(2)}
         </span>
       </div>
       <div className="flex items-center gap-2">
-        <span className="shrink-0 text-[10px] text-content-faint">Bild-genau</span>
+        <span className="shrink-0 text-[10px] text-content-faint">Frame-accurate</span>
         <input
           id={id}
           type="range"
@@ -50,11 +50,11 @@ export function BiasSlider({
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(Number(e.target.value))}
-          aria-label="Schnitt-Bias: Bild-genau bis Schnitt-sauber"
+          aria-label="Cut bias: frame-accurate to cut-clean"
           aria-valuetext={`${display}, ${value.toFixed(2)}`}
           className="min-w-0 flex-1 accent-accent disabled:opacity-40"
         />
-        <span className="shrink-0 text-[10px] text-content-faint">Schnitt-sauber</span>
+        <span className="shrink-0 text-[10px] text-content-faint">Cut-clean</span>
       </div>
     </div>
   );

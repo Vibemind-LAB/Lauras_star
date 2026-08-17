@@ -99,7 +99,7 @@ export function ContinuousTranscript({
             className="rounded bg-status-err/20 px-2 py-0.5 text-status-err hover:bg-status-err/30"
             onClick={() => onDeleteSelection(selection.startWordId, selection.endWordId)}
           >
-            Auswahl löschen
+            Delete selection
           </button>
           {onReplaceText && (
             <button
@@ -107,7 +107,7 @@ export function ContinuousTranscript({
               className="rounded bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
               onClick={openReplaceEditor}
             >
-              Text ersetzen
+              Replace text
             </button>
           )}
         </div>
@@ -116,7 +116,7 @@ export function ContinuousTranscript({
         <div className="flex items-center gap-2 text-xs">
           <input
             type="text"
-            aria-label="Neuer Text"
+            aria-label="New text"
             className="flex-1 rounded border border-accent bg-surface-1 px-2 py-0.5 text-content-base focus:outline-none focus:ring-1 focus:ring-accent"
             value={replaceText}
             onChange={(e) => setReplaceText(e.target.value)}
@@ -138,7 +138,7 @@ export function ContinuousTranscript({
             className="rounded bg-surface-2 px-2 py-0.5 text-content-muted hover:bg-surface-3"
             onClick={cancelReplace}
           >
-            Abbrechen
+            Cancel
           </button>
         </div>
       )}
@@ -153,9 +153,9 @@ export function ContinuousTranscript({
               <span key={w.id} className="whitespace-nowrap">
                 <button
                   type="button"
-                  aria-label={`Schnitt vor ${w.text}`}
+                  aria-label={`Cut before ${w.text}`}
                   data-testid={`caret-${w.id}`}
-                  title="Hier schneiden"
+                  title="Cut here"
                   className="mx-0.5 inline-block h-3.5 w-0.5 cursor-col-resize rounded-sm bg-transparent align-middle hover:bg-accent"
                   onClick={() => onCutAt(w.seqStart)}
                 />

@@ -62,7 +62,7 @@ async function deriveTarget(client: LauraClient, message: ChatMessage): Promise<
   // approve_script and select_scenes both resume the production and carry the same
   // {session_id, job_id} refs — they must derive like the other production cards (live finding
   // 2026-08-05 for approve_script: it fell through to "none", so the finished film's
-  // "▶ ansehen" left the preview empty; select_scenes' chat path — _handle_select_scenes in
+  // "▶ watch" left the preview empty; select_scenes' chat path — _handle_select_scenes in
   // services/local-api/src/laura/chat/executor.py — is the same shape for the same reason).
   if (
     tool === "start_short" ||
@@ -130,7 +130,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
   // True while EITHER onSend's or onDecide's turn is in flight — the composer must stay locked
   // for both, not just a text send (Finding 1: a pending approval decision is still a turn).
   const [turnInFlight, setTurnInFlight] = useState(false);
-  // Set by onFocusAction's manual "▶ ansehen" pick; cleared when the active conversation
+  // Set by onFocusAction's manual "▶ watch" pick; cleared when the active conversation
   // switches. While set, the default preview-derivation effect below must not clobber it with
   // its own recompute (Finding 2).
   const [manualPreview, setManualPreview] = useState(false);
@@ -195,7 +195,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
 
   // Default preview target: recompute from the newest action message whenever the thread
   // changes. Cancelled-guarded the same way as the conversation load above. Skipped entirely
-  // while `manualPreview` is set — a manual "▶ ansehen" pick (onFocusAction) must survive later
+  // while `manualPreview` is set — a manual "▶ watch" pick (onFocusAction) must survive later
   // messages changes (e.g. a follow-up text turn) instead of being clobbered by this effect's own
   // recompute (Finding 2). manualPreview is cleared on conversation switch (see the load effect
   // above), so a fresh conversation still gets its default derivation.
@@ -371,7 +371,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
         {resumedOrphan !== null ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             <div className="mb-1 text-[11px] text-content-muted">
-              <span className="font-medium text-content-strong">Ursprünglicher Auftrag:</span>{" "}
+              <span className="font-medium text-content-strong">Original brief:</span>{" "}
               {resumedOrphan.brief_preview}
             </div>
             <ProductionSessionCard
@@ -395,7 +395,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
         )}
       </section>
 
-      <section aria-label="Vorschau" className="flex min-h-0 flex-col overflow-hidden bg-surface-0">
+      <section aria-label="Preview" className="flex min-h-0 flex-col overflow-hidden bg-surface-0">
         <ChatPreview target={preview} client={client} />
       </section>
     </div>

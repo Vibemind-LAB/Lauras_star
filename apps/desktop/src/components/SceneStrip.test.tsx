@@ -12,9 +12,9 @@ const clip = (id: string, sin: number, sout: number): TimelineClip =>
      origin_word_start_id: null, origin_word_end_id: null, speed_num: 1, speed_den: 1,
      audio_offset_samples: 0 });
 const scenes: Scene[] = [
-  { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Szene 1",
+  { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Scene 1",
     order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 60 },
-  { id: "s2", project_id: "p", source_timeline_id: "tl", name: "Szene 2",
+  { id: "s2", project_id: "p", source_timeline_id: "tl", name: "Scene 2",
     order_index: 1, seq_in_frame: 60, seq_out_frame_exclusive: 90 },
 ];
 const clips = [clip("c1", 0, 30), clip("c2", 30, 60), clip("c3", 60, 90)];
@@ -32,8 +32,8 @@ describe("SceneStrip", () => {
       <SceneStrip client={client()} asset={asset} scenes={scenes} clips={clips}
         segments={segments} onSplit={vi.fn()} onMerge={vi.fn()} onRename={vi.fn()} onSeek={vi.fn()} />,
     );
-    expect(getByText("Szene 1")).toBeTruthy();
-    expect(getByText("Szene 2")).toBeTruthy();
+    expect(getByText("Scene 1")).toBeTruthy();
+    expect(getByText("Scene 2")).toBeTruthy();
   });
 
   it("seeks to a scene's start frame on card click", () => {
@@ -43,7 +43,7 @@ describe("SceneStrip", () => {
         segments={segments} onSplit={vi.fn()} onMerge={vi.fn()} onRename={vi.fn()}
         onSeek={onSeek} />,
     );
-    fireEvent.click(getByText("Szene 2"));
+    fireEvent.click(getByText("Scene 2"));
     expect(onSeek).toHaveBeenCalledWith(60);
   });
 
@@ -54,7 +54,7 @@ describe("SceneStrip", () => {
         segments={segments} onSplit={vi.fn()} onMerge={onMerge} onRename={vi.fn()} onSeek={vi.fn()} />,
     );
     // only the first scene (has a successor) shows a merge button
-    expect(getAllByTitle("Mit nächster Szene zusammenführen").length).toBe(1);
+    expect(getAllByTitle("Merge with next scene").length).toBe(1);
   });
 
   it("split at the middle clip boundary of a multi-clip scene", () => {
@@ -63,7 +63,7 @@ describe("SceneStrip", () => {
       <SceneStrip client={client()} asset={asset} scenes={scenes} clips={clips}
         segments={segments} onSplit={onSplit} onMerge={vi.fn()} onRename={vi.fn()} onSeek={vi.fn()} />,
     );
-    fireEvent.click(getAllByTitle("Szene teilen")[0]); // scene 1 spans clips c1,c2 -> boundary 30
+    fireEvent.click(getAllByTitle("Split scene")[0]); // scene 1 spans clips c1,c2 -> boundary 30
     expect(onSplit).toHaveBeenCalledWith("s1", 30);
   });
 });

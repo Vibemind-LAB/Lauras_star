@@ -155,14 +155,14 @@ export function TranscriptBar({
     return (
       <div className="flex h-32 flex-col border-t border-bezel bg-surface-1">
         <div className="flex items-center justify-between px-5 py-1.5">
-          <span className="text-xs uppercase tracking-wide text-content-faint">Transkript (Schnitt)</span>
+          <span className="text-xs uppercase tracking-wide text-content-faint">Transcript (cut)</span>
           <span className="flex items-center gap-1">
             {error && <span className="mr-2 text-xs text-status-err">{error}</span>}
           </span>
         </div>
         {!hasWords ? (
           <div className="flex flex-1 items-center px-5 text-xs text-content-faint">
-            {assetId ? "Keine Wörter im Schnitt." : "Wähle ein Medium."}
+            {assetId ? "No words in the cut." : "Choose a medium."}
           </div>
         ) : (
           <div className="flex-1 overflow-auto px-5 pb-2 text-sm leading-relaxed text-content-strong">
@@ -199,8 +199,8 @@ export function TranscriptBar({
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Im Transkript suchen"
-                aria-label="Im Transkript suchen"
+                placeholder="Search the transcript"
+                aria-label="Search the transcript"
                 className="w-40 rounded bg-surface-0 px-2 py-0.5 text-xs text-content-strong placeholder:text-content-faint"
               />
               {query && (
@@ -228,7 +228,7 @@ export function TranscriptBar({
       </div>
       {segments.length === 0 ? (
         <div className="flex flex-1 items-center px-5 text-xs text-content-faint">
-          {note ?? (assetId ? "noch kein Transkript" : "Wähle ein Medium.")}
+          {note ?? (assetId ? "no transcript yet" : "Choose a medium.")}
         </div>
       ) : (
         <div className="flex-1 space-y-1 overflow-auto px-5 pb-2 text-sm text-content-strong">
@@ -274,7 +274,7 @@ export function TranscriptBar({
                       type="button"
                       onClick={() => void saveEdit(seg.id)}
                       disabled={saving}
-                      title="Speichern"
+                      title="Save"
                       className="rounded bg-surface-0 px-1 text-xs text-status-ok hover:bg-surface-2 disabled:opacity-50"
                     >
                       ✓
@@ -283,7 +283,7 @@ export function TranscriptBar({
                       type="button"
                       onClick={cancelEdit}
                       disabled={saving}
-                      title="Abbrechen"
+                      title="Cancel"
                       className="rounded bg-surface-0 px-1 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-50"
                     >
                       ✕
@@ -296,7 +296,7 @@ export function TranscriptBar({
                       <button
                         type="button"
                         onClick={() => onAppendSegment(seg)}
-                        title="an Rough Cut anhängen"
+                        title="append to rough cut"
                         className="ml-0.5 rounded bg-surface-0 px-1 text-xs text-status-ok hover:bg-surface-2"
                       >
                         →
@@ -308,7 +308,7 @@ export function TranscriptBar({
                         onClick={() =>
                           onDeleteWords(seg.words[0].id, seg.words[seg.words.length - 1].id)
                         }
-                        title="Segment ripple-löschen"
+                        title="Ripple-delete segment"
                         className="ml-0.5 rounded bg-surface-0 px-1 text-xs text-red-400 hover:bg-red-600/40"
                       >
                         ✂

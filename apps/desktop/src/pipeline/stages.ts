@@ -5,10 +5,10 @@ export interface StageMeta { id: Stage; label: string; }
 // options and file/folder pickers — two tabs for one job, one of them strictly poorer.
 export const STAGES: readonly StageMeta[] = [
   { id: "chat", label: "💬 Chat" },
-  { id: "media", label: "Medien" },
+  { id: "media", label: "Media" },
   { id: "roughcut", label: "Rough Cut" },
-  { id: "finecut", label: "Feinschnitt" },
-  { id: "assemble", label: "Zusammenfügen" },
+  { id: "finecut", label: "Fine Cut" },
+  { id: "assemble", label: "Assemble" },
   { id: "shorts", label: "Shorts" },
   { id: "export", label: "Export" },
 ] as const;

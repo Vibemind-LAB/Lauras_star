@@ -72,7 +72,7 @@ describe("ActionCard — per-event-line error boundary", () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    expect(screen.getByText("⚠ Diese Zeile konnte nicht angezeigt werden.")).toBeTruthy();
-    expect(screen.getByText("⚙ läuft …")).toBeTruthy();
+    expect(screen.getByText("⚠ This line could not be displayed.")).toBeTruthy();
+    expect(screen.getByText("⚙ running …")).toBeTruthy();
   });
 });

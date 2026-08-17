@@ -44,7 +44,7 @@ describe("ConversationList", () => {
       />,
     );
     const resume = screen.getByRole("button", { name: "Fortsetzen" });
-    const newChat = screen.getByRole("button", { name: "Neuer Chat" });
+    const newChat = screen.getByRole("button", { name: "New chat" });
     expect(resume.compareDocumentPosition(newChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(resume);
     expect(onResume).toHaveBeenCalledWith(openSession);
@@ -54,7 +54,7 @@ describe("ConversationList", () => {
     render(
       <ConversationList items={[]} activeId={null} onSelect={vi.fn()} onNew={vi.fn()} onDelete={vi.fn()} />,
     );
-    expect(screen.getByText("Noch keine Unterhaltungen")).toBeTruthy();
+    expect(screen.getByText("No conversations yet")).toBeTruthy();
   });
 
   it("renders one row per conversation", () => {
@@ -89,7 +89,7 @@ describe("ConversationList", () => {
   it(`clicking „Neuer Chat" fires onNew`, () => {
     const onNew = vi.fn();
     render(<ConversationList items={[]} activeId={null} onSelect={vi.fn()} onNew={onNew} onDelete={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Neuer Chat" }));
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
     expect(onNew).toHaveBeenCalledOnce();
   });
 
@@ -99,7 +99,7 @@ describe("ConversationList", () => {
     render(
       <ConversationList items={items} activeId={null} onSelect={vi.fn()} onNew={vi.fn()} onDelete={onDelete} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Unterhaltung löschen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete conversation" }));
     expect(onDelete).not.toHaveBeenCalled();
   });
 
@@ -110,8 +110,8 @@ describe("ConversationList", () => {
     render(
       <ConversationList items={items} activeId={null} onSelect={onSelect} onNew={vi.fn()} onDelete={onDelete} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Unterhaltung löschen" }));
-    fireEvent.click(screen.getByRole("button", { name: "Wirklich löschen?" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Really delete?" }));
     expect(onDelete).toHaveBeenCalledWith("c1");
     // the delete affordance is a distinct control from the row — selecting must never fire too
     expect(onSelect).not.toHaveBeenCalled();
@@ -123,10 +123,10 @@ describe("ConversationList", () => {
     render(
       <ConversationList items={items} activeId={null} onSelect={vi.fn()} onNew={vi.fn()} onDelete={onDelete} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Unterhaltung löschen" }));
-    fireEvent.click(screen.getByRole("button", { name: "Abbrechen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onDelete).not.toHaveBeenCalled();
     // back to the normal row — the delete affordance is available again
-    expect(screen.getByRole("button", { name: "Unterhaltung löschen" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete conversation" })).toBeTruthy();
   });
 });

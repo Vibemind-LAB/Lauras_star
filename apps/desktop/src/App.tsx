@@ -423,12 +423,12 @@ export function App(): ReactElement {
     <div className="flex h-full flex-col">
       {/* Import drag-and-drop only in Import/Download. Its window-level dragover
           listener otherwise pops the full-screen import overlay during clip/scene
-          drags in Rough Cut / Feinschnitt / Zusammenfügen. */}
+          drags in Rough Cut / Fine Cut / Assemble. */}
       {stage === "media" && <DropZone onImport={onDropImport} />}
       <header className="flex items-center justify-between border-b border-bezel bg-surface-1 px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold tracking-tight text-content-strong">Laura</h1>
-          <span className="text-xs text-content-muted">frame-genauer KI-Filmschnitt · local-first</span>
+          <span className="text-xs text-content-muted">frame-accurate AI film editing · local-first</span>
         </div>
         {client && (
           <div className="flex items-center gap-2">
@@ -438,10 +438,10 @@ export function App(): ReactElement {
                 if (e.target.value) void selectProject(e.target.value);
               }}
               disabled={projects.length === 0}
-              aria-label="Projekt wählen"
+              aria-label="Choose a project"
               className="max-w-[12rem] rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
             >
-              <option value="">{projects.length ? "— Projekt wählen —" : "Kein Projekt"}</option>
+              <option value="">{projects.length ? "— Choose project —" : "No project"}</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -451,13 +451,13 @@ export function App(): ReactElement {
             {selectedProjectId && (
               <button
                 type="button"
-                title="Aktuelles Projekt löschen"
-                aria-label="Projekt löschen"
+                title="Delete the current project"
+                aria-label="Delete project"
                 onClick={() => {
                   const proj = projects.find((p) => p.id === selectedProjectId);
                   if (
                     proj &&
-                    window.confirm(`Projekt „${proj.name}" und alle zugehörigen Daten löschen?`)
+                    window.confirm(`Delete project "${proj.name}" and everything belonging to it?`)
                   ) {
                     void onDeleteProject(selectedProjectId);
                   }
@@ -492,7 +492,7 @@ export function App(): ReactElement {
                 disabled={!name.trim() || busy}
                 className="rounded bg-accent px-2 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
               >
-                + Anlegen
+                + Create
               </button>
               {/* Synthetic 2s single-colour clips — useful for wiring checks, useless for real
                   editing (they cannot even produce a rough cut). Dev builds only, so the
@@ -589,7 +589,7 @@ export function App(): ReactElement {
               }}
             />
           ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-content-faint">Service offline — starte den lokalen Server.</div>
+            <div className="flex flex-1 items-center justify-center text-sm text-content-faint">Service offline — start the local server.</div>
           ))}
 
           {stage === "roughcut" && client && (
@@ -667,7 +667,7 @@ export function App(): ReactElement {
                           <button
                             type="button"
                             onClick={() => void onDeleteProject(p.id)}
-                            title="Projekt löschen"
+                            title="Delete project"
                             className="shrink-0 rounded px-2 py-1 text-content-faint hover:text-status-err"
                           >
                             ×
@@ -698,14 +698,14 @@ export function App(): ReactElement {
                         disabled={busy || !client || !name.trim()}
                         className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-glow disabled:opacity-40"
                       >
-                        {busy ? "Lege an…" : "Projekt anlegen"}
+                        {busy ? "Lege an…" : "Create project"}
                       </button>
                     </form>
                   </div>
 
                   <div className="flex min-h-0 flex-1 flex-col">
                     <div className="flex items-center justify-between px-4 pb-2 pt-3">
-                      <h2 className="text-xs font-medium uppercase tracking-wide text-content-faint">Medien</h2>
+                      <h2 className="text-xs font-medium uppercase tracking-wide text-content-faint">Media</h2>
                     </div>
                     <div className="px-3 pb-2">
                       <ImportBar
@@ -742,7 +742,7 @@ export function App(): ReactElement {
                       <input
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder={semantic ? "Semantisch suchen…" : "Transkript durchsuchen…"}
+                        placeholder={semantic ? "Semantic search…" : "Transkript durchsuchen…"}
                         disabled={!selectedProjectId}
                         className="w-full rounded-md border border-bezel bg-surface-1 px-3 py-1.5 text-xs text-content-strong outline-none focus:border-bezel disabled:opacity-40"
                       />
@@ -778,10 +778,10 @@ export function App(): ReactElement {
                     )}
                     <ul className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-3">
                       {!selectedProjectId && (
-                        <li className="px-1 py-2 text-xs text-content-faint">Wähle ein Projekt.</li>
+                        <li className="px-1 py-2 text-xs text-content-faint">Choose a project.</li>
                       )}
                       {selectedProjectId && assets.length === 0 && (
-                        <li className="px-1 py-2 text-xs text-content-faint">Noch keine Medien importiert.</li>
+                        <li className="px-1 py-2 text-xs text-content-faint">No media imported yet.</li>
                       )}
                       {assets.map((a) => (
                         <li key={a.id} className="flex flex-col gap-0.5">
@@ -800,7 +800,7 @@ export function App(): ReactElement {
                             <button
                               type="button"
                               onClick={() => void onDeleteAsset(a.id)}
-                              title="Medium löschen"
+                              title="Delete medium"
                               className="shrink-0 rounded px-2 py-1 text-content-faint hover:text-status-err"
                             >
                               ×
@@ -820,7 +820,7 @@ export function App(): ReactElement {
                   {client && detailAsset ? (
                     <Player asset={detailAsset} seekTo={seek} onFrame={setCurrentFrame} />
                   ) : (
-                    <div className="flex flex-1 items-center justify-center text-sm text-content-faint">                       Wähle ein Medium oder importiere eines.
+                    <div className="flex flex-1 items-center justify-center text-sm text-content-faint">                       Choose a medium or import one.
                     </div>
                   )}
                 </section>
@@ -848,7 +848,7 @@ export function App(): ReactElement {
                       buildResult={buildResult}
                     />
                   ) : (
-                    <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-content-faint">                       Inspector — wähle ein Medium.
+                    <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-content-faint">                       Inspector — choose a medium.
                     </div>
                   )}
                 </section>
@@ -903,7 +903,7 @@ export function App(): ReactElement {
                 project={projects.find((p) => p.id === selectedProjectId) ?? null}
                 exportTargets={[
                   ...(sequenceTimelineId != null
-                    ? [{ id: sequenceTimelineId, label: "Sequenz (Zusammenfügen)", kind: "sequence" as const }]
+                    ? [{ id: sequenceTimelineId, label: "Sequence (Assemble)", kind: "sequence" as const }]
                     : []),
                   ...(roughCut != null
                     ? [{ id: roughCut.id, label: `Rough Cut: ${detailAsset?.display_name ?? roughCut.name}`, kind: "rough_cut" as const }]
@@ -912,7 +912,7 @@ export function App(): ReactElement {
               />
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-                Service offline — starte den lokalen Server.
+                Service offline — start the local server.
               </div>
             ))}
         </div>

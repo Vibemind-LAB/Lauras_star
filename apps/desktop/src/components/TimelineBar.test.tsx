@@ -71,7 +71,7 @@ describe("TimelineBar", () => {
     const { container } = render(
       <TimelineBar client={stubClient()} timeline={null} onChange={() => undefined} />,
     );
-    expect(container.textContent ?? "").toContain("wähle ein Projekt");
+    expect(container.textContent ?? "").toContain("choose a project");
   });
 
   it("scrubs the player to a clip's source IN frame when its thumbnail is clicked", () => {
@@ -155,7 +155,7 @@ describe("TimelineBar", () => {
         onChange={() => undefined}
       />,
     );
-    const handle = getByLabelText("Ton-Versatz Clip 2");
+    const handle = getByLabelText("Audio offset clip 2");
     // +50px at 0.1 frames/px = +5 frames (an L-cut). Element.setPointerCapture is absent in jsdom.
     handle.setPointerCapture = () => undefined;
     fireEvent.pointerDown(handle, { clientX: 100, pointerId: 1 });
@@ -177,8 +177,8 @@ describe("TimelineBar", () => {
         onChange={() => undefined}
       />,
     );
-    expect(queryByLabelText("Ton-Versatz Clip 1")).toBeNull();
-    expect(queryByLabelText("Ton-Versatz Clip 2")).not.toBeNull();
+    expect(queryByLabelText("Audio offset clip 1")).toBeNull();
+    expect(queryByLabelText("Audio offset clip 2")).not.toBeNull();
   });
 
   it("renders the A1 lane offset for an accepted (non-zero) split", async () => {
@@ -194,7 +194,7 @@ describe("TimelineBar", () => {
       />,
     );
     // The audio block's accessible label reflects the projected offset (L-cut at +5 frames).
-    const block = await findByLabelText(/Audio Clip 2 · Ton \+5f → L-Cut/);
+    const block = await findByLabelText(/Audio Clip 2 · Audio \+5f → L cut/);
     expect(block).not.toBeNull();
   });
 
@@ -211,7 +211,7 @@ describe("TimelineBar", () => {
     expect(getByLabelText("A2 Clip VO · seq 10–50")).not.toBeNull();
   });
 
-  // --- "+ Spur" / "− Spur" video lane controls -------------------------------------------------
+  // --- "+ Track" / "− Track" video lane controls -------------------------------------------------
 
   it("shows a single video lane (V1) by default for a single-track timeline", () => {
     const { getByLabelText, queryByLabelText } = render(
@@ -225,7 +225,7 @@ describe("TimelineBar", () => {
     expect(queryByLabelText("V2")).toBeNull();
   });
 
-  it("clicking '+ Spur' adds an empty video lane row as a drop target", () => {
+  it("clicking '+ Track' adds an empty video lane row as a drop target", () => {
     const { getByLabelText, getByTitle, queryByLabelText } = render(
       <TimelineBar
         client={stubClient()}
@@ -236,7 +236,7 @@ describe("TimelineBar", () => {
     // Initially only V1 is present.
     expect(queryByLabelText("V2")).toBeNull();
 
-    fireEvent.click(getByTitle("Videospur hinzufügen"));
+    fireEvent.click(getByTitle("Add a video track"));
 
     // After clicking +, V2 should be rendered as a new (empty) video lane row.
     expect(getByLabelText("V2")).not.toBeNull();
@@ -244,7 +244,7 @@ describe("TimelineBar", () => {
     expect(getByLabelText("V1")).not.toBeNull();
   });
 
-  it("clicking '− Spur' removes an empty lane but never below occupied count", () => {
+  it("clicking '− Track' removes an empty lane but never below occupied count", () => {
     const { getByTitle, queryByLabelText } = render(
       <TimelineBar
         client={stubClient()}
@@ -253,8 +253,8 @@ describe("TimelineBar", () => {
       />,
     );
     // Add two extra lanes.
-    fireEvent.click(getByTitle("Videospur hinzufügen"));
-    fireEvent.click(getByTitle("Videospur hinzufügen"));
+    fireEvent.click(getByTitle("Add a video track"));
+    fireEvent.click(getByTitle("Add a video track"));
     expect(queryByLabelText("V3")).not.toBeNull();
 
     // Remove one lane.
@@ -273,7 +273,7 @@ describe("TimelineBar", () => {
     expect(minusBtn.disabled).toBe(true);
   });
 
-  it("'+ Spur' button is disabled at MAX_VIDEO_LANES (9)", () => {
+  it("'+ Track' button is disabled at MAX_VIDEO_LANES (9)", () => {
     // Put a clip on lane 8 so maxLane = 8, numVideoLanes = 9 automatically.
     const tl = timeline([
       clip({ id: "base", lane: 0 }),
@@ -286,11 +286,11 @@ describe("TimelineBar", () => {
         onChange={() => undefined}
       />,
     );
-    const plusBtn = getByTitle("Videospur hinzufügen") as HTMLButtonElement;
+    const plusBtn = getByTitle("Add a video track") as HTMLButtonElement;
     expect(plusBtn.disabled).toBe(true);
   });
 
-  it("empty lane added by '+ Spur' is a valid cross-lane drop target (has onDrop)", () => {
+  it("empty lane added by '+ Track' is a valid cross-lane drop target (has onDrop)", () => {
     const tl = timeline([clip()]);
     const applyOperation = vi.fn(() => Promise.resolve(tl));
     const { getByTitle, getByLabelText } = render(
@@ -300,10 +300,10 @@ describe("TimelineBar", () => {
         onChange={() => undefined}
       />,
     );
-    fireEvent.click(getByTitle("Videospur hinzufügen"));
+    fireEvent.click(getByTitle("Add a video track"));
 
-    // The V2 lane row should exist and have a droppable container (aria-label="Video-Spur V2").
-    const v2Strip = getByLabelText("Video-Spur V2");
+    // The V2 lane row should exist and have a droppable container (aria-label="Video track V2").
+    const v2Strip = getByLabelText("Video track V2");
     expect(v2Strip).not.toBeNull();
     // Verify it accepts dragover without throwing.
     fireEvent.dragOver(v2Strip);

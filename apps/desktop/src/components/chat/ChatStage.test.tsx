@@ -25,7 +25,7 @@ function openSession(
     project_id: "p1",
     asset_id: "a1",
     asset_display_name: "Rough Cut",
-    brief_preview: "Baue den visuellen Schnitt weiter",
+    brief_preview: "Continuing the visual cut",
     resume_point: "visual_selection",
     state: "awaiting-approval",
     updated_utc: "2026-08-17T10:00:00+00:00",
@@ -106,7 +106,7 @@ function boardStatus(overrides: Partial<ProductionBoardStatus> = {}): Production
       session_id: "s1",
       asset_id: "a1",
       created_utc: "2026-08-03T00:00:00Z",
-      task: "mach einen Short",
+      task: "make a short",
       format: "insta",
       target_seconds: 30,
       status: "complete",
@@ -197,7 +197,7 @@ describe("ChatStage", () => {
     renderWithQuery(<ChatStage client={c} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Fortsetzen" }));
-    expect(await screen.findByText("Ursprünglicher Auftrag:")).toBeTruthy();
+    expect(await screen.findByText("Original brief:")).toBeTruthy();
     await waitFor(() => expect(getProductionStatus).toHaveBeenCalledWith("s1"));
     expect(c.getConversation).not.toHaveBeenCalled();
     expect(c.createConversation).not.toHaveBeenCalled();
@@ -217,7 +217,7 @@ describe("ChatStage", () => {
     expect(screen.getByText("Zweiter Chat")).toBeTruthy();
   });
 
-  it(`"Neuer Chat" creates a conversation and activates it`, async () => {
+  it(`"New chat" creates a conversation and activates it`, async () => {
     const c = client({
       listConversations: vi
         .fn()
@@ -232,13 +232,13 @@ describe("ChatStage", () => {
     renderWithQuery(<ChatStage client={c} />);
     await waitFor(() => expect(c.listConversations).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Neuer Chat" }));
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
 
     await waitFor(() => expect(c.createConversation).toHaveBeenCalledOnce());
     await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("new1"));
   });
 
-  it(`"Neuer Chat" binds the new conversation to the UI-selected project`, async () => {
+  it(`"New chat" binds the new conversation to the UI-selected project`, async () => {
     /* Live incident 2026-08-07: a fresh chat started while a project was selected in the top
      * bar came out unbound (the top-bar selection is client-only), so a production brief typed
      * right away had no project to resolve against. */
@@ -256,7 +256,7 @@ describe("ChatStage", () => {
     renderWithQuery(<ChatStage client={c} projectId="p1" />);
     await waitFor(() => expect(c.listConversations).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Neuer Chat" }));
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
 
     await waitFor(() => expect(c.createConversation).toHaveBeenCalledWith("p1"));
   });
@@ -270,7 +270,7 @@ describe("ChatStage", () => {
       sendChatMessage: vi.fn().mockResolvedValue({
         messages: [
           textMessage("u1", 1, "user", "Hallo Laura"),
-          textMessage("a1", 2, "assistant", "Hallo zurück!"),
+          textMessage("a1", 2, "assistant", "Hello back!"),
         ],
       } satisfies ChatTurnResult),
     });
@@ -280,11 +280,11 @@ describe("ChatStage", () => {
     await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("c1"));
 
     fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Hallo Laura" } });
-    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(c.sendChatMessage).toHaveBeenCalledWith("c1", "Hallo Laura");
     await waitFor(() => expect(screen.getByText("Hallo Laura")).toBeTruthy());
-    expect(screen.getByText("Hallo zurück!")).toBeTruthy();
+    expect(screen.getByText("Hello back!")).toBeTruthy();
   });
 
   it("a failed send's error banner clears the moment the next send starts", async () => {
@@ -305,12 +305,12 @@ describe("ChatStage", () => {
     await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("c1"));
 
     fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Hallo" } });
-    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(screen.getByText("network down")).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Nochmal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -342,7 +342,7 @@ describe("ChatStage", () => {
     expect(c.decideApproval).toHaveBeenCalledWith("c1", "m1", "approve");
     await waitFor(() => expect(getConversation).toHaveBeenCalledTimes(2));
     expect(getConversation).toHaveBeenNthCalledWith(2, "c1");
-    await waitFor(() => expect(screen.getByText("✓ freigegeben & ausgeführt")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("✓ approved & executed")).toBeTruthy());
     // The stale optimistic "pending" card (still clickable) must be gone, replaced by the
     // refetched read-only persisted state.
     expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
@@ -388,11 +388,11 @@ describe("ChatStage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Freigeben" }));
 
     expect(c.decideApproval).toHaveBeenCalledWith("c1", "m1", "approve");
-    await waitFor(() => expect(screen.getByText("✓ freigegeben & ausgeführt")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("✓ approved & executed")).toBeTruthy());
     // No duplicate card — the executed-card update merged in place by id, it did not append.
-    expect(screen.getAllByText("✓ freigegeben & ausgeführt")).toHaveLength(1);
+    expect(screen.getAllByText("✓ approved & executed")).toHaveLength(1);
     // The appended action message rendered its own card (JobActionCard, polled via getJob).
-    await waitFor(() => expect(screen.getByText("✓ fertig")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("✓ done")).toBeTruthy());
   });
 
   it("composer disables while an approval decision is in flight (Finding 1)", async () => {
@@ -416,7 +416,7 @@ describe("ChatStage", () => {
 
     renderWithQuery(<ChatStage client={c} />);
     fireEvent.click(await screen.findByText("Erster Chat"));
-    // Give the composer real text so "Senden" isn't disabled merely for being empty — its
+    // Give the composer real text so "Send" isn't disabled merely for being empty — its
     // disabled state below must be attributable to the in-flight decision, not empty input.
     fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Hallo" } });
     fireEvent.click(await screen.findByRole("button", { name: "Freigeben" }));
@@ -425,7 +425,7 @@ describe("ChatStage", () => {
     await waitFor(() =>
       expect((screen.getByLabelText("Nachricht") as HTMLTextAreaElement).disabled).toBe(true),
     );
-    expect((screen.getByRole("button", { name: "Senden" }) as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
 
@@ -440,12 +440,12 @@ describe("ChatStage", () => {
     await waitFor(() =>
       expect((screen.getByLabelText("Nachricht") as HTMLTextAreaElement).disabled).toBe(false),
     );
-    expect((screen.getByRole("button", { name: "Senden" }) as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
   });
 
-  it(`a manual "▶ ansehen" selection survives a follow-up text turn (Finding 2)`, async () => {
+  it(`a manual "▶ watch" selection survives a follow-up text turn (Finding 2)`, async () => {
     vi.useFakeTimers();
     try {
       const action = actionMessage("m1", 1, "start_short", { session_id: "s1" }, "running");
@@ -472,7 +472,7 @@ describe("ChatStage", () => {
         .fn()
         .mockImplementationOnce(() => new Promise<never>(() => {})) // ChatStage's initial default derive
         .mockResolvedValueOnce(done) // ActionCard's own on-done fetch
-        .mockResolvedValueOnce(done) // click "▶ ansehen" -> onFocusAction's derive
+        .mockResolvedValueOnce(done) // click "▶ watch" -> onFocusAction's derive
         .mockResolvedValue(noExportYet); // any later default-derivation recompute
       const c = client({
         listConversations: vi.fn().mockResolvedValue([summary()]),
@@ -501,7 +501,7 @@ describe("ChatStage", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2500);
       });
-      const ansehenButton = screen.getByRole("button", { name: "▶ ansehen" });
+      const ansehenButton = screen.getByRole("button", { name: "▶ watch" });
       await act(async () => {
         fireEvent.click(ansehenButton);
         await vi.advanceTimersByTimeAsync(0);
@@ -512,7 +512,7 @@ describe("ChatStage", () => {
 
       fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Danke" } });
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+        fireEvent.click(screen.getByRole("button", { name: "Send" }));
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -559,9 +559,9 @@ describe("ChatStage", () => {
     fireEvent.click(await screen.findByText("Erster Chat"));
     await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("c1"));
 
-    fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Hallo aus A" } });
-    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
-    expect(c.sendChatMessage).toHaveBeenCalledWith("c1", "Hallo aus A");
+    fireEvent.change(screen.getByLabelText("Nachricht"), { target: { value: "Hello from A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(c.sendChatMessage).toHaveBeenCalledWith("c1", "Hello from A");
 
     fireEvent.click(screen.getByText("Zweiter Chat"));
     await waitFor(() => expect(c.getConversation).toHaveBeenCalledWith("c2"));
@@ -570,14 +570,14 @@ describe("ChatStage", () => {
     await act(async () => {
       resolveSend({
         messages: [
-          textMessage("u1", 1, "user", "Hallo aus A"),
-          textMessage("a1", 2, "assistant", "Antwort aus A"),
+          textMessage("u1", 1, "user", "Hello from A"),
+          textMessage("a1", 2, "assistant", "Reply from A"),
         ],
       });
     });
 
-    expect(screen.queryByText("Hallo aus A")).toBeNull();
-    expect(screen.queryByText("Antwort aus A")).toBeNull();
+    expect(screen.queryByText("Hello from A")).toBeNull();
+    expect(screen.queryByText("Reply from A")).toBeNull();
     expect(screen.getByText("Willkommen in B")).toBeTruthy();
   });
 
@@ -609,7 +609,7 @@ describe("ChatStage", () => {
     await waitFor(() => expect(listConversations).toHaveBeenCalledTimes(2));
   });
 
-  it(`preview switches when an ActionCard's "▶ ansehen" fires`, async () => {
+  it(`preview switches when an ActionCard's "▶ watch" fires`, async () => {
     vi.useFakeTimers();
     try {
       const action = actionMessage("m1", 1, "start_short", { session_id: "s1" }, "running");
@@ -645,14 +645,14 @@ describe("ChatStage", () => {
         fireEvent.click(screen.getByText("Erster Chat"));
         await vi.advanceTimersByTimeAsync(0);
       });
-      expect(screen.getByText("Noch nichts zu zeigen — bau etwas.")).toBeTruthy();
+      expect(screen.getByText("Nothing to show yet — build something.")).toBeTruthy();
 
       // Advance the ActionCard's own poll interval so it reaches its "done" state and renders
-      // the "▶ ansehen" affordance.
+      // the "▶ watch" affordance.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2500);
       });
-      const ansehenButton = screen.getByRole("button", { name: "▶ ansehen" });
+      const ansehenButton = screen.getByRole("button", { name: "▶ watch" });
 
       await act(async () => {
         fireEvent.click(ansehenButton);
@@ -666,7 +666,7 @@ describe("ChatStage", () => {
     }
   });
 
-  it(`an approve_script card's "▶ ansehen" also derives the export preview`, async () => {
+  it(`an approve_script card's "▶ watch" also derives the export preview`, async () => {
     // Live finding 2026-08-05: the final-review fix routed approve_script into
     // ProductionActionCard, but deriveTarget — the OTHER reader of the tool string —
     // still fell through to {kind: "none"}, so the click left the preview empty.
@@ -701,7 +701,7 @@ describe("ChatStage", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2500);
       });
-      const ansehenButton = screen.getByRole("button", { name: "▶ ansehen" });
+      const ansehenButton = screen.getByRole("button", { name: "▶ watch" });
       await act(async () => {
         fireEvent.click(ansehenButton);
         await vi.advanceTimersByTimeAsync(0);
@@ -719,7 +719,7 @@ describe("ChatStage", () => {
     // `_handle_select_scenes` in services/local-api/src/laura/chat/executor.py) carries the SAME
     // {session_id, job_id} refs and must derive the same way, not fall through to {kind: "none"}.
     // Unlike approve_script/start_short, select_scenes' own card (SelectScenesLine) is a plain
-    // sync line, not a polled ProductionActionCard with its own "▶ ansehen" — so this exercises
+    // sync line, not a polled ProductionActionCard with its own "▶ watch" — so this exercises
     // the default-derivation effect directly (it recomputes from the newest action message
     // whenever the thread changes) rather than a manual button click.
     const action = actionMessage("m1", 1, "select_scenes", { session_id: "s1" }, "running");

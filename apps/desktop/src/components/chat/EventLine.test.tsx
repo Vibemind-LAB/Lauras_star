@@ -17,7 +17,7 @@ describe("EventLine", () => {
       escalated: false,
     };
     render(<EventLine event={resumeDone} />);
-    expect(screen.getByText(/Fertig — QA meldet Schwächen/)).not.toBeNull();
+    expect(screen.getByText(/Done — QA reports weaknesses/)).not.toBeNull();
     expect(screen.getByText(/Stufe A/)).not.toBeNull();
     expect(screen.queryByText("Verlauf")).toBeNull();
   });

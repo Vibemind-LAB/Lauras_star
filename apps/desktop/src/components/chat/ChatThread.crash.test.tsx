@@ -66,6 +66,6 @@ describe("ChatThread — per-card error boundary", () => {
     );
     expect(screen.getByText("davor")).toBeTruthy();
     expect(screen.getByText("danach")).toBeTruthy();
-    expect(screen.getByText("⚠ Diese Karte konnte nicht angezeigt werden.")).toBeTruthy();
+    expect(screen.getByText("⚠ This card could not be displayed.")).toBeTruthy();
   });
 });

@@ -34,7 +34,7 @@ export function findSameSourceEdge(
 /**
  * Scans ALL lane-0 boundaries and returns the first contiguous same-source
  * jump-cut found (asset_a===asset_b AND src_in_b===src_out_a), independent of
- * the current playhead position. Used by FineCutView so the "Übergang glätten"
+ * the current playhead position. Used by FineCutView so the "Smooth transition"
  * button lights up automatically after any delete that creates such an edge
  * (spec §8 — Fix 3).
  */

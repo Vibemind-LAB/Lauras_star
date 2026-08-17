@@ -19,8 +19,8 @@ const gate: ContactSheetGateStatus = {
       label: "0 S3",
       src_start_frame: 15,
       src_end_frame_exclusive: 75,
-      narration_excerpt: "Rowboat ordnet die Dateien.",
-      rationale: "Die Dateiansicht belegt die Aussage.",
+      narration_excerpt: "Rowboat sorts the files.",
+      rationale: "The file view backs the statement.",
     },
   ],
 };
@@ -50,8 +50,8 @@ describe("ContactSheetApprovalCard", () => {
     );
 
     expect(screen.getByText("In 15 · Out 75")).toBeTruthy();
-    expect(screen.getByText("Rowboat ordnet die Dateien.")).toBeTruthy();
-    expect(screen.getByText("Die Dateiansicht belegt die Aussage.")).toBeTruthy();
+    expect(screen.getByText("Rowboat sorts the files.")).toBeTruthy();
+    expect(screen.getByText("The file view backs the statement.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Kontaktbogen freigeben" }));
     await waitFor(() => expect(onConfirmed).toHaveBeenCalledTimes(1));

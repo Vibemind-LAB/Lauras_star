@@ -49,7 +49,7 @@ describe("TranscriptBar inline edit", () => {
     expect(box.value).toBe("Hallo Welt");
 
     fireEvent.change(box, { target: { value: "Hallo Welt!" } });
-    fireEvent.click(screen.getByTitle("Speichern"));
+    fireEvent.click(screen.getByTitle("Save"));
 
     await waitFor(() => expect(onEditSegment).toHaveBeenCalledWith("seg-1", "Hallo Welt!"));
     await waitFor(() => expect(screen.queryByLabelText("Segmenttext bearbeiten")).toBeNull());
@@ -98,7 +98,7 @@ describe("TranscriptBar search", () => {
         seg({ id: "s2", text: "and then the demo" }),
       ],
     });
-    const box = screen.getByLabelText("Im Transkript suchen");
+    const box = screen.getByLabelText("Search the transcript");
     fireEvent.change(box, { target: { value: "prototype" } });
     expect(screen.getByText("1 Treffer")).toBeTruthy();
     fireEvent.change(box, { target: { value: "the" } });
@@ -109,6 +109,6 @@ describe("TranscriptBar search", () => {
 
   it("shows no search box when there is no transcript", () => {
     renderBar({ segments: [] });
-    expect(screen.queryByLabelText("Im Transkript suchen")).toBeNull();
+    expect(screen.queryByLabelText("Search the transcript")).toBeNull();
   });
 });

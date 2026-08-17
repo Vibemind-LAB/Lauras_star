@@ -50,7 +50,7 @@ afterEach(() => {
 describe("EditorialToolsBar compliance", () => {
   it("always shows the synthetic-content disclosure with effects + subjects", () => {
     render(<EditorialToolsBar {...makeToolsBarProps({ syntheticEffects: ["VO", "Lippensync"] })} />);
-    const line = screen.getByText(/Enthält synthetische Inhalte/i);
+    const line = screen.getByText(/Contains synthetic content/i);
     expect(line.textContent).toMatch(/VO/);
     expect(line.textContent).toMatch(/Lippensync/);
     expect(line.textContent).toMatch(/Laura/);
@@ -63,7 +63,7 @@ describe("EditorialToolsBar compliance", () => {
 
   it("opens the consent inspector and lists active consents", () => {
     render(<EditorialToolsBar {...makeToolsBarProps({ syntheticEffects: ["VO"] })} />);
-    const summary = screen.getByText(/Das bin ich/i);
+    const summary = screen.getByText(/That's me/i);
     fireEvent.click(summary);
     expect(screen.getByText("Laura")).toBeDefined();
     expect(screen.getByRole("button", { name: /widerrufen/i })).toBeDefined();
@@ -71,7 +71,7 @@ describe("EditorialToolsBar compliance", () => {
 
   it("revoke button is present and clickable without throwing", () => {
     render(<EditorialToolsBar {...makeToolsBarProps({ syntheticEffects: [] })} />);
-    const summary = screen.getByText(/Das bin ich/i);
+    const summary = screen.getByText(/That's me/i);
     fireEvent.click(summary);
     const revokeBtn = screen.getByRole("button", { name: /widerrufen/i });
     // Should not throw — useConsent.revoke is a vi.fn()
@@ -93,7 +93,7 @@ describe("EditorialToolsBar compliance", () => {
 
     render(<EditorialToolsBar {...makeToolsBarProps({ syntheticEffects: [] })} />);
     // Open the details to make the error visible.
-    fireEvent.click(screen.getByText(/Das bin ich/i));
+    fireEvent.click(screen.getByText(/That's me/i));
     const errorEl = screen.getByRole("alert");
     expect(errorEl.textContent).toContain("Consent service unavailable");
   });

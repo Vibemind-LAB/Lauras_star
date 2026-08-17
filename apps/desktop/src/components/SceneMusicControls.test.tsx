@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type Asset, type LauraClient, type Scene } from "../api";
 import { SceneMusicControls } from "./SceneMusicControls";
 
-const scene: Scene = { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Szene 1",
+const scene: Scene = { id: "s1", project_id: "p", source_timeline_id: "tl", name: "Scene 1",
   order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 30,
   music_asset_id: null, music_gain_percent: 100 };
 const assets = [{ id: "m1", display_name: "song.mp3", type: "audio" }] as unknown as Asset[];

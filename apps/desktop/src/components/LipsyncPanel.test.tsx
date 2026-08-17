@@ -64,14 +64,14 @@ describe("LipsyncPanel", () => {
     const submit = getByRole("button", { name: "Lipsync (stub)" });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.change(getByLabelText("Subjekt-Label für Lipsync-Consent"), {
+    fireEvent.change(getByLabelText("Subject label for lipsync consent"), {
       target: { value: "Person A" },
     });
-    fireEvent.click(getByRole("button", { name: "Consent bestätigen" }));
+    fireEvent.click(getByRole("button", { name: "Confirm consent" }));
     await waitFor(() => expect(c.createConsent).toHaveBeenCalledWith("p", { subjectLabel: "Person A" }));
     expect((submit as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.click(getByLabelText("Lizenz und Nutzung bestätigt"));
+    fireEvent.click(getByLabelText("Licence and use confirmed"));
     fireEvent.change(getByLabelText("Lipsync seq out"), { target: { value: "30" } });
     expect((submit as HTMLButtonElement).disabled).toBe(false);
   });
@@ -90,19 +90,19 @@ describe("LipsyncPanel", () => {
       />,
     );
 
-    expect(getByLabelText("Lipsync-Audio auswählen").textContent).toContain("voice.wav");
-    expect(getByLabelText("Lipsync-Audio auswählen").textContent).not.toContain("clip.mp4");
+    expect(getByLabelText("Choose lipsync audio").textContent).toContain("voice.wav");
+    expect(getByLabelText("Choose lipsync audio").textContent).not.toContain("clip.mp4");
 
-    fireEvent.change(getByLabelText("Subjekt-Label für Lipsync-Consent"), {
+    fireEvent.change(getByLabelText("Subject label for lipsync consent"), {
       target: { value: "Person A" },
     });
-    fireEvent.click(getByRole("button", { name: "Consent bestätigen" }));
-    await findByText(/Consent für Person A/);
+    fireEvent.click(getByRole("button", { name: "Confirm consent" }));
+    await findByText(/Consent for Person A/);
 
-    fireEvent.click(getByLabelText("Lizenz und Nutzung bestätigt"));
+    fireEvent.click(getByLabelText("Licence and use confirmed"));
     fireEvent.change(getByLabelText("Lipsync seq in"), { target: { value: "5" } });
     fireEvent.change(getByLabelText("Lipsync seq out"), { target: { value: "45" } });
-    fireEvent.change(getByLabelText("Lipsync-Backend auswählen"), { target: { value: "vibevideo" } });
+    fireEvent.change(getByLabelText("Choose lipsync backend"), { target: { value: "vibevideo" } });
     fireEvent.click(getByRole("button", { name: "Lipsync (VibeVideo)" }));
 
     await waitFor(() =>
@@ -140,14 +140,14 @@ describe("LipsyncPanel", () => {
         onChange={onChange}
       />,
     );
-    fireEvent.change(getByLabelText("Subjekt-Label für Lipsync-Consent"), { target: { value: "Person A" } });
+    fireEvent.change(getByLabelText("Subject label for lipsync consent"), { target: { value: "Person A" } });
 
     // confirmConsent: let all microtasks (the Promise from createConsent) resolve.
     await act(async () => {
-      fireEvent.click(getByRole("button", { name: "Consent bestätigen" }));
+      fireEvent.click(getByRole("button", { name: "Confirm consent" }));
     });
 
-    fireEvent.click(getByLabelText("Lizenz und Nutzung bestätigt"));
+    fireEvent.click(getByLabelText("Licence and use confirmed"));
     fireEvent.change(getByLabelText("Lipsync seq out"), { target: { value: "30" } });
 
     // submit: let the lipsync() promise resolve and setJobId fire.
@@ -164,15 +164,15 @@ describe("LipsyncPanel", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    // After the first immediate poll resolves with "running", the chip shows "Läuft…".
-    expect(document.body.textContent).toContain("Läuft…");
+    // After the first immediate poll resolves with "running", the chip shows "Running…".
+    expect(document.body.textContent).toContain("Running…");
 
     // Advance past the 1500ms interval to trigger the second poll (succeeded).
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600);
     });
 
-    expect(document.body.textContent).toContain("Fertig ✓");
+    expect(document.body.textContent).toContain("Done ✓");
     expect(onChange).toHaveBeenCalledOnce();
     vi.useRealTimers();
   });

@@ -4,15 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
 
 describe("ChatComposer", () => {
-  it(`sends trimmed text on „Senden" click and clears the textarea`, () => {
+  it(`sends trimmed text on "Send" click and clears the textarea`, () => {
     const onSend = vi.fn();
     render(<ChatComposer disabled={false} onSend={onSend} />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
 
-    fireEvent.change(textarea, { target: { value: "  Mach mir einen Short  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Senden" }));
+    fireEvent.change(textarea, { target: { value: "  Make me a short  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    expect(onSend).toHaveBeenCalledWith("Mach mir einen Short");
+    expect(onSend).toHaveBeenCalledWith("Make me a short");
     expect(textarea.value).toBe("");
   });
 
@@ -43,7 +43,7 @@ describe("ChatComposer", () => {
     const onSend = vi.fn();
     render(<ChatComposer disabled={false} onSend={onSend} />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    const button = screen.getByRole("button", { name: "Senden" }) as HTMLButtonElement;
+    const button = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
 
     expect(button.disabled).toBe(true);
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -59,12 +59,12 @@ describe("ChatComposer", () => {
     const onSend = vi.fn();
     render(<ChatComposer disabled={true} onSend={onSend} />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    const button = screen.getByRole("button", { name: "Senden" }) as HTMLButtonElement;
+    const button = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
 
     expect(textarea.disabled).toBe(true);
     expect(button.disabled).toBe(true);
 
-    fireEvent.change(textarea, { target: { value: "Trotzdem senden?" } });
+    fireEvent.change(textarea, { target: { value: "Send anyway?" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.click(button);
 

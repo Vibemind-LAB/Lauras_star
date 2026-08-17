@@ -80,7 +80,7 @@ export function useTransitionReview(
         }
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Übergangs-Prüfung fehlgeschlagen");
+      setError(e instanceof Error ? e.message : "Transition review failed");
     } finally {
       setLoading(false);
     }

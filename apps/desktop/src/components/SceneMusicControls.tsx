@@ -34,7 +34,7 @@ export function SceneMusicControls({
       <span className="text-content-muted">Musik</span>
       <select value={pick} onChange={(e) => setPick(e.target.value)}
         className="rounded bg-surface-2 px-2 py-1 text-content-strong">
-        <option value="">— keine —</option>
+        <option value="">— none —</option>
         {assets.map((a) => <option key={a.id} value={a.id}>{a.display_name}</option>)}
       </select>
       <label className="flex items-center gap-1 text-content-muted">

@@ -13,12 +13,12 @@ function jobChipClass(status: string): string {
 }
 
 function jobChipLabel(status: string): string {
-  if (status === "succeeded") return "Fertig ✓";
+  if (status === "succeeded") return "Done ✓";
   if (status === "failed") return "Fehlgeschlagen";
   if (status === "cancelled") return "Abgebrochen";
   if (status === "queued") return "In Warteschlange";
-  if (status === "running" || status === "leased") return "Läuft…";
-  return "Läuft…";
+  if (status === "running" || status === "leased") return "Running…";
+  return "Running…";
 }
 
 export function LipsyncPanel({
@@ -171,11 +171,11 @@ export function LipsyncPanel({
           Schritt 1 — Consent
         </span>
         {confirmedLabel !== null ? (
-          <div className="text-xs text-status-ok">Consent für {confirmedLabel}</div>
+          <div className="text-xs text-status-ok">Consent for {confirmedLabel}</div>
         ) : (
           <div className="flex gap-2">
             <input
-              aria-label="Subjekt-Label für Lipsync-Consent"
+              aria-label="Subject label for lipsync consent"
               value={subjectLabel}
               onChange={(e) => setSubjectLabel(e.target.value)}
               disabled={busy}
@@ -188,7 +188,7 @@ export function LipsyncPanel({
               disabled={busy || projectId === null || subjectLabel.trim() === ""}
               className="shrink-0 rounded bg-amber-700 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-40"
             >
-              Consent bestätigen
+              Confirm consent
             </button>
           </div>
         )}
@@ -196,28 +196,28 @@ export function LipsyncPanel({
 
       <label className="flex items-center gap-2 text-xs text-content-muted">
         <input
-          aria-label="Lizenz und Nutzung bestätigt"
+          aria-label="Licence and use confirmed"
           type="checkbox"
           checked={licenseAccepted}
           onChange={(e) => setLicenseAccepted(e.target.checked)}
           disabled={busy}
           className="h-3.5 w-3.5"
         />
-        Lizenz/Sidecar-Nutzung bestätigt
+        Licence/sidecar use confirmed
       </label>
 
       <div className="grid grid-cols-2 gap-2 text-xs">
         <label className="col-span-2 flex flex-col gap-1 text-content-muted">
           Audio
           <select
-            aria-label="Lipsync-Audio auswählen"
+            aria-label="Choose lipsync audio"
             value={audioAssetId}
             onChange={(e) => setAudioAssetId(e.target.value)}
             disabled={busy || audioAssets.length === 0}
             className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             {audioAssets.length === 0 ? (
-              <option value="">Keine Audio-Assets</option>
+              <option value="">No audio assets</option>
             ) : (
               audioAssets.map((asset) => (
                 <option key={asset.id} value={asset.id}>
@@ -256,7 +256,7 @@ export function LipsyncPanel({
         <label className="col-span-2 flex flex-col gap-1 text-content-muted">
           Backend
           <select
-            aria-label="Lipsync-Backend auswählen"
+            aria-label="Choose lipsync backend"
             value={backend}
             onChange={(e) => setBackend(e.target.value === "vibevideo" ? "vibevideo" : "stub")}
             disabled={busy}
@@ -277,8 +277,8 @@ export function LipsyncPanel({
         {backend === "vibevideo" ? "Lipsync (VibeVideo)" : "Lipsync (stub)"}
       </button>
       <p className="text-[10px] leading-relaxed text-content-faint">
-        Erzeugt ein synthetisch markiertes Replace-Overlay. Der echte VibeVideo-Pfad bleibt ein
-        lokaler Sidecar; Laura lädt keine Deepfake-Modelle in den Kern.
+        Produces a replace overlay marked as synthetic. The real VibeVideo path stays a local
+        sidecar; Laura loads no deepfake models into the core.
       </p>
     </section>
   );

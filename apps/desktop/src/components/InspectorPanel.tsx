@@ -112,7 +112,7 @@ export function InspectorPanel({
           </label>
           <label
             className="flex items-center gap-1 text-[10px] text-content-muted"
-            title="Wort-Alignment (WhisperX)"
+            title="Word alignment (WhisperX)"
           >
             <input
               type="checkbox"
@@ -127,7 +127,7 @@ export function InspectorPanel({
             value={analysis.detector}
             onChange={(e) => analysis.setDetector(e.target.value)}
             disabled={running}
-            title="Szenen-Detektor (Hybrid fusioniert Adaptive + TransNetV2 mit Confidence; TransNetV2 nutzt das optionale ML-Modell, sonst Fallback auf Adaptive)"
+            title="Scene detector (Hybrid fuses Adaptive + TransNetV2 by confidence; TransNetV2 uses the optional ML model, otherwise it falls back to Adaptive)"
             className="rounded border border-bezel bg-surface-0 px-1 py-0.5 text-[10px] text-content-muted disabled:opacity-40"
           >
             <option value="hybrid">Hybrid (Adaptive + TransNetV2) — empfohlen</option>
@@ -168,12 +168,12 @@ export function InspectorPanel({
           onClick={onBuildFromShots}
           disabled={analysis.shots.length === 0 || !canAppend}
           className="mt-2 w-full rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition hover:bg-accent-glow disabled:opacity-40"
-          title="Eine Rough-Cut-Sequenz aus den erkannten Szenen bauen (schwache automatisch verworfen)"
+          title="Build a rough-cut sequence from the detected scenes (weak ones dropped automatically)"
         >
-          Rough Cut aus Szenen bauen
+          Build a rough cut from the scenes
         </button>
         {buildResult && (
-          <div className="mt-1 text-xs text-content-muted">`n            {buildResult.kept} Szenen übernommen · {buildResult.dropped} verworfen
+          <div className="mt-1 text-xs text-content-muted">`n            {buildResult.kept} scenes kept · {buildResult.dropped} dropped
           </div>
         )}
       </div>
@@ -187,7 +187,7 @@ export function InspectorPanel({
           />
         ) : (
           <div className="flex h-16 w-28 items-center justify-center rounded-md border border-bezel bg-surface-0 text-xs text-content-faint">
-            {asset.type === "video" ? "kein Poster" : "Audio"}
+            {asset.type === "video" ? "no poster" : "Audio"}
           </div>
         )}
         <div className="min-w-0">
@@ -199,11 +199,11 @@ export function InspectorPanel({
       <div className="rounded-lg border border-bezel bg-surface-0 px-4 py-2">
         <Row label="Typ" value={asset.type} />
         <Row
-          label="Auflösung"
+          label="Resolution"
           value={asset.width && asset.height ? `${asset.width}×${asset.height}` : "—"}
         />
         <Row label="Frame Rate" value={fmtFps(asset)} />
-        <Row label="Dauer" value={fmtDuration(asset)} />
+        <Row label="Duration" value={fmtDuration(asset)} />
         <Row label="Audio" value={asset.audio_sample_rate ? `${asset.audio_sample_rate} Hz` : "—"} />
         <Row
           label="Codec"
@@ -218,7 +218,7 @@ export function InspectorPanel({
           <Waveform peaks={peaks} />
         ) : (
           <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-bezel text-xs text-content-faint">
-            {waveformReady ? "lade…" : "wird analysiert…"}
+            {waveformReady ? "lade…" : "analysing…"}
           </div>
         )}
       </div>

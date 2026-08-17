@@ -70,7 +70,7 @@ function buildDuplicateHashes(assets: Asset[]): Set<string> {
 function DuplicateBadge(): ReactElement {
   return (
     <span
-      title="Diese Datei ist bereits im Projekt vorhanden"
+      title="This file is already in the project"
       className="shrink-0 rounded bg-status-warn/20 px-1.5 py-0.5 text-[10px] font-medium leading-none text-status-warn"
     >
       bereits importiert
@@ -290,10 +290,10 @@ export function ImportView({
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {/* Search */}
           <label className="flex items-center gap-1 text-xs text-content-muted">
-            <span className="sr-only">Suche</span>
+            <span className="sr-only">Search</span>
             <input
               type="search"
-              placeholder="Suchen…"
+              placeholder="Search…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-40 rounded border border-bezel bg-surface-2 px-2 py-0.5 text-xs text-content-strong placeholder:text-content-faint focus:outline-none focus:ring-1 focus:ring-accent"
@@ -306,7 +306,7 @@ export function ImportView({
             value={filterKey}
             onChange={(v) => setFilterKey(v as FilterKey)}
             options={[
-              { value: "all", label: "Alle" },
+              { value: "all", label: "All" },
               { value: "video", label: "Video" },
               { value: "audio", label: "Audio" },
               { value: "ai", label: "KI" },
@@ -321,7 +321,7 @@ export function ImportView({
             options={[
               { value: "newest", label: "Neueste" },
               { value: "name", label: "Name" },
-              { value: "duration", label: "Dauer" },
+              { value: "duration", label: "Duration" },
             ]}
           />
         </div>
@@ -329,11 +329,11 @@ export function ImportView({
 
       {!hasAssets ? (
         <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-          Dateien/Ordner/Links hier ablegen oder importieren.
+          Drop files, folders or links here, or import them.
         </div>
       ) : !hasVisible ? (
         <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-          Keine Treffer.
+          No matches.
         </div>
       ) : (
         <div

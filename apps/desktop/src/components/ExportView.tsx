@@ -8,16 +8,16 @@ import type { ExportTarget } from "../App";
 
 /** Human-readable hint shown below the format picker. */
 const FORMAT_HINT: Record<string, string> = {
-  mp4:    "Fertiges, teilbares Video",
-  otio:   "Projektaustausch für ein anderes Schnittprogramm (verlustarm)",
-  edl:    "Schnittliste für ein anderes NLE",
-  fcpxml: "Schnittliste für ein anderes NLE",
-  srt:    "Untertitel-Datei (separat)",
+  mp4:    "Finished, shareable video",
+  otio:   "Project interchange for another editor (near-lossless)",
+  edl:    "Cut list for another NLE",
+  fcpxml: "Cut list for another NLE",
+  srt:    "Subtitle file (separate)",
 };
 
 function exportMeta(e: Export): string {
   if (e.status === "ready") return formatBytes(e.size_bytes ?? 0);
-  if (e.status === "error") return e.error ?? "Fehler";
+  if (e.status === "error") return e.error ?? "Error";
   return "rendert…";
 }
 
@@ -390,10 +390,10 @@ export function ExportView({
             disabled={!timelineId}
             className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong disabled:opacity-40"
           >
-            <optgroup label="Fertiges Video">
+            <optgroup label="Finished video">
               <option value="mp4">MP4</option>
             </optgroup>
-            <optgroup label="Für anderes Schnittprogramm">
+            <optgroup label="For another editor">
               <option value="otio">OTIO</option>
               <option value="edl">EDL</option>
               <option value="fcpxml">FCPXML</option>
@@ -489,7 +489,7 @@ export function ExportView({
           className="rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-40"
         />
         <label className="flex items-center gap-2 text-xs text-content-muted">
-          Max. Dauer (Sek.)
+          Max duration (sec)
           <input
             type="number"
             min={1}
@@ -497,7 +497,7 @@ export function ExportView({
             value={reelMaxDuration ?? ""}
             onChange={(e) =>
               setReelMaxDuration(e.target.value === "" ? null : Math.max(1, Number(e.target.value)))}
-            placeholder="kein Limit"
+            placeholder="no limit"
             disabled={!timelineId}
             className="w-28 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint disabled:opacity-40"
           />
@@ -507,7 +507,7 @@ export function ExportView({
           aria-label="KI-Kennzeichnung verpflichtend"
         >
           <span aria-hidden className="text-content-strong">●</span>
-          KI-Kennzeichnung wird immer eingeblendet (EU AI Act)
+          The AI disclosure is always shown (EU AI Act)
         </div>
         <label className="flex items-center gap-2 text-xs text-content-muted">
           <input
@@ -519,7 +519,7 @@ export function ExportView({
           />
           Untertitel (Captions) einbrennen
         </label>
-        <span className="text-xs text-content-muted">Captions werden aus dem Transkript der Timeline generiert.</span>
+        <span className="text-xs text-content-muted">Captions are generated from the timeline's transcript.</span>
         {/* Live 9:16 caption preview — updates as controls change, no render needed. */}
         <CaptionPreview
           client={client}
@@ -615,7 +615,7 @@ export function ExportView({
       {error && <div className="mb-2 text-xs text-status-err">{error}</div>}
       {exports.length === 0 ? (
         <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-          Noch keine Exporte — wähle ein Format und exportiere die Sequenz.
+          No exports yet — pick a format and export the sequence.
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
@@ -658,7 +658,7 @@ export function ExportView({
                   }}
                   className="rounded bg-surface-2 px-2 py-0.5 text-[10px] text-content-strong hover:bg-surface-2"
                 >
-                  Im Ordner zeigen
+                  Show in folder
                 </button>
                 <button
                   type="button"
@@ -678,7 +678,7 @@ export function ExportView({
                 onClick={() => void onCancelJob(knownJobId)}
                 className="shrink-0 self-start rounded bg-red-700 px-2 py-0.5 text-[10px] text-white hover:bg-red-600"
               >
-                Abbrechen
+                Cancel
               </button>
             ) : undefined;
 
@@ -704,7 +704,7 @@ export function ExportView({
                   onClick={openExport}
                   className="flex aspect-video w-full items-center justify-center bg-black text-content-faint"
                 >
-                  <span className="text-xs">kein Vorschaubild</span>
+                  <span className="text-xs">no thumbnail</span>
                 </button>
                 <div className="flex items-start justify-between gap-2 p-2">
                   <button type="button" onClick={openExport} className="min-w-0 text-left">

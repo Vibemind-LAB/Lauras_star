@@ -64,10 +64,10 @@ describe("AutoOverviewPanel", () => {
     const client = mockClient();
     renderWithQuery(<AutoOverviewPanel client={client} projectId="p1" />);
 
-    fireEvent.change(screen.getByLabelText("Übersichts-Thema"), {
+    fireEvent.change(screen.getByLabelText("Overview topic"), {
       target: { value: "Meetings" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Übersicht erstellen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create overview" }));
     await flush();
 
     expect(client.autoOverview).toHaveBeenCalledWith("p1", {
@@ -79,7 +79,7 @@ describe("AutoOverviewPanel", () => {
     expect(screen.getByText(/n8n Farm/)).toBeTruthy();
     expect(screen.getByText(/source file missing: AgentFarm/)).toBeTruthy();
     // The render runs as a job; the panel must say where the film will appear.
-    expect(screen.getByText(/Export-Tab/)).toBeTruthy();
+    expect(screen.getByText(/Export tab/)).toBeTruthy();
   });
 
   it("a 422 shows the backend's reason instead of crashing", async () => {
@@ -88,8 +88,8 @@ describe("AutoOverviewPanel", () => {
     });
     renderWithQuery(<AutoOverviewPanel client={client} projectId="p1" />);
 
-    fireEvent.change(screen.getByLabelText("Übersichts-Thema"), { target: { value: "xyz" } });
-    fireEvent.click(screen.getByRole("button", { name: "Übersicht erstellen" }));
+    fireEvent.change(screen.getByLabelText("Overview topic"), { target: { value: "xyz" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create overview" }));
     await flush();
 
     expect(screen.getByText(/no material found for topic/)).toBeTruthy();
@@ -97,14 +97,14 @@ describe("AutoOverviewPanel", () => {
 
   it("without a project the panel offers nothing", () => {
     renderWithQuery(<AutoOverviewPanel client={mockClient()} projectId={null} />);
-    expect(screen.queryByRole("button", { name: "Übersicht erstellen" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create overview" })).toBeNull();
   });
 
   it("an empty topic does not fire a request", async () => {
     const client = mockClient();
     renderWithQuery(<AutoOverviewPanel client={client} projectId="p1" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Übersicht erstellen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create overview" }));
     await flush();
 
     expect(client.autoOverview).not.toHaveBeenCalled();

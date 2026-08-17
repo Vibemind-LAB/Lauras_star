@@ -28,7 +28,7 @@ export function ContactSheetApprovalCard({
       await client.confirmContactSheet(sessionId, gate.current_sheet_hash);
       await onConfirmed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Kontaktbogen konnte nicht bestätigt werden");
+      setError(err instanceof Error ? err.message : "Could not confirm the contact sheet");
     } finally {
       setBusy(false);
     }
@@ -36,12 +36,12 @@ export function ContactSheetApprovalCard({
 
   return (
     <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px]">
-      <div className="mb-1 text-content-strong">Kontaktbogen prüfen</div>
+      <div className="mb-1 text-content-strong">Review the contact sheet</div>
       <div className="space-y-1">
         {gate.tiles.map((tile) => (
           <div key={tile.order} className="rounded border border-bezel px-1.5 py-1">
             <div className="font-semibold text-content-strong">
-              Szene {tile.scene_number} · {tile.label}
+              Scene {tile.scene_number} · {tile.label}
             </div>
             {tile.src_start_frame !== null && tile.src_end_frame_exclusive !== null ? (
               <div className="text-content-muted">

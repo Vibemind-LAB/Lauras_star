@@ -23,7 +23,7 @@ export function MediaCard({
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-bezel bg-surface-1">
       <button type="button" onClick={onClick} className="flex aspect-video w-full items-center justify-center bg-black text-content-faint">
-        {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <span className="text-xs">kein Vorschaubild</span>}
+        {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <span className="text-xs">no thumbnail</span>}
       </button>
       <div className="flex items-start justify-between gap-2 p-2">
         <button type="button" onClick={onClick} className="min-w-0 text-left">

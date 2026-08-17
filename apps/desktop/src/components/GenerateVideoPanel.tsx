@@ -52,21 +52,21 @@ export function GenerateVideoPanel({
   return (
     <details className="border-b border-bezel/60 pb-1.5">
       <summary className="cursor-pointer select-none text-[11px] font-medium text-content-muted">
-        ✨ B-Roll generieren
+        ✨ Generate B-roll
       </summary>
       <div className="mt-1 flex flex-col gap-1">
         <textarea
           aria-label="Prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Beschreibe den Clip …"
+          placeholder="Describe the clip …"
           rows={2}
           className="rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px] text-content-strong"
         />
         <label className="flex items-center gap-1 text-[10px] text-content-muted">
-          Länge
+          Length
           <input
-            aria-label="Länge in Sekunden"
+            aria-label="Length in seconds"
             type="number"
             min={1}
             max={30}

@@ -41,7 +41,7 @@ export function OpenSessionsPanel({
             </span>
             {session.stale ? (
               <span className="mt-0.5 block text-status-warn">
-                Quelldatei oder Vorschlag hat sich geändert — vor Freigabe prüfen.
+                The source file or the proposal changed — check before approving.
               </span>
             ) : null}
             <span className="mt-0.5 block font-medium text-accent">Fortsetzen</span>

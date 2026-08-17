@@ -8,7 +8,7 @@ function jobStatusText(status: string): string {
   if (status === "succeeded") return "Draft bereit.";
   if (status === "failed") return "Draft-Analyse fehlgeschlagen.";
   if (status === "cancelled") return "Draft-Analyse abgebrochen.";
-  return "Draft-Analyse läuft.";
+  return "Draft analysis running.";
 }
 
 function itemDuration(item: DemoDraftItem): string {
@@ -66,7 +66,7 @@ export function DemoAssistantPanel({
   }
 
   async function createDraft(): Promise<void> {
-    if (!assetId) { setError("Kein Video-Asset verfügbar."); return; }
+    if (!assetId) { setError("No video asset available."); return; }
     setBusy(true);
     setError(null);
     setStatus(null);
@@ -104,7 +104,7 @@ export function DemoAssistantPanel({
       const applied = await client.applyDemoDraft(saved.id);
       setDraft(applied.draft);
       setItems(applied.draft.items);
-      setStatus("Sequenz aus Draft übernommen.");
+      setStatus("Sequence taken from the draft.");
       onApplied();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -119,7 +119,7 @@ export function DemoAssistantPanel({
     <section className="flex flex-col gap-3 rounded border border-bezel bg-surface-1/50 p-3">
       <div>
         <div className="text-xs font-semibold text-content-strong">Demo-Draft</div>
-        <div className="text-[11px] text-content-faint">Produktstory aus Shots und Transkript</div>
+        <div className="text-[11px] text-content-faint">Product story from shots and transcript</div>
       </div>
 
       {error !== null && (
@@ -143,7 +143,7 @@ export function DemoAssistantPanel({
           className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
         >
           {videoAssets.length === 0 ? (
-            <option value="">Keine Video-Assets</option>
+            <option value="">No video assets</option>
           ) : (
             videoAssets.map((asset) => (
               <option key={asset.id} value={asset.id}>
@@ -213,7 +213,7 @@ export function DemoAssistantPanel({
             disabled={busy || draft === null || items.every((item) => !item.enabled)}
             className="self-start rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
           >
-            In Sequenz übernehmen
+            Apply to sequence
           </button>
         </div>
       )}

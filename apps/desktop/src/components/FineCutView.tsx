@@ -99,7 +99,7 @@ export function FineCutView({
 
   // Pending same-source edge: scan ALL lane-0 boundaries for a contiguous
   // same-source jump-cut, independent of currentFrame. This ensures the
-  // "Übergang glätten" button lights up immediately after any delete that
+  // "Smooth transition" button lights up immediately after any delete that
   // creates such an edge, without requiring the user to seek to the cut
   // (spec §8 — Fix 3).
   const pendingEdge = useMemo<BoundaryIdentity | null>(
@@ -217,7 +217,7 @@ export function FineCutView({
   if (!roughCutId) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-        Noch keine Szenen — erst Rough Cut ausführen.
+        No scenes yet — run the rough cut first.
       </div>
     );
   }
@@ -231,16 +231,16 @@ export function FineCutView({
         <button
           type="button"
           onClick={() => setScenesCollapsed((v) => !v)}
-          title={scenesCollapsed ? "Szenen einblenden" : "Szenen ausblenden"}
-          aria-label={scenesCollapsed ? "Szenen einblenden" : "Szenen ausblenden"}
+          title={scenesCollapsed ? "Show scenes" : "Hide scenes"}
+          aria-label={scenesCollapsed ? "Show scenes" : "Hide scenes"}
           className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-content-faint hover:bg-surface-2 hover:text-content-strong"
         >
-          {scenesCollapsed ? "Szenen ▸" : "Szenen ◂"}
+          {scenesCollapsed ? "Scenes ▸" : "Scenes ◂"}
         </button>
         {!scenesCollapsed && (
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {jumpScenes.length === 0 ? (
-              <span className="px-1 text-[11px] text-content-faint">Noch keine Szenen</span>
+              <span className="px-1 text-[11px] text-content-faint">No scenes yet</span>
             ) : (
               jumpScenes.map((s) => {
                 const preview = sceneFirstWords.get(s.id);
@@ -283,7 +283,7 @@ export function FineCutView({
         {/* Inline VO progress indicator — visible while VO job is running (Fix 1). */}
         {voJobRunning && (
           <div className="px-3 py-1 text-xs text-accent" aria-live="polite">
-            Voiceover wird generiert…
+            Generating voiceover…
           </div>
         )}
 

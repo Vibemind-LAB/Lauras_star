@@ -7,9 +7,9 @@ import { EditorialToolsBar } from "./EditorialToolsBar";
 // (EditorialToolsBar.test.tsx).
 
 describe("EditorialToolsBar undo/redo buttons", () => {
-  it("renders ↶ Rückgängig button as disabled when canUndo is false (default)", () => {
+  it("renders the ↶ Undo button as disabled when canUndo is false (default)", () => {
     render(<EditorialToolsBar />);
-    const btn = screen.getByRole("button", { name: /Rückgängig/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /Undo/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
 
@@ -22,7 +22,7 @@ describe("EditorialToolsBar undo/redo buttons", () => {
   it("enables ↶ and calls onUndo when canUndo is true and button is clicked", () => {
     const onUndo = vi.fn();
     render(<EditorialToolsBar canUndo={true} onUndo={onUndo} />);
-    const btn = screen.getByRole("button", { name: /Rückgängig/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /Undo/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(onUndo).toHaveBeenCalledTimes(1);
@@ -39,13 +39,13 @@ describe("EditorialToolsBar undo/redo buttons", () => {
 
   it("shows undoLabel in title when provided", () => {
     render(<EditorialToolsBar canUndo={true} undoLabel="delete scene" />);
-    const btn = screen.getByRole("button", { name: /Rückgängig/i }) as HTMLButtonElement;
-    expect(btn.title).toBe("Rückgängig: delete scene");
+    const btn = screen.getByRole("button", { name: /Undo/i }) as HTMLButtonElement;
+    expect(btn.title).toBe("Undo: delete scene");
   });
 
   it("shows generic title when undoLabel is null", () => {
     render(<EditorialToolsBar canUndo={true} undoLabel={null} />);
-    const btn = screen.getByRole("button", { name: /Rückgängig/i }) as HTMLButtonElement;
-    expect(btn.title).toBe("Rückgängig");
+    const btn = screen.getByRole("button", { name: /Undo/i }) as HTMLButtonElement;
+    expect(btn.title).toBe("Undo");
   });
 });

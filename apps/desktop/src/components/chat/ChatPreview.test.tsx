@@ -24,7 +24,7 @@ describe("ChatPreview", () => {
     const target: PreviewTarget = { kind: "none" };
     renderWithQuery(<ChatPreview target={target} client={client()} />);
 
-    expect(screen.getByText("Noch nichts zu zeigen — bau etwas.")).toBeTruthy();
+    expect(screen.getByText("Nothing to show yet — build something.")).toBeTruthy();
   });
 
   it("contact_sheet: loads the sheet via client.contactSheetUrl and renders it as an img", async () => {
@@ -77,7 +77,7 @@ describe("ChatPreview", () => {
       renderWithQuery(<ChatPreview target={target} client={c} />);
     });
 
-    expect(screen.getByText("Bogen konnte nicht geladen werden")).toBeTruthy();
+    expect(screen.getByText("Could not load the sheet")).toBeTruthy();
     expect(screen.queryByAltText("Kontaktbogen")).toBeNull();
   });
 

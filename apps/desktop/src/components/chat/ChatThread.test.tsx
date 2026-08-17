@@ -112,7 +112,7 @@ describe("ChatThread", () => {
     renderWithQuery(
       <ChatThread messages={messages} client={client()} onDecide={vi.fn()} />,
     );
-    expect(await screen.findByText("⚙ läuft")).toBeTruthy();
+    expect(await screen.findByText("⚙ running")).toBeTruthy();
   });
 
   it("routes action focus through onFocusAction with the message id", async () => {
@@ -124,7 +124,7 @@ describe("ChatThread", () => {
     );
     // JobActionCard has no focus affordance itself — this exercises the wiring only when the
     // card type supports it (start_short/follow_up); a plain job card just confirms no crash.
-    expect(await screen.findByText("✓ fertig")).toBeTruthy();
+    expect(await screen.findByText("✓ done")).toBeTruthy();
   });
 
   it("auto-scrolls to the newest message when messages change", () => {

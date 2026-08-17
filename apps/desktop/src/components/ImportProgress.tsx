@@ -5,11 +5,11 @@ import { formatBytes, formatEta, formatSpeed } from "../import/format";
 
 const PHASE_LABEL: Record<ImportStatus["phase"], string> = {
   queued: "Wartet…",
-  downloading: "Lädt…",
-  verifying: "Prüft…",
+  downloading: "Loading…",
+  verifying: "Checking…",
   analyzing: "Analysiert…",
-  ready: "Fertig",
-  error: "Fehler",
+  ready: "Done",
+  error: "Error",
   cancelled: "Abgebrochen",
 };
 
@@ -91,7 +91,7 @@ export function ImportProgress({
           <button
             type="button"
             onClick={onCancel}
-            aria-label="Abbrechen"
+            aria-label="Cancel"
             className="ml-2 shrink-0 rounded px-1.5 py-0.5 text-content-faint hover:bg-surface-2 hover:text-content-strong"
           >
             ✕

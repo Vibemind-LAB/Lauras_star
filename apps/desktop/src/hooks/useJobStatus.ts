@@ -55,7 +55,7 @@ export function useJobStatus(
     // Keep polling while the window is unfocused: react-query pauses interval
     // refetches for backgrounded windows by default, which froze the chat
     // card's job backstop mid-production (seen live 2026-08-04 — the job
-    // failed but the card kept showing "läuft" until refocus).
+    // failed but the card kept showing "running" until refocus).
     refetchIntervalInBackground: true,
     // Do not use stale cached data from a previous job — always start fresh
     // when a new jobId is provided. gcTime 0 would remove it too eagerly;

@@ -64,7 +64,7 @@ describe("SceneSelectionCard", () => {
     expect(screen.getByTestId("scene-tile-2").getAttribute("data-selected")).toBe("true");
     expect(screen.getByTestId("scene-tile-5").getAttribute("data-selected")).toBe("false");
     fireEvent.click(screen.getByTestId("scene-tile-5"));
-    fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Apply selection/ }));
     // the version the tiles were rendered from travels with the confirm
     expect(confirm).toHaveBeenCalledWith("s1", [2, 5], 3);
   });
@@ -82,7 +82,7 @@ describe("SceneSelectionCard", () => {
       />,
     );
     fireEvent.click(screen.getByTestId("scene-tile-2")); // deselect the only pick
-    const button = screen.getByRole("button", { name: /Auswahl übernehmen/ }) as HTMLButtonElement;
+    const button = screen.getByRole("button", { name: /Apply selection/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
   });
 
@@ -106,7 +106,7 @@ describe("SceneSelectionCard", () => {
       />,
     );
 
-    const button = screen.getByRole("button", { name: /Auswahl übernehmen/ }) as HTMLButtonElement;
+    const button = screen.getByRole("button", { name: /Apply selection/ }) as HTMLButtonElement;
     fireEvent.click(button);
 
     expect(confirm).toHaveBeenCalledTimes(1);
@@ -161,7 +161,7 @@ describe("SceneSelectionCard", () => {
 
     expect(screen.getByTestId("scene-tile-7").getAttribute("data-selected")).toBe("true");
     expect(screen.getByTestId("scene-tile-9").getAttribute("data-selected")).toBe("false");
-    fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Apply selection/ }));
     expect(confirm).toHaveBeenCalledWith("s1", [7], 4);
   });
 

@@ -6,10 +6,10 @@ import { log } from "../shared/log";
 const RUNNING = new Set(["queued", "leased", "running"]);
 
 function statusLabel(status: string): string {
-  if (status === "succeeded") return "Fertig";
-  if (status === "failed") return "Fehler";
+  if (status === "succeeded") return "Done";
+  if (status === "failed") return "Error";
   if (status === "cancelled") return "Abgebrochen";
-  if (status === "running" || status === "leased") return "Läuft";
+  if (status === "running" || status === "leased") return "Running";
   if (status === "queued") return "Wartet";
   return status;
 }
@@ -117,7 +117,7 @@ export function JobCenter({
           {error !== null && <div className="border-b border-status-err/70 p-2 text-xs text-status-err">{error}</div>}
           <div className="min-h-0 overflow-y-auto">
             {jobs.length === 0 ? (
-              <div className="p-4 text-xs text-content-faint">Keine Jobs.</div>
+              <div className="p-4 text-xs text-content-faint">No jobs.</div>
             ) : (
               jobs.map((job) => {
                 const err = errorText(job);

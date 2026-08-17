@@ -18,11 +18,11 @@ function agentMeta(agent: string): { icon: string; label: string } {
 }
 
 const ARTIFACT_LABELS: Record<string, string> = {
-  roughcut: "🧱 Rough Cut gebaut",
-  render: "🎞️ Render gestartet",
-  export: "🎞️ Export erstellt",
-  timeline: "🧱 Timeline erstellt",
-  voiceover: "🎙️ Voiceover erzeugt",
+  roughcut: "🧱 Rough cut built",
+  render: "🎞️ Render started",
+  export: "🎞️ Export created",
+  timeline: "🧱 Timeline created",
+  voiceover: "🎙️ Voiceover generated",
 };
 
 /** Keys worth surfacing from a raw tool-result summary (a truncated Python-dict repr). */
@@ -56,7 +56,7 @@ export function pickHighlights(summary: string): string {
   return picks.join(" · ");
 }
 
-/** Agent prose longer than this is clamped behind a "mehr anzeigen" toggle. */
+/** Agent prose longer than this is clamped behind a "show more" toggle. */
 const CLAMP_CHARS = 280;
 
 function AgentBubble({ agent, text }: { agent: string; text: string }): ReactElement {
@@ -66,7 +66,7 @@ function AgentBubble({ agent, text }: { agent: string; text: string }): ReactEle
   if (agent === "user") {
     return (
       <details className="mb-1.5 rounded border border-bezel px-1.5 py-1 text-content-faint">
-        <summary className="cursor-pointer select-none">📋 Auftrag ans Team</summary>
+        <summary className="cursor-pointer select-none">📋 Brief to the team</summary>
         <p className="mt-1 whitespace-pre-wrap break-words text-[10px]">{text}</p>
       </details>
     );
@@ -75,7 +75,7 @@ function AgentBubble({ agent, text }: { agent: string; text: string }): ReactEle
   if (text.trim().replace(/\.+$/, "").toUpperCase() === "SKIP") {
     return (
       <div className="mb-1.5 text-content-faint">
-        {meta.icon} {meta.label} überspringt (kein Auftrag für ihn)
+        {meta.icon} {meta.label} skips (no brief for them)
       </div>
     );
   }
@@ -93,7 +93,7 @@ function AgentBubble({ agent, text }: { agent: string; text: string }): ReactEle
           onClick={() => setExpanded((v) => !v)}
           className="mt-0.5 text-[10px] text-accent hover:underline"
         >
-          {expanded ? "weniger anzeigen" : "mehr anzeigen"}
+          {expanded ? "weniger anzeigen" : "show more"}
         </button>
       )}
     </div>
@@ -130,10 +130,10 @@ function DoneCard({
   event: Extract<AgentEvent, { type: "done" }>;
 }): ReactElement {
   const tone = !event.ok
-    ? { cls: "border-status-err text-status-err", text: "✗ Nicht geklappt" }
+    ? { cls: "border-status-err text-status-err", text: "✗ Did not work" }
     : event.weak
-      ? { cls: "border-status-warn text-status-warn", text: "⚠ Fertig — QA meldet Schwächen" }
-      : { cls: "border-status-ok text-status-ok", text: "✓ Short fertig" };
+      ? { cls: "border-status-warn text-status-warn", text: "⚠ Done — QA reports weaknesses" }
+      : { cls: "border-status-ok text-status-ok", text: "✓ Short done" };
   return (
     <div className={`mt-1 rounded-md border bg-surface-2 px-1.5 py-1 ${tone.cls}`}>
       <div className="font-medium">

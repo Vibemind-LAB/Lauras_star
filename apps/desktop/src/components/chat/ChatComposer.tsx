@@ -46,7 +46,7 @@ export function ChatComposer({ disabled, onSend }: ChatComposerProps): ReactElem
         disabled={disabled || text.trim() === ""}
         className="shrink-0 self-end rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
       >
-        Senden
+        Send
       </button>
     </div>
   );

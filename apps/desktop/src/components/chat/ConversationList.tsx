@@ -23,7 +23,7 @@ const rowInactive = "hover:bg-surface-2";
  * inline confirm (no `window.confirm` — MediaSidebar's asset row uses that, but a bare browser
  * dialog can't be styled or tested the same way threads elsewhere in this app are, and per the
  * brief a dedicated confirm control fits the sidebar's existing row idiom better): the first
- * click on „×" swaps the row's trailing control for „Wirklich löschen?" / „Abbrechen"; only the
+ * click on „×" swaps the row's trailing control for "Really delete?" / „Abbrechen"; only the
  * former fires `onDelete`. Both delete-related clicks stop propagation so they never also select
  * the row underneath, mirroring MediaSidebar's `onDelete` button.
  */
@@ -65,7 +65,7 @@ function ConversationRow({
             }}
             className="rounded px-1 py-0.5 text-[10px] font-medium text-status-err hover:bg-red-600/40"
           >
-            Wirklich löschen?
+            Really delete?
           </button>
           <button
             type="button"
@@ -75,14 +75,14 @@ function ConversationRow({
             }}
             className="rounded px-1 py-0.5 text-[10px] text-content-faint hover:text-content-strong"
           >
-            Abbrechen
+            Cancel
           </button>
         </span>
       ) : (
         <button
           type="button"
-          title="Unterhaltung löschen"
-          aria-label="Unterhaltung löschen"
+          title="Delete conversation"
+          aria-label="Delete conversation"
           onClick={(e) => {
             e.stopPropagation();
             setConfirming(true);
@@ -118,11 +118,11 @@ export function ConversationList({
         onClick={onNew}
         className="rounded border border-bezel px-2 py-1 text-[11px] font-medium text-content-strong hover:bg-surface-2"
       >
-        Neuer Chat
+        New chat
       </button>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
         {items.length === 0 ? (
-          <p className="px-1 py-2 text-[11px] text-content-faint">Noch keine Unterhaltungen</p>
+          <p className="px-1 py-2 text-[11px] text-content-faint">No conversations yet</p>
         ) : (
           items.map((item) => (
             <ConversationRow

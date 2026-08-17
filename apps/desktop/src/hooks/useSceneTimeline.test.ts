@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LauraClient, type Timeline } from "../api";
 import { useSceneTimeline } from "./useSceneTimeline";
 
-const TL: Timeline = { id: "stl", project_id: "p", name: "Szene 1", kind: "scene", created_at: "", clips: [] };
+const TL: Timeline = { id: "stl", project_id: "p", name: "Scene 1", kind: "scene", created_at: "", clips: [] };
 
 function client(over: Partial<LauraClient>): LauraClient {
   return { openScene: vi.fn().mockResolvedValue(TL), deleteWords: vi.fn().mockResolvedValue(TL),

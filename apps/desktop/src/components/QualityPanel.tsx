@@ -63,12 +63,12 @@ export function QualityPanel({
       data-testid="quality-panel"
     >
       <div className="mb-1.5 flex items-baseline justify-between">
-        <span className="text-[10px] uppercase tracking-wide text-content-faint">Schnittqualität</span>
+        <span className="text-[10px] uppercase tracking-wide text-content-faint">Cut quality</span>
         <span className={`text-sm font-semibold tabular-nums ${g.text}`}>{pct(quality.overall)}</span>
       </div>
       <div className="space-y-1">
-        <Bar label="Bild-genau" score={quality.visual_exactness} />
-        <Bar label="Schnitt-sauber" score={quality.editorial_cleanliness} />
+        <Bar label="Frame-accurate" score={quality.visual_exactness} />
+        <Bar label="Cut-clean" score={quality.editorial_cleanliness} />
       </div>
       <div
         className="mt-1.5 flex items-center justify-between border-t border-bezel pt-1.5 text-[10px] text-content-muted"

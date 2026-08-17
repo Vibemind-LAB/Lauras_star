@@ -16,11 +16,11 @@ describe("EditorialToolsBar", () => {
       <EditorialToolsBar
         voices={voices} voiceId={null} onVoiceChange={() => {}}
         pendingEdge={null} onSmooth={() => {}} onReenact={() => {}}
-        syntheticEffects={["Stimme", "Lippensync"]}
+        syntheticEffects={["Voice", "Lippensync"]}
       />,
     );
-    const disclosure = screen.getByText(/Enthält synthetische Inhalte/i);
-    expect(disclosure.textContent).toContain("Stimme");
+    const disclosure = screen.getByText(/Contains synthetic content/i);
+    expect(disclosure.textContent).toContain("Voice");
     expect(disclosure.textContent).toContain("Lippensync");
   });
 
@@ -33,7 +33,7 @@ describe("EditorialToolsBar", () => {
         syntheticEffects={[]}
       />,
     );
-    expect((screen.getByRole("button", { name: "Übergang glätten" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Smooth transition" }) as HTMLButtonElement).disabled).toBe(true);
     rerender(
       <EditorialToolsBar
         voices={voices} voiceId={null} onVoiceChange={() => {}}
@@ -41,7 +41,7 @@ describe("EditorialToolsBar", () => {
         onSmooth={onSmooth} onReenact={() => {}} syntheticEffects={[]}
       />,
     );
-    const btn = screen.getByRole("button", { name: "Übergang glätten" }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: "Smooth transition" }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(onSmooth).toHaveBeenCalledTimes(1);
@@ -56,7 +56,7 @@ describe("EditorialToolsBar", () => {
         syntheticEffects={[]}
       />,
     );
-    fireEvent.change(screen.getByLabelText(/Stimme/i), { target: { value: "Hedda" } });
+    fireEvent.change(screen.getByLabelText(/Voice/i), { target: { value: "Hedda" } });
     expect(onVoiceChange).toHaveBeenCalledWith("Hedda");
   });
 
@@ -79,8 +79,8 @@ describe("EditorialToolsBar", () => {
         onChange={vi.fn()}
       />,
     );
-    expect(queryByText("Reenact (Identitäts-Ebene)")).toBeNull();
+    expect(queryByText("Reenact (identity layer)")).toBeNull();
     fireEvent.click(getByRole("button", { name: /Reenact/ }));
-    expect(queryByText("Reenact (Identitäts-Ebene)")).not.toBeNull();
+    expect(queryByText("Reenact (identity layer)")).not.toBeNull();
   });
 });

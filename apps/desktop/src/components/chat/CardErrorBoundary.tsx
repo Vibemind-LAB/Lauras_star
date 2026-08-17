@@ -40,7 +40,7 @@ export class CardErrorBoundary extends Component<CardErrorBoundaryProps, CardErr
       return (
         this.props.fallback ?? (
           <div className="mb-1.5 rounded-md border border-bezel bg-surface-2 px-1.5 py-1 text-[11px] text-content-faint">
-            ⚠ Diese Karte konnte nicht angezeigt werden.
+            ⚠ This card could not be displayed.
           </div>
         )
       );

@@ -56,7 +56,7 @@ describe("ApprovalCard", () => {
 
     expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Ablehnen" })).toBeNull();
-    expect(screen.getByText("✓ freigegeben & ausgeführt")).toBeTruthy();
+    expect(screen.getByText("✓ approved & executed")).toBeTruthy();
   });
 
   it("rejected shows no buttons — the negative read-only line", () => {
@@ -68,7 +68,7 @@ describe("ApprovalCard", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
-    expect(screen.getByText("✗ abgelehnt")).toBeTruthy();
+    expect(screen.getByText("✗ rejected")).toBeTruthy();
   });
 
   it(`approved (crash mid-execution) shows no buttons and an honest "interrupted" line — not "abgelehnt"`, () => {
@@ -81,7 +81,7 @@ describe("ApprovalCard", () => {
 
     expect(screen.queryByRole("button", { name: "Freigeben" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Ablehnen" })).toBeNull();
-    expect(screen.getByText("⏳ freigegeben — Ausführung unterbrochen")).toBeTruthy();
-    expect(screen.queryByText("✗ abgelehnt")).toBeNull();
+    expect(screen.getByText("⏳ approved — execution interrupted")).toBeTruthy();
+    expect(screen.queryByText("✗ rejected")).toBeNull();
   });
 });

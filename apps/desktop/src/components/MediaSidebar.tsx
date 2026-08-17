@@ -261,14 +261,14 @@ function MediaSidebarItem({
               }}
               className="rounded bg-accent px-2 py-0.5 text-[10px] text-white hover:bg-accent-glow"
             >
-              Analysieren
+              Analyse
             </button>
           )}
           {analysisState.kind === "running" && (
             <span className="text-[10px] text-content-muted">{analysisState.label}</span>
           )}
           {analysisState.kind === "done" && (
-            <span className="text-[10px] text-status-ok">✓ analysiert</span>
+            <span className="text-[10px] text-status-ok">✓ analysed</span>
           )}
           {analysisState.kind === "failed" && (
             <>
@@ -281,7 +281,7 @@ function MediaSidebarItem({
                 }}
                 className="rounded bg-accent px-2 py-0.5 text-[10px] text-white hover:bg-accent-glow"
               >
-                Analysieren
+                Analyse
               </button>
             </>
           )}
@@ -290,7 +290,7 @@ function MediaSidebarItem({
           <div className="mt-1 rounded border border-cyan-950 bg-surface-0/50 px-2 py-1 text-[10px] text-content-muted">
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium text-cyan-200">Provenance</span>
-              {provenanceState.kind === "loading" && <span>lädt…</span>}
+              {provenanceState.kind === "loading" && <span>loading…</span>}
               {provenanceState.kind === "missing" && (
                 <span className="text-status-warn">{provenanceState.message}</span>
               )}
@@ -310,11 +310,11 @@ function MediaSidebarItem({
       {onDelete && (
         <button
           type="button"
-          title="Medium löschen"
-          aria-label="Medium löschen"
+          title="Delete medium"
+          aria-label="Delete medium"
           onClick={(e) => {
             e.stopPropagation();
-            if (window.confirm(`Medium „${asset.display_name}" löschen?`)) onDelete(asset.id);
+            if (window.confirm(`Delete medium "${asset.display_name}"?`)) onDelete(asset.id);
           }}
           className="shrink-0 rounded px-1 text-sm text-content-faint hover:bg-red-600/40 hover:text-red-200"
         >
@@ -381,7 +381,7 @@ export function MediaSidebar({
   return (
     <aside className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-bezel bg-surface-0 p-2">
       <div className="flex items-center justify-between pb-1">
-        <span className="text-xs font-semibold text-content-muted">Projekt-Medien</span>
+        <span className="text-xs font-semibold text-content-muted">Project media</span>
         <span className="flex items-center gap-1">
           <span className="text-[10px] text-content-faint">{assets.length}</span>
           {onToggleCollapse && (
@@ -405,7 +405,7 @@ export function MediaSidebar({
       )}
       {assets.length === 0 ? (
         <p className="text-[11px] text-content-faint">
-          Keine Videos — in Download/Import hinzufügen.
+          No videos — add them under Media.
         </p>
       ) : (
         assets.map((asset, i) => (

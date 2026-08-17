@@ -42,7 +42,7 @@ describe("SplitCutList", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("posts the clicked split with the right {seqCut, offset} on Übernehmen", async () => {
+  it("posts the clicked split with the right {seqCut, offset} on Apply", async () => {
     const acceptSplitCuts = vi
       .fn()
       .mockResolvedValue({ accepted: [{ seqCut: 50, offset: 3 }] });
@@ -54,8 +54,8 @@ describe("SplitCutList", () => {
         splitCuts={SPLITS}
       />,
     );
-    // First per-row „Übernehmen" is the L-cut at seq_cut 50.
-    fireEvent.click(getAllByText("Übernehmen")[0]);
+    // First per-row "Apply" is the L-cut at seq_cut 50.
+    fireEvent.click(getAllByText("Apply")[0]);
     await waitFor(() =>
       expect(acceptSplitCuts).toHaveBeenCalledWith("p", "tl", [{ seqCut: 50, offset: 3 }]),
     );
@@ -73,12 +73,12 @@ describe("SplitCutList", () => {
         splitCuts={SPLITS}
       />,
     );
-    fireEvent.click(getAllByText("Übernehmen")[0]);
+    fireEvent.click(getAllByText("Apply")[0]);
     await waitFor(() => expect(getByTestId("split-cut-applied-50")).toBeTruthy());
     expect(getByTestId("split-cut-applied-50").textContent).toContain("L-Cut aktiv");
   });
 
-  it("Alle übernehmen posts every recommended split (hard excluded)", async () => {
+  it("Apply all posts every recommended split (hard excluded)", async () => {
     const acceptSplitCuts = vi.fn().mockResolvedValue({
       accepted: [
         { seqCut: 50, offset: 3 },
@@ -93,7 +93,7 @@ describe("SplitCutList", () => {
         splitCuts={SPLITS}
       />,
     );
-    fireEvent.click(getByText("Alle übernehmen"));
+    fireEvent.click(getByText("Apply all"));
     await waitFor(() =>
       expect(acceptSplitCuts).toHaveBeenCalledWith("p", "tl", [
         { seqCut: 50, offset: 3 },
@@ -102,7 +102,7 @@ describe("SplitCutList", () => {
     );
   });
 
-  it("re-posts without an entry on Zurücknehmen (take back)", async () => {
+  it("re-posts without an entry on Take back", async () => {
     const acceptSplitCuts = vi
       .fn()
       .mockResolvedValueOnce({ accepted: [{ seqCut: 50, offset: 3 }] })
@@ -115,9 +115,9 @@ describe("SplitCutList", () => {
         splitCuts={SPLITS}
       />,
     );
-    fireEvent.click(getAllByText("Übernehmen")[0]);
-    await waitFor(() => expect(getByText("Zurücknehmen")).toBeTruthy());
-    fireEvent.click(getByText("Zurücknehmen"));
+    fireEvent.click(getAllByText("Apply")[0]);
+    await waitFor(() => expect(getByText("Take back")).toBeTruthy());
+    fireEvent.click(getByText("Take back"));
     // Taking the only applied split back re-posts an empty set.
     await waitFor(() => expect(acceptSplitCuts).toHaveBeenLastCalledWith("p", "tl", []));
   });
@@ -126,7 +126,7 @@ describe("SplitCutList", () => {
     const { getByText } = render(
       <SplitCutList client={client()} projectId="p" timelineId="tl" splitCuts={SPLITS} />,
     );
-    expect(getByText(/OTIO-Export/)).toBeTruthy();
-    expect(getByText(/hart geschnitten/)).toBeTruthy();
+    expect(getByText(/OTIO export/)).toBeTruthy();
+    expect(getByText(/hard-cut/)).toBeTruthy();
   });
 });

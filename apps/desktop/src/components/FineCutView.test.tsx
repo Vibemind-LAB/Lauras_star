@@ -38,7 +38,7 @@ vi.mock("./ContinuousTranscript", () => ({
         <button type="button" onClick={() => p.onDeleteSelection?.("w0", "w1")}>
           cut-word
         </button>
-        <button type="button" onClick={() => p.onReplaceText?.("w0", "w1", "neue Stimme")}>
+        <button type="button" onClick={() => p.onReplaceText?.("w0", "w1", "new voice")}>
           replace-word
         </button>
       </>
@@ -78,7 +78,7 @@ const sceneA: Scene = {
   id: "sA",
   project_id: "p",
   source_timeline_id: "rc1",
-  name: "Szene 1",
+  name: "Scene 1",
   order_index: 0,
   seq_in_frame: 0,
   seq_out_frame_exclusive: 30,
@@ -91,7 +91,7 @@ const sceneB: Scene = {
   id: "sB",
   project_id: "p",
   source_timeline_id: "rc1",
-  name: "Szene 2",
+  name: "Scene 2",
   order_index: 1,
   seq_in_frame: 30,
   seq_out_frame_exclusive: 60,
@@ -169,7 +169,7 @@ describe("FineCutView", () => {
       />,
     );
 
-    await screen.findByText("Szene 1");
+    await screen.findByText("Scene 1");
     expect(getTimeline).toHaveBeenCalledWith("rc1");
     expect(openScene).not.toHaveBeenCalled();
   });
@@ -194,12 +194,12 @@ describe("FineCutView", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Szene 2" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Scene 2" }));
     expect(onSeek).toHaveBeenCalledWith(sceneB.seq_in_frame);
     // The seek object emitted by onSeek is forwarded to App.tsx which converts it
     // to a new { frame } object (setSeek) that is then passed back as `seek` prop
     // → SequencePlayer seekTo={seek} triggers the seek effect.
-    // Full player-seek (video scrub) is manuell zu prüfen (live CDP 9222) — jsdom cannot
+    // Full player-seek (video scrub) has to be checked by hand (live CDP 9222) — jsdom cannot
     // assert HTMLVideoElement.currentTime changes.
   });
 
@@ -221,7 +221,7 @@ describe("FineCutView", () => {
     );
 
     // Wait for the component to finish loading so ContinuousTranscript is present.
-    await screen.findByText("Szene 1");
+    await screen.findByText("Scene 1");
     fireEvent.click(screen.getByText("cut-word"));
 
     // deleteWords should be called on the rough-cut id with the word range from the mock.
@@ -242,7 +242,7 @@ describe("FineCutView", () => {
         onFrame={vi.fn()}
       />,
     );
-    expect(getByText(/Noch keine Szenen/)).toBeTruthy();
+    expect(getByText(/No scenes yet/)).toBeTruthy();
   });
 
   it("loads rough-cut audio clips and forwards them to the player", async () => {
@@ -280,7 +280,7 @@ describe("FineCutView", () => {
         onFrame={vi.fn()}
       />,
     );
-    expect(await findByLabelText("Stimme")).not.toBeNull();
+    expect(await findByLabelText("Voice")).not.toBeNull();
   });
 
   it("Fix 2 — forwards asset rateNum/rateDen to SequencePlayer", async () => {
@@ -305,7 +305,7 @@ describe("FineCutView", () => {
       />,
     );
 
-    await screen.findByText("Szene 1");
+    await screen.findByText("Scene 1");
     expect(fcSeqPlayerProps.rateNum).toBe(25);
     expect(fcSeqPlayerProps.rateDen).toBe(1);
   });
@@ -334,7 +334,7 @@ describe("FineCutView", () => {
     );
 
     // Wait for the initial load to complete.
-    await screen.findByText("Szene 1");
+    await screen.findByText("Scene 1");
     const callsAfterMount = (listTimelineAudioClips as ReturnType<typeof vi.fn>).mock.calls.length;
 
     // Simulate the VO job completing: set mock to "succeeded" then force a re-render.
@@ -374,7 +374,7 @@ describe("FineCutView", () => {
     // createVoiceover is skipped when words are empty (commit=null), so we just verify the prop
     // is wired (is a function) and that calling it with a known voice causes createVoiceover
     // to be invoked once real word data is present.
-    // Full end-to-end video generation is manuell zu prüfen (live CDP 9222).
+    // Full end-to-end video generation has to be checked by hand (live CDP 9222).
     const c = makeClient();
 
     renderWithQuery(
@@ -397,7 +397,7 @@ describe("FineCutView", () => {
     expect(typeof capturedTranscriptProps.current.onReplaceText).toBe("function");
 
     // Select a voice in the toolbar so voiceId becomes "v1".
-    const voicePicker = screen.getByLabelText("Stimme");
+    const voicePicker = screen.getByLabelText("Voice");
     fireEvent.change(voicePicker, { target: { value: "v1" } });
 
     // After re-render the prop is still a function (voice selection didn't break wiring).

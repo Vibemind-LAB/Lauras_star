@@ -57,19 +57,19 @@ export function AudioLaneControls({
 
   async function submit(): Promise<void> {
     if (!timelineId) {
-      setError("Keine Timeline ausgewählt.");
+      setError("No timeline selected.");
       return;
     }
     if (!assetId) {
-      setError("Kein Audio-Asset verfügbar.");
+      setError("No audio asset available.");
       return;
     }
     if (seqOut <= seqIn) {
-      setError("seq out muss größer als seq in sein.");
+      setError("seq out must be greater than seq in.");
       return;
     }
     if (fadeIn + fadeOut > seqOut - seqIn) {
-      setError("Fades dürfen nicht länger als der Clip sein.");
+      setError("Fades cannot be longer than the clip.");
       return;
     }
     setBusy(true);
@@ -118,7 +118,7 @@ export function AudioLaneControls({
   const assetName = (id: string): string =>
     audioAssets.find((asset) => asset.id === id)?.display_name ?? "Audio";
   const mixModeLabel = (mode: AudioMixMode): string => {
-    if (mode === "replace_original") return "Original ersetzen";
+    if (mode === "replace_original") return "Replace original";
     if (mode === "mute_original") return "Original muten";
     return "Mix";
   };
@@ -127,7 +127,7 @@ export function AudioLaneControls({
     <section className="flex flex-col gap-3 rounded border border-bezel bg-surface-1/50 p-3">
       <div>
         <div className="text-xs font-semibold text-content-strong">Audio-Lane</div>
-        <div className="text-[11px] text-content-faint">Musik oder Voiceover auf A2 platzieren</div>
+        <div className="text-[11px] text-content-faint">Place music or a voiceover on A2</div>
       </div>
       {error !== null && (
         <div className="rounded border border-status-err/40 bg-status-err/10 p-2 text-xs text-status-err">
@@ -144,7 +144,7 @@ export function AudioLaneControls({
             className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             {audioAssets.length === 0 ? (
-              <option value="">Keine Audio-Assets</option>
+              <option value="">No audio assets</option>
             ) : (
               audioAssets.map((asset) => (
                 <option key={asset.id} value={asset.id}>
@@ -186,7 +186,7 @@ export function AudioLaneControls({
             className="rounded border border-bezel bg-surface-0 px-2 py-1 text-content-strong disabled:opacity-50"
           >
             <option value="mix">Mix</option>
-            <option value="replace_original">Original ersetzen</option>
+            <option value="replace_original">Replace original</option>
             <option value="mute_original">Original muten</option>
           </select>
         </label>
@@ -277,7 +277,7 @@ export function AudioLaneControls({
       </button>
       <div className="flex flex-col gap-2">
         {clips.length === 0 ? (
-          <div className="text-xs text-content-faint">Noch keine A2-Clips.</div>
+          <div className="text-xs text-content-faint">No A2 clips yet.</div>
         ) : (
           clips.map((clip) => (
             <div

@@ -60,15 +60,15 @@ export function OverlayControls({
 
   async function submit(): Promise<void> {
     if (!timelineId) {
-      setError("Keine Timeline ausgewählt.");
+      setError("No timeline selected.");
       return;
     }
     if (!assetId) {
-      setError("Bitte ein Asset auswählen.");
+      setError("Pick an asset first.");
       return;
     }
     if (seqOut <= seqIn) {
-      setError("seq_out muss größer als seq_in sein.");
+      setError("seq_out must be greater than seq_in.");
       return;
     }
     setBusy(true);
@@ -98,11 +98,11 @@ export function OverlayControls({
           value={assetId}
           onChange={(e) => setAssetId(e.target.value)}
           disabled={busy || assets.length === 0}
-          aria-label="Asset auswählen"
+          aria-label="Choose asset"
           className="min-w-0 flex-1 truncate rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
         >
           {assets.length === 0 ? (
-            <option value="">— keine Assets —</option>
+            <option value="">— no assets —</option>
           ) : (
             assets.map((a) => (
               <option key={a.id} value={a.id}>

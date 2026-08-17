@@ -20,7 +20,7 @@ const SESSION_ARTIFACT_LABELS: Record<(typeof SESSION_ARTIFACT_ORDER)[number], s
   script: "script",
   voice: "voice",
   cutlist: "cutlist",
-  contact_sheet: "Bogen",
+  contact_sheet: "sheet",
   render_report: "Export",
   qa_report: "QA",
 };
@@ -41,7 +41,7 @@ const SESSION_CHIP_CLS =
 
 /** One artifact chip whose slot has archived versions: click opens a small dropdown listing
  * them ("v1", "v2", …) plus the current version for reference; picking one and confirming with
- * "Zurückdrehen" calls `onConfirm(version)`. Owns its open/selected state independently per
+ * "Roll back" calls `onConfirm(version)`. Owns its open/selected state independently per
  * chip — simpler than a shared "which chip is open" slot on the parent, and multiple dropdowns
  * open at once is harmless. */
 function RevertChip({
@@ -109,7 +109,7 @@ function RevertChip({
             }}
             className="rounded bg-accent px-1.5 py-0.5 font-medium text-accent-ink disabled:opacity-40"
           >
-            Zurückdrehen
+            Roll back
           </button>
         </div>
       )}
@@ -153,7 +153,7 @@ export function SessionChips({
       key: "restored",
       kind: "plain",
       text: `♻️ ${restored.length}`,
-      title: `Wiederhergestellt: ${restored.map(sessionArtifactLabel).join(", ")}`,
+      title: `Restored: ${restored.map(sessionArtifactLabel).join(", ")}`,
     });
   }
 
@@ -174,7 +174,7 @@ export function SessionChips({
             : `🎬 ${status.scene_reviews.count}`,
         title:
           degraded > 0
-            ? `${degraded} Review(s) ohne echte Bildanalyse (Szenen ${status.scene_reviews.degraded_scenes.join(", ")})`
+            ? `${degraded} review(s) without real picture analysis (scenes ${status.scene_reviews.degraded_scenes.join(", ")})`
             : undefined,
       });
     }
@@ -185,14 +185,14 @@ export function SessionChips({
       if (info === undefined || info.version === null) continue;
       const warnings: string[] = [];
       if (info.stale === true) {
-        warnings.push("gehört zu einem älteren Skript (stale)");
+        warnings.push("belongs to an older script (stale)");
       }
       if (info.checks_ok === false) {
         warnings.push(`Checks fehlgeschlagen: ${(info.failed_checks ?? []).join(", ")}`);
       }
       // Unknown is not current: null means the artifact predates provenance and cannot be
       // judged either way — saying nothing here would present it as proven-fresh.
-      const unknown = info.stale === null ? "Provenienz unbekannt (älteres Board)" : undefined;
+      const unknown = info.stale === null ? "Provenance unknown (older board)" : undefined;
       // How much of the requested length the DELIVERED film reached. Live 2026-08-02: a 60s
       // short came out 15.8s and the panel showed a finished export with no hint why. A short
       // film is allowed — the Scene Author's charter says to write less rather than invent
@@ -201,7 +201,7 @@ export function SessionChips({
       const ratioText = typeof ratio === "number" ? ` · ${Math.round(ratio * 100)}%` : "";
       const ratioTitle =
         typeof ratio === "number"
-          ? `gelieferter Film: ${Math.round(ratio * 100)}% der Ziellänge`
+          ? `delivered film: ${Math.round(ratio * 100)}% of the target length`
           : undefined;
       const text = `${SESSION_ARTIFACT_LABELS[name]} v${info.version}${ratioText}${warnings.length > 0 ? " ⚠" : ""}`;
       const title =

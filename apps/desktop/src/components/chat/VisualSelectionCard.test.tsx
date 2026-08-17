@@ -28,9 +28,9 @@ function candidate(
     src_start_frame: thumbFrame - 30,
     src_end_frame_exclusive: thumbFrame + 30,
     thumb_frame: thumbFrame,
-    description: `Szene ${sceneNumber}`,
+    description: `Scene ${sceneNumber}`,
     transcript_snippet: `Transkript ${sceneNumber}`,
-    rationale: `Begründung ${sceneNumber}`,
+    rationale: `Rationale ${sceneNumber}`,
     score: 0.9,
   };
 }
@@ -44,7 +44,7 @@ const gate: VisualSelectionGateStatus = {
     {
       beat_id: "beat-1",
       voice_segment_index: 0,
-      narration_text: "Rowboat organisiert Dateien.",
+      narration_text: "Rowboat organises files.",
       duration_s: 2.5,
       candidates: [candidate("beat-1", "candidate-1", 2, 42), candidate("beat-1", "candidate-2", 4, 142)],
       recommended_candidate_id: "candidate-1",
@@ -53,7 +53,7 @@ const gate: VisualSelectionGateStatus = {
     {
       beat_id: "beat-2",
       voice_segment_index: 1,
-      narration_text: "Danach baut es Präsentationen.",
+      narration_text: "After that it builds presentations.",
       duration_s: 3,
       candidates: [candidate("beat-2", "candidate-3", 6, 242)],
       recommended_candidate_id: "candidate-3",
@@ -81,7 +81,7 @@ function sceneChoice(
     description:
       roughCutOrder === 0 ? "Rowboat dashboard and file organizer" : `Rough-Cut scene ${sceneNumber}`,
     transcript: roughCutOrder === 0 ? "recognized UI: Draft an email" : `Transcript ${sceneNumber}`,
-    rationale: `Relevant für Rough Cut ${roughCutOrder + 1}`,
+    rationale: `Relevant for rough cut ${roughCutOrder + 1}`,
     candidates: Array.from({ length: candidateCount }, (_, windowIndex) => ({
       candidate_id: `scene-${roughCutOrder}-candidate-${windowIndex}`,
       rough_cut_order: roughCutOrder,
@@ -171,7 +171,7 @@ describe("VisualSelectionCard", () => {
     expect((screen.getByTestId("visual-candidate-candidate-2") as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId("visual-candidate-candidate-3") as HTMLInputElement).checked).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply the picture selection" }));
     await waitFor(() => expect(onConfirmed).toHaveBeenCalledTimes(1));
     expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), [
       "candidate-2",
@@ -240,7 +240,7 @@ describe("VisualSelectionCard", () => {
 
     fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-0"));
     fireEvent.click(screen.getByTestId("visual-scene-use-3"));
-    fireEvent.click(screen.getByRole("button", { name: "Szene 1: 7 Sekunden" }));
+    fireEvent.click(screen.getByRole("button", { name: "Scene 1: 7 seconds" }));
 
     await waitFor(() => expect(saveVisualSelectionDraft).toHaveBeenCalledTimes(3));
     expect(saveVisualSelectionDraft.mock.calls[2]?.[1].selections).toEqual([
@@ -265,9 +265,9 @@ describe("VisualSelectionCard", () => {
     );
 
     fireEvent.click(screen.getByTestId("visual-scene-use-4"));
-    expect(await screen.findByRole("button", { name: "Erneut speichern" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Save again" })).toBeTruthy();
     expect(
-      (screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "Apply the picture selection" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
   });
@@ -295,7 +295,7 @@ describe("VisualSelectionCard", () => {
       />,
     );
 
-    expect((screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Apply the picture selection" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("disables inputs and confirm while the request is in flight", () => {
@@ -311,7 +311,7 @@ describe("VisualSelectionCard", () => {
       />,
     );
 
-    const confirm = screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement;
+    const confirm = screen.getByRole("button", { name: "Apply the picture selection" }) as HTMLButtonElement;
     fireEvent.click(confirm);
 
     expect(confirm.disabled).toBe(true);
@@ -341,17 +341,17 @@ describe("VisualSelectionCard", () => {
       />,
     );
 
-    const rows = screen.getAllByRole("group", { name: /Szene/ });
+    const rows = screen.getAllByRole("group", { name: /Scene/ });
     expect(rows).toHaveLength(8);
     expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
-      "Szene 3 · Rough Cut 3",
-      "Szene 1 · Rough Cut 1",
-      "Szene 2 · Rough Cut 2",
-      "Szene 4 · Rough Cut 4",
-      "Szene 5 · Rough Cut 5",
-      "Szene 6 · Rough Cut 6",
-      "Szene 7 · Rough Cut 7",
-      "Szene 8 · Rough Cut 8",
+      "Scene 3 · rough cut 3",
+      "Scene 1 · rough cut 1",
+      "Scene 2 · rough cut 2",
+      "Scene 4 · rough cut 4",
+      "Scene 5 · rough cut 5",
+      "Scene 6 · rough cut 6",
+      "Scene 7 · rough cut 7",
+      "Scene 8 · rough cut 8",
     ]);
     expect(screen.getByText("Rowboat dashboard and file organizer")).toBeTruthy();
     expect(screen.getByText("recognized UI: Draft an email")).toBeTruthy();
@@ -381,10 +381,10 @@ describe("VisualSelectionCard", () => {
     expect((screen.getByTestId("visual-scene-use-0") as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId("visual-scene-use-3") as HTMLInputElement).checked).toBe(false);
     fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-1"));
-    fireEvent.click(screen.getByRole("button", { name: "Szene 1: 6 Sekunden" }));
+    fireEvent.click(screen.getByRole("button", { name: "Scene 1: 6 seconds" }));
     fireEvent.click(screen.getByTestId("visual-scene-use-3"));
     await screen.findByText("Gespeichert");
-    fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply the picture selection" }));
 
     await waitFor(() => expect(confirmVisualSelection).toHaveBeenCalledTimes(1));
     expect(confirmVisualSelection).toHaveBeenCalledWith("s1", "a".repeat(64), [
@@ -409,13 +409,13 @@ describe("VisualSelectionCard", () => {
       />,
     );
 
-    const confirm = screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement;
+    const confirm = screen.getByRole("button", { name: "Apply the picture selection" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
-    expect(screen.getByText("Gewählt: 40,0 s · Voice: 45,0 s")).toBeTruthy();
+    expect(screen.getByText("Chosen: 40.0 s · voice: 45.0 s")).toBeTruthy();
     fireEvent.click(screen.getByTestId("visual-scene-use-4"));
     await screen.findByText("Gespeichert");
     expect(confirm.disabled).toBe(false);
-    expect(screen.getByText("Letzte Szene final: 5,0 s")).toBeTruthy();
+    expect(screen.getByText("Last scene final: 5.0 s")).toBeTruthy();
   });
 
   it("blocks a final trim below one second with a concrete conflict", () => {
@@ -433,10 +433,10 @@ describe("VisualSelectionCard", () => {
     );
 
     expect(
-      (screen.getByRole("button", { name: "Bildauswahl übernehmen" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "Apply the picture selection" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
-    expect(screen.getByText("Die früheren Szenen lassen weniger als 1,0 s für die letzte Szene.")).toBeTruthy();
+    expect(screen.getByText("The earlier scenes leave less than 1.0 s for the last one.")).toBeTruthy();
   });
 
   it("bounds duration buttons by the selected candidate capacity", async () => {
@@ -452,11 +452,11 @@ describe("VisualSelectionCard", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Szene 1: 4 Sekunden" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Szene 1: 5 Sekunden" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Scene 1: 4 seconds" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Scene 1: 5 seconds" })).toBeNull();
     fireEvent.click(screen.getByTestId("visual-scene-candidate-scene-0-candidate-1"));
     await screen.findByText("Gespeichert");
-    expect(screen.getByRole("button", { name: "Szene 1: 7 Sekunden" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Scene 1: 7 seconds" })).toBeTruthy();
   });
 
   it("keeps stale confirmation errors visible and does not refresh", async () => {
@@ -472,7 +472,7 @@ describe("VisualSelectionCard", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Bildauswahl übernehmen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply the picture selection" }));
     expect((await screen.findByRole("alert")).textContent).toContain("409: proposal stale");
     expect(onConfirmed).not.toHaveBeenCalled();
   });

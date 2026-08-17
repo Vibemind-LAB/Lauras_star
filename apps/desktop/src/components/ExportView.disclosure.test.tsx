@@ -34,6 +34,6 @@ describe("ExportView disclosure is mandatory", () => {
 
   it("shows a persistent disclosure confirmation", () => {
     render(<ExportView {...makeExportViewProps()} />);
-    expect(screen.getByText(/KI-Kennzeichnung wird immer eingeblendet/i)).toBeTruthy();
+    expect(screen.getByText(/AI disclosure is always shown/i)).toBeTruthy();
   });
 });

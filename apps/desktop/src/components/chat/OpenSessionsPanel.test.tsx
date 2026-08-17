@@ -13,7 +13,7 @@ function session(
     project_id: "p1",
     asset_id: "a1",
     asset_display_name: "Rough Cut",
-    brief_preview: "Baue den visuellen Schnitt weiter",
+    brief_preview: "Continuing the visual cut",
     resume_point: "visual_selection",
     state: "awaiting-approval",
     updated_utc: "2026-08-17T10:00:00+00:00",
@@ -33,7 +33,7 @@ describe("OpenSessionsPanel", () => {
 
   it("shows one prominent resumable session with brief and saved time", () => {
     render(<OpenSessionsPanel sessions={[session()]} onResume={vi.fn()} />);
-    expect(screen.getByText("Baue den visuellen Schnitt weiter")).toBeTruthy();
+    expect(screen.getByText("Continuing the visual cut")).toBeTruthy();
     expect(screen.getByText(/Gespeichert.*2026-08-17T09:59/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Fortsetzen" })).toBeTruthy();
   });
@@ -64,7 +64,7 @@ describe("OpenSessionsPanel", () => {
     const onResume = vi.fn();
     render(<OpenSessionsPanel sessions={[stale]} onResume={onResume} />);
 
-    expect(screen.getByText(/Quelldatei oder Vorschlag hat sich geändert/)).toBeTruthy();
+    expect(screen.getByText(/The source file or the proposal changed/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Fortsetzen" }));
     expect(onResume).toHaveBeenCalledWith(stale);
   });

@@ -111,7 +111,7 @@ function LegacyVisualSelectionCard({
       await client.confirmVisualSelection(sessionId, gate.proposal_id, selectedCandidateIds);
       await onConfirmed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bildauswahl konnte nicht bestätigt werden");
+      setError(err instanceof Error ? err.message : "Could not confirm the picture selection");
     } finally {
       setBusy(false);
     }
@@ -119,7 +119,7 @@ function LegacyVisualSelectionCard({
 
   return (
     <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px]">
-      <div className="mb-1 text-content-strong">Bildauswahl prüfen</div>
+      <div className="mb-1 text-content-strong">Review the picture selection</div>
       <div className="space-y-2">
         {beats.map((beat) => (
           <fieldset key={beat.beat_id} className="rounded border border-bezel p-1">
@@ -155,7 +155,7 @@ function LegacyVisualSelectionCard({
                     className="mr-1"
                   />
                   <span className="font-semibold text-content-strong">
-                    Szene {candidate.scene_number}
+                    Scene {candidate.scene_number}
                   </span>
                   <div className="text-content-muted">{candidate.description}</div>
                   <div className="text-content-faint">{candidate.rationale}</div>
@@ -176,7 +176,7 @@ function LegacyVisualSelectionCard({
         onClick={() => void submit()}
         className="mt-1 rounded bg-accent px-2 py-1 font-medium text-accent-ink disabled:opacity-40"
       >
-        Bildauswahl übernehmen
+        Apply the picture selection
       </button>
     </div>
   );
@@ -196,7 +196,7 @@ function selectedCandidate(
 }
 
 function secondsLabel(frames: number, fps: number): string {
-  return (frames / fps).toFixed(1).replace(".", ",");
+  return (frames / fps).toFixed(1);
 }
 
 function RoughCutVisualSelectionCard({
@@ -298,7 +298,7 @@ function RoughCutVisualSelectionCard({
       await client.confirmVisualSelection(sessionId, gate.proposal_id, selections);
       await onConfirmed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bildauswahl konnte nicht bestätigt werden");
+      setError(err instanceof Error ? err.message : "Could not confirm the picture selection");
     } finally {
       setBusy(false);
     }
@@ -306,32 +306,32 @@ function RoughCutVisualSelectionCard({
 
   return (
     <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px]">
-      <div className="mb-1 text-content-strong">Bildauswahl prüfen</div>
+      <div className="mb-1 text-content-strong">Review the picture selection</div>
       {fps !== null && voiceFrames !== null ? (
         <div className="mb-1 rounded bg-surface-2 px-1.5 py-1 text-content-muted">
           <div>
-            Gewählt: {secondsLabel(requestedFrames, fps)} s · Voice: {secondsLabel(voiceFrames, fps)} s
+            Chosen: {secondsLabel(requestedFrames, fps)} s · voice: {secondsLabel(voiceFrames, fps)} s
           </div>
           {requestedFrames >= voiceFrames && included.length > 0 ? (
             validFinalTrim ? (
-              <div>Letzte Szene final: {secondsLabel(finalLastFrames, fps)} s</div>
+              <div>Last scene final: {secondsLabel(finalLastFrames, fps)} s</div>
             ) : (
               <div className="text-status-err">
-                Die früheren Szenen lassen weniger als 1,0 s für die letzte Szene.
+                The earlier scenes leave less than 1.0 s for the last one.
               </div>
             )
           ) : (
-            <div>Die gewählte Dauer muss die Voice vollständig abdecken.</div>
+            <div>The chosen duration has to cover the whole voice.</div>
           )}
         </div>
       ) : (
-        <div className="mb-1 text-status-err">Voice-Länge oder Framerate fehlt.</div>
+        <div className="mb-1 text-status-err">Voice length or frame rate is missing.</div>
       )}
       <div className="space-y-2">
         {choices.map((choice) => {
           const decision = decisions[choice.rough_cut_order];
           const candidate = selectedCandidate(choice.candidates, decision);
-          const label = `Szene ${choice.scene_number} · Rough Cut ${choice.rough_cut_order + 1}`;
+          const label = `Scene ${choice.scene_number} · rough cut ${choice.rough_cut_order + 1}`;
           return (
             <div
               key={choice.rough_cut_order}
@@ -401,7 +401,7 @@ function RoughCutVisualSelectionCard({
                       <button
                         key={duration}
                         type="button"
-                        aria-label={`Szene ${choice.scene_number}: ${duration} Sekunden`}
+                        aria-label={`Scene ${choice.scene_number}: ${duration} seconds`}
                         disabled={busy || decision?.included === false}
                         onClick={() =>
                           updateDecision(
@@ -438,21 +438,21 @@ function RoughCutVisualSelectionCard({
         <div className="mt-1 text-status-err" role="alert">
           Entwurf konnte nicht gespeichert werden.{" "}
           <button type="button" onClick={retry} className="underline">
-            Erneut speichern
+            Save again
           </button>
         </div>
       ) : null}
       {saveState === "conflict" ? (
         <div className="mt-1 text-status-err" role="alert">
-          Der Entwurf wurde an anderer Stelle geändert.{" "}
+          The draft was changed elsewhere.{" "}
           <button type="button" onClick={loadServerDraft} className="underline">
-            Serverstand laden
+            Load server state
           </button>
         </div>
       ) : null}
       {saveState === "stale" ? (
         <div className="mt-1 text-status-err" role="alert">
-          Quelldatei oder Vorschlag hat sich geändert. Bitte Auswahl neu öffnen.
+          The source file or the proposal changed. Open the selection again.
         </div>
       ) : null}
       {error !== null ? (
@@ -466,7 +466,7 @@ function RoughCutVisualSelectionCard({
         onClick={() => void submit()}
         className="mt-1 rounded bg-accent px-2 py-1 font-medium text-accent-ink disabled:opacity-40"
       >
-        Bildauswahl übernehmen
+        Apply the picture selection
       </button>
     </div>
   );

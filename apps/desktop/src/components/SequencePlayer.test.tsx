@@ -246,7 +246,7 @@ describe("SequencePlayer render", () => {
     const { getByText } = render(
       <SequencePlayer client={c} projectId="p" sequenceId={null} />,
     );
-    expect(getByText("Noch keine Sequenz — Szenen hinzufügen")).toBeTruthy();
+    expect(getByText("No sequence yet — add scenes")).toBeTruthy();
   });
 
   it("shows placeholder when clips list is empty", async () => {
@@ -258,7 +258,7 @@ describe("SequencePlayer render", () => {
       <SequencePlayer client={c} projectId="p" sequenceId="seq" />,
     );
     await waitFor(() => {
-      expect(getByText("Noch keine Sequenz — Szenen hinzufügen")).toBeTruthy();
+      expect(getByText("No sequence yet — add scenes")).toBeTruthy();
     });
   });
 

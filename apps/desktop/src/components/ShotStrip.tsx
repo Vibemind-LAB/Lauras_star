@@ -51,7 +51,7 @@ function ShotThumb({
   const appendHint = onAppend
     ? dropped
       ? ` · verworfen: ${shot.drop_reason ?? "unbekannt"} (Klick = wieder aufnehmen)`
-      : " (Klick = an Rough Cut anhängen)"
+      : " (click = append to rough cut)"
     : "";
   const title = baseTitle + appendHint;
 
@@ -100,7 +100,7 @@ export function ShotStrip({
   onAppend?: (shot: Shot) => void;
 }): ReactElement {
   if (shots.length === 0) {
-    return <div className="text-xs text-content-faint">keine Shots</div>;
+    return <div className="text-xs text-content-faint">no shots</div>;
   }
   return (
     <div className="flex w-full gap-1 overflow-x-auto pb-1">

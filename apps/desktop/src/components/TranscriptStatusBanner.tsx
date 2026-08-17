@@ -18,7 +18,7 @@ export function TranscriptStatusBanner({
   return (
     <div className="flex items-center gap-3 border-t border-bezel bg-status-warn/10 px-3 py-2 text-xs text-content-muted">
       <span className="flex-1 leading-snug">
-        {note ?? "Für dieses Video liegt noch kein Transkript vor."}
+        {note ?? "This video has no transcript yet."}
       </span>
       <button
         type="button"
@@ -26,7 +26,7 @@ export function TranscriptStatusBanner({
         disabled={busy}
         className="shrink-0 rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
       >
-        {busy ? "Transkript läuft…" : "Transkript erzeugen"}
+        {busy ? "Transcript running…" : "Transkript erzeugen"}
       </button>
     </div>
   );

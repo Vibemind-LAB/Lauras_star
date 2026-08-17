@@ -15,8 +15,8 @@ function setup(disabled = false) {
       onPickFolder={vi.fn()}
     />,
   );
-  const textarea = screen.getByPlaceholderText(/URLs einfügen/i);
-  const load = screen.getByRole("button", { name: "Laden" });
+  const textarea = screen.getByPlaceholderText(/Paste URLs/i);
+  const load = screen.getByRole("button", { name: "Load" });
   return { onUrls, textarea, load };
 }
 
@@ -45,8 +45,8 @@ describe("ImportBar", () => {
     });
 
     fireEvent.change(textarea, { target: { value: "https://youtu.be/y" } });
-    fireEvent.change(screen.getByLabelText("Qualität"), { target: { value: "audio" } });
-    fireEvent.change(screen.getByLabelText("Cookies aus Browser"), {
+    fireEvent.change(screen.getByLabelText("Quality"), { target: { value: "audio" } });
+    fireEvent.change(screen.getByLabelText("Cookies from browser"), {
       target: { value: "firefox" },
     });
     fireEvent.click(load);

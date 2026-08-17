@@ -119,7 +119,7 @@ export function SceneSelectionCard({
       await doConfirm(sessionId, picked, gate.selection_version);
       onConfirmed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bestätigung fehlgeschlagen");
+      setError(err instanceof Error ? err.message : "Confirmation failed");
     } finally {
       setBusy(false);
     }
@@ -128,7 +128,7 @@ export function SceneSelectionCard({
   return (
     <div className="mt-0.5 rounded border border-bezel bg-surface-1 px-1.5 py-1 text-[11px]">
       <div className="mb-1 text-content-strong">
-        🎬 Szenen-Auswahl — Lauras Empfehlung ist vorausgewählt
+        🎬 Scene selection — Laura's recommendation is pre-checked
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         {candidates.map((c) => {
@@ -147,7 +147,7 @@ export function SceneSelectionCard({
               }`}
             >
               <Thumb client={client} assetId={assetId} frame={c.thumb_frame} />
-              <div className="font-semibold text-content-strong">Szene {c.scene_number}</div>
+              <div className="font-semibold text-content-strong">Scene {c.scene_number}</div>
               <div className="text-content-muted">{c.description}</div>
               <div className="italic text-content-faint">„{c.transcript_snippet}"</div>
             </button>
@@ -161,7 +161,7 @@ export function SceneSelectionCard({
         onClick={() => void submit()}
         className="mt-1 rounded bg-accent px-2 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
       >
-        Auswahl übernehmen ({picked.length})
+        Apply selection ({picked.length})
       </button>
     </div>
   );

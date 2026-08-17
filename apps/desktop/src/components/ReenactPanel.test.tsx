@@ -42,13 +42,13 @@ describe("ReenactPanel", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("Subjekt-Label für Consent"), {
+    fireEvent.change(screen.getByLabelText("Subject label for consent"), {
       target: { value: "Person A" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /consent bestätigen/i }));
-    await waitFor(() => expect(screen.getByText(/Consent für/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /confirm consent/i }));
+    await waitFor(() => expect(screen.getByText(/Consent for/)).toBeTruthy());
 
-    fireEvent.change(screen.getByLabelText("Reenact-Backend auswählen"), {
+    fireEvent.change(screen.getByLabelText("Choose reenact backend"), {
       target: { value: "liveportrait" },
     });
     fireEvent.change(screen.getByLabelText("Sequenz-Auspunkt exklusiv (Frames)"), {

@@ -34,7 +34,7 @@ describe("CardErrorBoundary", () => {
         <Bomb />
       </CardErrorBoundary>,
     );
-    expect(screen.getByText("⚠ Diese Karte konnte nicht angezeigt werden.")).toBeTruthy();
+    expect(screen.getByText("⚠ This card could not be displayed.")).toBeTruthy();
   });
 
   it("renders a custom fallback when one is provided", () => {
@@ -44,7 +44,7 @@ describe("CardErrorBoundary", () => {
       </CardErrorBoundary>,
     );
     expect(screen.getByText("eigener Fallback")).toBeTruthy();
-    expect(screen.queryByText("⚠ Diese Karte konnte nicht angezeigt werden.")).toBeNull();
+    expect(screen.queryByText("⚠ This card could not be displayed.")).toBeNull();
   });
 
   it("only replaces its own subtree — a sibling boundary's healthy child survives", () => {
@@ -58,7 +58,7 @@ describe("CardErrorBoundary", () => {
         </CardErrorBoundary>
       </>,
     );
-    expect(screen.getByText("⚠ Diese Karte konnte nicht angezeigt werden.")).toBeTruthy();
+    expect(screen.getByText("⚠ This card could not be displayed.")).toBeTruthy();
     expect(screen.getByText("Nachbar lebt")).toBeTruthy();
   });
 });

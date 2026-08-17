@@ -104,7 +104,7 @@ describe("ShortsView", () => {
         onFrame={vi.fn()}
       />,
     );
-    expect(getByText(/Wähle ein Asset/)).toBeTruthy();
+    expect(getByText(/Pick an asset/)).toBeTruthy();
   });
 
   it("renders candidates with time, score, and QA badge", async () => {
@@ -124,7 +124,7 @@ describe("ShortsView", () => {
     expect(getByText("QA ok")).toBeTruthy();
     // Candidate B: score 0.62, QA failed
     expect(getByText("0.62")).toBeTruthy();
-    expect(getAllByText("QA fehler").length).toBeGreaterThan(0);
+    expect(getAllByText("QA error").length).toBeGreaterThan(0);
   });
 
   it("shows the start timecode for each candidate", async () => {
@@ -156,7 +156,7 @@ describe("ShortsView", () => {
       />,
     );
     await waitFor(() =>
-      expect(getByText(/Noch keine Kandidaten/)).toBeTruthy(),
+      expect(getByText(/No candidates yet/)).toBeTruthy(),
     );
   });
 

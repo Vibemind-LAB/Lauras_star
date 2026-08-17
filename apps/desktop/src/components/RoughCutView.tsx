@@ -104,7 +104,7 @@ export function RoughCutView({
   if (!asset || !roughCut) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-        Wähle ein Asset (in Import), um Szenen zu erzeugen.
+        Pick an asset under Media to create scenes.
       </div>
     );
   }
@@ -122,7 +122,7 @@ export function RoughCutView({
             disabled={busy}
             className="rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
           >
-            {busy ? "Erzeuge…" : "Szenen erzeugen"}
+            {busy ? "Erzeuge…" : "Create scenes"}
           </button>
           <div className="w-64">
             <BiasSlider value={cutBias} onChange={(b) => void onRebuildAtBias(b)} disabled={busy} />

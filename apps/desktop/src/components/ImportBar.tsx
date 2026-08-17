@@ -12,7 +12,7 @@ const FORMAT_OPTIONS: ReadonlyArray<{ value: ImportFormat; label: string }> = [
   { value: "best", label: "Beste" },
   { value: "1080", label: "1080p" },
   { value: "720", label: "720p" },
-  { value: "audio", label: "nur Audio" },
+  { value: "audio", label: "audio only" },
 ];
 
 const COOKIE_OPTIONS: ReadonlyArray<{ value: CookiesFromBrowser | ""; label: string }> = [
@@ -59,7 +59,7 @@ export function ImportBar({
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="URLs einfügen — eine pro Zeile (YouTube, Drive, Playlist …)"
+          placeholder="Paste URLs — one per line (YouTube, Drive, playlist …)"
           disabled={disabled}
           rows={2}
           className="min-h-0 w-full resize-y rounded bg-surface-2 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint"
@@ -69,7 +69,7 @@ export function ImportBar({
             value={format}
             onChange={(e) => setFormat(e.target.value as ImportFormat)}
             disabled={disabled}
-            aria-label="Qualität"
+            aria-label="Quality"
             className="min-w-0 flex-1 rounded bg-surface-2 px-1.5 py-1 text-xs text-content-strong disabled:opacity-40"
           >
             {FORMAT_OPTIONS.map((o) => (
@@ -82,7 +82,7 @@ export function ImportBar({
             value={cookies}
             onChange={(e) => setCookies(e.target.value as CookiesFromBrowser | "")}
             disabled={disabled}
-            aria-label="Cookies aus Browser"
+            aria-label="Cookies from browser"
             className="min-w-0 flex-1 rounded bg-surface-2 px-1.5 py-1 text-xs text-content-strong disabled:opacity-40"
           >
             {COOKIE_OPTIONS.map((o) => (
@@ -96,7 +96,7 @@ export function ImportBar({
             disabled={disabled || urls.length === 0}
             className="shrink-0 rounded bg-accent px-3 py-1 text-xs text-white disabled:opacity-40"
           >
-            Laden
+            Load
           </button>
         </div>
       </form>
@@ -107,7 +107,7 @@ export function ImportBar({
           disabled={disabled}
           className="flex-1 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
         >
-          + Datei(en)
+          + File(s)
         </button>
         <button
           type="button"
@@ -115,7 +115,7 @@ export function ImportBar({
           disabled={disabled}
           className="flex-1 rounded bg-surface-2 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
         >
-          + Ordner
+          + Folder
         </button>
       </div>
     </div>

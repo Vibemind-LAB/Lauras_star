@@ -228,7 +228,7 @@ export function Player({
             }}
             onError={() => {
               const err = videoRef.current?.error;
-              const msg = `Video-Fehler ${err?.code ?? "?"}: ${err?.message ?? "unbekannt"}`;
+              const msg = `Video error ${err?.code ?? "?"}: ${err?.message ?? "unknown"}`;
               console.error(`[Player] ${msg}`);
               setLoadError(msg);
             }}
@@ -240,7 +240,7 @@ export function Player({
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-xs text-content-faint">
-            {proxyReady ? "lade Proxy…" : "Proxy wird erstellt…"}
+            {proxyReady ? "lade Proxy…" : "Building proxy…"}
           </div>
         )}
       </div>

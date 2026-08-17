@@ -8,7 +8,7 @@ import { useScenes } from "./useScenes";
 
 const SCENE: Scene = {
   id: "s1", project_id: "p", source_timeline_id: "tl",
-  name: "Szene 1", order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 30,
+  name: "Scene 1", order_index: 0, seq_in_frame: 0, seq_out_frame_exclusive: 30,
 };
 
 function fakeClient(over: Partial<LauraClient>): LauraClient {
@@ -29,7 +29,7 @@ describe("useScenes", () => {
       wrapper: queryWrapper(),
     });
     await waitFor(() => expect(result.current.scenes.length).toBe(1));
-    expect(result.current.scenes[0].name).toBe("Szene 1");
+    expect(result.current.scenes[0].name).toBe("Scene 1");
   });
 
   it("generate replaces scenes from the response", async () => {

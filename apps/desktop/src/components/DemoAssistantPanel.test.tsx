@@ -111,7 +111,7 @@ describe("DemoAssistantPanel", () => {
     fireEvent.change(getByLabelText("Demo-Voiceovertext 1"), {
       target: { value: "Shorter hook line" },
     });
-    fireEvent.click(getByRole("button", { name: "In Sequenz übernehmen" }));
+    fireEvent.click(getByRole("button", { name: "Apply to sequence" }));
 
     await waitFor(() => expect(updateDemoDraft).toHaveBeenCalled());
     expect(updateDemoDraft).toHaveBeenCalledWith(

@@ -313,7 +313,7 @@ describe("production session client methods", () => {
         {
           beat_id: "beat-1",
           voice_segment_index: 0,
-          narration_text: "Rowboat ordnet Dateien.",
+          narration_text: "Rowboat sorts files.",
           duration_s: 2.5,
           recommended_candidate_id: "candidate-1",
           selected_candidate_id: null,
@@ -329,7 +329,7 @@ describe("production session client methods", () => {
               thumb_frame: 180,
               description: "Dateiliste",
               transcript_snippet: "organize files",
-              rationale: "Passt zum Sprechertext",
+              rationale: "Matches the narration",
               score: 0.9,
             },
           ],
@@ -341,7 +341,7 @@ describe("production session client methods", () => {
           scene_number: 2,
           description: "Rowboat dashboard",
           transcript: "Draft an email",
-          rationale: "Belegt den Rough Cut",
+          rationale: "Backs the rough cut",
           candidates: [
             {
               candidate_id: "scene-0-candidate-0",
@@ -354,7 +354,7 @@ describe("production session client methods", () => {
               max_duration_s: 10,
               description: "Dashboard",
               transcript_snippet: "Draft an email",
-              rationale: "Passt zur Szene",
+              rationale: "Matches the scene",
               score: 0.95,
             },
           ],
@@ -382,8 +382,8 @@ describe("production session client methods", () => {
           label: "0 S2",
           src_start_frame: 120,
           src_end_frame_exclusive: 240,
-          narration_excerpt: "Rowboat ordnet Dateien.",
-          rationale: "Passt zum Sprechertext",
+          narration_excerpt: "Rowboat sorts files.",
+          rationale: "Matches the narration",
         },
       ],
     };
@@ -453,7 +453,7 @@ describe("autoOverview", () => {
 
 describe("contactSheetUrl", () => {
   // The backend has served GET /production/{sid}/contact-sheet since the Kontaktbogen arc;
-  // the desktop never grew a client method for it, so the "Bogen" chip existed with no way
+  // the desktop never grew a client method for it, so the "Sheet" chip existed with no way
   // to SHOW the sheet — the last open gap of that feature.
   it("fetches the sheet PNG with the token and returns an object URL", async () => {
     const fn = vi.fn().mockResolvedValue({

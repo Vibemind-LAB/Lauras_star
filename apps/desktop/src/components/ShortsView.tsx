@@ -65,7 +65,7 @@ function ShortsCandidateRow({
         {candidate.qa_passed ? (
           <span
             className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-status-ok"
-            title="Alle QA-Checks bestanden"
+            title="All QA checks passed"
           >
             QA ok
           </span>
@@ -74,7 +74,7 @@ function ShortsCandidateRow({
             className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-status-err"
             title={candidate.qa_issues.join(" · ")}
           >
-            QA fehler
+            QA error
           </span>
         )}
 
@@ -87,7 +87,7 @@ function ShortsCandidateRow({
               setExpanded((v) => !v);
             }}
             className="shrink-0 text-[10px] text-content-faint hover:text-content-muted"
-            title="Score-Erklärung ein-/ausklappen"
+            title="Expand/collapse the score explanation"
           >
             {expanded ? "▲" : "▼"}
           </button>
@@ -178,7 +178,7 @@ export function ShortsView({
       <div className="flex min-h-0 flex-1 flex-col p-2">
         <AutoOverviewPanel client={client} projectId={projectId} />
         <div className="flex flex-1 items-center justify-center text-sm text-content-faint">
-          Wähle ein Asset (in Import), um Shorts zu analysieren.
+          Pick an asset under Media to analyse shorts.
         </div>
       </div>
     );
@@ -232,7 +232,7 @@ export function ShortsView({
         )}
         {!loading && !error && sortedCandidates.length === 0 && (
           <div className="px-3 py-4 text-center text-xs text-content-faint">
-            Noch keine Kandidaten — „Shorts extrahieren" klicken.
+            No candidates yet — click "Extract shorts".
           </div>
         )}
         {!loading && !error && sortedCandidates.length > 0 && (

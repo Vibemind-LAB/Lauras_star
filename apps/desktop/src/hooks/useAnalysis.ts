@@ -21,15 +21,15 @@ function asrNote(diagnostics: Record<string, unknown>): string | null {
   if (asr && typeof asr === "object") {
     const rec = asr as Record<string, unknown>;
     if (rec["status"] === "skipped" && typeof rec["reason"] === "string") {
-      return `Transkript übersprungen: ${rec["reason"]}`;
+      return `Transcript skipped: ${rec["reason"]}`;
     }
     // ASR can fail *within* a run whose scene stage succeeded (status "succeeded" overall),
     // so surface the sub-stage failure explicitly — otherwise the transcript is silently
     // empty with no explanation. The most common local cause is memory exhaustion.
     if (rec["status"] === "failed") {
-      const reason = typeof rec["error"] === "string" ? rec["error"] : "unbekannter Fehler";
+      const reason = typeof rec["error"] === "string" ? rec["error"] : "unknown error";
       if (/malloc|memory|allocate|1455|paging/i.test(reason)) {
-        return "Transkript fehlgeschlagen: zu wenig Arbeitsspeicher. Schließe andere Programme und erzeuge das Transkript erneut.";
+        return "Transcript failed: out of memory. Close other programs and generate it again.";
       }
       return `Transkript fehlgeschlagen: ${reason.slice(0, 140)}`;
     }

@@ -71,7 +71,7 @@ export function ChatPreview({ target, client }: ChatPreviewProps): ReactElement 
   if (target.kind === "none") {
     return (
       <div className={`${PANE_CLS} text-[11px] text-content-faint`}>
-        Noch nichts zu zeigen — bau etwas.
+        Nothing to show yet — build something.
       </div>
     );
   }
@@ -91,7 +91,7 @@ export function ChatPreview({ target, client }: ChatPreviewProps): ReactElement 
   if (error !== null) {
     return (
       <div className={`${PANE_CLS} text-[11px] text-status-err`} role="alert">
-        Bogen konnte nicht geladen werden
+        Could not load the sheet
       </div>
     );
   }
@@ -99,7 +99,7 @@ export function ChatPreview({ target, client }: ChatPreviewProps): ReactElement 
   if (url === null) {
     return (
       <div className={`${PANE_CLS} text-[11px] text-content-faint`} role="status">
-        lädt …
+        loading …
       </div>
     );
   }

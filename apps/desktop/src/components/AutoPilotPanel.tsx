@@ -31,7 +31,7 @@ export function AutoPilotPanel({
 
   const run = async (target: "roughcut" | "render"): Promise<void> => {
     setRunning(true);
-    setStatus("läuft …");
+    setStatus("running …");
     try {
       for (let i = 0; i < MAX_ITERS; i++) {
         const result = await client.autoPilot(assetId, target);

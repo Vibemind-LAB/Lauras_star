@@ -4,9 +4,9 @@ import { NavRail } from "./NavRail";
 describe("NavRail", () => {
   it("renders all seven stages and marks the active one", () => {
     render(<NavRail active="media" onSelect={vi.fn()} />);
-    expect(screen.getByText("Medien")).toBeTruthy();
+    expect(screen.getByText("Media")).toBeTruthy();
     expect(screen.getByText("Export")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Medien" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("button", { name: "Media" }).getAttribute("aria-current")).toBe("page");
   });
   it("calls onSelect with the stage id when clicked", () => {
     const onSelect = vi.fn();

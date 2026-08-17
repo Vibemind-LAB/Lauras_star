@@ -83,21 +83,21 @@ function frameLabel(start: number, endExclusive: number): string {
 
 function transcriptErrorMessage(error: string | null): string | null {
   if (error === null) return null;
-  if (error.startsWith("404:")) return "Sequenz-Transkript ist noch nicht verfügbar.";
-  if (error.startsWith("422:")) return "Sequenz-Transkript passt noch nicht zur aktuellen Sequenz.";
-  return "Sequenz-Transkript konnte nicht geladen werden.";
+  if (error.startsWith("404:")) return "The sequence transcript is not available yet.";
+  if (error.startsWith("422:")) return "The sequence transcript does not match the current sequence yet.";
+  return "Could not load the sequence transcript.";
 }
 
 function jobStatusLabel(status: string): string {
   if (status === "succeeded") return "Re-Alignment abgeschlossen.";
   if (status === "failed") return "Re-Alignment fehlgeschlagen.";
   if (status === "cancelled") return "Re-Alignment abgebrochen.";
-  return "Re-Alignment läuft.";
+  return "Re-alignment running.";
 }
 
 function alignmentStatusLabel(status: string | undefined): string | null {
-  if (status === "stale") return "Nicht neu aligned";
-  if (status === "aligning") return "Alignment läuft";
+  if (status === "stale") return "Not re-aligned";
+  if (status === "aligning") return "Alignment running";
   if (status === "failed") return "Alignment fehlgeschlagen";
   return null;
 }
@@ -201,11 +201,11 @@ function TranscriptBlockEditor({
       </div>
       {block.alignment_status === "stale" && (
         <div className="rounded border border-amber-900/70 bg-amber-950/20 p-2 text-xs leading-relaxed text-amber-200">
-          Text bleibt gespeichert, Timing ist alt.
+          The text stays saved, the timing is stale.
         </div>
       )}
       {alignmentLanguage !== null && alignmentLanguage !== undefined && (
-        <div className="text-[11px] text-content-faint">Sprache: {alignmentLanguage}</div>
+        <div className="text-[11px] text-content-faint">Language: {alignmentLanguage}</div>
       )}
       {block.alignment_status === "failed" && block.alignment_error ? (
         <div className="rounded border border-red-900/70 bg-red-950/20 p-2 text-xs leading-relaxed text-red-200">
@@ -213,7 +213,7 @@ function TranscriptBlockEditor({
         </div>
       ) : null}
       <textarea
-        aria-label="Sequenz-Transcript-Text"
+        aria-label="Sequence transcript text"
         value={text}
         onChange={(e) => setText(e.target.value)}
         disabled={busy}
@@ -262,7 +262,7 @@ function TranscriptBlockEditor({
           disabled={busy || jobRunning || text.trim() === ""}
           className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-glow disabled:opacity-40"
         >
-          {busy ? "Speichert..." : "Speichern + neu ausrichten"}
+          {busy ? "Speichert..." : "Save + re-align"}
         </button>
       </div>
     </article>
@@ -293,7 +293,7 @@ function SequenceTranscriptPanel({
   if (blocks.length === 0) {
     return (
       <div className="rounded border border-bezel bg-surface-1/50 p-3 text-xs leading-relaxed text-content-faint">
-        Noch kein Sequenz-Transkript.
+        No sequence transcript yet.
       </div>
     );
   }
@@ -347,7 +347,7 @@ export function AssembleView({
   const [captionPreview, setCaptionPreview] = useState(true);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
-  // Collapsible "Szenen hinzufügen" panel — open by default when there are scenes to add.
+  // Collapsible "Add scenes" panel — open by default when there are scenes to add.
   const [addPanelOpen, setAddPanelOpen] = useState(true);
 
   useEffect(() => {
@@ -368,7 +368,7 @@ export function AssembleView({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setBinError(err instanceof Error ? err.message : "Fehler beim Laden der Szenen");
+          setBinError(err instanceof Error ? err.message : "Could not load the scenes");
         }
       });
     return () => {
@@ -414,7 +414,7 @@ export function AssembleView({
   });
   const transcript = transcriptQuery.data ?? [];
   const transcriptError = transcriptQuery.error !== null
-    ? (transcriptQuery.error?.message ?? "Sequenz-Transkript konnte nicht geladen werden.")
+    ? (transcriptQuery.error?.message ?? "Could not load the sequence transcript.")
     : null;
 
   useEffect(() => {
@@ -583,7 +583,7 @@ export function AssembleView({
         <div className="flex items-center justify-between gap-2 border-b border-bezel/60 px-3 py-2">
           <div>
             <div className="text-xs font-semibold text-content-strong">Anordnung</div>
-            <div className="text-[11px] text-content-faint">Ziehen zum Umordnen · Klick wählt Szene</div>
+            <div className="text-[11px] text-content-faint">Drag to reorder · click selects a scene</div>
           </div>
           <div className="flex items-center gap-2 text-xs tabular-nums text-content-faint">
             <span>Gesamtdauer {totalSequenceFrames} f</span>
@@ -603,7 +603,7 @@ export function AssembleView({
         <div className="flex flex-col gap-0 px-3 py-2">
           {items.length === 0 ? (
             <div className="py-4 text-xs text-content-faint">
-              Noch keine Szenen — unten „Szene hinzufügen" nutzen.
+              No scenes yet — use "Add scene" below.
             </div>
           ) : (
             items.map((it, i) => {
@@ -626,7 +626,7 @@ export function AssembleView({
                     }`}
                   >
                     {dragOverIndex === i && (
-                      <span className="sr-only">Einfügemarke vor {i + 1}</span>
+                      <span className="sr-only">Insertion point before {i + 1}</span>
                     )}
                     <Thumb
                       client={client}
@@ -656,9 +656,9 @@ export function AssembleView({
                   </div>
                   {i < items.length - 1 && (
                     <label className="mx-2 flex items-center gap-1 py-1 text-[10px] text-content-faint">
-                      <span className="shrink-0">Übergang:</span>
+                      <span className="shrink-0">Transition:</span>
                       <select
-                        aria-label={`Transition nach Szene ${i + 1}`}
+                        aria-label={`Transition after scene ${i + 1}`}
                         value={it.transition_after_kind}
                         onChange={(e) =>
                           updateTransition(it.id, e.target.value as SequenceTransitionKind)}
@@ -677,14 +677,14 @@ export function AssembleView({
           )}
         </div>
 
-        {/* ── Collapsible "Szenen hinzufügen" source panel ── */}
+        {/* ── Collapsible "Add scenes" source panel ── */}
         <div className="mt-auto border-t border-bezel/60">
           <button
             type="button"
             onClick={() => setAddPanelOpen((v) => !v)}
             className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-content-strong hover:bg-surface-1"
           >
-            <span>Szenen-Bin</span>
+            <span>Scene bin</span>
             <span className="text-content-faint">{addPanelOpen ? "▲" : "▼"}</span>
           </button>
           {addPanelOpen && (
@@ -692,15 +692,15 @@ export function AssembleView({
               <input
                 value={sceneQuery}
                 onChange={(e) => setSceneQuery(e.target.value)}
-                placeholder="Szenen suchen"
+                placeholder="Search scenes"
                 className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong placeholder:text-content-faint outline-none focus:border-accent"
               />
               {scenes.length === 0 ? (
                 <div className="text-xs text-content-faint">
-                  Noch keine Szenen — erst im Rough Cut Szenen erzeugen.
+                  No scenes yet — create them in the rough cut first.
                 </div>
               ) : groups.length === 0 ? (
-                <div className="text-xs text-content-faint">Keine Szene passt zum Filter.</div>
+                <div className="text-xs text-content-faint">No scene matches the filter.</div>
               ) : (
                 groups.map((g) => (
                   <div key={g.assetId} className="flex flex-col gap-1">
@@ -711,11 +711,11 @@ export function AssembleView({
                       {g.scenes.length > 1 && (
                         <button
                           type="button"
-                          title={`Alle ${g.scenes.length} Szenen von „${assetName(g.assetId)}" anhängen`}
+                          title={`Append all ${g.scenes.length} scenes of "${assetName(g.assetId)}"`}
                           onClick={() => void applySceneIds([...ids, ...g.scenes.map((s) => s.id)])}
                           className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-accent-glow"
                         >
-                          + alle
+                          + all
                         </button>
                       )}
                     </div>
@@ -723,7 +723,7 @@ export function AssembleView({
                       <button
                         key={s.id}
                         type="button"
-                        title={`„${s.name}" an die Reihenfolge anhängen`}
+                        title={`Append "${s.name}" to the order`}
                         onClick={() => void applySceneIds([...ids, s.id])}
                         className="flex items-center gap-2 rounded border border-bezel bg-surface-2/50 p-1 text-left text-xs hover:bg-surface-2"
                       >
@@ -744,7 +744,7 @@ export function AssembleView({
 
       {/* ── Centre column: player + timeline ── */}
       <section
-        aria-label="Sequenz-Arbeitsfläche"
+        aria-label="Sequence canvas"
         className="flex min-h-0 flex-col gap-3 overflow-y-auto bg-surface-0 p-3"
       >
         <div className="relative w-full max-w-3xl">
@@ -805,14 +805,14 @@ export function AssembleView({
             onClick={() => setCaptionPreview((v) => !v)}
             className="rounded border border-bezel bg-surface-1 px-2 py-1 text-content-muted hover:bg-surface-2"
           >
-            {captionPreview ? "Caption-Preview aus" : "Caption-Preview ein"}
+            {captionPreview ? "Caption preview off" : "Caption preview on"}
           </button>
         </div>
       </section>
 
       {/* ── Right rail: transcript + tools ── */}
       <aside
-        aria-label="Transkript und Werkzeuge"
+        aria-label="Transcript and tools"
         className="flex min-h-0 flex-col overflow-y-auto bg-surface-0 p-3"
       >
         <div className="mb-3 flex rounded border border-bezel bg-surface-1 p-0.5">

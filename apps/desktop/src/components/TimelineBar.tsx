@@ -48,9 +48,9 @@ function offsetSamplesToFrames(
 
 /** Human read-out for an audio offset in frames: hard, J-cut (audio earlier), or L-cut (later). */
 function offsetLabel(frames: number): string {
-  if (frames === 0) return "Ton 0f → harter Schnitt";
-  if (frames < 0) return `Ton ${frames}f → J-Cut`;
-  return `Ton +${frames}f → L-Cut`;
+  if (frames === 0) return "Audio 0f → hard cut";
+  if (frames < 0) return `Audio ${frames}f → J cut`;
+  return `Audio +${frames}f → L cut`;
 }
 
 /** Live state while dragging a clip's audio leading-edge handle (A1 lane). The offset is held in
@@ -177,7 +177,7 @@ function ClipThumb({
       }}
       title={`Clip ${index + 1} · src ${clip.src_in_frame}–${clip.src_out_frame_exclusive}${
         retimed ? ` · ${clip.speed_num}/${clip.speed_den}×` : ""
-      } (Klick = auswählen, ziehen = umsortieren)`}
+      } (click = select, drag = reorder)`}
       style={{ width: `${pct}%` }}
       className={`relative flex items-center justify-center overflow-hidden ${
         url ? "" : index % 2 === 0 ? "bg-accent/50" : "bg-accent/40"
@@ -196,7 +196,7 @@ function ClipThumb({
           <span
             role="separator"
             aria-label="Trim clip start"
-            title="Ziehen = Anfang trimmen"
+            title="Drag = trim the start"
             onPointerDown={(e) => {
               e.stopPropagation();
               onEdgeDown("in", e);
@@ -210,7 +210,7 @@ function ClipThumb({
           <span
             role="separator"
             aria-label="Trim clip end"
-            title="Ziehen = Ende trimmen"
+            title="Drag = trim the end"
             onPointerDown={(e) => {
               e.stopPropagation();
               onEdgeDown("out", e);
@@ -264,7 +264,7 @@ function AudioBlock({
       role="group"
       aria-label={`Audio Clip ${index + 1} · ${offsetLabel(offsetFrames)}`}
       title={`Audio Clip ${index + 1} · ${offsetLabel(offsetFrames)}${
-        isFirst ? " (erster Clip: harter Schnitt)" : " (Ton-Kante ziehen = J/L-Cut)"
+        isFirst ? " (first clip: hard cut)" : " (drag the audio edge = J/L cut)"
       }`}
       style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
       className={`absolute inset-y-0 flex items-center overflow-hidden rounded-sm ${
@@ -278,11 +278,11 @@ function AudioBlock({
       {!isFirst && (
         <span
           role="slider"
-          aria-label={`Ton-Versatz Clip ${index + 1}`}
+          aria-label={`Audio offset clip ${index + 1}`}
           aria-valuenow={offsetFrames}
           aria-valuetext={offsetLabel(offsetFrames)}
           tabIndex={0}
-          title="Ziehen = Ton-Schnitt gegen Bild-Schnitt versetzen (J/L-Cut)"
+          title="Drag = offset the audio cut against the picture cut (J/L cut)"
           onPointerDown={(e) => {
             e.stopPropagation();
             onHandleDown(e);
@@ -458,7 +458,7 @@ export function TimelineBar({
   if (!timeline) {
     return (
       <div className="flex h-20 items-center border-t border-bezel bg-surface-1 px-5 text-xs text-content-faint">
-        Rough Cut — wähle ein Projekt.
+        Rough Cut — choose a project.
       </div>
     );
   }
@@ -832,7 +832,7 @@ export function TimelineBar({
             type="button"
             onClick={() => void undo()}
             disabled={history.length === 0}
-            title="Rückgängig"
+            title="Undo"
             className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-30"
           >
             ↶ Undo
@@ -861,14 +861,14 @@ export function TimelineBar({
             ))}
           <span className="text-xs text-content-faint">
             {baseClips.length} Clips · {total} frames
-            {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""} · ${numVideoLanes} Spuren` : ""}
+            {overlayClips.length > 0 ? ` · ${overlayClips.length} Overlay${overlayClips.length > 1 ? "s" : ""} · ${numVideoLanes} tracks` : ""}
           </span>
         </span>
       </div>
       {error && <div className="mb-1 text-xs text-red-400">{error}</div>}
       {baseClips.length === 0 && overlayClips.length === 0 ? (
         <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-bezel text-xs text-content-faint">
-          Klicke einen Shot oder Transkript-Satz an, um ihn anzuhängen.
+          Click a shot or a transcript sentence to append it.
         </div>
       ) : (
         <div className="relative flex flex-col gap-1">
@@ -902,8 +902,8 @@ export function TimelineBar({
             </span>
             <button
               type="button"
-              aria-label="Videospur hinzufügen"
-              title="Videospur hinzufügen"
+              aria-label="Add a video track"
+              title="Add a video track"
               onClick={() =>
                 setRequestedVideoLanes((n) => Math.min(n + 1, MAX_VIDEO_LANES))
               }
@@ -938,7 +938,7 @@ export function TimelineBar({
                     /* V1 — contiguous reorder, edge-trim, pointer-capture for trim drags. */
                     <div
                       ref={stripRef}
-                      aria-label={`Video-Spur ${laneLabel}`}
+                      aria-label={`Video track ${laneLabel}`}
                       className={`flex h-12 min-w-0 flex-1 gap-px overflow-hidden rounded-md ${
                         isTargetLane ? "ring-2 ring-amber-400/60" : ""
                       }`}
@@ -993,7 +993,7 @@ export function TimelineBar({
                       {/* Drop-at-end affordance: a thin zone after the last clip. */}
                       <div
                         aria-label="Move clip to end"
-                        title="Hierher ziehen = ans Ende"
+                        title="Drag here = to the end"
                         onDragOver={(e) => {
                           e.preventDefault();
                           if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -1019,7 +1019,7 @@ export function TimelineBar({
                   ) : (
                     /* Lanes ≥ 1 — absolute-position overlay clips; drop target for cross-lane drag. */
                     <div
-                      aria-label={`Video-Spur ${laneLabel}`}
+                      aria-label={`Video track ${laneLabel}`}
                       className={`relative h-8 min-w-0 flex-1 overflow-hidden rounded-md ${
                         isTargetLane
                           ? "bg-violet-800/60 ring-2 ring-amber-400/60"
@@ -1099,7 +1099,7 @@ export function TimelineBar({
           <div className="flex items-center gap-2">
             <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">A1</span>
             <div
-              aria-label="Audio-Spur (A1)"
+              aria-label="Audio track (A1)"
               className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-surface-0/40"
               onPointerMove={onAudioMove}
               onPointerUp={() => void onAudioUp()}
@@ -1154,7 +1154,7 @@ export function TimelineBar({
             <div className="flex items-center gap-2">
               <span className="w-6 shrink-0 text-[9px] font-medium uppercase text-content-faint">TX</span>
               <div
-                aria-label="Transkript-Spur"
+                aria-label="Transcript track"
                 className="relative h-7 min-w-0 flex-1 overflow-hidden rounded-md bg-surface-0/40"
               >
                 {transcriptWords.map((w) => (
@@ -1213,7 +1213,7 @@ export function TimelineBar({
             onClick={() => void deleteSelected()}
             className="rounded bg-surface-0 px-2 py-0.5 text-red-300 hover:bg-red-600/40"
           >
-            Löschen
+            Delete
           </button>
         </div>
       )}

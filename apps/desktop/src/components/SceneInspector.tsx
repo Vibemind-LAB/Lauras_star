@@ -222,7 +222,7 @@ export function SceneInspector({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4">
       <div>
-        <h2 className="text-xs font-medium uppercase tracking-wide text-content-faint">Szene</h2>
+        <h2 className="text-xs font-medium uppercase tracking-wide text-content-faint">Scene</h2>
         <div className="mt-1 text-sm text-content-strong">
           Quelle{" "}
           <span className="tabular-nums">
@@ -237,7 +237,7 @@ export function SceneInspector({
 
       <section className="space-y-1.5">
         <h3 className="text-[11px] font-medium uppercase tracking-wide text-content-faint">
-          IN-Schnitt
+          IN point
         </h3>
         <Filmstrip client={client} assetId={asset.id} center={clip.src_in_frame} onSeek={onSeek} />
         <Nudges fps={fps} label="IN" onNudge={nudgeIn} />
@@ -245,7 +245,7 @@ export function SceneInspector({
 
       <section className="space-y-1.5">
         <h3 className="text-[11px] font-medium uppercase tracking-wide text-content-faint">
-          OUT-Schnitt
+          OUT point
         </h3>
         <Filmstrip
           client={client}

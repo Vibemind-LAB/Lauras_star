@@ -380,11 +380,11 @@ export function SequencePlayer({
           </div>
         ) : clips.length === 0 ? (
           <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
-            Noch keine Sequenz — Szenen hinzufügen
+            No sequence yet — add scenes
           </div>
         ) : !firstClipHasProxy ? (
           <div className="flex aspect-video w-full items-center justify-center text-xs text-content-faint">
-            Proxy wird erstellt…
+            Building proxy…
           </div>
         ) : (
           <video
@@ -396,7 +396,7 @@ export function SequencePlayer({
             onTimeUpdate={handleTimeUpdate}
             onError={() => {
               const err = videoRef.current?.error;
-              setError(`Video-Fehler ${err?.code ?? "?"}: ${err?.message ?? "unbekannt"}`);
+              setError(`Video error ${err?.code ?? "?"}: ${err?.message ?? "unknown"}`);
             }}
           />
         )}
