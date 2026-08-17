@@ -724,10 +724,15 @@ def test_storyline_order_drives_voice_text_and_zoom_timing(tmp_path: Path) -> No
     # per-line clips, so those literals no longer reproduce (the precise number is a construction
     # detail VS3 owns, wiring build_cutlist to VoiceArtifact.segments directly). The ORDER
     # discrimination this test exists for still has to hold, though: scene 2's line plays FIRST
-    # in the constructed track, so its zoom must land before scene 1's.
+    # in the constructed track, so its zoom must land before scene 1's. ``zoom_start_s`` is
+    # segment-relative, so compare global timeline anchors. Comparing the two relative values
+    # directly is platform-dependent: ffprobe's MP3 duration and frame rounding can move the
+    # second value a fraction of a frame to either side of the first without changing playback
+    # order.
     assert seg0.zoom_start_s is not None
     assert seg1.zoom_start_s is not None
-    assert seg0.zoom_start_s < seg1.zoom_start_s
+    seg1_timeline_start_s = (seg0.end_frame_exclusive - seg0.start_frame) / FPS
+    assert seg0.zoom_start_s < seg1_timeline_start_s + seg1.zoom_start_s
 
     # The voice cache is keyed on the ORDERED text: re-saving the storyline with a DIFFERENT
     # scene order changes that text (even though the script itself is untouched) and must
