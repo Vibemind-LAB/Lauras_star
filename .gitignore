@@ -19,6 +19,10 @@ __pycache__/
 
 # --- Runtime workspace (local media/analysis/export artifacts) ---
 workspace/
+# Side workspaces for live/drive testing hold the same class of artifacts (media, proxies,
+# boards, the SQLite db) and grow to gigabytes — 2026-08-17: workspace-livetest/ alone was
+# 10 GB and NOT ignored, one `git add -A` away from the history.
+workspace-*/
 *.log
 
 # --- Local model / weights caches (heavy, never commit) ---

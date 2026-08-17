@@ -4,6 +4,23 @@ Date: 2026-08-07 · Evidence: livetest sessions `617523e1` (Obsidian short) and 
 (Idea Spaces), run logs under `workspace-livetest/agent-runs/<sid>/runs/*.ndjson`, plus the
 implementation as merged in PR #15 (`960406f`).
 
+> **NACHTRAG 2026-08-17 — P0 und P1 sind auf `main` bereits gelöst.** Diese Analyse
+> beschreibt den Stand vom 07.08. Zwischen dem 13. und 17.08. hat Parallel-Arbeit auf
+> `main` (Rough-Cut Visual Selection + Scene-Gate-Integration, ~13 000 Zeilen) genau die
+> hier empfohlene Terminierung gebaut — **deterministischer als der hier vorgeschlagene
+> Text-Sentinel**: `production_agents.py` konstruiert das Team mit
+> `termination_condition=pending_user_gate_termination`, einer `FunctionalTermination`,
+> die den **persistierten Board-Zustand** prüft (neue pending Scene-Selection- oder
+> Visual-Plan-Version → Lauf endet sofort) und zusätzlich `deps.cancel_requested()`
+> berücksichtigt. P1 ebenfalls erledigt: `ProductionRunStatus` kennt jetzt
+> `awaiting_user_input` (und `cancelled`) als echte Laufergebnisse.
+>
+> Damit gilt von der Empfehlungsliste weiterhin offen: **P2** (Confirm an eine
+> `selection_version` binden — TOCTOU-Fenster) und **P3** (Kontext-Diät: `SOURCE MATERIAL`
+> steht im Task-Builder noch drin). Die Diagnose, die Evidenz (§2–§4) und das
+> Zustandsmodell (§5–§7) bleiben als Beleg gültig — insbesondere die Lehre, die sich
+> bestätigt hat: **Terminierung muss aus persistiertem Zustand folgen, nicht aus Prosa.**
+
 ## 1. Executive Diagnosis
 
 The persisted workflow state is correct throughout — no LLM statement ever became board
