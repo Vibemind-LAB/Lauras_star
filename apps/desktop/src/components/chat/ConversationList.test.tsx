@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ConversationSummary } from "../../api";
+import type { ConversationSummary, OpenProductionSession } from "../../api";
 import { ConversationList } from "./ConversationList";
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
@@ -13,7 +13,43 @@ function summary(overrides: Partial<ConversationSummary> = {}): ConversationSumm
   };
 }
 
+const openSession: OpenProductionSession = {
+  session_id: "s1",
+  conversation_id: "c1",
+  project_id: "p1",
+  asset_id: "a1",
+  asset_display_name: "Rough Cut",
+  brief_preview: "Szenenauswahl fortsetzen",
+  resume_point: "visual_selection",
+  state: "awaiting-approval",
+  updated_utc: "2026-08-17T10:00:00+00:00",
+  draft_updated_utc: "2026-08-17T09:59:00+00:00",
+  latest_job_id: "j1",
+  stale: false,
+  stale_reason: null,
+};
+
 describe("ConversationList", () => {
+  it("renders open productions above new chat and forwards an explicit resume", () => {
+    const onResume = vi.fn();
+    render(
+      <ConversationList
+        items={[]}
+        activeId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onDelete={vi.fn()}
+        openSessions={[openSession]}
+        onResume={onResume}
+      />,
+    );
+    const resume = screen.getByRole("button", { name: "Fortsetzen" });
+    const newChat = screen.getByRole("button", { name: "Neuer Chat" });
+    expect(resume.compareDocumentPosition(newChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(resume);
+    expect(onResume).toHaveBeenCalledWith(openSession);
+  });
+
   it("shows the empty state when there are no conversations", () => {
     render(
       <ConversationList items={[]} activeId={null} onSelect={vi.fn()} onNew={vi.fn()} onDelete={vi.fn()} />,

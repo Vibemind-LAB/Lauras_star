@@ -721,7 +721,7 @@
 - Consumes: Task 4 Open-Sessions-Endpoint, Task 5 `OpenProductionSession`, bestehende Produktions-Aktionskarte.
 - Produces: sichtbare offene Sessions, verknüpftes Chat-Resume und read-only Orphan-Session-Ansicht.
 
-- [ ] **Step 1: Open-Sessions-Panel-RED schreiben**
+- [x] **Step 1: Open-Sessions-Panel-RED schreiben**
 
   Prüfe:
 
@@ -731,13 +731,13 @@
   - stale Session: sichtbarer Warntext, kein impliziter Confirm;
   - Klick liefert das vollständige `OpenProductionSession`-Objekt an `onResume`.
 
-- [ ] **Step 2: Panel-RED ausführen**
+- [x] **Step 2: Panel-RED ausführen**
 
   Run: `cd apps/desktop && pnpm test -- src/components/chat/OpenSessionsPanel.test.tsx`
 
   Expected: FAIL mit fehlender Komponente.
 
-- [ ] **Step 3: Panel minimal implementieren**
+- [x] **Step 3: Panel minimal implementieren**
 
   ```typescript
   export interface OpenSessionsPanelProps {
@@ -748,7 +748,7 @@
 
   Das Panel nutzt bestehende Token-Klassen und zeigt keine automatische Aktion beim Rendern.
 
-- [ ] **Step 4: ChatStage-Resume-RED schreiben**
+- [x] **Step 4: ChatStage-Resume-RED schreiben**
 
   Prüfe mit einem Mock-Client:
 
@@ -759,7 +759,7 @@
   - Session wird nie ohne Klick geöffnet;
   - nach Autosave/Confirm werden offene Sessions und Status aktualisiert.
 
-- [ ] **Step 5: Produktionskarte für Orphan-Ansicht wiederverwendbar machen**
+- [x] **Step 5: Produktionskarte für Orphan-Ansicht wiederverwendbar machen**
 
   Exportiere die bestehende `ProductionActionCard` unter dem präziseren Namen `ProductionSessionCard`, ohne Polling-/Gate-Prioritätslogik zu duplizieren:
 
@@ -775,7 +775,7 @@
 
   `ActionCard` verwendet denselben Export. Die Orphan-Ansicht setzt `initialOutcome` aus dem Open-Session-State und zeigt oberhalb der Karte den persistierten Brief.
 
-- [ ] **Step 6: ChatStage und ConversationList integrieren**
+- [x] **Step 6: ChatStage und ConversationList integrieren**
 
   `ChatStage` lädt beide Listen gemeinsam, hält `resumedOrphan: OpenProductionSession | null` und behandelt einen Resume-Klick explizit:
 
@@ -791,7 +791,7 @@
 
   Ein normaler Chat-Klick löscht `resumedOrphan`. `ConversationList` rendert `OpenSessionsPanel` oberhalb von „Neuer Chat“.
 
-- [ ] **Step 7: UI-GREEN ausführen**
+- [x] **Step 7: UI-GREEN ausführen**
 
   Run: `cd apps/desktop && pnpm test -- src/components/chat/OpenSessionsPanel.test.tsx src/components/chat/ConversationList.test.tsx src/components/chat/ChatStage.test.tsx src/components/chat/ActionCard.test.tsx`
 
@@ -801,7 +801,7 @@
 
   Expected: alle Befehle Exit 0.
 
-- [ ] **Step 8: Task 6 committen**
+- [x] **Step 8: Task 6 committen**
 
   ```bash
   git add apps/desktop/src/components/chat/OpenSessionsPanel.tsx apps/desktop/src/components/chat/OpenSessionsPanel.test.tsx apps/desktop/src/components/chat/ConversationList.tsx apps/desktop/src/components/chat/ConversationList.test.tsx apps/desktop/src/components/chat/ChatStage.tsx apps/desktop/src/components/chat/ChatStage.test.tsx apps/desktop/src/components/chat/ActionCard.tsx apps/desktop/src/components/chat/ActionCard.test.tsx
