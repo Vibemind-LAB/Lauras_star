@@ -268,6 +268,15 @@ class JobRunner:
                 (json.dumps(result or {}), now, now, job_id),
             )
 
+    def _finish_cancelled(self, job_id: str, result: dict[str, Any] | None) -> None:
+        now = utcnow_iso()
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE jobs SET status='cancelled', result_json=?, finished_at=?, "
+                "updated_at=? WHERE id=?",
+                (json.dumps(result or {}), now, now, job_id),
+            )
+
     def _store_result(self, job_id: str, result: dict[str, Any] | None) -> None:
         """Keep the handler's payload without claiming the job succeeded.
 
@@ -361,6 +370,11 @@ class JobRunner:
             # heartbeat stopping and the status write, causing a double-run.
             try:
                 result = handler(ctx)
+                if isinstance(result, dict) and result.get("status") == "cancelled":
+                    sp.set_attribute("job.status", "cancelled")
+                    self._finish_cancelled(str(job["id"]), result)
+                    JOBS.labels(kind, "cancelled").inc()
+                    return
                 failure = job_failure_from_result(result)
                 if failure is None:
                     sp.set_attribute("job.status", "succeeded")

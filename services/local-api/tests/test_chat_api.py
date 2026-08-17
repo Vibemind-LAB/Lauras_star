@@ -493,6 +493,204 @@ def test_message_turn_context_skips_session_line_for_broken_board(tmp_path: Path
     assert resp.json()["messages"][-1]["content"] == {"text": "ok"}
 
 
+def test_active_session_exposes_only_pending_visual_gates(tmp_path: Path) -> None:
+    from laura.api.chat import _active_session
+    from laura.short_creator.board import Board
+    from laura.short_creator.board_models import (
+        BoardMeta,
+        ContactSheet,
+        ContactSheetTile,
+        VisualBeatPlan,
+        VisualPlan,
+        VisualRecutRequest,
+        VisualSceneCandidate,
+        VisualSceneChoice,
+        VisualShotCandidate,
+        content_hash,
+    )
+    from laura.short_creator.production_orchestrator import board_root_for
+
+    _client, db, _settings = _app(tmp_path)
+    project = _project(db, tmp_path)
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="a",
+        source_path="/tmp/a.mp4",
+    )
+    session_id = "sess-visual"
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW
+    )
+    board = Board.create(
+        board_root_for(db, asset["id"], session_id),
+        BoardMeta(
+            session_id=session_id,
+            asset_id=asset["id"],
+            created_utc=_NOW,
+            task="visual recut",
+            target_seconds=30.0,
+            contact_sheet_gate=True,
+        ),
+    )
+    board.save(
+        "visual_recut_request",
+        VisualRecutRequest(
+            user_request="new pictures",
+            script_version=1,
+            script_hash="a" * 64,
+            voice_version=1,
+            voice_hash="b" * 64,
+        ),
+    )
+    candidate = VisualShotCandidate(
+        candidate_id="candidate-1",
+        beat_id="beat-1",
+        voice_segment_index=0,
+        scene_number=1,
+        window_index=0,
+        src_start_frame=0,
+        src_end_frame_exclusive=90,
+        thumb_frame=45,
+        description="screen",
+        transcript_snippet="workflow",
+        rationale="relevant",
+        score=1.0,
+    )
+    pending_plan = VisualPlan(
+        proposal_hash="c" * 64,
+        request_hash="d" * 64,
+        beats=[
+            VisualBeatPlan(
+                beat_id="beat-1",
+                voice_segment_index=0,
+                narration_text="Narration",
+                duration_s=3.0,
+                candidates=[candidate],
+                recommended_candidate_id=candidate.candidate_id,
+            )
+        ],
+    )
+    board.save("visual_plan", pending_plan)
+    messages = [
+        {
+            "role": "assistant",
+            "kind": "action",
+            "content": {"refs": {"session_id": session_id}},
+        }
+    ]
+
+    visual = _active_session(db, messages)
+    assert visual is not None
+    assert visual["state"] == "awaiting-approval"
+    assert visual["visual_selection_gate"] == {
+        "proposal_hash": "c" * 64,
+        "recommended_candidate_ids": ["candidate-1"],
+    }
+    assert "contact_sheet_gate" not in visual
+
+    scene_choices = []
+    for order in range(3):
+        scene_candidate = VisualSceneCandidate(
+            candidate_id=f"scene-{order}-candidate-0",
+            rough_cut_order=order,
+            scene_number=order + 1,
+            window_index=0,
+            src_start_frame=order * 300,
+            src_end_frame_exclusive=(order + 1) * 300,
+            thumb_frame=order * 300 + 150,
+            max_duration_s=10,
+            description=f"Rough-Cut scene {order + 1}",
+            transcript_snippet=f"workflow step {order + 1}",
+            rationale="covers the scene",
+            score=1.0,
+        )
+        scene_choices.append(
+            VisualSceneChoice(
+                rough_cut_order=order,
+                scene_number=order + 1,
+                description=scene_candidate.description,
+                transcript=scene_candidate.transcript_snippet,
+                rationale=scene_candidate.rationale,
+                candidates=[scene_candidate],
+                recommended_candidate_id=scene_candidate.candidate_id,
+                recommended_included=True,
+                recommended_duration_s=5,
+            )
+        )
+    board.save(
+        "visual_plan",
+        VisualPlan(
+            version=2,
+            proposal_hash="e" * 64,
+            request_hash="d" * 64,
+            scene_choices=scene_choices,
+            rough_cut_scene_count=3,
+            voice_total_frames=450,
+            fps=30.0,
+        ),
+    )
+
+    visual_v2 = _active_session(db, messages)
+    assert visual_v2 is not None
+    assert visual_v2["visual_selection_gate"] == {
+        "proposal_hash": "e" * 64,
+        "recommended_selections": [
+            {
+                "rough_cut_order": order,
+                "candidate_id": f"scene-{order}-candidate-0",
+                "included": True,
+                "requested_duration_s": 5,
+            }
+            for order in range(3)
+        ],
+    }
+
+    board.save(
+        "visual_plan",
+        pending_plan.model_copy(
+            update={
+                "confirmed_utc": _NOW,
+                "beats": [
+                    pending_plan.beats[0].model_copy(
+                        update={"selected_candidate_id": "candidate-1"}
+                    )
+                ],
+            }
+        ),
+    )
+    sheet = ContactSheet(
+        png_path="/tmp/sheet.png",
+        cols=1,
+        rows=1,
+        tiles=[
+            ContactSheetTile(
+                order=0,
+                scene_number=1,
+                frame=45,
+                label="scene",
+                src_start_frame=0,
+                src_end_frame_exclusive=90,
+            )
+        ],
+    )
+    board.save("contact_sheet", sheet)
+    board.clear_contact_sheet_approval(enable_gate=True)
+
+    contact = _active_session(db, messages)
+    assert contact is not None
+    assert "visual_selection_gate" not in contact
+    assert contact["contact_sheet_gate"] == {
+        "contact_sheet_hash": content_hash(sheet)
+    }
+
+    board.set_contact_sheet_approved(_NOW, content_hash(sheet))
+    approved = _active_session(db, messages)
+    assert approved is not None
+    assert "contact_sheet_gate" not in approved
+
+
 # --- auth ------------------------------------------------------------------------------------
 
 

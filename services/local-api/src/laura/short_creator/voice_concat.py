@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 INTER_SCENE_GAP_S = 0.35
+LAST_SEGMENT_CUSHION_S = 0.3
 
 
 def probe_duration_s(path: Path) -> float:

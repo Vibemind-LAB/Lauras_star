@@ -39,6 +39,8 @@ from laura.short_creator.board_models import (
     SceneSelection,
     Script,
     Storyline,
+    VisualPlan,
+    VisualRecutRequest,
     VoiceArtifact,
     content_hash,
     lines_in_storyline_order,
@@ -98,6 +100,61 @@ _CHAIN: tuple[str, ...] = (
     "render_report",
     "qa_report",
 )
+
+_DOWNSTREAM: dict[str, tuple[str, ...]] = {
+    "scene_selection": (
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ),
+    "storyline": (
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ),
+    "script": (
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ),
+    "voice": (
+        "visual_recut_request",
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ),
+    "visual_recut_request": (
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    ),
+    "visual_plan": ("cutlist", "contact_sheet", "render_report", "qa_report"),
+    "cutlist": ("contact_sheet", "render_report", "qa_report"),
+    "contact_sheet": ("render_report", "qa_report"),
+    "render_report": ("qa_report",),
+    "qa_report": (),
+}
+
+
 def _is_stale(artifact: BaseModel | None, current_script_hash: str | None) -> bool | None:
     """Whether this artifact was built from a script the board has since moved past.
 
@@ -155,6 +212,8 @@ _SINGLETONS: dict[str, type[BaseModel]] = {
     "storyline": Storyline,
     "script": Script,
     "voice": VoiceArtifact,
+    "visual_recut_request": VisualRecutRequest,
+    "visual_plan": VisualPlan,
     "cutlist": Cutlist,
     "contact_sheet": ContactSheet,
     "render_report": RenderReport,
@@ -165,8 +224,8 @@ _SINGLETONS: dict[str, type[BaseModel]] = {
 def downstream_of(name: str) -> tuple[str, ...]:
     """Artifacts invalidated by a change to ``name`` (chain order preserved)."""
     if name == "scene_reviews":
-        return _CHAIN
-    return _CHAIN[_CHAIN.index(name) + 1 :]
+        return ("scene_selection",) + _DOWNSTREAM["scene_selection"]
+    return _DOWNSTREAM[name]
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -497,6 +556,33 @@ class Board:
             )
             _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
 
+    def set_contact_sheet_approved(self, approved_utc: str, sheet_hash: str) -> None:
+        """Stamp approval of the current contact sheet without changing the gate setting.
+
+        The caller supplies the current :func:`content_hash`; readers compare it again with
+        the persisted sheet, so a later replacement cannot inherit this approval.
+        """
+        with self._lock:
+            meta = self.meta().model_copy(
+                update={
+                    "contact_sheet_approved_utc": approved_utc,
+                    "contact_sheet_approved_hash": sheet_hash,
+                }
+            )
+            _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
+
+    def clear_contact_sheet_approval(self, *, enable_gate: bool) -> None:
+        """Clear the sheet approval and explicitly select whether its gate is active."""
+        with self._lock:
+            meta = self.meta().model_copy(
+                update={
+                    "contact_sheet_gate": enable_gate,
+                    "contact_sheet_approved_utc": None,
+                    "contact_sheet_approved_hash": None,
+                }
+            )
+            _write_atomic(self.root / "meta.json", meta.model_dump_json(indent=2))
+
     def set_language(self, language: str) -> None:
         """Switch the board's script/voice/caption language (user-requested via chat).
 
@@ -518,7 +604,11 @@ class Board:
         """The chain THIS board actually walks: gate-off boards (every board written
         before Gate S) skip the scene_selection root — otherwise no old board could
         ever read "done" again and restore_coherent_suffix would stop at link one."""
-        return _CHAIN if self.meta().scene_gate else _CHAIN[1:]
+        chain = _CHAIN if self.meta().scene_gate else _CHAIN[1:]
+        if self.load("visual_recut_request") is None:
+            return chain
+        voice_index = chain.index("voice") + 1
+        return chain[:voice_index] + ("visual_recut_request", "visual_plan") + chain[voice_index:]
 
     def resume_point(self, expected_scenes: list[int]) -> str:
         """First missing artifact — where a (re)started session job continues."""
@@ -545,7 +635,26 @@ class Board:
                     # exists, the user has not picked yet — a team turn now would only
                     # run into save_storyline's refusal.
                     return "scene_selection"
-            for name in self._active_chain():
+            active_chain = self._active_chain()
+            for name in active_chain:
+                if name == "visual_recut_request":
+                    continue
+                if name == "visual_plan":
+                    visual_plan = self.load("visual_plan")
+                    if not isinstance(visual_plan, VisualPlan) or visual_plan.confirmed_utc is None:
+                        return "visual_selection"
+                    continue
+                if name == "contact_sheet":
+                    sheet = self.load("contact_sheet")
+                    meta = self.meta()
+                    sheet_hash = content_hash(sheet) if isinstance(sheet, ContactSheet) else None
+                    approved = (
+                        meta.contact_sheet_approved_utc is not None
+                        and sheet_hash is not None
+                        and meta.contact_sheet_approved_hash == sheet_hash
+                    )
+                    if meta.contact_sheet_gate and sheet is not None and not approved:
+                        return "contact_sheet_approval"
                 if self.load(name) is None:
                     return name
             return "done"
@@ -571,7 +680,7 @@ class Board:
         else:
             current_hash = None
         artifacts: dict[str, Any] = {}
-        for name in _CHAIN:
+        for name in self._active_chain():
             cur = self.load(name)
             if cur is not None:
                 cur_versioned = cast(_Versioned, cur)
@@ -642,6 +751,52 @@ class Board:
                 c.scene_number for c in selection.candidates if c.recommended
             ]
             scene_gate["selected"] = list(selection.selected_scene_numbers)
+        visual_request = self.load("visual_recut_request")
+        visual_plan = self.load("visual_plan")
+        visual_approved = (
+            isinstance(visual_plan, VisualPlan) and visual_plan.confirmed_utc is not None
+        )
+        visual_selection_gate: dict[str, Any] = {
+            "enabled": isinstance(visual_request, VisualRecutRequest),
+            "approved": visual_approved,
+            "pending": isinstance(visual_request, VisualRecutRequest) and not visual_approved,
+            "proposal_id": (
+                visual_plan.proposal_hash if isinstance(visual_plan, VisualPlan) else None
+            ),
+            "beats": [beat.model_dump() for beat in visual_plan.beats]
+            if isinstance(visual_plan, VisualPlan)
+            else [],
+            "scene_choices": [choice.model_dump() for choice in visual_plan.scene_choices]
+            if isinstance(visual_plan, VisualPlan)
+            else [],
+            "rough_cut_scene_count": visual_plan.rough_cut_scene_count
+            if isinstance(visual_plan, VisualPlan)
+            else None,
+            "voice_total_frames": visual_plan.voice_total_frames
+            if isinstance(visual_plan, VisualPlan)
+            else None,
+            "fps": visual_plan.fps if isinstance(visual_plan, VisualPlan) else None,
+        }
+        sheet = self.load("contact_sheet")
+        current_sheet_hash = content_hash(sheet) if isinstance(sheet, ContactSheet) else None
+        contact_sheet_approved = (
+            meta.contact_sheet_approved_utc is not None
+            and current_sheet_hash is not None
+            and meta.contact_sheet_approved_hash == current_sheet_hash
+        )
+        contact_sheet_gate: dict[str, Any] = {
+            "enabled": meta.contact_sheet_gate,
+            "approved": contact_sheet_approved,
+            "pending": (
+                meta.contact_sheet_gate
+                and isinstance(sheet, ContactSheet)
+                and not contact_sheet_approved
+            ),
+            "current_sheet_hash": current_sheet_hash,
+            "tiles": [tile.model_dump() for tile in sheet.tiles]
+            if isinstance(sheet, ContactSheet)
+            else [],
+        }
         result: dict[str, Any] = {
             "meta": json.loads(meta.model_dump_json()),
             "scene_reviews": {
@@ -656,6 +811,8 @@ class Board:
             "artifacts": artifacts,
             "script_gate": script_gate,
             "scene_gate": scene_gate,
+            "visual_selection_gate": visual_selection_gate,
+            "contact_sheet_gate": contact_sheet_gate,
             # A language switch (set_board_language) changes meta.language without touching the
             # script text — the script keeps recording the language it was actually WRITTEN in
             # (stamped at save time). True only once a script exists and the two disagree, so an

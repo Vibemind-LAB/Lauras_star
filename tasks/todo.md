@@ -706,3 +706,17 @@ durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
   (nur eine Zeile neu synthetisiert), Sprachwechsel-Follow-up (alle Zeilen neu, Film
   konsistent), Alt-Session-Resume (Legacy-Ein-Spur-Pfad unverändert) — siehe
   `.superpowers/sdd/2026-08-06-voice-per-scene/task-VS5-report.md`.
+
+## Gate-S Orchestrator Hard-Stop  `[x]`  (Fix 2026-08-08)
+- [x] Ein neu persistiertes, unbestätigtes `scene_selection` beendet den aktiven
+      `MagenticOneGroupChat` über eine boardbasierte `FunctionalTermination`; kein Agent
+      wird zum Warten erneut aufgerufen.
+- [x] `select_scenes` / `confirm_scene_selection` bleibt der einzige Confirmation-Pfad;
+      Agententext kann `confirmed_utc` und `selected_scene_numbers` nicht setzen.
+- [x] Geparkte Runs melden `status=awaiting_user_input`, `ok=true`, `complete=false` und
+      `resume_point=scene_selection`; echte Turn-Erschöpfung ohne Gate-Transition ist
+      `hard_fail`.
+- [x] Verifiziert: 141 fokussierte Gate-S-/Chat-/Event-Log-Tests inklusive echter
+      AutoGen-Contracts bestanden (2 Warnings); voller Backend-Pytest: 2713 bestanden,
+      12 übersprungen, 2 Warnings; Mypy strict prüfte 528 Dateien und Ruff war sauber.
+      CI-YAML geparst; der Backend-Sync installiert `scene`, `otel` und `autoshort`.

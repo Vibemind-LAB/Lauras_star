@@ -14,6 +14,11 @@ Format pro Eintrag:
 
 ---
 
+## 2026-08-09 — Visual-Recut-Auswahl muss den Rough-Cut abbilden
+- **Kontext:** Der erste Visual-Recut-Vorschlag bot nur zwei Sprecher-Beats mit je einer impliziten festen Länge an. Für die Bildentscheidung fehlten damit ein Großteil der Rough-Cut-Szenen, wählbare Shot-Längen und ausreichende Szenenbeschreibungen.
+- **Korrektur:** Jeder im aktuellen Rough-Cut definierte Szenenwechsel muss mindestens einmal als auswählbare Bildoption erscheinen. Die Auswahl muss mehr als zwei Szenen zulassen, die verwendete Länge über Voreinstellungen bis 10 Sekunden sichtbar und wählbar machen und pro Option eine Beschreibung als Entscheidungsgrundlage zeigen.
+- **Konsequenz:** Visual-Plan, Kandidatengenerierung und Electron-Karte werden nicht nur beat-, sondern zusätzlich rough-cut-coverage-basiert entworfen. Bestätigung bleibt gesperrt, bis alle Rough-Cut-Szenenwechsel vertreten sind und jede Auswahl eine explizite Dauer bis maximal 10 Sekunden sowie Beschreibung besitzt.
+
 ## 2026-06-24 — Migration, die schema_version erhöht, muss die Frontend-Konstante mitziehen
 - **Kontext:** Das Undo/Redo-Feature fügte Migration `0029_timeline_history` hinzu (Backend-Schema → 29), ließ aber `EXPECTED_SCHEMA_VERSION` in `apps/desktop/src/App.tsx:61` auf 28. Beim Start gegen das neue Backend zeigte die App **„Frontend veraltet · schema 29/28"**. Die Frontend-Tests (`App.test.tsx`) fingen es nicht, weil sie die Konstante interpolieren statt einen festen Wert zu prüfen.
 - **Korrektur:** Jede Migration, die `schema_version` erhöht, muss im selben Zug `EXPECTED_SCHEMA_VERSION` (App.tsx) auf denselben Wert ziehen. Der Versions-Guard vergleicht `health.schema_version` mit der Konstante: `<` → „Backend veraltet", `>` → „Frontend veraltet".

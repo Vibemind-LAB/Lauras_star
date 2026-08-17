@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..db import repos
 from ..db.database import Database
@@ -34,21 +34,26 @@ from . import context
 from .board import Board
 from .board_models import (
     BoardMeta,
+    ContactSheet,
     Format,
     QaReport,
     RenderReport,
     SceneSelection,
     Script,
+    VisualPlan,
     canvas_for,
     content_hash,
 )
-from .orchestrator import ExecuteFn, StageOutcome, Status, TeamKind, _safe_execute
+from .orchestrator import ExecuteFn, StageOutcome, TeamKind, _safe_execute
 from .production_agents import build_production_team
 from .production_pipeline import run_tail_with_qa
 from .production_tools import ProductionDeps, follow_up_render_cap
 from .providers import AgentConfig, Stage, config_warnings
 
 logger = logging.getLogger(__name__)
+
+ProductionRunStatus = Literal["ok", "hard_fail", "awaiting_user_input", "cancelled"]
+PendingUserGate = Literal["scene_selection", "visual_selection", "contact_sheet"]
 
 
 def board_root_for(db: Database, asset_id: str, session_id: str) -> Path:
@@ -143,9 +148,7 @@ def build_production_task(
        one line per SELECTED scene from its candidate (description + transcript_snippet);
        otherwise (no confirmed selection) one SHOWS-only line per the board's scene_reviews;
     5. the mandatory stage order (reviews -> storyline -> script -> voice+cutlist ->
-       contact sheet -> render -> qa) plus the contact-sheet checkpoint as a known pattern:
-       stopping at the Kontaktbogen or rendering later is steered purely by follow-up
-       messages against the normal resume flow - no extra session state;
+       contact sheet -> render -> qa), including persisted Visual Plan and Contact Sheet gates;
     6. the board's script language plus the coding-agent's ``voice_fits`` charter;
     7. the QA revision-round limit (one revise round, then ship with findings as warnings);
     8. only when ``message`` is set: the user's follow-up request text (capped at 2000 chars)
@@ -283,15 +286,19 @@ def build_production_task(
         f"{facts_block}"
         "\n"
         "5) MANDATORY ORDER: reviews -> storyline -> script -> voice+cutlist -> contact sheet "
-        "(save_contact_sheet: ALWAYS right after build_cutlist and BEFORE render_production, "
-        "and again after every cutlist rebuild - a cutlist save archives the sheet) -> render "
-        "(coding_agent) -> qa. Do not skip or reorder a stage.\n"
-        "   CONTACT-SHEET CHECKPOINT (known pattern, no extra session state): the user steers "
-        "around the Kontaktbogen purely by follow-up messages. When the task or a user message "
-        "says to stop at the contact sheet (e.g. 'bau bis zum Kontaktbogen, dann stopp'), END "
-        "the run right after save_contact_sheet and report the sheet's tiles instead of "
-        "rendering; a later message (e.g. 'render jetzt') resumes at render_production through "
-        "the normal resume flow.\n"
+        "-> render (coding_agent) -> qa. Do not skip or reorder a stage.\n"
+        "   VISUAL-SELECTION GATE (structural): for a visual-only recut that preserves the "
+        "approved narration, coding_agent must call start_visual_recut exactly once. The "
+        "persisted proposal must contain every current Rough-Cut scene in Rough-Cut order, "
+        "with 1-10 second recommendations. STOP immediately after the Visual Plan tool receipt. "
+        "While visual_recut_request is active, never "
+        "re-save storyline, script, or voice and never synthesize the voice again. Continue "
+        "only after the user confirms the current proposal_hash.\n"
+        "   CONTACT-SHEET APPROVAL GATE (structural): call save_contact_sheet immediately after "
+        "build_cutlist. When board_status reports this gate enabled, STOP after the current "
+        "sheet is persisted and never call render_production until the user approves that exact "
+        "contact_sheet_hash. A cutlist change archives the old sheet and requires a new "
+        "approval. Gate-off legacy boards continue through render as before.\n"
         "   SCRIPT-APPROVAL CHECKPOINT (known pattern, no extra session state): when this "
         "session's script_gate is enabled and the script is not yet approved, "
         "synthesize_script_voice refuses deterministically - the tool enforces it, this just "
@@ -388,6 +395,11 @@ def _deps_for_run(
     return replace(deps, max_render_cycles=cap)
 
 
+def _turn_budget_exhausted(stop_reason: str | None) -> bool:
+    normalized = (stop_reason or "").casefold()
+    return normalized == "max rounds reached." or "maximum number of turns" in normalized
+
+
 def _parse_outcome(
     board: Board,
     result: Any,
@@ -414,6 +426,8 @@ def _parse_outcome(
     Stage B instead of reporting a success that changed nothing — with the team's own closing
     claim kept in the summary so the false success stays inspectable.
     """
+    stop_reason_raw = getattr(result, "stop_reason", None)
+    stop_reason = str(stop_reason_raw) if stop_reason_raw is not None else None
     summary = ""
     for msg in reversed(getattr(result, "messages", None) or []):
         to_text = getattr(msg, "to_model_text", None)
@@ -421,6 +435,14 @@ def _parse_outcome(
         if text:
             summary = text[:2000]
             break
+    if _turn_budget_exhausted(stop_reason):
+        return StageOutcome(
+            status="hard_fail",
+            weak=_qa_weak(board),
+            summary=(stop_reason or summary)[:2000],
+            team="magentic",
+            stage=stage,
+        )
     if require_tool_call and tool_calls == 0:
         return StageOutcome(
             status="hard_fail",
@@ -445,6 +467,7 @@ def _make_default_execute(
     *,
     require_tool_call: bool = False,
     agent_names: tuple[str, ...] | None = None,
+    follow_up: bool = False,
 ) -> ExecuteFn:
     """The default ``ExecuteFn``: lazily builds and runs the real production team.
 
@@ -477,7 +500,7 @@ def _make_default_execute(
         async def _run() -> tuple[Any, int]:
             team = build_production_team(
                 db, board, config, asset_id=asset_id, stage=stage, deps=deps,
-                agent_names=agent_names,
+                agent_names=agent_names, follow_up=follow_up,
             )
             final: Any = None
             n_tool_calls = 0
@@ -516,12 +539,65 @@ def _make_default_execute(
     return execute
 
 
+def pending_user_gate(board: Board, expected_scenes: list[int]) -> PendingUserGate | None:
+    """Classify the persisted user gate at the board's current resume point."""
+    resume_point = board.resume_point(expected_scenes)
+    if resume_point == "scene_selection":
+        selection = board.load("scene_selection")
+        if (
+            board.meta().scene_gate
+            and isinstance(selection, SceneSelection)
+            and selection.confirmed_utc is None
+        ):
+            return "scene_selection"
+    if resume_point == "visual_selection":
+        plan = board.load("visual_plan")
+        if isinstance(plan, VisualPlan) and plan.confirmed_utc is None:
+            return "visual_selection"
+    if resume_point == "contact_sheet_approval":
+        sheet = board.load("contact_sheet")
+        if isinstance(sheet, ContactSheet):
+            return "contact_sheet"
+    return None
+
+
+def _gate_summary(gate: PendingUserGate) -> str:
+    return {
+        "scene_selection": "awaiting user scene selection — pick scenes in chat to continue",
+        "visual_selection": "awaiting user visual selection — confirm the visual proposal",
+        "contact_sheet": "awaiting user contact-sheet approval — approve the current sheet",
+    }[gate]
+
+
+def _gate_metadata(board: Board, gate: PendingUserGate) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "gate": gate,
+        "required_action": {
+            "scene_selection": "confirm_scene_selection",
+            "visual_selection": "confirm_visual_selection",
+            "contact_sheet": "confirm_contact_sheet",
+        }[gate],
+    }
+    if gate == "visual_selection":
+        plan = board.load("visual_plan")
+        if isinstance(plan, VisualPlan):
+            metadata["proposal_hash"] = plan.proposal_hash
+            metadata["scene_choices"] = [
+                choice.model_dump() for choice in plan.scene_choices
+            ]
+    elif gate == "contact_sheet":
+        sheet = board.load("contact_sheet")
+        if isinstance(sheet, ContactSheet):
+            metadata["contact_sheet_hash"] = content_hash(sheet)
+    return metadata
+
+
 def _completed_result(
     board: Board,
     *,
     session_id: str,
     restored: list[str],
-    status: Status,
+    status: ProductionRunStatus,
     stage: Stage,
     team: TeamKind,
     weak: bool,
@@ -529,6 +605,7 @@ def _completed_result(
     summary: str,
     export_id: str | None,
     resume_point: str,
+    gate: PendingUserGate | None = None,
 ) -> dict[str, Any]:
     """The result dict :func:`run_production` returns, built once for both completion paths:
     the full-restore short-circuit (no team turn) and the normal completion tail (a team ran).
@@ -542,8 +619,8 @@ def _completed_result(
     here from ``status``/``resume_point`` rather than passed in separately, since both call sites
     compute them the same way.
     """
-    return {
-        "ok": status == "ok",
+    result = {
+        "ok": status != "hard_fail",
         "complete": resume_point == "done",
         "status": status,
         "stage": stage,
@@ -557,6 +634,38 @@ def _completed_result(
         "resume_point": resume_point,
         "restored": restored,
     }
+    if gate is not None:
+        result.update(_gate_metadata(board, gate))
+    return result
+
+
+def _cancel_requested(deps: ProductionDeps | None) -> bool:
+    return deps is not None and deps.cancel_requested is not None and deps.cancel_requested()
+
+
+def _cancelled_result(
+    board: Board,
+    *,
+    session_id: str,
+    restored: list[str],
+    expected_scenes: list[int],
+    stage: Stage = "A",
+) -> dict[str, Any]:
+    """Persist the sole allowed post-cancel board write and return a terminal result."""
+    board.set_status("cancelled")
+    return _completed_result(
+        board,
+        session_id=session_id,
+        restored=restored,
+        status="cancelled",
+        stage=stage,
+        team="magentic",
+        weak=_qa_weak(board),
+        escalated=False,
+        summary="production cancelled by user",
+        export_id=_export_id_of(board),
+        resume_point=board.resume_point(expected_scenes),
+    )
 
 
 # The five resume points that :func:`production_pipeline.run_deterministic_tail` actually
@@ -693,6 +802,14 @@ def run_production(
         )
         board = Board.create(root, meta)
 
+    if _cancel_requested(deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=[],
+            expected_scenes=_expected_scene_numbers(db, asset_id),
+        )
+
     # Advisory (never a gate): say out loud when the text agents will run on a local ollama
     # model. Live incident 2026-07-20: three production runs silently ran qwen2.5:7b — tool
     # calls as prose, invented schemas — and nothing anywhere said so.
@@ -707,6 +824,13 @@ def run_production(
     # longest archived suffix whose parent-instance hashes match the board. Runs BEFORE
     # build_production_task so the resume contract reads DONE for what came back — the
     # task-text lie that killed the single-link restore is structurally impossible here.
+    if _cancel_requested(deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=[],
+            expected_scenes=_expected_scene_numbers(db, asset_id),
+        )
     restored = board.restore_coherent_suffix()
     if restored and event_sink is not None:
         try:
@@ -717,6 +841,14 @@ def run_production(
     # Computed once and reused below (the short-circuit condition and the completion tail both
     # need it); build_production_task computes its own copy internally for its other callers.
     expected_scenes = _expected_scene_numbers(db, asset_id)
+
+    if _cancel_requested(deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            expected_scenes=expected_scenes,
+        )
 
     # Spec decision 2 (2026-07-20-provenance-chain-design.md, §Entscheidungen (User)): a fully
     # coherent board reaches complete WITHOUT an agent-team turn. A follow-up ``message`` is
@@ -738,28 +870,26 @@ def run_production(
             resume_point="done",
         )
 
-    # Gate S (spec 2026-08-06): a proposal is on the board and the user has not picked yet.
-    # A team turn now would only run into save_storyline's structural refusal — so a plain
-    # resume parks instead of spending an LLM run. A follow-up MESSAGE still goes through
-    # (the user may be adjusting the proposal in chat via the team).
-    if (
-        message is None
-        and board.meta().scene_gate
-        and isinstance(board.load("scene_selection"), SceneSelection)
-        and board.resume_point(expected_scenes) == "scene_selection"
-    ):
+    # A persisted user gate is terminal for this orchestrator run. A plain resume never
+    # constructs a team just to repeat that it is waiting; a follow-up may still ask the
+    # team to revise the pending proposal, and the same classifier is checked after its turn.
+    initial_pending_gate = pending_user_gate(board, expected_scenes)
+    if message is None and initial_pending_gate is not None:
+        board.set_status("active")
+        resume_point = board.resume_point(expected_scenes)
         return _completed_result(
             board,
             session_id=session_id,
             restored=restored,
-            status="ok",
+            status="awaiting_user_input",
             stage="A",
             team="magentic",
             weak=_qa_weak(board),
             escalated=False,
-            summary="awaiting user scene selection — pick scenes in chat to continue",
+            summary=_gate_summary(initial_pending_gate),
             export_id=_export_id_of(board),
-            resume_point="scene_selection",
+            resume_point=resume_point,
+            gate=initial_pending_gate,
         )
 
     # Spec 2026-08-05 (modular production): a gated session resuming past user approval needs
@@ -788,7 +918,15 @@ def run_production(
             db, board, config, asset_id=asset_id, deps=run_deps,
             event_sink=event_sink, expected_scenes=expected_scenes,
         )
+        if _cancel_requested(run_deps):
+            return _cancelled_result(
+                board,
+                session_id=session_id,
+                restored=restored,
+                expected_scenes=expected_scenes,
+            )
         resume_point = board.resume_point(expected_scenes)
+        tail_pending_gate = pending_user_gate(board, expected_scenes)
         # A hard-failed QA stage (LLM outage, etc. — _safe_execute turns any exception into a
         # hard_fail StageOutcome) is a failure of THIS run just as much as a failed chain step:
         # the chain succeeded but the run as a whole did not finish, and the board must not be
@@ -806,7 +944,11 @@ def run_production(
             tail.ok and not qa_hard_failed and qa_outcome is not None
             and board.load("qa_report") is None
         )
-        if not tail.ok:
+        if tail_pending_gate is not None:
+            board.set_status("active")
+            summary = _gate_summary(tail_pending_gate)
+            ok = True
+        elif not tail.ok:
             board.set_status("failed")
             summary = f"deterministic tail failed at {tail.failed_step}: {tail.reason}"
             ok = False
@@ -830,7 +972,11 @@ def run_production(
             board,
             session_id=session_id,
             restored=restored,
-            status="ok" if ok else "hard_fail",
+            status=(
+                "awaiting_user_input"
+                if tail_pending_gate is not None
+                else "ok" if ok else "hard_fail"
+            ),
             stage="A",
             team="magentic",  # cosmetic result field; cards read summary/status.
             weak=_qa_weak(board),
@@ -838,6 +984,7 @@ def run_production(
             summary=summary,
             export_id=_export_id_of(board),
             resume_point=resume_point,
+            gate=tail_pending_gate,
         )
 
     task_text = build_production_task(
@@ -849,23 +996,64 @@ def run_production(
     # hard_fail instead of a false success.
     run_deps = _deps_for_run(deps, board, message)
     run: ExecuteFn = execute if execute is not None else _make_default_execute(
-        board, asset_id, run_deps, event_sink, require_tool_call=message is not None
+        board,
+        asset_id,
+        run_deps,
+        event_sink,
+        require_tool_call=message is not None,
+        follow_up=message is not None,
     )
 
     outcome = _safe_execute(run, db, config, "A", "magentic", task_text)
+    if _cancel_requested(run_deps):
+        return _cancelled_result(
+            board,
+            session_id=session_id,
+            restored=restored,
+            expected_scenes=expected_scenes,
+            stage=outcome.stage,
+        )
+    pending_gate = pending_user_gate(board, expected_scenes)
     escalated = False
-    if outcome.status == "hard_fail":
+    if outcome.status == "hard_fail" and pending_gate is None:
+        if _cancel_requested(run_deps):
+            return _cancelled_result(
+                board,
+                session_id=session_id,
+                restored=restored,
+                expected_scenes=expected_scenes,
+                stage=outcome.stage,
+            )
         outcome = _safe_execute(run, db, config, "B", "magentic", task_text)
+        if _cancel_requested(run_deps):
+            return _cancelled_result(
+                board,
+                session_id=session_id,
+                restored=restored,
+                expected_scenes=expected_scenes,
+                stage=outcome.stage,
+            )
         escalated = True
+        pending_gate = pending_user_gate(board, expected_scenes)
 
     export_id = _export_id_of(board)
     resume_point = board.resume_point(expected_scenes)
+    result_status: ProductionRunStatus = (
+        "awaiting_user_input" if pending_gate is not None else outcome.status
+    )
+    result_summary = (
+        _gate_summary(pending_gate)
+        if pending_gate is not None
+        else outcome.summary
+    )
 
     # Tell the BOARD how this ended, not just the caller. The result dict goes into the job row;
     # the board is what the session endpoint reads. A run that hard-failed on a missing API key
     # left the board reporting "active" for 55 minutes because only the result was ever told.
-    if outcome.status == "hard_fail":
+    if result_status == "hard_fail":
         board.set_status("failed")
+    elif result_status == "awaiting_user_input":
+        board.set_status("active")
     elif resume_point == "done":
         board.set_status("complete")
 
@@ -873,12 +1061,13 @@ def run_production(
         board,
         session_id=session_id,
         restored=restored,
-        status=outcome.status,
+        status=result_status,
         stage=outcome.stage,
         team=outcome.team,
         weak=outcome.weak,
         escalated=escalated,
-        summary=outcome.summary,
+        summary=result_summary,
         export_id=export_id,
         resume_point=resume_point,
+        gate=pending_gate,
     )
