@@ -333,6 +333,12 @@ def _handle_start_short(
         )
     except HTTPException as exc:
         return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
+    repos.link_production_session_conversation(
+        db,
+        str(result["session_id"]),
+        conversation_id,
+        updated_utc=now_utc,
+    )
     text_msg = _append_text(db, conversation_id, _rationale_text(result), now_utc)
     action_msg = _append(
         db, conversation_id, role="assistant", kind="action",

@@ -2515,6 +2515,10 @@ def link_production_session_conversation(
             "SET conversation_id=?, updated_utc=? WHERE session_id=?",
             (conversation_id, updated_utc, session_id),
         )
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (updated_utc, conversation_id),
+        )
 
 
 def set_production_session_job(db: Database, session_id: str, job_id: str) -> None:

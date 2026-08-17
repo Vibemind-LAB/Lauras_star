@@ -111,6 +111,9 @@ def test_production_session_persists_brief_conversation_and_updated_time(
     assert session["brief_text"] == "Baue den Rough Cut weiter"
     assert session["conversation_id"] == "conversation-1"
     assert session["updated_utc"] == "2026-08-17T08:01:00+00:00"
+    conversation = repos.get_conversation(db, "conversation-1")
+    assert conversation is not None
+    assert conversation["updated_at"] == "2026-08-17T08:01:00+00:00"
 
 
 def test_list_production_sessions_by_updated_includes_all_assets(tmp_path: Path) -> None:

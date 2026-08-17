@@ -355,6 +355,54 @@ def test_start_short_success_appends_text_and_running_action(
     assert action_msg["content"]["refs"] == {"session_id": "sess-1", "job_id": "job-1"}
 
 
+def test_start_short_links_the_persisted_session_to_its_conversation(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    db, settings = _setup(tmp_path)
+    project = _project(db, tmp_path)
+    asset = repos.create_asset(
+        db,
+        project_id=project["id"],
+        type="video",
+        display_name="Rough Cut",
+        source_path="/media/rough-cut.mp4",
+    )
+    conversation_id = _conversation(db, project_id=project["id"])
+
+    def fake_auto_short(*_: Any, **__: Any) -> dict[str, Any]:
+        repos.create_production_session(
+            db,
+            session_id="linked-session",
+            asset_id=asset["id"],
+            created_utc=_NOW,
+            brief_text="Rough Cut",
+        )
+        return {
+            "session_id": "linked-session",
+            "job_id": "job-1",
+            "asset_id": asset["id"],
+            "scene_numbers": [1, 2],
+            "rationale": "selected",
+            "fallback": False,
+            "ranking": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("laura.chat.executor.run_project_auto_short", fake_auto_short)
+    execute_decision(
+        db,
+        settings,
+        conversation_id=conversation_id,
+        decision=_decision("start_short", {"topic": "Rough Cut", "target_seconds": 45}),
+        now_utc=_NOW2,
+    )
+
+    session = repos.get_production_session(db, "linked-session")
+    assert session is not None
+    assert session["conversation_id"] == conversation_id
+    assert session["updated_utc"] == _NOW2
+
+
 def test_start_short_http_exception_becomes_honest_text(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:

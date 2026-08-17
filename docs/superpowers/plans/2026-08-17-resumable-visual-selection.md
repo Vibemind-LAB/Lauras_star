@@ -470,7 +470,7 @@
 - Consumes: Task 1 Session-Metadaten, Board `resume_point()` und Task 3 Draft-Status.
 - Produces: `GET /production-sessions/open`, Chat→Session-Link und `brief_text` im aktiven Router-Kontext.
 
-- [ ] **Step 1: Session-Brief- und Chat-Link-RED schreiben**
+- [x] **Step 1: Session-Brief- und Chat-Link-RED schreiben**
 
   Prüfe, dass `_create_production_session(db, asset_id, task=expected_task, target_seconds=45, format="9:16", language="en")` den vollständigen Brief speichert und `_handle_start_short` nach erfolgreichem Start die Session mit `conversation_id` verknüpft. Ein fehlgeschlagener Start darf keine Verknüpfung erzeugen.
 
@@ -492,13 +492,13 @@
   assert session["brief_text"] == expected_task
   ```
 
-- [ ] **Step 2: Chat-Link-RED ausführen**
+- [x] **Step 2: Chat-Link-RED ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_chat_executor.py -k "start_short and session" -q`
 
   Expected: FAIL, weil Brief und Conversation-Link fehlen.
 
-- [ ] **Step 3: Session-Erzeugung und Executor verknüpfen**
+- [x] **Step 3: Session-Erzeugung und Executor verknüpfen**
 
   `_create_production_session` reicht `task` als `brief_text` an Task 1 weiter. `_handle_start_short` ruft erst nach erfolgreichem `run_project_auto_short` auf:
 
@@ -510,7 +510,7 @@
 
   Die Link-Funktion berührt sowohl Session- als auch Conversation-Zeitstempel mit `now_utc`.
 
-- [ ] **Step 4: Open-Sessions-RED schreiben**
+- [x] **Step 4: Open-Sessions-RED schreiben**
 
   Lege Sessions in den Zuständen Visual-Gate, Kontaktbogen-Gate, running, complete, failed und ohne Board an. Prüfe:
 
@@ -520,7 +520,7 @@
   - read-only GET verändert weder Session noch Board noch Jobs;
   - eine gelöschte Conversation setzt den Link auf null, die Session bleibt auffindbar.
 
-- [ ] **Step 5: Open-Sessions-Endpoint implementieren**
+- [x] **Step 5: Open-Sessions-Endpoint implementieren**
 
   ```python
   @router.get("/production-sessions/open")
@@ -533,7 +533,7 @@
 
   Die Ableitung öffnet Boards read-only, verwendet Job-Liveness als Autorität und lässt kaputte/verwaiste Board-Verzeichnisse als stabile diagnostische Zeile erscheinen, ohne 500 für die gesamte Liste.
 
-- [ ] **Step 6: Router-Kontext-RED schreiben**
+- [x] **Step 6: Router-Kontext-RED schreiben**
 
   Erzeuge 25 Nachrichten, sodass der ursprüngliche Auftrag nicht mehr im letzten-20-Fenster liegt. `_active_session` liefert `brief_text`; `compose_context` muss genau eine kompakte Zeile vor `Recent conversation` enthalten:
 
@@ -543,11 +543,11 @@
   assert len([line for line in context.splitlines() if line.startswith("Original production brief:")]) == 1
   ```
 
-- [ ] **Step 7: Persistierten Brief in `_active_session` und `compose_context` integrieren**
+- [x] **Step 7: Persistierten Brief in `_active_session` und `compose_context` integrieren**
 
   `_active_session` setzt `brief` aus der Sessionzeile. `compose_context` normalisiert Zeilenumbrüche und begrenzt nur die Router-Zeile auf eine definierte maximale Zeichenzahl; der vollständige Brief bleibt in SQLite. Das letzte-20-Nachrichtenfenster bleibt unverändert.
 
-- [ ] **Step 8: Chat-/Session-GREEN ausführen**
+- [x] **Step 8: Chat-/Session-GREEN ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_production_api.py tests/test_chat_executor.py tests/test_chat_api.py tests/test_chat_router.py -q`
 
@@ -557,7 +557,7 @@
 
   Expected: alle Befehle Exit 0.
 
-- [ ] **Step 9: Task 4 committen**
+- [x] **Step 9: Task 4 committen**
 
   ```bash
   git add services/local-api/src/laura/api/short_creator.py services/local-api/src/laura/chat/executor.py services/local-api/src/laura/api/chat.py services/local-api/src/laura/chat/router.py services/local-api/tests/test_production_api.py services/local-api/tests/test_chat_executor.py services/local-api/tests/test_chat_api.py services/local-api/tests/test_chat_router.py

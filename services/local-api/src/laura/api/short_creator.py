@@ -454,7 +454,11 @@ def _create_production_session(
     session_id = new_id()
     created_utc = datetime.now(UTC).isoformat(timespec="seconds")
     repos.create_production_session(
-        db, session_id=session_id, asset_id=asset_id, created_utc=created_utc
+        db,
+        session_id=session_id,
+        asset_id=asset_id,
+        created_utc=created_utc,
+        brief_text=task,
     )
     payload: dict[str, Any] = {
         "asset_id": asset_id,
@@ -1577,6 +1581,107 @@ def _production_status_payload(
             tiles=[t.model_dump() for t in sheet.tiles],
         )
     return result
+
+
+def _brief_preview(value: Any, *, limit: int = 160) -> str:
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
+def _open_production_session_views(db: Database) -> list[dict[str, Any]]:
+    """Return resumable sessions without mutating boards, drafts, or jobs."""
+    from ..short_creator.board import Board
+    from ..short_creator.production_orchestrator import board_root_for
+
+    views: list[dict[str, Any]] = []
+    for session in repos.list_production_sessions_by_updated(db):
+        session_id = str(session["session_id"])
+        asset_id = str(session["asset_id"])
+        asset = repos.get_asset(db, asset_id)
+        project_id = str(asset["project_id"]) if asset is not None else None
+        display_name = str(asset["display_name"]) if asset is not None else "Missing asset"
+        job_id = str(session["latest_job_id"]) if session.get("latest_job_id") else None
+        job = repos.get_job(db, job_id) if job_id is not None else None
+        job_status = str(job["status"]) if job is not None else None
+        running = job_status in ("queued", "running")
+        draft = repos.get_visual_selection_draft(db, session_id)
+        resume_point: str | None = None
+        stale = False
+        stale_reason: str | None = None
+
+        try:
+            if asset is None:
+                raise ValueError("asset_missing")
+            board = Board.open(board_root_for(db, asset_id, session_id))
+            status_payload = board.status()
+            resume_point = board.resume_point(_expected_scenes_for(db, asset_id))
+            visual_gate = status_payload.get("visual_selection_gate") or {}
+            if (
+                visual_gate.get("pending")
+                and visual_gate.get("scene_choices")
+            ):
+                draft_view = _draft_view_for_session(db, session_id, board=board)
+                stale = draft_view.stale
+                stale_reason = draft_view.stale_reason
+
+            if running:
+                state = "running"
+            elif any(
+                (status_payload.get(name) or {}).get("pending")
+                for name in (
+                    "script_gate",
+                    "scene_gate",
+                    "visual_selection_gate",
+                    "contact_sheet_gate",
+                )
+            ):
+                state = "awaiting-approval"
+            elif board.meta().status in ("complete", "failed", "cancelled"):
+                continue
+            else:
+                state = "in-progress"
+        except (FileNotFoundError, ValueError):
+            if running:
+                state = "running"
+            else:
+                state = "needs-attention"
+                stale = True
+                stale_reason = "board_unavailable"
+        except Exception:  # noqa: BLE001 - one corrupt session must not hide the rest
+            logger.warning("open production session could not be inspected", exc_info=True)
+            state = "needs-attention"
+            stale = True
+            stale_reason = "board_unreadable"
+
+        views.append(
+            {
+                "session_id": session_id,
+                "conversation_id": session.get("conversation_id"),
+                "project_id": project_id,
+                "asset_id": asset_id,
+                "asset_display_name": display_name,
+                "brief_preview": _brief_preview(session.get("brief_text")),
+                "resume_point": resume_point,
+                "state": state,
+                "updated_utc": str(session["updated_utc"]),
+                "draft_updated_utc": str(draft["updated_utc"]) if draft is not None else None,
+                "latest_job_id": job_id,
+                "stale": stale,
+                "stale_reason": stale_reason,
+            }
+        )
+    return views
+
+
+@router.get("/production-sessions/open")
+def list_open_production_sessions(
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("read"))],
+) -> list[dict[str, Any]]:
+    """List running, resumable, and diagnostic production sessions newest first."""
+    return _open_production_session_views(_db(request))
 
 
 @router.get("/production/{session_id}")
