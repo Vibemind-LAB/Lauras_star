@@ -822,7 +822,7 @@
 - Consumes: vollständige Tasks 1–6.
 - Produces: automatisierter Restart-/Multi-Day-Vertrag, Bedienungsdoku und verifizierter Abschlussbericht.
 
-- [ ] **Step 1: End-to-End-Restart-RED schreiben**
+- [x] **Step 1: End-to-End-Restart-RED schreiben**
 
   Der Test verwendet eine echte SQLite-Datei und echte Board-Artefakte:
 
@@ -837,13 +837,13 @@
 
   Zusätzlich pinnt der Test die Script-/Voice-Content-Hashes vor und nach dem Resume.
 
-- [ ] **Step 2: Acceptance-RED/GREEN ausführen**
+- [x] **Step 2: Acceptance-RED/GREEN ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_visual_selection_resume_acceptance.py -q`
 
   Expected vor nötigen Integrationskorrekturen: FAIL am ersten nicht vollständig verdrahteten Vertrag. Korrigiere ausschließlich die verantwortliche Task-Grenze, wiederhole den Einzeltest bis Exit 0 und führe danach die betroffene Nachbarsuite erneut aus.
 
-- [ ] **Step 3: Dokumentation aktualisieren**
+- [x] **Step 3: Dokumentation aktualisieren**
 
   Ergänze `docs/rough-cut-visual-selection.md` um:
 
@@ -856,7 +856,7 @@
 
   Markiere das Arbeitspaket in `tasks/todo.md` erst nach allen automatisierten Gates und der Live-Verifikation als erledigt. Wenn Live extern blockiert ist, bleibt der Live-Punkt offen und wird als Non-Claim dokumentiert.
 
-- [ ] **Step 4: Backend-Vollgates frisch ausführen**
+- [x] **Step 4: Backend-Vollgates frisch ausführen**
 
   Run: `cd services/local-api && uv run pytest -p no:cacheprovider`
 
@@ -866,7 +866,7 @@
 
   Expected: Exit 0; vollständige Testanzahl und Warnungen im Abschlussbericht festhalten.
 
-- [ ] **Step 5: Desktop-Vollgates frisch ausführen**
+- [x] **Step 5: Desktop-Vollgates frisch ausführen**
 
   Run: `cd apps/desktop && pnpm test`
 
@@ -894,7 +894,7 @@
 
   Keine API-Keys, Tokenwerte oder Präfixe in Logs, Doku oder Commit aufnehmen. Bei Provider-/Drive-Nichtverfügbarkeit stoppen und den externen Blocker belegen, statt Erfolg zu behaupten.
 
-- [ ] **Step 7: Scope-, Secret- und Diff-Gates ausführen**
+- [x] **Step 7: Scope-, Secret- und Diff-Gates ausführen**
 
   Run: `git diff --check`
 
@@ -904,13 +904,13 @@
 
   Prüfe neue Dateien zusätzlich auf versehentliche `.env`-, Token-, Key- und lokale Workspace-Pfade. Expected: nur geplante Source-/Test-/Doku-Pfade, keine Secrets, keine Runtime-Artefakte.
 
-- [ ] **Step 8: Task 7 committen**
+- [x] **Step 8: Task 7 committen**
 
   ```bash
   git add services/local-api/tests/test_visual_selection_resume_acceptance.py docs/rough-cut-visual-selection.md tasks/todo.md
   git commit -m "docs(shorts): verify resumable visual selection"
   ```
 
-- [ ] **Step 9: Completion-Review durchführen**
+- [x] **Step 9: Completion-Review durchführen**
 
   Gleiche jedes Abnahmekriterium aus der Spec mit Testnamen, Gate-Ausgabe oder Live-Evidenz ab. Prüfe insbesondere: kein Autosave-Job, kein LLM-Aufruf, kein stilles Conflict-Overwrite, starke Drive-Prüfung vor Confirm, exakte Wiederherstellung nach Neustart und unveränderte Script-/Voice-Hashes.
