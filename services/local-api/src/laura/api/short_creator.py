@@ -12,11 +12,11 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, Any
+from typing import IO, TYPE_CHECKING, Annotated, Any, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..auth import Principal, require_permission
 from ..db import repos
@@ -26,7 +26,15 @@ from ..jobs.runner import enqueue
 
 # Pure-pydantic leaf: safe at runtime even without the optional 'autoshort' extra, unlike
 # short_creator.board below.
-from ..short_creator.board_models import Format, SceneSelection
+from ..short_creator.board_models import (
+    ContactSheet,
+    Format,
+    SceneSelection,
+    VisualPlan,
+    VisualRecutRequest,
+    VisualSceneSelection,
+    content_hash,
+)
 
 # discovery/scout import nothing from autogen at module load either (Tasks 1-2 of the
 # auto-short arc) — safe here too. run_scout is imported at module level (rather than inside
@@ -37,6 +45,7 @@ from ..short_creator.overview_build import build_overview
 from ..short_creator.overview_scout import OverviewDecision, run_overview_scout
 from ..short_creator.overview_windows import build_candidates, duration_seconds
 from ..short_creator.scout import ScoutDecision, run_scout
+from ..short_creator.visual_timeline import VisualSelectionError, apply_scene_selections
 from ..util import new_id
 
 if TYPE_CHECKING:  # annotation only — never imported at runtime
@@ -100,6 +109,35 @@ class ProductionRevertRequest(BaseModel):
 
 class SceneSelectionConfirmRequest(BaseModel):
     scene_numbers: list[int]
+
+
+class VisualSceneSelectionRequest(BaseModel):
+    """Strict HTTP transport shape for one v2 Rough-Cut decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rough_cut_order: int = Field(ge=0, strict=True)
+    candidate_id: str = Field(min_length=1, strict=True)
+    included: bool = Field(strict=True)
+    requested_duration_s: int = Field(ge=1, le=10, strict=True)
+
+
+class VisualSelectionConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selections: list[VisualSceneSelectionRequest] | None = None
+    selected_candidate_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_payload_shape(self) -> Self:
+        if (self.selections is None) == (self.selected_candidate_ids is None):
+            raise ValueError("provide selections for v2 or selected_candidate_ids for v1")
+        return self
+
+
+class ContactSheetConfirmRequest(BaseModel):
+    contact_sheet_hash: str = Field(min_length=64, max_length=64)
 
 
 def _db(request: Request) -> Database:
@@ -959,6 +997,19 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _guard_production_not_busy(
+    db: Database, session: dict[str, Any], *, action: str
+) -> None:
+    """Reject an approval while the session's latest production job is still alive."""
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    if job is not None and str(job["status"]) in ("queued", "running"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"a production run is in progress — wait for it before {action}",
+        )
+
+
 def confirm_scene_selection(
     db: Database, session_id: str, scene_numbers: list[int]
 ) -> dict[str, Any]:
@@ -993,13 +1044,7 @@ def confirm_scene_selection(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"scenes {stray} are not among the proposed candidates",
         )
-    job_id = session.get("latest_job_id")
-    job = repos.get_job(db, str(job_id)) if job_id else None
-    if job is not None and str(job["status"]) in ("queued", "running"):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "a production run is in progress — wait for it before changing the selection",
-        )
+    _guard_production_not_busy(db, session, action="changing the selection")
     if selection.confirmed_utc is not None and selection.selected_scene_numbers == picked:
         # Idempotent re-confirm: a fresh timestamp would bump the version and wipe a
         # perfectly valid storyline downstream for nothing (Board.save's own no-op guard
@@ -1031,6 +1076,188 @@ def confirm_scene_selection(
     return {**confirm_result, **run_production_resume(db, session_id)}
 
 
+def confirm_visual_selection(
+    db: Database,
+    session_id: str,
+    proposal_hash: str,
+    *,
+    selections: list[VisualSceneSelection] | None = None,
+    selected_candidate_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Confirm the current v1 beat or v2 Rough-Cut visual proposal.
+
+    The proposal hash is checked before any write, and this is the sole writer of visual-plan
+    confirmation state for both HTTP and chat.  A matching re-confirm performs no board write
+    but retries the pure resume, healing a prior write-then-enqueue failure forward.
+    """
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    with board.transaction():
+        request = board.load("visual_recut_request")
+        if not isinstance(request, VisualRecutRequest):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "visual selection gate is not enabled"
+            )
+        plan = board.load("visual_plan")
+        if not isinstance(plan, VisualPlan):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "no visual proposal on the board yet"
+            )
+        if proposal_hash != plan.proposal_hash:
+            raise HTTPException(status.HTTP_409_CONFLICT, "stale visual proposal")
+
+        if plan.scene_choices:
+            if selections is None or selected_candidate_ids is not None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "provide selections for a v2 visual proposal",
+                )
+            try:
+                updated_plan = apply_scene_selections(plan, selections, _utc_now_iso())
+            except VisualSelectionError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)
+                ) from exc
+
+            current_session = repos.get_production_session(db, session_id)
+            if current_session is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+            _guard_production_not_busy(
+                db, current_session, action="changing the visual selection"
+            )
+            already_current = (
+                plan.confirmed_utc is not None
+                and plan.selection_hash == updated_plan.selection_hash
+            )
+            if not already_current:
+                board.save("visual_plan", updated_plan)
+            v2_result: dict[str, Any] = {
+                "session_id": session_id,
+                "selection_hash": updated_plan.selection_hash,
+            }
+            if already_current:
+                v2_result["already_current"] = True
+            return {**v2_result, **run_production_resume(db, session_id)}
+
+        if selected_candidate_ids is None or selections is not None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "provide selected_candidate_ids for a v1 visual proposal",
+            )
+        selected = list(selected_candidate_ids)
+        if not selected:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "select exactly one candidate per beat",
+            )
+        candidate_to_beat = {
+            candidate.candidate_id: beat.beat_id
+            for beat in plan.beats
+            for candidate in beat.candidates
+        }
+        stray = sorted(set(selected) - set(candidate_to_beat))
+        if stray:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"candidate IDs {stray} are not among the current visual proposal",
+            )
+        selected_set = set(selected)
+        if len(selected_set) != len(selected) or any(
+            sum(candidate.candidate_id in selected_set for candidate in beat.candidates)
+            != 1
+            for beat in plan.beats
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "select exactly one candidate per beat",
+            )
+
+        current_session = repos.get_production_session(db, session_id)
+        if current_session is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        _guard_production_not_busy(
+            db, current_session, action="changing the visual selection"
+        )
+        selected_in_beat_order = [
+            next(
+                candidate.candidate_id
+                for candidate in beat.candidates
+                if candidate.candidate_id in selected_set
+            )
+            for beat in plan.beats
+        ]
+        current = [beat.selected_candidate_id for beat in plan.beats]
+        already_current = (
+            plan.confirmed_utc is not None and current == selected_in_beat_order
+        )
+        if not already_current:
+            updated_beats = [
+                beat.model_copy(update={"selected_candidate_id": selected_id})
+                for beat, selected_id in zip(
+                    plan.beats, selected_in_beat_order, strict=True
+                )
+            ]
+            board.save(
+                "visual_plan",
+                plan.model_copy(
+                    update={"beats": updated_beats, "confirmed_utc": _utc_now_iso()}
+                ),
+            )
+        result: dict[str, Any] = {
+            "session_id": session_id,
+            "selected_candidate_ids": selected_in_beat_order,
+        }
+        if already_current:
+            result["already_current"] = True
+        return {**result, **run_production_resume(db, session_id)}
+
+
+def confirm_contact_sheet(
+    db: Database, session_id: str, contact_sheet_hash: str
+) -> dict[str, Any]:
+    """Approve the current contact sheet by content hash and enqueue a pure resume."""
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    with board.transaction():
+        meta = board.meta()
+        if not meta.contact_sheet_gate:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "contact sheet gate is not enabled"
+            )
+        sheet = board.load("contact_sheet")
+        if not isinstance(sheet, ContactSheet):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "no contact sheet on the board yet"
+            )
+        current_hash = content_hash(sheet)
+        if contact_sheet_hash != current_hash:
+            raise HTTPException(status.HTTP_409_CONFLICT, "stale contact sheet")
+
+        current_session = repos.get_production_session(db, session_id)
+        if current_session is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        _guard_production_not_busy(
+            db, current_session, action="approving the contact sheet"
+        )
+        already_current = (
+            meta.contact_sheet_approved_utc is not None
+            and meta.contact_sheet_approved_hash == current_hash
+        )
+        if not already_current:
+            board.set_contact_sheet_approved(_utc_now_iso(), current_hash)
+        result: dict[str, Any] = {
+            "session_id": session_id,
+            "contact_sheet_hash": current_hash,
+        }
+        if already_current:
+            result["already_current"] = True
+        return {**result, **run_production_resume(db, session_id)}
+
+
 @router.post(
     "/production/{session_id}/scene-selection:confirm",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1043,6 +1270,44 @@ def confirm_scene_selection_endpoint(
 ) -> dict[str, Any]:
     """Confirm the user's Gate-S scene pick. See :func:`confirm_scene_selection`."""
     return confirm_scene_selection(_db(request), session_id, body.scene_numbers)
+
+
+@router.post(
+    "/production/{session_id}/visual-selection:confirm",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def confirm_visual_selection_endpoint(
+    session_id: str,
+    body: VisualSelectionConfirmRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Confirm the current hash-bound visual proposal and enqueue a pure resume."""
+    return confirm_visual_selection(
+        _db(request),
+        session_id,
+        body.proposal_hash,
+        selections=(
+            [VisualSceneSelection.model_validate(item.model_dump()) for item in body.selections]
+            if body.selections is not None
+            else None
+        ),
+        selected_candidate_ids=body.selected_candidate_ids,
+    )
+
+
+@router.post(
+    "/production/{session_id}/contact-sheet:confirm",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def confirm_contact_sheet_endpoint(
+    session_id: str,
+    body: ContactSheetConfirmRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Approve the current hash-bound contact sheet and enqueue a pure resume."""
+    return confirm_contact_sheet(_db(request), session_id, body.contact_sheet_hash)
 
 
 @router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)

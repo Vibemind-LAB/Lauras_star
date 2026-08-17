@@ -45,6 +45,8 @@ TOOLS: frozenset[str] = frozenset(
         "confirm_transcript",
         "approve_script",
         "select_scenes",
+        "select_visuals",
+        "approve_contact_sheet",
         "discuss",
     }
 )
@@ -63,7 +65,15 @@ _SYSTEM_PROMPT = (
     '- reply: {"text": str} — say something back without taking an action. Use this whenever '
     "you are unsure what the user wants, instead of guessing.\n"
     '- create_project: {"name": str} — start a new project.\n'
-    '- switch_project: {"ref": str} — switch to an existing project, by name or id.\n'
+    '- switch_project: {"ref": str} — switch to an existing project, by name or id. The '
+    'context\'s "Projekte:" line lists every known project (the active one marked with "*"); '
+    "when the user's message loosely names one of them — case-insensitive, substring or "
+    "word-level, e.g. 'aus Drive Vibemind', 'im Vibemind projekt', 'switch to drive vibemind' "
+    "all matching a listed 'Drive VibeMind' — choose switch_project with the EXACT listed name "
+    "as ref. NEVER treat a name that matches a listed project as a Google-Drive link or URL "
+    "request, even if it contains the word 'Drive' — a listed project name always wins over "
+    "propose_import. Example: Projekte contains 'Drive VibeMind' and the user says 'aus Drive "
+    'Vibemind\' -> {"tool": "switch_project", "args": {"ref": "Drive VibeMind"}}.\n'
     '- propose_import: {"urls": [str, ...]} — propose importing one or more media URLs (each '
     "must start with 'http'). Never invent URLs the user did not give you.\n"
     '- start_short: {"topic": str, "target_seconds"?: int, "format"?: "insta"|"x"|"linkedin", '
@@ -89,6 +99,15 @@ _SYSTEM_PROMPT = (
     "gewünschte Auswahl. Relativ-Anweisungen gegen die Empfehlung auflösen: bei Empfehlung "
     '[2, 4, 5] heißt "nimm 2 und 5 statt 4" -> [2, 5]; "passt so" / "nimm deine Auswahl" '
     "-> die Empfehlung unverändert.\n"
+    "- select_visuals: der User bestätigt die aktuelle Visual-Auswahl. Nur wenn der Kontext "
+    'eine Zeile "Visual-Auswahl offen" zeigt. args.proposal_hash muss exakt der dortige '
+    "64-stellige Hash sein. Bei Rough-Cut-Auswahlen ist args.selections die KOMPLETTE "
+    "geordnete Liste aus rough_cut_order, candidate_id, included und requested_duration_s; "
+    "bei alten Beat-Auswahlen bleibt args.selected_candidate_ids die komplette Auswahl. Bei "
+    "'deine Auswahl passt' die Empfehlungen aus dem Kontext unverändert übernehmen.\n"
+    "- approve_contact_sheet: der User gibt den aktuellen Kontaktbogen frei. Nur wenn der "
+    'Kontext eine Zeile "Kontaktbogen-Freigabe offen" zeigt. args.contact_sheet_hash muss '
+    "exakt der dortige 64-stellige Hash sein.\n"
     '- discuss: {"text": str} — answer a question, critique, or comment about the result or '
     "process; pass the user's message verbatim as text. Choose this whenever the user is "
     "ASKING or COMPLAINING about the video, its scenes, its wording, or the transcript "
@@ -160,6 +179,30 @@ def _compact_message(message: dict[str, Any]) -> str:
     return f"{role}: {kind}"
 
 
+_MAX_PROJECTS_LISTED = 15
+
+
+def _projects_line(
+    all_projects: list[dict[str, Any]], active_project: dict[str, Any] | None
+) -> str:
+    """The 'Projekte:' roster line: every known project's name, ``*``-marked when it is the
+    conversation's currently active one, capped at :data:`_MAX_PROJECTS_LISTED`.
+
+    Exists so a loosely mentioned project name ('aus Drive Vibemind') is verifiable against a
+    real roster instead of the model guessing — the same rationale as the Videos line below, but
+    for projects, and rendered whether or not a project is bound yet (live incident 2026-08-07:
+    a fresh, unbound conversation had NO roster to check a mentioned project name against, so
+    'aus Drive Vibemind' was misread as a Google-Drive URL request)."""
+    active_id = active_project.get("id") if active_project is not None else None
+    names = []
+    for p in all_projects[:_MAX_PROJECTS_LISTED]:
+        name = str(p.get("name") or "?")
+        if active_id is not None and p.get("id") == active_id:
+            name = f"{name}*"
+        names.append(name)
+    return "Projekte: " + " | ".join(names)
+
+
 def compose_context(
     *,
     project: dict[str, Any] | None,
@@ -167,14 +210,19 @@ def compose_context(
     messages: list[dict[str, Any]],
     asset_names: list[str] | None = None,
     active_session: dict[str, Any] | None = None,
+    all_projects: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Assemble the router's context string: project line, video roster, active-session line,
-    running-jobs line, then the last 20 messages compacted to one line each (pure string
-    assembly, no I/O).
+    """Assemble the router's context string: project line, project roster, video roster,
+    active-session line, running-jobs line, then the last 20 messages compacted to one line
+    each (pure string assembly, no I/O).
 
-    The roster exists because the router's rules forbid inventing names: without it, an
+    The video roster exists because the router's rules forbid inventing names: without it, an
     asset_ref the user names ('die Bildschirmaufnahme') is unverifiable and the model asks
-    back instead of routing review_transcript (seen live 2026-08-05).
+    back instead of routing review_transcript (seen live 2026-08-05). ``all_projects`` (when
+    given) renders one more line right after the Project line via :func:`_projects_line` — the
+    SAME rationale, one level up: a loosely mentioned project name needs a real roster to
+    resolve against, and this line is rendered even when no project is bound yet (unlike the
+    Videos line, which needs an active project to enumerate against).
 
     ``active_session`` (FE3) grounds follow_up/discuss on the session the thread is actually
     working, instead of the router having to reconstruct it by re-reading compacted action
@@ -192,10 +240,12 @@ def compose_context(
         name = project.get("name") or "?"
         project_id = project.get("id") or "?"
         lines.append(f"Project: {name} (id={project_id})")
-        if asset_names:
-            lines.append("Videos: " + ", ".join(asset_names[:20]))
     else:
         lines.append("Project: none selected")
+    if all_projects:
+        lines.append(_projects_line(all_projects, project))
+    if project is not None and asset_names:
+        lines.append("Videos: " + ", ".join(asset_names[:20]))
     if active_session is not None:
         lines.append(
             f"Active production session: {active_session['id']} "
@@ -208,6 +258,31 @@ def compose_context(
             lines.append(
                 f"Szenen-Vorschlag offen: empfohlen {recommended} von Kandidaten {candidates}"
             )
+        visual_gate = active_session.get("visual_selection_gate")
+        if isinstance(visual_gate, dict):
+            proposal_hash = visual_gate.get("proposal_hash")
+            if isinstance(proposal_hash, str) and proposal_hash:
+                recommended_selections = visual_gate.get("recommended_selections")
+                if isinstance(recommended_selections, list) and recommended_selections:
+                    lines.append(
+                        f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+                        "empfohlene Szenenentscheidungen "
+                        f"{recommended_selections}"
+                    )
+                else:
+                    recommended = visual_gate.get("recommended_candidate_ids") or []
+                    lines.append(
+                        f"Visual-Auswahl offen: proposal_hash={proposal_hash} "
+                        f"empfohlen {recommended}"
+                    )
+        contact_sheet_gate = active_session.get("contact_sheet_gate")
+        if isinstance(contact_sheet_gate, dict):
+            contact_sheet_hash = contact_sheet_gate.get("contact_sheet_hash")
+            if isinstance(contact_sheet_hash, str) and contact_sheet_hash:
+                lines.append(
+                    "Kontaktbogen-Freigabe offen: "
+                    f"contact_sheet_hash={contact_sheet_hash}"
+                )
     lines.append(f"Running jobs: {running_jobs}")
     lines.append("")
     lines.append("Recent conversation (oldest first):")
@@ -403,6 +478,72 @@ def _validate_args(tool: str, args: dict[str, Any]) -> str | None:
             isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers
         ):
             return "select_scenes.scene_numbers must all be integers >= 1"
+        return None
+
+    if tool == "select_visuals":
+        proposal_hash = args.get("proposal_hash")
+        if (
+            not isinstance(proposal_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", proposal_hash) is None
+        ):
+            return "select_visuals.proposal_hash must be a lowercase hexadecimal SHA-256 hash"
+        has_selections = "selections" in args
+        has_candidate_ids = "selected_candidate_ids" in args
+        if has_selections == has_candidate_ids:
+            return (
+                "select_visuals requires selections for v2 or selected_candidate_ids for v1"
+            )
+        if has_selections:
+            selections = args.get("selections")
+            if not isinstance(selections, list) or not selections:
+                return "select_visuals.selections is missing, not a list, or empty"
+            required = {
+                "rough_cut_order",
+                "candidate_id",
+                "included",
+                "requested_duration_s",
+            }
+            for selection in selections:
+                if not isinstance(selection, dict) or set(selection) != required:
+                    return "select_visuals.selections must contain exact scene decisions"
+                rough_cut_order = selection.get("rough_cut_order")
+                if (
+                    not isinstance(rough_cut_order, int)
+                    or isinstance(rough_cut_order, bool)
+                    or rough_cut_order < 0
+                ):
+                    return "select_visuals.selections rough_cut_order must be an integer >= 0"
+                candidate_id = selection.get("candidate_id")
+                if not isinstance(candidate_id, str) or not candidate_id:
+                    return "select_visuals.selections candidate_id must be a non-empty string"
+                if not isinstance(selection.get("included"), bool):
+                    return "select_visuals.selections included must be a boolean"
+                duration = selection.get("requested_duration_s")
+                if (
+                    not isinstance(duration, int)
+                    or isinstance(duration, bool)
+                    or not 1 <= duration <= 10
+                ):
+                    return (
+                        "select_visuals.selections requested_duration_s must be an integer 1-10"
+                    )
+            return None
+        candidate_ids = args.get("selected_candidate_ids")
+        if not isinstance(candidate_ids, list) or not candidate_ids:
+            return (
+                "select_visuals.selected_candidate_ids is missing, not a list, or empty"
+            )
+        if not all(
+            isinstance(candidate_id, str) and candidate_id
+            for candidate_id in candidate_ids
+        ):
+            return "select_visuals.selected_candidate_ids must all be non-empty strings"
+        return None
+
+    if tool == "approve_contact_sheet":
+        contact_sheet_hash = args.get("contact_sheet_hash")
+        if not isinstance(contact_sheet_hash, str) or len(contact_sheet_hash) != 64:
+            return "approve_contact_sheet.contact_sheet_hash must be a 64-character string"
         return None
 
     if tool == "discuss":

@@ -25,9 +25,14 @@ from laura.short_creator.board import Board
 from laura.short_creator.board_models import (
     BoardMeta,
     ContactSheet,
+    ContactSheetTile,
     Cutlist,
     CutSegment,
     Roi,
+    VisualPlan,
+    VisualRecutRequest,
+    VisualSceneCandidate,
+    VisualSceneChoice,
     canvas_for,
     content_hash,
 )
@@ -177,6 +182,149 @@ def test_save_contact_sheet_builds_grid_png_and_tile_list(tmp_path: Path) -> Non
     sheet = board.load("contact_sheet")
     assert cutlist_now is not None and isinstance(sheet, ContactSheet)
     assert sheet.parents == {"cutlist": content_hash(cutlist_now)}
+
+
+def test_legacy_contact_sheet_tile_keeps_pre_v2_serialization_and_hash() -> None:
+    legacy_payload = {
+        "order": 0,
+        "scene_number": 1,
+        "frame": 15,
+        "label": "0 S1",
+        "src_start_frame": None,
+        "src_end_frame_exclusive": None,
+        "narration_excerpt": "",
+        "rationale": "",
+    }
+    tile = ContactSheetTile.model_validate_json(json.dumps(legacy_payload))
+
+    assert tile.model_dump(mode="json") == legacy_payload
+    # Derived independently from the ContactSheetTile shape at b0cc00a by canonicalizing the
+    # literal payload above with sorted JSON keys, then hashing those UTF-8 bytes with SHA-256.
+    assert content_hash(tile) == "05cc4b6a37e42eb408817728f2fd9841ec2b558a2b2a8b1a991d23c40ed1333d"
+
+    v2_tile = tile.model_copy(
+        update={
+            "rough_cut_order": 0,
+            "description": "Rough-Cut scene 1",
+            "requested_duration_s": 2,
+            "final_duration_frames": 45,
+        }
+    )
+    v2_payload = v2_tile.model_dump(mode="json")
+    assert {
+        field: v2_payload[field]
+        for field in (
+            "rough_cut_order",
+            "description",
+            "requested_duration_s",
+            "final_duration_frames",
+        )
+    } == {
+        "rough_cut_order": 0,
+        "description": "Rough-Cut scene 1",
+        "requested_duration_s": 2,
+        "final_duration_frames": 45,
+    }
+
+
+def test_save_contact_sheet_enriches_v2_rough_cut_metadata(tmp_path: Path) -> None:
+    db, asset_id = _seed_asset(tmp_path)
+    board = _board(tmp_path, asset_id)
+    request = VisualRecutRequest(
+        user_request="keep all Rough-Cut scenes",
+        framing_mode="full_frame_blur",
+        script_version=1,
+        script_hash="a" * 64,
+        voice_version=1,
+        voice_hash="b" * 64,
+    )
+    board.save("visual_recut_request", request)
+    plan = VisualPlan(
+        version=2,
+        proposal_hash="c" * 64,
+        request_hash="d" * 64,
+        scene_choices=[
+            VisualSceneChoice(
+                rough_cut_order=order,
+                scene_number=order + 1,
+                description=f"Rough-Cut scene {order + 1}",
+                transcript=f"workflow step {order + 1}",
+                rationale="keeps the original scene order",
+                candidates=[
+                    VisualSceneCandidate(
+                        candidate_id=f"candidate-{order}",
+                        rough_cut_order=order,
+                        scene_number=order + 1,
+                        window_index=0,
+                        src_start_frame=order * 60,
+                        src_end_frame_exclusive=(order + 1) * 60,
+                        thumb_frame=order * 60 + 30,
+                        max_duration_s=2,
+                        description=f"Rough-Cut scene {order + 1}",
+                        transcript_snippet=f"workflow step {order + 1}",
+                        rationale="covers the selected source range",
+                        score=1.0,
+                    )
+                ],
+                recommended_candidate_id=f"candidate-{order}",
+                recommended_included=True,
+                recommended_duration_s=2,
+                selected_candidate_id=f"candidate-{order}",
+                included=True,
+                requested_duration_s=2,
+            )
+            for order in range(3)
+        ],
+        selection_hash="e" * 64,
+        rough_cut_scene_count=3,
+        voice_total_frames=150,
+        fps=30.0,
+        confirmed_utc="2026-08-09T10:00:00Z",
+    )
+    board.save("visual_plan", plan)
+    board.save(
+        "cutlist",
+        Cutlist(
+            segments=[
+                CutSegment(order=0, scene_number=1, start_frame=0, end_frame_exclusive=60),
+                CutSegment(order=1, scene_number=2, start_frame=60, end_frame_exclusive=120),
+                CutSegment(order=2, scene_number=3, start_frame=120, end_frame_exclusive=150),
+            ]
+        ),
+    )
+    specs = _specs(db, board, asset_id)
+
+    result = specs["save_contact_sheet"].func()
+
+    assert result["ok"] is True, result
+    assert [
+        {
+            "rough_cut_order": tile["rough_cut_order"],
+            "description": tile["description"],
+            "requested_duration_s": tile["requested_duration_s"],
+            "final_duration_frames": tile["final_duration_frames"],
+        }
+        for tile in result["tiles"]
+    ] == [
+        {
+            "rough_cut_order": 0,
+            "description": "Rough-Cut scene 1",
+            "requested_duration_s": 2,
+            "final_duration_frames": 60,
+        },
+        {
+            "rough_cut_order": 1,
+            "description": "Rough-Cut scene 2",
+            "requested_duration_s": 2,
+            "final_duration_frames": 60,
+        },
+        {
+            "rough_cut_order": 2,
+            "description": "Rough-Cut scene 3",
+            "requested_duration_s": 2,
+            "final_duration_frames": 30,
+        },
+    ]
 
 
 def test_save_contact_sheet_crops_in_proxy_space_for_downscaled_proxy(tmp_path: Path) -> None:

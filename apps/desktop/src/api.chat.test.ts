@@ -61,6 +61,26 @@ describe("createConversation", () => {
     expect((init.headers as Record<string, string>)["X-Laura-Token"]).toBe("tok");
   });
 
+  it("omits project_id from the body when no project is given", async () => {
+    const fn = mockFetch({ id: "c1" });
+    const c = new LauraClient("http://h", "tok");
+
+    await c.createConversation();
+
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+
+  it("passes the given project id as project_id in the body", async () => {
+    const fn = mockFetch({ id: "c1" });
+    const c = new LauraClient("http://h", "tok");
+
+    await c.createConversation("p1");
+
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ project_id: "p1" });
+  });
+
   it("rejects on a non-2xx response", async () => {
     mockFetchError(500, "boom");
     const c = new LauraClient("http://h", "tok");

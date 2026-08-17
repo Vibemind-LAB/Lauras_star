@@ -51,9 +51,9 @@ class _Msg:
 class TaskResult:
     """Duck-typed like autogen's TaskResult: the mapper drops it, _parse_outcome reads it."""
 
-    def __init__(self, messages: list[Any]) -> None:
+    def __init__(self, messages: list[Any], stop_reason: str = "done") -> None:
         self.messages = messages
-        self.stop_reason = "done"
+        self.stop_reason = stop_reason
 
 
 class _FakeTeam:
@@ -111,6 +111,25 @@ def test_without_a_sink_the_stream_still_produces_the_outcome(
 
     assert outcome.status == "ok"
     assert outcome.summary == "final"
+
+
+def test_stream_turn_exhaustion_is_not_reported_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[Any] = [
+        _Msg("story_architect", "Paused."),
+        TaskResult(
+            [_Msg("story_architect", "Paused.")],
+            stop_reason="Max rounds reached.",
+        ),
+    ]
+    monkeypatch.setattr(po, "build_production_team", lambda *a, **k: _FakeTeam(events))
+    execute = po._make_default_execute(_board(tmp_path), "a1", None, None)
+
+    outcome = execute(None, _config(), "A", "magentic", "the task")  # type: ignore[arg-type]
+
+    assert outcome.status == "hard_fail"
+    assert outcome.summary == "Max rounds reached."
 
 
 def test_a_crashing_sink_does_not_kill_the_run(

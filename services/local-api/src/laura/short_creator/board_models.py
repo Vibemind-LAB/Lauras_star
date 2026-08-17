@@ -35,6 +35,7 @@ FORMAT_PRESETS: dict[str, tuple[bool, tuple[int, int]]] = {
 }
 
 Format = Literal["insta", "x", "linkedin"]
+FramingMode = Literal["full_frame_blur"]
 
 
 def canvas_for(fmt: Format) -> tuple[bool, tuple[int, int]]:
@@ -415,6 +416,221 @@ class VoiceArtifact(BaseModel):
         return data
 
 
+class VisualRecutRequest(BaseModel):
+    """A user-requested visual-only recut bound to the current script and voice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    user_request: str = Field(min_length=1, max_length=2000)
+    framing_mode: FramingMode = "full_frame_blur"
+    script_version: int = Field(ge=1)
+    script_hash: str = Field(min_length=64, max_length=64)
+    voice_version: int = Field(ge=1)
+    voice_hash: str = Field(min_length=64, max_length=64)
+    parents: dict[str, str] = Field(default_factory=dict)
+
+
+class VisualShotCandidate(BaseModel):
+    """One visual source window proposed for one voice beat."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    beat_id: str
+    voice_segment_index: int = Field(ge=0)
+    scene_number: int = Field(ge=1)
+    window_index: int = Field(ge=0)
+    src_start_frame: int = Field(ge=0)
+    src_end_frame_exclusive: int
+    thumb_frame: int = Field(ge=0)
+    description: str
+    transcript_snippet: str
+    rationale: str
+    score: float
+
+    @model_validator(mode="after")
+    def _frames_are_a_valid_source_window(self) -> VisualShotCandidate:
+        if self.src_end_frame_exclusive <= self.src_start_frame:
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        if not self.src_start_frame <= self.thumb_frame < self.src_end_frame_exclusive:
+            raise ValueError("thumb_frame must lie inside the source frame range")
+        return self
+
+
+class VisualBeatPlan(BaseModel):
+    """Candidate choices for exactly one spoken beat."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: str
+    voice_segment_index: int = Field(ge=0)
+    narration_text: str = Field(min_length=1)
+    duration_s: float = Field(gt=0.0)
+    candidates: list[VisualShotCandidate] = Field(min_length=1, max_length=4)
+    recommended_candidate_id: str
+    selected_candidate_id: str | None = None
+
+    @model_validator(mode="after")
+    def _candidate_choices_belong_to_this_beat(self) -> VisualBeatPlan:
+        candidate_ids = {candidate.candidate_id for candidate in self.candidates}
+        if len(candidate_ids) != len(self.candidates):
+            raise ValueError("duplicate candidate_ids")
+        if any(candidate.beat_id != self.beat_id for candidate in self.candidates):
+            raise ValueError("candidate beat_id must match the containing beat")
+        if self.recommended_candidate_id not in candidate_ids:
+            raise ValueError("recommended_candidate_id must belong to the beat")
+        if (
+            self.selected_candidate_id is not None
+            and self.selected_candidate_id not in candidate_ids
+        ):
+            raise ValueError("selected_candidate_id must belong to the beat")
+        return self
+
+
+class VisualSceneCandidate(BaseModel):
+    """One visual source window proposed for one rough-cut scene row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    rough_cut_order: int = Field(ge=0)
+    scene_number: int = Field(ge=1)
+    window_index: int = Field(ge=0)
+    src_start_frame: int = Field(ge=0)
+    src_end_frame_exclusive: int
+    thumb_frame: int = Field(ge=0)
+    max_duration_s: int = Field(ge=1, le=10)
+    description: str
+    transcript_snippet: str
+    rationale: str
+    score: float
+
+    @model_validator(mode="after")
+    def _frames_are_a_valid_source_window(self) -> VisualSceneCandidate:
+        if self.src_end_frame_exclusive <= self.src_start_frame:
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        if not self.src_start_frame <= self.thumb_frame < self.src_end_frame_exclusive:
+            raise ValueError("thumb_frame must lie inside the source frame range")
+        return self
+
+
+class VisualSceneSelection(BaseModel):
+    """One explicit visual decision for one rough-cut scene row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rough_cut_order: int = Field(ge=0)
+    candidate_id: str
+    included: bool
+    requested_duration_s: int = Field(ge=1, le=10)
+
+
+class VisualSceneChoice(BaseModel):
+    """Candidates and an optional user decision for one rough-cut scene row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rough_cut_order: int = Field(ge=0)
+    scene_number: int = Field(ge=1)
+    description: str
+    transcript: str
+    rationale: str
+    candidates: list[VisualSceneCandidate] = Field(min_length=1, max_length=4)
+    recommended_candidate_id: str
+    recommended_included: bool
+    recommended_duration_s: int = Field(ge=1, le=10)
+    selected_candidate_id: str | None = None
+    included: bool | None = None
+    requested_duration_s: int | None = Field(default=None, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _candidate_choices_belong_to_this_rough_cut_row(self) -> VisualSceneChoice:
+        candidate_ids = {candidate.candidate_id for candidate in self.candidates}
+        if len(candidate_ids) != len(self.candidates):
+            raise ValueError("duplicate candidate_ids")
+        if any(candidate.rough_cut_order != self.rough_cut_order for candidate in self.candidates):
+            raise ValueError("candidate rough_cut_order must match the containing scene choice")
+        if self.recommended_candidate_id not in candidate_ids:
+            raise ValueError("recommended_candidate_id must belong to the scene choice")
+        if (
+            self.selected_candidate_id is not None
+            and self.selected_candidate_id not in candidate_ids
+        ):
+            raise ValueError("selected_candidate_id must belong to the scene choice")
+        decisions = (self.selected_candidate_id, self.included, self.requested_duration_s)
+        if any(value is None for value in decisions) and not all(
+            value is None for value in decisions
+        ):
+            raise ValueError("selected candidate, included, and duration must be set together")
+        return self
+
+
+class VisualPlan(BaseModel):
+    """Persisted visual proposal; confirmation is a user-only state transition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    proposal_hash: str = Field(min_length=64, max_length=64)
+    request_hash: str = Field(min_length=64, max_length=64)
+    beats: list[VisualBeatPlan] = Field(default_factory=list)
+    scene_choices: list[VisualSceneChoice] = Field(default_factory=list)
+    selection_hash: str | None = None
+    rough_cut_scene_count: int | None = Field(default=None, ge=1)
+    voice_total_frames: int | None = None
+    fps: float | None = None
+    confirmed_utc: str | None = None
+    parents: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _is_a_valid_plan_representation(self) -> VisualPlan:
+        has_beats = bool(self.beats)
+        has_scene_choices = bool(self.scene_choices)
+        if has_beats and has_scene_choices:
+            raise ValueError("visual plans must contain exactly one representation")
+        if not has_beats and not has_scene_choices:
+            # ``version`` is the persisted artifact revision, incremented by Board.save(),
+            # not a stable schema discriminator. It only makes this otherwise ambiguous
+            # empty-payload error actionable for callers constructing a v2 proposal.
+            if self.version == 2:
+                raise ValueError("v2 plans require non-empty scene_choices")
+            raise ValueError("v1 plans require non-empty beats")
+
+        if has_beats:
+            if self.rough_cut_scene_count is not None:
+                raise ValueError("v1 plans require rough_cut_scene_count to be None")
+        else:
+            if self.rough_cut_scene_count is None:
+                raise ValueError("v2 plans require rough_cut_scene_count")
+            if self.voice_total_frames is None or self.fps is None:
+                raise ValueError("v2 plans require voice_total_frames and fps")
+            rough_cut_orders = [choice.rough_cut_order for choice in self.scene_choices]
+            if len(rough_cut_orders) != len(set(rough_cut_orders)):
+                raise ValueError("duplicate rough_cut_order")
+            if rough_cut_orders != list(range(self.rough_cut_scene_count)):
+                raise ValueError("rough_cut_order sequence must match rough_cut_scene_count")
+            if self.confirmed_utc is not None and any(
+                choice.selected_candidate_id is None
+                or choice.included is None
+                or choice.requested_duration_s is None
+                for choice in self.scene_choices
+            ):
+                raise ValueError("confirmed v2 plan requires a selection for every scene choice")
+
+        candidate_ids = [
+            candidate.candidate_id for beat in self.beats for candidate in beat.candidates
+        ]
+        candidate_ids.extend(
+            candidate.candidate_id
+            for choice in self.scene_choices
+            for candidate in choice.candidates
+        )
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("duplicate candidate_ids")
+        return self
+
+
 class CutSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -461,6 +677,40 @@ class ContactSheetTile(BaseModel):
     scene_number: int = Field(ge=1)
     frame: int = Field(ge=0)  # sampled SOURCE frame (the segment window's middle)
     label: str
+    src_start_frame: int | None = Field(default=None, ge=0)
+    src_end_frame_exclusive: int | None = None
+    narration_excerpt: str = ""
+    rationale: str = ""
+    rough_cut_order: int | None = Field(default=None, ge=0)
+    description: str | None = None
+    requested_duration_s: int | None = Field(default=None, ge=1, le=10)
+    final_duration_frames: int | None = Field(default=None, ge=1)
+
+    @model_serializer(mode="wrap")
+    def _omit_null_v2_metadata(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Keep pre-v2 tile JSON and content hashes byte-compatible."""
+        data: dict[str, Any] = handler(self)
+        for field in (
+            "rough_cut_order",
+            "description",
+            "requested_duration_s",
+            "final_duration_frames",
+        ):
+            if data.get(field) is None:
+                data.pop(field, None)
+        return data
+
+    @model_validator(mode="after")
+    def _optional_source_range_is_end_exclusive(self) -> ContactSheetTile:
+        if (
+            self.src_start_frame is not None
+            and self.src_end_frame_exclusive is not None
+            and self.src_end_frame_exclusive <= self.src_start_frame
+        ):
+            raise ValueError("src_end_frame_exclusive must be > src_start_frame")
+        return self
 
 
 class ContactSheet(BaseModel):
@@ -539,7 +789,7 @@ class QaReport(BaseModel):
     parents: dict[str, str] = Field(default_factory=dict)
 
 
-BoardStatus = Literal["active", "failed", "complete"]
+BoardStatus = Literal["active", "failed", "complete", "cancelled"]
 
 
 class BoardMeta(BaseModel):
@@ -584,3 +834,9 @@ class BoardMeta(BaseModel):
     # content_hash — approval is content-aware, not just a stamp. Optional so every meta.json
     # written before this field existed still loads unchanged (pydantic default).
     script_approved_script_hash: str | None = None
+    # Gate C (contact-sheet checkpoint): optional for old boards. A matching sheet content
+    # hash, rather than a bare timestamp, is the only proof that the user approved the CURRENT
+    # contact sheet after a visual recut.
+    contact_sheet_gate: bool = False
+    contact_sheet_approved_utc: str | None = None
+    contact_sheet_approved_hash: str | None = None

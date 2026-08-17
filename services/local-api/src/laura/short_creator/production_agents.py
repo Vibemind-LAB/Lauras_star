@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from ..db.database import Database
 from .agents import AgentSpec
 from .board import Board
+from .board_models import SceneSelection, VisualPlan
 from .production_tools import ProductionDeps, build_production_tool_specs
 from .providers import AgentConfig, Stage, build_model_client
 
@@ -33,6 +34,47 @@ if TYPE_CHECKING:  # annotation only — never imported at runtime
 
 # Hard cap on the orchestrator's turn budget — a runaway-loop backstop (mirrors magentic.MAX_TURNS).
 MAX_TURNS = 30
+
+
+def _scene_selection_version(board: Board) -> int | None:
+    selection = board.load("scene_selection")
+    return selection.version if isinstance(selection, SceneSelection) else None
+
+
+def _new_pending_scene_selection(board: Board, initial_version: int | None) -> bool:
+    if not board.meta().scene_gate:
+        return False
+    selection = board.load("scene_selection")
+    return (
+        isinstance(selection, SceneSelection)
+        and selection.confirmed_utc is None
+        and selection.version != initial_version
+    )
+
+
+def _visual_plan_version(board: Board) -> int | None:
+    plan = board.load("visual_plan")
+    return plan.version if isinstance(plan, VisualPlan) else None
+
+
+def _new_pending_visual_plan(board: Board, initial_version: int | None) -> bool:
+    plan = board.load("visual_plan")
+    return (
+        isinstance(plan, VisualPlan)
+        and plan.confirmed_utc is None
+        and plan.version != initial_version
+    )
+
+
+def _new_pending_user_proposal(
+    board: Board,
+    initial_scene_selection_version: int | None,
+    initial_visual_plan_version: int | None,
+) -> bool:
+    """Whether this team turn persisted a new unconfirmed user proposal."""
+    return _new_pending_scene_selection(
+        board, initial_scene_selection_version
+    ) or _new_pending_visual_plan(board, initial_visual_plan_version)
 
 
 def production_agent_specs(language: str = "German") -> list[AgentSpec]:
@@ -196,18 +238,33 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
         ),
         AgentSpec(
             name="coding_agent",
-            description="Executes voice, cutlist and render — never changes content decisions.",
+            description=(
+                "Executes voice, visual-only recuts, cutlist and render — never changes "
+                "content decisions."
+            ),
             system_message=(
                 "You are the Coding Agent. You execute; you do not change content decisions made "
                 "by the Story Architect or Scene Author. Check board_status, then read the "
                 "storyline (get_storyline), script (get_script) and reviews (get_reviews) so you "
-                "know what you are rendering. Pipeline, strictly in order: "
-                "synthesize_script_voice -> build_cutlist -> save_contact_sheet -> "
-                "render_production. save_contact_sheet is the user's visual pre-render "
+                "know what you are rendering. PRESERVE-NARRATION BRANCH (this takes priority): "
+                "when the task or a user message asks to CHANGE VISUAL SELECTION while preserving "
+                "the approved narration, NEVER call synthesize_script_voice. Call "
+                "start_visual_recut exactly once. The persisted proposal must contain every "
+                "current Rough-Cut scene in Rough-Cut order, with 1-10 second recommendations. "
+                "STOP immediately after the Visual Plan tool receipt at its pending "
+                "visual-selection gate. "
+                "That path must never rewrite storyline, script, or voice. A framing-only change "
+                "calls build_cutlist with zoom=\"off\" and likewise must never call "
+                "synthesize_script_voice or rewrite storyline, script, or voice. NORMAL "
+                "PRODUCTION BRANCH: only for a new production or the board has no voice, follow "
+                "the pipeline strictly in order: synthesize_script_voice -> build_cutlist -> "
+                "save_contact_sheet -> render_production. save_contact_sheet is the user's "
+                "visual pre-render "
                 "checkpoint — NEVER skip it, and re-run it after EVERY build_cutlist call (a "
-                "cutlist save archives the current sheet). If the task or a user message says "
-                "to stop at the contact sheet, end after save_contact_sheet and report its "
-                "tiles instead of rendering. FRAMING LEVER: when the task or a user message "
+                "cutlist save archives the current sheet). When board_status reports the "
+                "contact-sheet gate enabled, STOP after save_contact_sheet and wait for the "
+                "user to approve that exact sheet before render_production. Gate-off legacy "
+                "boards continue through render as before. When the task or a user message "
                 "asks for the full frame / no tight zoom (e.g. 'zeig das volle Bild', 'kein "
                 "Zoom'), call build_cutlist with zoom=\"off\" — it drops every roi and zoom "
                 "timing regardless of the storyline's window references; the storyline does "
@@ -237,6 +294,7 @@ def production_agent_specs(language: str = "German") -> list[AgentSpec]:
                 "get_reviews",
                 "suggest_scenes_for_script",
                 "synthesize_script_voice",
+                "start_visual_recut",
                 "build_cutlist",
                 "save_contact_sheet",
                 "render_production",
@@ -289,6 +347,7 @@ def build_production_team(
     stage: Stage = "A",
     deps: ProductionDeps | None = None,
     agent_names: tuple[str, ...] | None = None,
+    follow_up: bool = False,
 ) -> MagenticOneGroupChat:
     """Assemble the v2 production Magentic-One team (roster + orchestrator model client).
 
@@ -305,9 +364,14 @@ def build_production_team(
     a one-agent QA team cannot hold any write-capable creative tool. An unknown name is a
     programmer error (a caller misspelled a roster name), so it raises immediately rather than
     silently building a smaller-than-intended team.
+
+    A user follow-up caps the coding agent at one tool iteration. This returns control to the
+    team boundary immediately after a mutating recut tool, where the persisted gate termination
+    condition can stop the run before a second model call.
     """
     try:
         from autogen_agentchat.agents import AssistantAgent
+        from autogen_agentchat.conditions import FunctionalTermination
         from autogen_agentchat.teams import MagenticOneGroupChat
         from autogen_core.tools import FunctionTool
     except ImportError as exc:
@@ -318,7 +382,8 @@ def build_production_team(
 
     # Validate agent_names FIRST — fail fast on a misspelled roster name before spending work on
     # tool_specs/tools_by_name/model_client, which an unknown name would only throw away.
-    specs_all = production_agent_specs(board.meta().language)
+    board_meta = board.meta()
+    specs_all = production_agent_specs(board_meta.language)
     if agent_names is not None:
         known = {s.name for s in specs_all}
         unknown = [n for n in agent_names if n not in known]
@@ -342,9 +407,31 @@ def build_production_team(
             tools=[tools_by_name[n] for n in spec.tool_names if n in tools_by_name],
             description=spec.description,
             system_message=spec.system_message,
-            max_tool_iterations=spec.max_tool_iterations,
+            max_tool_iterations=(
+                1
+                if (follow_up and spec.name == "coding_agent")
+                or (board_meta.scene_gate and spec.name == "story_architect")
+                else spec.max_tool_iterations
+            ),
         )
         for spec in specs_all
     ]
     orchestrator = build_model_client(config, role="orchestrator", stage=stage)
-    return MagenticOneGroupChat(participants=agents, model_client=orchestrator, max_turns=MAX_TURNS)
+    initial_scene_selection_version = _scene_selection_version(board)
+    initial_visual_plan_version = _visual_plan_version(board)
+    pending_user_gate_termination = FunctionalTermination(
+        lambda _messages: (
+            deps is not None
+            and deps.cancel_requested is not None
+            and deps.cancel_requested()
+        )
+        or _new_pending_user_proposal(
+            board, initial_scene_selection_version, initial_visual_plan_version
+        )
+    )
+    return MagenticOneGroupChat(
+        participants=agents,
+        model_client=orchestrator,
+        termination_condition=pending_user_gate_termination,
+        max_turns=MAX_TURNS,
+    )

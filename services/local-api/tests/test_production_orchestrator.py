@@ -181,12 +181,11 @@ def test_task_text_contains_contract_and_resume(tmp_path: Path) -> None:
     assert "viral arc" in fresh.lower()
     assert "do not redo" in fresh.lower()
     assert "scene_reviews:1" in fresh  # fresh board -> scene 1 not reviewed yet
-    # The contact-sheet checkpoint is part of the mandatory order AND documented as the known
-    # steer-by-message pattern (stop at the Kontaktbogen / render later) — no session state.
+    # The contact-sheet checkpoint is a persisted gate, not a steer-by-message convention.
     assert "save_contact_sheet" in fresh
-    assert "Kontaktbogen" in fresh
-    assert "dann stopp" in fresh
-    assert "render jetzt" in fresh
+    assert "CONTACT-SHEET APPROVAL GATE" in fresh
+    assert "STOP after the current sheet is persisted" in fresh
+    assert "contact_sheet_hash" in fresh
 
     board.save_scene_review(_review(1))
     board.save(
@@ -1292,6 +1291,69 @@ def test_parse_outcome_empty_result_gives_empty_summary(tmp_path: Path) -> None:
     outcome = _parse_outcome(board, SimpleNamespace(messages=[]), stage="A")
 
     assert outcome.summary == ""
+
+
+def test_parse_outcome_base_group_chat_max_turns_hard_fails(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("still waiting")],
+        stop_reason="Maximum number of turns 30 reached.",
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=3)
+
+    assert outcome.status == "hard_fail"
+    assert "Maximum number of turns 30 reached" in outcome.summary
+
+
+@pytest.mark.parametrize("stop_reason", ["Max rounds reached.", "mAx RoUnDs ReAcHeD."])
+def test_parse_outcome_magentic_max_rounds_hard_fails(
+    tmp_path: Path, stop_reason: str
+) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("still waiting")],
+        stop_reason=stop_reason,
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=3)
+
+    assert outcome.status == "hard_fail"
+    assert outcome.summary == stop_reason
+
+
+def test_parse_outcome_functional_termination_stays_ok(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("proposal saved")],
+        stop_reason="Functional termination condition met",
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=1)
+
+    assert outcome.status == "ok"
+    assert outcome.summary == "proposal saved"
+
+
+def test_parse_outcome_unrelated_max_round_reason_stays_ok(tmp_path: Path) -> None:
+    from laura.short_creator.production_orchestrator import _parse_outcome
+
+    board = _make_board(tmp_path)
+    result = SimpleNamespace(
+        messages=[_SummaryMsg("proposal saved")],
+        stop_reason="Max round-trip latency reached.",
+    )
+
+    outcome = _parse_outcome(board, result, stage="A", tool_calls=1)
+
+    assert outcome.status == "ok"
+    assert outcome.summary == "proposal saved"
 
 
 # --- follow-up guards (live finding 2026-08-04) --------------------------------------------------

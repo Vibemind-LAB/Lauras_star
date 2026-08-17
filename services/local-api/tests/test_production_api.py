@@ -316,8 +316,13 @@ def test_get_production_status_shape(tmp_path: Path) -> None:
         "degraded_scenes": [],
     }
     assert set(body["artifacts"]) == {
-        "scene_selection", "storyline", "script", "voice", "cutlist",
-        "contact_sheet", "render_report", "qa_report",
+        "storyline",
+        "script",
+        "voice",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
     }
     # Fresh board, no expected scenes resolvable (no rough cut) -> first chain artifact.
     assert body["resume_point"] == "storyline"
@@ -362,7 +367,18 @@ def test_get_production_status_carries_contact_sheet_details(tmp_path: Path) -> 
     assert sheet["version"] == 1
     assert sheet["png_path"] == str(png)
     assert sheet["labeled"] is True
-    assert sheet["tiles"] == [{"order": 0, "scene_number": 1, "frame": 30, "label": "0 S1"}]
+    assert sheet["tiles"] == [
+        {
+            "order": 0,
+            "scene_number": 1,
+            "frame": 30,
+            "label": "0 S1",
+            "src_start_frame": None,
+            "src_end_frame_exclusive": None,
+            "narration_excerpt": "",
+            "rationale": "",
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------

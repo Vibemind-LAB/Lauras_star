@@ -103,7 +103,12 @@ def _review(scene_number: int = 1) -> SceneReview:
     )
 
 
-def _proposal(scene_number: int = 1, *, confirmed: bool = False) -> SceneSelection:
+def _proposal(
+    scene_number: int = 1,
+    *,
+    confirmed: bool = False,
+    rationale: str = "starker hook",
+) -> SceneSelection:
     return SceneSelection(
         candidates=[
             SceneCandidate(
@@ -113,7 +118,7 @@ def _proposal(scene_number: int = 1, *, confirmed: bool = False) -> SceneSelecti
                 thumb_frame=SCENE_FRAMES // 2,
                 description="dashboard",
                 transcript_snippet="hallo welt schauen wir uns das dashboard an",
-                rationale="starker hook",
+                rationale=rationale,
                 recommended=True,
             )
         ],
@@ -139,13 +144,15 @@ def _make_board(db: Database, asset_id: str, session_id: str, *, scene_gate: boo
 
 
 def test_run_awaiting_selection_never_spawns_team(tmp_path: Path) -> None:
-    """Proposal on the board, unconfirmed, no message -> no execute call, awaiting summary."""
+    """A failed board with a pending proposal resumes as an active, healthy park."""
     db, asset_id = _seed_scene(tmp_path)
     config = providers.resolve_from_env({})
     board = _make_board(db, asset_id, "sess-scene-gate", scene_gate=True)
     board.save_scene_review(_review(1))
     board.save("scene_selection", _proposal())
+    board.set_status("failed")
     assert board.resume_point([1]) == "scene_selection"
+    assert board.meta().status == "failed"
 
     calls: list[str] = []
 
@@ -170,12 +177,14 @@ def test_run_awaiting_selection_never_spawns_team(tmp_path: Path) -> None:
     )
 
     assert calls == []
+    assert result["status"] == "awaiting_user_input"
     assert result["resume_point"] == "scene_selection"
     assert "scene selection" in result["summary"]
     assert result["ok"] is True
     assert result["complete"] is False
-    # the run is a healthy park, not a failure — the board must stay "active"
+    # The run is a healthy park, so both persisted and returned lifecycle state are active.
     assert board.meta().status == "active"
+    assert result["board"]["meta"]["status"] == "active"
 
 
 def test_run_confirmed_selection_runs_the_team(tmp_path: Path) -> None:
@@ -225,14 +234,15 @@ def test_run_confirmed_selection_runs_the_team(tmp_path: Path) -> None:
     assert result["resume_point"] != "scene_selection"
 
 
-def test_run_awaiting_selection_with_message_still_runs_the_team(tmp_path: Path) -> None:
-    """A follow-up ``message`` IS a request for a team turn — the gate pause is for a plain
-    resume only (same rule the full-restore short-circuit and deterministic_eligible use)."""
+def test_pending_selection_revision_runs_once_then_parks_again(tmp_path: Path) -> None:
+    """A follow-up reopens a completed board, revises once, then parks active at Gate S."""
     db, asset_id = _seed_scene(tmp_path)
     config = providers.resolve_from_env({})
     board = _make_board(db, asset_id, "sess-scene-gate-msg", scene_gate=True)
     board.save_scene_review(_review(1))
     board.save("scene_selection", _proposal())
+    board.set_status("complete")
+    assert board.meta().status == "complete"
 
     calls: list[tuple[str, str]] = []
 
@@ -244,10 +254,11 @@ def test_run_awaiting_selection_with_message_still_runs_the_team(tmp_path: Path)
         task: str,
     ) -> orchestrator.StageOutcome:
         calls.append((stage, kind))
+        board.save("scene_selection", _proposal(rationale="revised hook"))
         return orchestrator.StageOutcome(
             status="ok",
             weak=False,
-            summary="done",
+            summary="proposal revised",
             team=cast(orchestrator.TeamKind, kind),
             stage=cast(providers.Stage, stage),
         )
@@ -264,7 +275,53 @@ def test_run_awaiting_selection_with_message_still_runs_the_team(tmp_path: Path)
     )
 
     assert calls == [("A", "magentic")]
+    assert result["status"] == "awaiting_user_input"
     assert result["resume_point"] == "scene_selection"
+    assert result["ok"] is True
+    assert board.meta().status == "active"
+    assert result["board"]["meta"]["status"] == "active"
+
+
+def test_new_pending_proposal_parks_without_stage_b_retry(tmp_path: Path) -> None:
+    db, asset_id = _seed_scene(tmp_path)
+    config = providers.resolve_from_env({})
+    board = _make_board(db, asset_id, "sess-live-loop", scene_gate=True)
+    board.save_scene_review(_review(1))
+    calls: list[str] = []
+
+    def execute(
+        db: Database,
+        config: providers.AgentConfig,
+        stage: str,
+        kind: str,
+        task: str,
+    ) -> orchestrator.StageOutcome:
+        calls.append(stage)
+        board.save("scene_selection", _proposal())
+        return orchestrator.StageOutcome(
+            status="hard_fail",
+            weak=True,
+            summary="Maximum number of turns 30 reached.",
+            team=cast(orchestrator.TeamKind, kind),
+            stage=cast(providers.Stage, stage),
+        )
+
+    result = production_orchestrator.run_production(
+        db,
+        config,
+        asset_id=asset_id,
+        session_id="sess-live-loop",
+        task="demo",
+        target_seconds=60,
+        execute=execute,
+    )
+
+    assert calls == ["A"]
+    assert result["status"] == "awaiting_user_input"
+    assert result["ok"] is True
+    assert result["complete"] is False
+    assert result["resume_point"] == "scene_selection"
+    assert board.meta().status == "active"
 
 
 def test_run_gate_off_board_unaffected(tmp_path: Path) -> None:

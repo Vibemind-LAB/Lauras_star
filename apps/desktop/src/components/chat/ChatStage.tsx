@@ -98,6 +98,11 @@ function errorText(e: unknown): string {
 
 export interface ChatStageProps {
   client: LauraClient;
+  /** The top bar's currently selected project, if any — a fresh conversation is bound to it at
+   *  creation time (see `onNew`) so it never starts unbound while a project is visibly selected
+   *  (live incident 2026-08-07: an unbound chat couldn't recognize a loosely mentioned project
+   *  name and misread it as a Google-Drive URL request). */
+  projectId?: string | null;
 }
 
 /**
@@ -109,7 +114,7 @@ export interface ChatStageProps {
  * reloaded wholesale, so an in-flight production card's own poll is never interrupted), whether
  * a turn is in flight (disables the composer), and the preview pane's target.
  */
-export function ChatStage({ client }: ChatStageProps): ReactElement {
+export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -192,14 +197,14 @@ export function ChatStage({ client }: ChatStageProps): ReactElement {
   const onNew = useCallback((): void => {
     void (async () => {
       try {
-        const { id } = await client.createConversation();
+        const { id } = await client.createConversation(projectId ?? undefined);
         await reloadConversations();
         setActiveId(id);
       } catch (e) {
         setError(errorText(e));
       }
     })();
-  }, [client, reloadConversations]);
+  }, [client, projectId, reloadConversations]);
 
   const onDelete = useCallback(
     (id: string): void => {

@@ -73,8 +73,17 @@ def test_downstream_of() -> None:
     # scene_reviews sits above the whole chain, including its Gate-S root: a scene review
     # change potentially invalidates the candidates any scene_selection was built from.
     assert downstream_of("scene_reviews") == (
-        "scene_selection", "storyline", "script", "voice", "cutlist",
-        "contact_sheet", "render_report", "qa_report")
+        "scene_selection",
+        "storyline",
+        "script",
+        "voice",
+        "visual_recut_request",
+        "visual_plan",
+        "cutlist",
+        "contact_sheet",
+        "render_report",
+        "qa_report",
+    )
     assert downstream_of("cutlist") == ("contact_sheet", "render_report", "qa_report")
     assert downstream_of("contact_sheet") == ("render_report", "qa_report")
     assert downstream_of("qa_report") == ()

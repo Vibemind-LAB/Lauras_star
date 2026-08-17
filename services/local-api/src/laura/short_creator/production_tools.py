@@ -109,6 +109,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -140,6 +141,8 @@ from .board_models import (
     Script,
     ScriptLine,
     Storyline,
+    VisualPlan,
+    VisualRecutRequest,
     VoiceArtifact,
     VoiceSegment,
     as_scene_window,
@@ -154,9 +157,17 @@ from .brain_tools import brain_root, read_brain_note, search_second_brain
 from .describe import DescribeBackend, resolve_describe_backend
 from .script_match import match_lines_to_scenes
 from .toolset import RENDER_WAIT_SECONDS, ToolSpec
+from .visual_candidates import (
+    InsufficientVisualCandidates,
+    SceneMaterial,
+    TranscriptSpan,
+    build_rough_cut_visual_plan,
+)
+from .visual_timeline import resolve_selected_shots, voice_total_frames
 from .voice import VoiceBackend, resolve_voice_backend
 from .voice_concat import (
     INTER_SCENE_GAP_S,
+    LAST_SEGMENT_CUSHION_S,
     concat_with_gaps,
     line_offsets,
     merge_word_timings,
@@ -240,14 +251,6 @@ _VOICE_FIT_TOLERANCE_S = 0.05
 # few hundredths of a second of intentional headroom, not error — 0.05s left no margin for
 # either and made voice_fits fail deterministically on an otherwise-correct render.
 _SEGMENTS_VOICE_FIT_TOLERANCE_S = 0.15
-# The LAST cutlist segment (per-line/segments path only) gets this much EXTRA picture beyond
-# what its own clip(s) measure, clamped to the scene's own capacity. ``-shortest`` at mux time
-# always trims the delivered file to the (shorter) voice track, so the extra picture never
-# lengthens the film — it only protects the last word's tail from a probe/round-trip mismatch
-# (the probed voice duration includes container padding an exact frame-rounded video does not)
-# that would otherwise make voice_fits fail on an otherwise-correct cut. See build_cutlist's
-# per-scene-voice branch and the spec's §5.2 note.
-_LAST_SEGMENT_CUSHION_S = 0.3
 # A hard cap on real renders per production — the net for a loop that keeps revising for a
 # reason the budget fix cannot remove (a QA verdict, the model second-guessing itself). One
 # render plus one revise round is the charter; past that, render_production ships the last cut
@@ -316,6 +319,19 @@ class ProductionDeps:
     # follow_up_render_cap(board) for a run carrying an explicit user follow-up message — the
     # cap exists to stop the team's own revision loops, never an operator-requested change.
     max_render_cycles: int | None = None
+    cancel_requested: Callable[[], bool] | None = None
+
+
+@dataclass(frozen=True)
+class _ContactSheetVisualMetadata:
+    src_start_frame: int
+    src_end_frame_exclusive: int
+    narration_excerpt: str
+    rationale: str
+    rough_cut_order: int | None = None
+    description: str | None = None
+    requested_duration_s: int | None = None
+    final_duration_frames: int | None = None
 
 
 # --- reply parsing + clamping (pure) ------------------------------------------------------------
@@ -680,6 +696,97 @@ def _resolve_scene(db: Database, asset_id: str, scene_number: int) -> tuple[int,
     in_scene = context._segments_in_ranges(segments, ranges)
     text = " ".join(str(seg.get("text") or "").strip() for seg in in_scene).strip()
     return src_start, src_end_exclusive, text
+
+
+def _scene_materials(
+    db: Database, asset_id: str, reviews: list[SceneReview]
+) -> list[SceneMaterial]:
+    """All rough-cut scenes with source-frame transcript spans for visual-plan generation."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return []
+    timeline = repos.get_or_create_asset_rough_cut(db, str(asset["project_id"]), asset_id)
+    scenes = repos.list_scenes(db, str(timeline["id"]))
+    clips = repos.list_timeline_clips(db, str(timeline["id"]))
+    run = repos.get_latest_transcript_run(db, asset_id)
+    transcript = repos.get_transcript(db, asset_id, str(run["id"])) if run is not None else []
+    reviews_by_scene = {review.scene_number: review for review in reviews}
+    materials: list[SceneMaterial] = []
+    for scene in scenes:
+        scene_number = int(scene["order_index"]) + 1
+        ranges = context._scene_src_ranges(
+            clips,
+            seq_in=int(scene["seq_in_frame"]),
+            seq_out_exclusive=int(scene["seq_out_frame_exclusive"]),
+        )
+        if not ranges:
+            continue
+        in_scene = context._segments_in_ranges(transcript, ranges)
+        spans = tuple(
+            TranscriptSpan(
+                start_frame=int(segment["start_frame"]),
+                end_frame_exclusive=int(segment["end_frame"]),
+                text=str(segment.get("text") or "").strip(),
+            )
+            for segment in in_scene
+            if segment.get("start_frame") is not None
+            and segment.get("end_frame") is not None
+            and int(segment["end_frame"]) > int(segment["start_frame"])
+        )
+        review = reviews_by_scene.get(scene_number)
+        materials.append(
+            SceneMaterial(
+                scene_number=scene_number,
+                src_start_frame=ranges[0][0],
+                src_end_frame_exclusive=ranges[-1][1],
+                description=review.description if review is not None else "",
+                transcript=" ".join(span.text for span in spans).strip(),
+                transcript_spans=spans,
+                review=review,
+            )
+        )
+    return materials
+
+
+def _rough_cut_source_hash(db: Database, asset_id: str) -> str | None:
+    """Hash the ordered Rough-Cut scene boundaries and every mapped source range."""
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        return None
+    timeline = repos.get_asset_rough_cut(db, str(asset["project_id"]), asset_id)
+    if timeline is None:
+        return None
+    clips = repos.list_timeline_clips(db, str(timeline["id"]))
+    scenes = sorted(
+        repos.list_scenes(db, str(timeline["id"])),
+        key=lambda scene: int(scene["order_index"]),
+    )
+    identity: list[dict[str, Any]] = []
+    for scene in scenes:
+        ranges = context._scene_src_ranges(
+            clips,
+            seq_in=int(scene["seq_in_frame"]),
+            seq_out_exclusive=int(scene["seq_out_frame_exclusive"]),
+        )
+        if not ranges:
+            return None
+        identity.append(
+            {
+                "rough_cut_order": int(scene["order_index"]),
+                "seq_in_frame": int(scene["seq_in_frame"]),
+                "seq_out_frame_exclusive": int(scene["seq_out_frame_exclusive"]),
+                "source_ranges": [[int(start), int(end)] for start, end in ranges],
+            }
+        )
+    if not identity:
+        return None
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _expected_scenes(db: Database, asset_id: str) -> list[int]:
@@ -2548,6 +2655,154 @@ def build_production_tool_specs(
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
 
+    def start_visual_recut(
+        user_request: str, framing_mode: str = "full_frame_blur"
+    ) -> dict[str, Any]:
+        """Start a visual-only recut while preserving storyline, script and voice exactly.
+
+        Builds one deterministic choice row for every current Rough-Cut scene, then stops
+        for the user's visual selection. Only full-frame blur
+        framing is supported; narration artifacts are never saved or invalidated by this tool.
+        """
+        try:
+            if framing_mode != "full_frame_blur":
+                return {"ok": False, "reason": 'framing_mode must be "full_frame_blur"'}
+            storyline = board.load("storyline")
+            script = board.load("script")
+            voice = board.load("voice")
+            if not isinstance(storyline, Storyline):
+                return {"ok": False, "reason": "no storyline on the board"}
+            if not isinstance(script, Script):
+                return {"ok": False, "reason": "no script on the board"}
+            if not isinstance(voice, VoiceArtifact):
+                return {"ok": False, "reason": "no voice on the board"}
+            if voice.segments is None:
+                return {
+                    "ok": False,
+                    "reason": (
+                        "visual recut requires a segmented voice; run "
+                        "synthesize_script_voice first"
+                    ),
+                }
+            ordered_lines = _lines_in_storyline_order(script, storyline)
+            if voice.script_hash and voice.script_hash != script_hash(ordered_lines):
+                return {
+                    "ok": False,
+                    "reason": "voice was synthesized from a different script",
+                }
+            request = VisualRecutRequest(
+                user_request=user_request,
+                framing_mode="full_frame_blur",
+                script_version=script.version,
+                script_hash=_content_hash(script),
+                voice_version=voice.version,
+                voice_hash=_content_hash(voice),
+                parents={
+                    "script": _content_hash(script),
+                    "voice": _content_hash(voice),
+                },
+            )
+            current_request = board.load("visual_recut_request")
+            current_plan = board.load("visual_plan")
+            current_v2_inputs: tuple[float, list[SceneMaterial], str | None, int] | None = (
+                None
+            )
+            if (
+                isinstance(current_request, VisualRecutRequest)
+                and isinstance(current_plan, VisualPlan)
+                and current_plan.confirmed_utc is None
+                and current_request.model_dump(exclude={"version"})
+                == request.model_dump(exclude={"version"})
+            ):
+                if current_plan.scene_choices:
+                    asset = repos.get_asset(db, asset_id)
+                    current_fps = _fps(db, asset) if asset is not None else 30.0
+                    current_materials = _scene_materials(
+                        db, asset_id, board.scene_reviews()
+                    )
+                    current_rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+                    current_total_frames = voice_total_frames(voice, current_fps)
+                    current_v2_inputs = (
+                        current_fps,
+                        current_materials,
+                        current_rough_cut_hash,
+                        current_total_frames,
+                    )
+                    expected_parents = {
+                        "visual_recut_request": _content_hash(request),
+                        "script": _content_hash(script),
+                        "voice": _content_hash(voice),
+                        "rough_cut": current_rough_cut_hash,
+                    }
+                    if (
+                        current_materials
+                        and current_rough_cut_hash is not None
+                        and current_plan.parents == expected_parents
+                        and current_plan.fps == current_fps
+                        and current_plan.voice_total_frames == current_total_frames
+                        and current_plan.rough_cut_scene_count
+                        == len(current_materials)
+                    ):
+                        return {
+                            "ok": True,
+                            "status": "awaiting_user_input",
+                            "proposal_id": current_plan.proposal_hash,
+                            "scene_choices": [
+                                choice.model_dump()
+                                for choice in current_plan.scene_choices
+                            ],
+                        }
+                else:
+                    return {
+                        "ok": True,
+                        "status": "awaiting_user_input",
+                        "proposal_id": current_plan.proposal_hash,
+                        "beats": [beat.model_dump() for beat in current_plan.beats],
+                    }
+            if current_v2_inputs is None:
+                asset = repos.get_asset(db, asset_id)
+                fps = _fps(db, asset) if asset is not None else 30.0
+                materials = _scene_materials(db, asset_id, board.scene_reviews())
+                rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+                total_frames = voice_total_frames(voice, fps)
+            else:
+                fps, materials, rough_cut_hash, total_frames = current_v2_inputs
+            if not materials:
+                return {"ok": False, "reason": "no rough-cut scene material available"}
+            if rough_cut_hash is None:
+                return {"ok": False, "reason": "no Rough-Cut source ranges available"}
+            plan = build_rough_cut_visual_plan(
+                request=request,
+                scenes=materials,
+                narration_text=" ".join(line.text for line in ordered_lines),
+                voice_total_frames=total_frames,
+                fps=fps,
+            ).model_copy(
+                update={
+                    "parents": {
+                        "visual_recut_request": _content_hash(request),
+                        "script": _content_hash(script),
+                        "voice": _content_hash(voice),
+                        "rough_cut": rough_cut_hash,
+                    }
+                }
+            )
+            board.save("visual_recut_request", request)
+            board.save("visual_plan", plan)
+            board.clear_contact_sheet_approval(enable_gate=True)
+            return {
+                "ok": True,
+                "status": "awaiting_user_input",
+                "proposal_id": plan.proposal_hash,
+                "scene_choices": [choice.model_dump() for choice in plan.scene_choices],
+            }
+        except InsufficientVisualCandidates as exc:
+            return {"ok": False, "reason": str(exc)}
+        except (ValidationError, ValueError) as exc:
+            return {"ok": False, "reason": str(exc)[:200]}
+        except Exception as exc:  # tool must never kill the agent loop
+            return {"ok": False, "reason": str(exc)[:200]}
+
     def build_cutlist(transition_lead_s: float = 0.4, zoom: str = "auto") -> dict[str, Any]:
         """Deterministically derive a frame-accurate cutlist from storyline + script + voice:
         one CutSegment per scene entry in arc order (chapter, then that chapter's
@@ -2628,6 +2883,216 @@ def build_production_tool_specs(
                         "the voice on the board was synthesized from a DIFFERENT script than "
                         "the current one — run synthesize_script_voice first so the cut and "
                         "the narration agree"
+                    ),
+                }
+            visual_request = board.load("visual_recut_request")
+            if isinstance(visual_request, VisualRecutRequest):
+                visual_plan = board.load("visual_plan")
+                if not isinstance(visual_plan, VisualPlan) or visual_plan.confirmed_utc is None:
+                    return {"ok": False, "reason": "visual plan confirmation required"}
+                if voice.segments is None:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "visual recut requires a segmented voice; run "
+                            "synthesize_script_voice first"
+                        ),
+                    }
+                current_script_hash = _content_hash(script)
+                current_voice_hash = _content_hash(voice)
+                if (
+                    visual_request.script_version != script.version
+                    or visual_request.script_hash != current_script_hash
+                    or visual_request.voice_version != voice.version
+                    or visual_request.voice_hash != current_voice_hash
+                ):
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "visual recut request does not match the current script and voice; "
+                            "start_visual_recut again"
+                        ),
+                    }
+                expected_plan_parents = {
+                    "visual_recut_request": _content_hash(visual_request),
+                    "script": current_script_hash,
+                    "voice": current_voice_hash,
+                }
+                if visual_plan.scene_choices:
+                    current_rough_cut_hash = _rough_cut_source_hash(db, asset_id)
+                    if current_rough_cut_hash is None:
+                        return {
+                            "ok": False,
+                            "reason": "current Rough-Cut source ranges are unavailable",
+                        }
+                    expected_plan_parents["rough_cut"] = current_rough_cut_hash
+                if visual_plan.parents != expected_plan_parents:
+                    return {
+                        "ok": False,
+                        "reason": (
+                            "visual plan does not match the current script, voice, or Rough-Cut; "
+                            "start_visual_recut again"
+                        ),
+                    }
+                if visual_plan.scene_choices:
+                    if visual_plan.fps != fps:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                "visual plan frame rate does not match the current project; "
+                                "start_visual_recut again"
+                            ),
+                        }
+                    current_voice_total_frames = voice_total_frames(voice, fps)
+                    if visual_plan.voice_total_frames != current_voice_total_frames:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                "visual plan Voice frame projection is stale; "
+                                "start_visual_recut again"
+                            ),
+                        }
+                    resolved_shots = resolve_selected_shots(visual_plan)
+                    v2_segments: list[CutSegment] = []
+                    for order, shot in enumerate(resolved_shots):
+                        candidate_width = (
+                            shot.src_end_frame_exclusive - shot.src_start_frame
+                        )
+                        if shot.final_frames > candidate_width:
+                            return {
+                                "ok": False,
+                                "reason": (
+                                    f"selected visual candidate {shot.candidate_id} is too short "
+                                    "for its resolved duration"
+                                ),
+                            }
+                        start_frame = shot.src_start_frame
+                        v2_segments.append(
+                            CutSegment(
+                                order=order,
+                                scene_number=shot.scene_number,
+                                start_frame=start_frame,
+                                end_frame_exclusive=start_frame + shot.final_frames,
+                                roi=None,
+                                zoom_start_s=None,
+                            )
+                        )
+                    board.save(
+                        "cutlist",
+                        Cutlist(
+                            segments=v2_segments,
+                            script_hash=script_hash(ordered_lines),
+                            parents={
+                                "script": current_script_hash,
+                                "voice": current_voice_hash,
+                                "visual_plan": _content_hash(visual_plan),
+                            },
+                        ),
+                    )
+                    return {
+                        "ok": True,
+                        "segments": len(v2_segments),
+                        "total_seconds": round(
+                            sum(
+                                (segment.end_frame_exclusive - segment.start_frame) / fps
+                                for segment in v2_segments
+                            ),
+                            3,
+                        ),
+                        "with_zoom": 0,
+                        "note": (
+                            "full-frame visual recut: every roi and zoom_start_s dropped — "
+                            "the render uses blur fill"
+                        ),
+                    }
+                voice_indices = [beat.voice_segment_index for beat in visual_plan.beats]
+                if voice_indices != list(range(len(voice.segments))):
+                    return {
+                        "ok": False,
+                        "reason": "visual plan beats must follow voice segment order",
+                    }
+                visual_segments: list[CutSegment] = []
+                for order, beat in enumerate(visual_plan.beats):
+                    if beat.selected_candidate_id is None:
+                        return {"ok": False, "reason": "visual plan confirmation required"}
+                    selected = next(
+                        (
+                            candidate
+                            for candidate in beat.candidates
+                            if candidate.candidate_id == beat.selected_candidate_id
+                        ),
+                        None,
+                    )
+                    if selected is None:
+                        return {"ok": False, "reason": "selected visual candidate is missing"}
+                    if (
+                        selected.beat_id != beat.beat_id
+                        or selected.voice_segment_index != beat.voice_segment_index
+                    ):
+                        return {
+                            "ok": False,
+                            "reason": "selected visual candidate does not match its beat",
+                        }
+                    voice_segment = voice.segments[beat.voice_segment_index]
+                    contains_last_clip = beat.voice_segment_index == len(voice.segments) - 1
+                    duration_s = voice_segment.duration_s
+                    duration_s += (
+                        LAST_SEGMENT_CUSHION_S
+                        if contains_last_clip
+                        else INTER_SCENE_GAP_S
+                    )
+                    duration_frames = max(1, round(duration_s * fps))
+                    capacity_frames = (
+                        selected.src_end_frame_exclusive - selected.src_start_frame
+                    )
+                    if duration_frames > capacity_frames:
+                        return {
+                            "ok": False,
+                            "reason": (
+                                f"selected visual candidate for {beat.beat_id} is too short for "
+                                "its voice segment"
+                            ),
+                        }
+                    start_frame = min(
+                        selected.src_start_frame,
+                        selected.src_end_frame_exclusive - duration_frames,
+                    )
+                    visual_segments.append(
+                        CutSegment(
+                            order=order,
+                            scene_number=selected.scene_number,
+                            start_frame=start_frame,
+                            end_frame_exclusive=start_frame + duration_frames,
+                            roi=None,
+                            zoom_start_s=None,
+                        )
+                    )
+                board.save(
+                    "cutlist",
+                    Cutlist(
+                        segments=visual_segments,
+                        script_hash=script_hash(ordered_lines),
+                        parents={
+                            "script": current_script_hash,
+                            "voice": current_voice_hash,
+                            "visual_plan": _content_hash(visual_plan),
+                        },
+                    ),
+                )
+                return {
+                    "ok": True,
+                    "segments": len(visual_segments),
+                    "total_seconds": round(
+                        sum(
+                            (segment.end_frame_exclusive - segment.start_frame) / fps
+                            for segment in visual_segments
+                        ),
+                        3,
+                    ),
+                    "with_zoom": 0,
+                    "note": (
+                        "full-frame visual recut: every roi and zoom_start_s dropped — "
+                        "the render uses blur fill"
                     ),
                 }
             # VS3: a voice with per-line segments (VS2) sizes each cutlist segment to its OWN
@@ -2787,7 +3252,7 @@ def build_production_tool_specs(
                             # src_end. ``-shortest`` always trims delivery to the (shorter)
                             # voice, so this never lengthens the film — it only protects the
                             # probe-vs-frame-rounding gap voice_fits checks against.
-                            want = min(want + _LAST_SEGMENT_CUSHION_S, capacity)
+                            want = min(want + LAST_SEGMENT_CUSHION_S, capacity)
                         durations.append(want)
                 else:
                     audio_window = audio_windows.get(chapter.chapter)
@@ -2898,15 +3363,78 @@ def build_production_tool_specs(
                 }
             rate_num, rate_den = rate
 
-            tiles = [
-                ContactSheetTile(
-                    order=s.order,
-                    scene_number=s.scene_number,
-                    frame=s.start_frame + (s.end_frame_exclusive - s.start_frame) // 2,
-                    label=f"{s.order} S{s.scene_number}",
-                )
-                for s in sorted(cutlist.segments, key=lambda s: s.order)
-            ]
+            selected_by_order: dict[int, _ContactSheetVisualMetadata] = {}
+            visual_request = board.load("visual_recut_request")
+            if isinstance(visual_request, VisualRecutRequest):
+                visual_plan = board.load("visual_plan")
+                if isinstance(visual_plan, VisualPlan):
+                    if visual_plan.scene_choices:
+                        for tile_order, shot in enumerate(
+                            resolve_selected_shots(visual_plan)
+                        ):
+                            choice = visual_plan.scene_choices[shot.rough_cut_order]
+                            selected_scene_candidate = next(
+                                candidate
+                                for candidate in choice.candidates
+                                if candidate.candidate_id == shot.candidate_id
+                            )
+                            selected_by_order[tile_order] = _ContactSheetVisualMetadata(
+                                src_start_frame=shot.src_start_frame,
+                                src_end_frame_exclusive=shot.src_end_frame_exclusive,
+                                narration_excerpt=choice.transcript,
+                                rationale=selected_scene_candidate.rationale,
+                                rough_cut_order=shot.rough_cut_order,
+                                description=choice.description,
+                                requested_duration_s=choice.requested_duration_s,
+                                final_duration_frames=shot.final_frames,
+                            )
+                    else:
+                        for beat_order, beat in enumerate(visual_plan.beats):
+                            selected_beat_candidate = next(
+                                (
+                                    candidate
+                                    for candidate in beat.candidates
+                                    if candidate.candidate_id == beat.selected_candidate_id
+                                ),
+                                None,
+                            )
+                            if selected_beat_candidate is not None:
+                                selected_by_order[beat_order] = _ContactSheetVisualMetadata(
+                                    src_start_frame=selected_beat_candidate.src_start_frame,
+                                    src_end_frame_exclusive=(
+                                        selected_beat_candidate.src_end_frame_exclusive
+                                    ),
+                                    narration_excerpt=beat.narration_text,
+                                    rationale=selected_beat_candidate.rationale,
+                                )
+            tiles: list[ContactSheetTile] = []
+            for segment in sorted(cutlist.segments, key=lambda item: item.order):
+                metadata = selected_by_order.get(segment.order)
+                if metadata is None:
+                    tile = ContactSheetTile(
+                        order=segment.order,
+                        scene_number=segment.scene_number,
+                        frame=segment.start_frame
+                        + (segment.end_frame_exclusive - segment.start_frame) // 2,
+                        label=f"{segment.order} S{segment.scene_number}",
+                    )
+                else:
+                    tile = ContactSheetTile(
+                        order=segment.order,
+                        scene_number=segment.scene_number,
+                        frame=segment.start_frame
+                        + (segment.end_frame_exclusive - segment.start_frame) // 2,
+                        label=f"{segment.order} S{segment.scene_number}",
+                        src_start_frame=metadata.src_start_frame,
+                        src_end_frame_exclusive=metadata.src_end_frame_exclusive,
+                        narration_excerpt=metadata.narration_excerpt,
+                        rationale=metadata.rationale,
+                        rough_cut_order=metadata.rough_cut_order,
+                        description=metadata.description,
+                        requested_duration_s=metadata.requested_duration_s,
+                        final_duration_frames=metadata.final_duration_frames,
+                    )
+                tiles.append(tile)
             cols, rows = _grid_shape(len(tiles))
             out_dir = board.root.parent / "contact_sheets"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -2978,7 +3506,9 @@ def build_production_tool_specs(
                 "cols": cols,
                 "rows": rows,
                 "labeled": labeled,
-                "tiles": [t.model_dump() for t in tiles],
+                "tiles": [
+                    t.model_dump(exclude_none=True, exclude_defaults=True) for t in tiles
+                ],
             }
         except Exception as exc:  # tool must never kill the agent loop
             return {"ok": False, "reason": str(exc)[:200]}
@@ -3039,6 +3569,17 @@ def build_production_tool_specs(
                     "ok": False,
                     "reason": "no storyline on the board; run save_storyline first",
                 }
+
+            meta = board.meta()
+            if meta.contact_sheet_gate:
+                contact_sheet = board.load("contact_sheet")
+                approved = (
+                    isinstance(contact_sheet, ContactSheet)
+                    and meta.contact_sheet_approved_utc is not None
+                    and meta.contact_sheet_approved_hash == _content_hash(contact_sheet)
+                )
+                if not approved:
+                    return {"ok": False, "reason": "contact sheet approval required"}
 
             # Revision cap: once this production has rendered render_cap times, do not spend
             # another render. Ship the last one instead. An upstream re-save may have
@@ -3354,6 +3895,7 @@ def build_production_tool_specs(
         get_script,
         suggest_scenes_for_script,
         synthesize_script_voice,
+        start_visual_recut,
         build_cutlist,
         save_contact_sheet,
         render_production,
@@ -3366,4 +3908,39 @@ def build_production_tool_specs(
     if brain_root() is not None:
         funcs.append(search_second_brain)
         funcs.append(read_brain_note)
-    return [ToolSpec(name=f.__name__, description=(f.__doc__ or "").strip(), func=f) for f in funcs]
+    mutating_names = {
+        "review_scene",
+        "propose_scene_selection",
+        "save_storyline",
+        "save_script_chapter",
+        "set_board_language",
+        "synthesize_script_voice",
+        "start_visual_recut",
+        "build_cutlist",
+        "save_contact_sheet",
+        "render_production",
+        "save_qa_report",
+        "revert_artifact",
+    }
+
+    def cancel_guard(func: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+        @wraps(func)
+        def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            if d.cancel_requested is not None and d.cancel_requested():
+                return {
+                    "ok": False,
+                    "status": "cancelled",
+                    "reason": "user requested cancellation",
+                }
+            return func(*args, **kwargs)
+
+        return guarded
+
+    return [
+        ToolSpec(
+            name=func.__name__,
+            description=(func.__doc__ or "").strip(),
+            func=cancel_guard(func) if func.__name__ in mutating_names else func,
+        )
+        for func in funcs
+    ]
