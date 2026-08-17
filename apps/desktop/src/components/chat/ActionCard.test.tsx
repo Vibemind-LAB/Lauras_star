@@ -1102,7 +1102,7 @@ describe("ActionCard — Gate S (scene checkpoint)", () => {
     // The card's own `client` (not the tile card's own confirm-prop default) fielded the POST —
     // no `confirm` prop was passed at the ActionCard wiring site, so this proves the wiring uses
     // the real client method, not a test-only override.
-    expect(confirmSceneSelection).toHaveBeenCalledWith("s1", [2]);
+    expect(confirmSceneSelection).toHaveBeenCalledWith("s1", [2], undefined);
     expect(getProductionStatus).toHaveBeenCalledTimes(2);
     // The tile picker is gone (scene_gate.pending is now false) and the card resumed narrating
     // live for the NEW job the confirm's resume enqueued, instead of going stale.

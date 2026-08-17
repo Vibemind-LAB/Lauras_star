@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 
 import type { LauraClient, SceneGateStatus } from "../../api";
 
@@ -50,7 +50,11 @@ export interface SceneSelectionCardProps {
   sessionId: string;
   client: LauraClient;
   /** Overridable for tests; defaults to the real confirm call. */
-  confirm?: (sessionId: string, sceneNumbers: number[]) => Promise<unknown>;
+  confirm?: (
+    sessionId: string,
+    sceneNumbers: number[],
+    selectionVersion?: number,
+  ) => Promise<unknown>;
   /** Fires after a successful confirm — the caller's job is to refresh the session's status so
    * this card's own `gate.pending` goes false and it stops rendering. */
   onConfirmed: () => void;
@@ -73,8 +77,27 @@ export function SceneSelectionCard({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const doConfirm = confirm ?? ((sid: string, nums: number[]) => client.confirmSceneSelection(sid, nums));
+  const doConfirm =
+    confirm ??
+    ((sid: string, nums: number[], version?: number) =>
+      client.confirmSceneSelection(sid, nums, version));
   const picked = useMemo(() => [...selected].sort((a, b) => a - b), [selected]);
+
+  // The agent can replace its proposal while this card stays mounted — the user asks for other
+  // scenes, propose_scene_selection runs again, new candidates arrive. useState's initializer
+  // runs once, so the pre-selection would stay pinned to the FIRST proposal: scene numbers this
+  // proposal no longer offers stay checked (the confirm then names scenes that are not on the
+  // board) and the new recommendation is not checked at all. Re-arm whenever the proposed set
+  // itself changes; an ordinary re-render with the same candidates leaves the user's own
+  // toggles alone.
+  const proposalKey = candidates.map((c) => `${c.scene_number}:${c.recommended ? 1 : 0}`).join(",");
+  const armedFor = useRef(proposalKey);
+  useEffect(() => {
+    if (armedFor.current === proposalKey) return;
+    armedFor.current = proposalKey;
+    setSelected(new Set(candidates.filter((c) => c.recommended).map((c) => c.scene_number)));
+    setError(null);
+  }, [proposalKey, candidates]);
 
   const toggle = (n: number): void => {
     if (busy) return;
@@ -91,7 +114,9 @@ export function SceneSelectionCard({
     setBusy(true);
     setError(null);
     try {
-      await doConfirm(sessionId, picked);
+      // The version of the proposal these tiles came from — the backend refuses the confirm if
+      // the agent has replaced the proposal since it was rendered.
+      await doConfirm(sessionId, picked, gate.selection_version);
       onConfirmed();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Bestätigung fehlgeschlagen");

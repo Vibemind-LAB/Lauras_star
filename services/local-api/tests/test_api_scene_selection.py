@@ -148,6 +148,52 @@ def test_confirm_dedupes_and_sorts_scene_numbers(tmp_path: Path, monkeypatch: An
     assert sel.selected_scene_numbers == [2, 5]
 
 
+def test_confirm_refuses_a_version_the_board_has_moved_past(tmp_path: Path) -> None:
+    # The user reads proposal v1 and picks scene 2. Before the confirm lands, the agent
+    # re-proposes: same asset, so scene numbers still exist and the stray check sees nothing
+    # wrong — the pick would be applied verbatim to a candidate list the user never saw.
+    db = _db(tmp_path)
+    asset_id = _seed(db, tmp_path)
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    board.save(
+        "scene_selection",
+        SceneSelection(candidates=[_candidate(n, recommended=n == 3) for n in (2, 3)]),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        confirm_scene_selection(db, "sess-1", [2], selection_version=1)
+    assert exc.value.status_code == 409
+    assert "changed" in str(exc.value.detail)
+
+    sel = Board.open(board_root_for(db, asset_id, "sess-1")).load("scene_selection")
+    assert isinstance(sel, SceneSelection)
+    assert sel.confirmed_utc is None  # refused, not half-applied
+
+
+def test_confirm_accepts_the_version_it_was_shown(tmp_path: Path, monkeypatch: Any) -> None:
+    _fake_resume(monkeypatch)
+    db = _db(tmp_path)
+    asset_id = _seed(db, tmp_path)
+    board = Board.open(board_root_for(db, asset_id, "sess-1"))
+    selection = board.load("scene_selection")
+    assert isinstance(selection, SceneSelection)
+
+    out = confirm_scene_selection(db, "sess-1", [2], selection_version=selection.version)
+
+    assert out["selected"] == [2]
+
+
+def test_confirm_without_a_version_still_takes_the_board_as_it_is(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # The chat path confirms on the user's behalf and has no rendered proposal to quote.
+    _fake_resume(monkeypatch)
+    db = _db(tmp_path)
+    _seed(db, tmp_path)
+
+    assert confirm_scene_selection(db, "sess-1", [2])["selected"] == [2]
+
+
 def test_confirm_rejects_stray_scene(tmp_path: Path) -> None:
     db = _db(tmp_path)
     _seed(db, tmp_path)

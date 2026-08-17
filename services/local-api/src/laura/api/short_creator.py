@@ -122,6 +122,10 @@ class ProductionRevertRequest(BaseModel):
 
 class SceneSelectionConfirmRequest(BaseModel):
     scene_numbers: list[int]
+    # The proposal version the picker was showing — see confirm_scene_selection. Optional so
+    # older clients (and agent-side confirms, which have no screen to read a version off) keep
+    # working exactly as before.
+    selection_version: int | None = None
 
 
 class VisualSceneSelectionRequest(BaseModel):
@@ -1036,11 +1040,23 @@ def _guard_production_not_busy(
 
 
 def confirm_scene_selection(
-    db: Database, session_id: str, scene_numbers: list[int]
+    db: Database,
+    session_id: str,
+    scene_numbers: list[int],
+    *,
+    selection_version: int | None = None,
 ) -> dict[str, Any]:
     """Server-side Gate-S confirmation (spec 2026-08-06 §4.4): stamps the user's pick on
     the scene_selection artifact and enqueues the resume run. The ONLY writer of
     ``confirmed_utc`` — chat and HTTP both land here.
+
+    ``selection_version`` is the version of the proposal the caller was LOOKING AT (served as
+    ``scene_gate.selection_version``). Passing it closes the window between reading a proposal
+    and confirming it: the agent can replace the proposal in between, and scene numbers are
+    stable per asset, so a pick made against the old candidate list would otherwise be accepted
+    verbatim against the new one — the stray check cannot see the difference. Omitted means
+    "whatever is on the board now", which is what a caller with no version to quote (an agent
+    acting on the user's behalf) genuinely means.
 
     The busy check mirrors :func:`run_production_revert`'s own inline guard exactly (same
     ``latest_job_id`` -> ``repos.get_job`` -> status check) rather than importing
@@ -1058,6 +1074,12 @@ def confirm_scene_selection(
     if not isinstance(selection, SceneSelection):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "no scene proposal on the board yet"
+        )
+    if selection_version is not None and selection_version != selection.version:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"the scene proposal changed (you confirmed version {selection_version}, the board "
+            f"is at {selection.version}) — look at the new proposal and pick again",
         )
     picked = sorted(set(int(n) for n in scene_numbers))
     if not picked:
@@ -1476,7 +1498,12 @@ def confirm_scene_selection_endpoint(
     principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
 ) -> dict[str, Any]:
     """Confirm the user's Gate-S scene pick. See :func:`confirm_scene_selection`."""
-    return confirm_scene_selection(_db(request), session_id, body.scene_numbers)
+    return confirm_scene_selection(
+        _db(request),
+        session_id,
+        body.scene_numbers,
+        selection_version=body.selection_version,
+    )
 
 
 @router.post(

@@ -12,6 +12,7 @@ const gate: SceneGateStatus = {
   enabled: true,
   pending: true,
   confirmed: false,
+  selection_version: 3,
   recommended: [2],
   candidates: [
     {
@@ -64,7 +65,8 @@ describe("SceneSelectionCard", () => {
     expect(screen.getByTestId("scene-tile-5").getAttribute("data-selected")).toBe("false");
     fireEvent.click(screen.getByTestId("scene-tile-5"));
     fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
-    expect(confirm).toHaveBeenCalledWith("s1", [2, 5]);
+    // the version the tiles were rendered from travels with the confirm
+    expect(confirm).toHaveBeenCalledWith("s1", [2, 5], 3);
   });
 
   it("refuses to confirm an empty selection", () => {
@@ -118,5 +120,66 @@ describe("SceneSelectionCard", () => {
       resolveConfirm({ session_id: "s1" });
       await pending;
     })();
+  });
+  it("re-arms the pre-selection when the agent proposes a different set of scenes", () => {
+    const confirm = vi.fn().mockResolvedValue({ session_id: "s1" });
+    const view = render(
+      <SceneSelectionCard
+        gate={gate}
+        assetId="a1"
+        sessionId="s1"
+        client={client()}
+        confirm={confirm}
+        onConfirmed={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("scene-tile-5")); // user's own toggle on THIS proposal
+
+    // The user asks for other scenes; propose_scene_selection runs again and the card — still
+    // mounted — receives a new candidate set. Scene 5 is gone entirely, scene 7 is the new
+    // recommendation. Pinning the first proposal's pre-selection would confirm scene 5, which
+    // is no longer on the board.
+    const reproposed: SceneGateStatus = {
+      ...gate,
+      selection_version: 4,
+      recommended: [7],
+      candidates: [
+        { ...gate.candidates![0], scene_number: 7, recommended: true },
+        { ...gate.candidates![1], scene_number: 9, recommended: false },
+      ],
+    };
+    view.rerender(
+      <SceneSelectionCard
+        gate={reproposed}
+        assetId="a1"
+        sessionId="s1"
+        client={client()}
+        confirm={confirm}
+        onConfirmed={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("scene-tile-7").getAttribute("data-selected")).toBe("true");
+    expect(screen.getByTestId("scene-tile-9").getAttribute("data-selected")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: /Auswahl übernehmen/ }));
+    expect(confirm).toHaveBeenCalledWith("s1", [7], 4);
+  });
+
+  it("leaves the user's toggles alone on a re-render with the same proposal", () => {
+    const confirm = vi.fn().mockResolvedValue({ session_id: "s1" });
+    const props = {
+      gate,
+      assetId: "a1",
+      sessionId: "s1",
+      client: client(),
+      confirm,
+      onConfirmed: () => {},
+    };
+    const view = render(<SceneSelectionCard {...props} />);
+    fireEvent.click(screen.getByTestId("scene-tile-2")); // deselect Laura's pick
+
+    view.rerender(<SceneSelectionCard {...props} gate={{ ...gate }} />);
+
+    expect(screen.getByTestId("scene-tile-2").getAttribute("data-selected")).toBe("false");
   });
 });

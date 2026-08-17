@@ -1,9 +1,11 @@
-export type Stage = "chat" | "download" | "import" | "roughcut" | "finecut" | "assemble" | "shorts" | "export";
+export type Stage = "chat" | "media" | "roughcut" | "finecut" | "assemble" | "shorts" | "export";
 export interface StageMeta { id: Stage; label: string; }
+// "media" replaced the separate Download and Import stages: Import already did everything
+// Download did (URL import, the same gallery) plus search/filter/sort, format and cookie
+// options and file/folder pickers — two tabs for one job, one of them strictly poorer.
 export const STAGES: readonly StageMeta[] = [
   { id: "chat", label: "💬 Chat" },
-  { id: "download", label: "Download" },
-  { id: "import", label: "Import" },
+  { id: "media", label: "Medien" },
   { id: "roughcut", label: "Rough Cut" },
   { id: "finecut", label: "Feinschnitt" },
   { id: "assemble", label: "Zusammenfügen" },

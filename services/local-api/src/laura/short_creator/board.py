@@ -746,6 +746,10 @@ class Board:
             ),
         }
         if isinstance(selection, SceneSelection):
+            # The version the reader is looking AT. A confirm may quote it back so a proposal
+            # replaced between reading and confirming is refused instead of silently applying
+            # the old pick to the new candidate list.
+            scene_gate["selection_version"] = selection.version
             scene_gate["candidates"] = [c.model_dump() for c in selection.candidates]
             scene_gate["recommended"] = [
                 c.scene_number for c in selection.candidates if c.recommended

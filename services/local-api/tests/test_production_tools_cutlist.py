@@ -324,6 +324,62 @@ def test_line_starts_maps_tokens_to_word_times() -> None:
     assert starts == {(1, 1): 0.0, (1, 2): 1.5}
 
 
+def _three_lines() -> list[ScriptLine]:
+    return [
+        ScriptLine(chapter=1, scene_number=1, text="Stopp dein Team"),
+        ScriptLine(chapter=1, scene_number=2, text="Ein Klick"),
+        ScriptLine(chapter=2, scene_number=3, text="Fertig"),
+    ]
+
+
+def test_line_starts_follows_the_line_stamp_across_a_line_without_timings() -> None:
+    # A per-line synthesis whose backend returned no timings for line 2: merge_word_timings
+    # contributes NO words for it. Counting tokens forward would hand line 2 the word "Fertig"
+    # (start 4.0) and leave line 3 with nothing — anchoring scene 2's zoom to scene 3's
+    # narration and dropping scene 3's entirely. The stamp keeps both honest.
+    lines = _three_lines()
+    words = [
+        {"text": "Stopp", "start_s": 0.0, "end_s": 0.3, "line": 0},
+        {"text": "dein", "start_s": 0.4, "end_s": 0.7, "line": 0},
+        {"text": "Team", "start_s": 0.8, "end_s": 1.3, "line": 0},
+        {"text": "Fertig", "start_s": 4.0, "end_s": 4.6, "line": 2},
+    ]
+
+    assert line_starts(lines, words) == {(1, 1): 0.0, (2, 3): 4.0}
+
+
+def test_chapter_audio_windows_follow_the_line_stamp_too() -> None:
+    lines = _three_lines()
+    words = [
+        {"text": "Stopp", "start_s": 0.0, "end_s": 0.3, "line": 0},
+        {"text": "dein", "start_s": 0.4, "end_s": 0.7, "line": 0},
+        {"text": "Team", "start_s": 0.8, "end_s": 1.3, "line": 0},
+        {"text": "Fertig", "start_s": 4.0, "end_s": 4.6, "line": 2},
+    ]
+
+    windows = chapter_audio_windows(lines, words, tail_s=0.5)
+
+    # Chapter 1 ends and chapter 2 begins at the midpoint of the gap between 1.3 and 4.0.
+    assert windows[1] == pytest.approx((0.0, 2.65))
+    assert windows[2] == pytest.approx((2.65, 5.1))
+
+
+def test_words_without_a_line_stamp_still_walk_by_token_count() -> None:
+    # A single-track sidecar straight from a voice backend carries no stamps; the legacy walk
+    # is what those boards were cut with and must stay byte-identical.
+    lines = _three_lines()
+    words = [
+        {"text": "Stopp", "start_s": 0.0, "end_s": 0.3},
+        {"text": "dein", "start_s": 0.4, "end_s": 0.7},
+        {"text": "Team", "start_s": 0.8, "end_s": 1.3},
+        {"text": "Ein", "start_s": 1.5, "end_s": 1.7},
+        {"text": "Klick", "start_s": 1.9, "end_s": 2.3},
+        {"text": "Fertig", "start_s": 4.0, "end_s": 4.6},
+    ]
+
+    assert line_starts(lines, words) == {(1, 1): 0.0, (1, 2): 1.5, (2, 3): 4.0}
+
+
 def test_synthesize_uses_cache_on_same_hash(tmp_path: Path) -> None:
     db, asset_id = _seed_two_scenes(tmp_path)
     board = _board(tmp_path, asset_id)

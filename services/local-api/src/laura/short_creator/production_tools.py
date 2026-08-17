@@ -957,17 +957,49 @@ def silent_seconds_share(script: Script, storyline: Storyline | None) -> tuple[l
 script_hash = _script_hash
 
 
+def words_by_line(
+    lines: list[ScriptLine], words: list[dict[str, Any]]
+) -> list[list[dict[str, Any]]]:
+    """``words`` split per entry of ``lines`` — the one place that decides which words a line
+    owns, so ``line_starts`` and ``chapter_audio_windows`` can never disagree about it.
+
+    A sidecar built by :func:`voice_concat.merge_word_timings` stamps every word with the index
+    of the line it was synthesised from; that index is authoritative and is used verbatim. It
+    has to be: a per-line synthesis whose backend returned no timings for one line contributes
+    NO words for it, and the fallback below would then hand every later line the previous
+    line's words — a silent, cumulative mis-attribution of every zoom anchor and chapter window
+    after the gap, with nothing failing.
+
+    Without the stamp (a single-track sidecar straight from a voice backend) the stream is
+    assumed to be the whitespace tokens of exactly ``script_text(lines)``, in order, and each
+    line claims as many words as it has tokens. A line the stream runs out before reaching
+    claims nothing.
+    """
+    if any("line" in word for word in words):
+        claimed: list[list[dict[str, Any]]] = [[] for _ in lines]
+        for word in words:
+            index = word.get("line")
+            if isinstance(index, int) and 0 <= index < len(claimed):
+                claimed[index].append(word)
+        return claimed
+    out: list[list[dict[str, Any]]] = []
+    idx = 0
+    for line in lines:
+        n_tokens = len(line.text.split())
+        out.append(words[idx : idx + n_tokens])
+        idx += n_tokens
+    return out
+
+
 def line_starts(
     lines: list[ScriptLine], words: list[dict[str, Any]]
 ) -> dict[tuple[int, int], float]:
     """Each line's ``(chapter, scene_number)`` mapped to its FIRST word's ``start_s``.
 
-    ``words`` (a voice backend's timings sidecar) are assumed to be the whitespace tokens of
-    exactly :func:`script_text` of these SAME ``lines``, in the SAME order — so each line
-    "claims" as many words as it has whitespace-split tokens, walking the shared word stream
-    forward in that order. A line is absent from the result if the word stream runs out before
-    reaching it (e.g. a sidecar shorter than the script) — callers treat a missing entry as "no
-    known start" (skip the zoom for that line).
+    Which words a line owns is :func:`words_by_line`'s decision. A line is absent from the
+    result if it owns no words (a sidecar shorter than the script, or a line the voice backend
+    returned no timings for) — callers treat a missing entry as "no known start" (skip the zoom
+    for that line).
 
     Two lines can share a ``(chapter, scene_number)`` key (a scene spoken by multiple lines,
     identity-paired into one cutlist segment by VS3) — the FIRST line's start wins, never a
@@ -976,13 +1008,10 @@ def line_starts(
     zoom entirely, if the later time falls too close to the segment's end).
     """
     out: dict[tuple[int, int], float] = {}
-    idx = 0
-    for line in lines:
-        n_tokens = len(line.text.split())
+    for line, claimed in zip(lines, words_by_line(lines, words), strict=True):
         key = (line.chapter, line.scene_number)
-        if n_tokens and idx < len(words) and key not in out:
-            out[key] = _as_float(words[idx].get("start_s"), 0.0)
-        idx += n_tokens
+        if claimed and key not in out:
+            out[key] = _as_float(claimed[0].get("start_s"), 0.0)
     return out
 
 
@@ -1324,10 +1353,10 @@ def chapter_audio_windows(
     """Each chapter's share of the continuous voice track, as ``{chapter: (start_s, end_s)}``
     windows tiling the track from 0.0 to voice end + ``tail_s``.
 
-    The word stream is walked exactly like :func:`line_starts` (each line claims as many words
-    as it has whitespace tokens, in ``ordered_lines`` order — pass the storyline-ordered lines),
-    giving each chapter a raw extent from its first claimed word's ``start_s`` to its last
-    claimed word's ``end_s``. The boundary between two adjacent chapters is the MIDPOINT of the
+    Each line's words come from :func:`words_by_line`, exactly as in :func:`line_starts` (pass
+    the storyline-ordered lines), giving each chapter a raw extent from its first claimed word's
+    ``start_s`` to its last claimed word's ``end_s``. The boundary between two adjacent chapters
+    is the MIDPOINT of the
     gap between them (the inter-chapter pause belongs half to each side); the first chapter
     starts at 0.0 and the last runs to the voice end plus ``tail_s`` of breathing room.
 
@@ -1340,11 +1369,7 @@ def chapter_audio_windows(
         return {}
     extents: dict[int, tuple[float, float]] = {}
     chapter_order: list[int] = []
-    idx = 0
-    for line in ordered_lines:
-        n_tokens = len(line.text.split())
-        claimed = words[idx : idx + n_tokens]
-        idx += n_tokens
+    for line, claimed in zip(ordered_lines, words_by_line(ordered_lines, words), strict=True):
         if not claimed:
             continue
         start = _as_float(claimed[0].get("start_s"), 0.0)

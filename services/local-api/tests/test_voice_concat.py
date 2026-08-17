@@ -35,16 +35,19 @@ def test_merge_word_timings_shifts_by_offset() -> None:
     )
     assert merged == {
         "words": [
-            {"text": "hallo", "start_s": 0.0, "end_s": 0.4},
-            {"text": "welt", "start_s": 2.45, "end_s": 2.85},
+            {"text": "hallo", "start_s": 0.0, "end_s": 0.4, "line": 0},
+            {"text": "welt", "start_s": 2.45, "end_s": 2.85, "line": 1},
         ]
     }
 
 
 def test_merge_skips_missing_line_timings() -> None:
+    # The surviving word keeps its OWN line index (1) — this stamp is the only thing that tells
+    # the cutlist readers a line contributed nothing, instead of them counting tokens forward
+    # and handing line 0 this word.
     merged = merge_word_timings([[], [{"text": "x", "start_s": 0.0, "end_s": 0.2}]],
                                 offsets=[0.0, 1.0])
-    assert merged == {"words": [{"text": "x", "start_s": 1.0, "end_s": 1.2}]}
+    assert merged == {"words": [{"text": "x", "start_s": 1.0, "end_s": 1.2, "line": 1}]}
 
 
 def test_concat_with_gaps_duration(tmp_path: Path) -> None:

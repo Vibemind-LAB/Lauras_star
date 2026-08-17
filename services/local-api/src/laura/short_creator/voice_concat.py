@@ -49,15 +49,22 @@ def merge_word_timings(
 
     A line without timings contributes nothing (captions there fall back to the render's
     even-spread) — never a reason to fail the voice.
+
+    Every word carries the index of the line it came from. That index is what makes a gappy
+    sidecar readable: the readers downstream (``line_starts``, ``chapter_audio_windows``) used
+    to re-derive line boundaries by counting each line's whitespace tokens forward through the
+    stream, which silently mis-attributes EVERY word after the first line that contributed
+    none — wrong zoom anchors and wrong chapter audio windows, with nothing failing.
     """
     words: list[dict[str, Any]] = []
-    for line_words, offset in zip(per_line_words, offsets, strict=True):
+    for line_index, (line_words, offset) in enumerate(zip(per_line_words, offsets, strict=True)):
         for word in line_words:
             words.append(
                 {
                     "text": str(word.get("text", "")),
                     "start_s": float(word.get("start_s", 0.0)) + offset,
                     "end_s": float(word.get("end_s", 0.0)) + offset,
+                    "line": line_index,
                 }
             )
     return {"words": words}

@@ -14,7 +14,6 @@ import {
 } from "./api";
 import { AssembleView } from "./components/AssembleView";
 import { ChatStage } from "./components/chat/ChatStage";
-import { DownloadView } from "./components/DownloadView";
 import { DropZone, type ResolvedImport } from "./components/DropZone";
 import { ExportView } from "./components/ExportView";
 import { FineCutView } from "./components/FineCutView";
@@ -425,7 +424,7 @@ export function App(): ReactElement {
       {/* Import drag-and-drop only in Import/Download. Its window-level dragover
           listener otherwise pops the full-screen import overlay during clip/scene
           drags in Rough Cut / Feinschnitt / Zusammenfügen. */}
-      {(stage === "import" || stage === "download") && <DropZone onImport={onDropImport} />}
+      {stage === "media" && <DropZone onImport={onDropImport} />}
       <header className="flex items-center justify-between border-b border-bezel bg-surface-1 px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold tracking-tight text-content-strong">Laura</h1>
@@ -495,14 +494,19 @@ export function App(): ReactElement {
               >
                 + Anlegen
               </button>
-              <button
-                type="button"
-                onClick={() => void onCreateDemoProject()}
-                disabled={busy}
-                className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
-              >
-                Demo
-              </button>
+              {/* Synthetic 2s single-colour clips — useful for wiring checks, useless for real
+                  editing (they cannot even produce a rough cut). Dev builds only, so the
+                  project list a user sees is only ever their own material. */}
+              {import.meta.env.DEV && (
+                <button
+                  type="button"
+                  onClick={() => void onCreateDemoProject()}
+                  disabled={busy}
+                  className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong hover:bg-surface-2 disabled:opacity-40"
+                >
+                  Demo
+                </button>
+              )}
             </form>
             <JobCenter client={client} />
           </div>
@@ -550,18 +554,7 @@ export function App(): ReactElement {
             <ChatStage client={client} projectId={selectedProjectId} />
           )}
 
-          {stage === "download" && (client ? (
-            <DownloadView
-              client={client}
-              disabled={!selectedProjectId}
-              assets={assets}
-              onUrl={(u) => void runImport([], [u])}
-            />
-          ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-content-faint">Service offline — starte den lokalen Server.</div>
-          ))}
-
-          {stage === "import" && (client ? (
+          {stage === "media" && (client ? (
             <ImportView
               client={client}
               disabled={!selectedProjectId}

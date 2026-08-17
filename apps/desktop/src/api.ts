@@ -795,6 +795,10 @@ export interface SceneGateStatus {
   enabled: boolean;
   pending: boolean;
   confirmed: boolean;
+  /** Version of the proposal these candidates come from — quote it back when confirming so a
+   * proposal replaced in the meantime is refused instead of silently re-interpreting the pick.
+   * Absent on boards with no proposal yet. */
+  selection_version?: number;
   candidates?: SceneCandidate[];
   recommended?: number[];
   selected?: number[];
@@ -1170,13 +1174,23 @@ export class LauraClient {
    * heals a resume that may never have started), `already_current` marks a no-op re-confirm.
    * POST /production/{sessionId}/scene-selection:confirm {scene_numbers} -> 202
    */
+  /** `selectionVersion` is the `scene_gate.selection_version` the picker was showing; the
+   * backend refuses (409) if the agent has replaced the proposal since. Omit only when there is
+   * no displayed proposal to quote. */
   confirmSceneSelection(
     sessionId: string,
     sceneNumbers: number[],
+    selectionVersion?: number,
   ): Promise<{ session_id: string; job_id?: string; already_current?: boolean }> {
     return this.request<{ session_id: string; job_id?: string; already_current?: boolean }>(
       `/production/${sessionId}/scene-selection:confirm`,
-      { method: "POST", body: JSON.stringify({ scene_numbers: sceneNumbers }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          scene_numbers: sceneNumbers,
+          ...(selectionVersion === undefined ? {} : { selection_version: selectionVersion }),
+        }),
+      },
     );
   }
 
