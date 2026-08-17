@@ -69,3 +69,46 @@ describe("OpenSessionsPanel", () => {
     expect(onResume).toHaveBeenCalledWith(stale);
   });
 });
+
+describe("OpenSessionsPanel delete", () => {
+  it("asks before deleting and says the video survives", () => {
+    const onDelete = vi.fn();
+    render(
+      <OpenSessionsPanel sessions={[session()]} onResume={vi.fn()} onDelete={onDelete} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^Delete production/ }));
+    expect(onDelete).not.toHaveBeenCalled(); // one click only arms the confirm
+    expect(screen.getByText("the video stays")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete production" }));
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ session_id: "s1" }));
+  });
+
+  it("takes the confirmation back", () => {
+    const onDelete = vi.fn();
+    render(
+      <OpenSessionsPanel sessions={[session()]} onResume={vi.fn()} onDelete={onDelete} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^Delete production/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep" }));
+
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(screen.queryByText("the video stays")).toBeNull();
+  });
+
+  it("shows no delete affordance without a handler", () => {
+    render(<OpenSessionsPanel sessions={[session()]} onResume={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /Delete/ })).toBeNull();
+  });
+
+  it("caps its own height so a long list cannot push the conversations out of the sidebar", () => {
+    const many = Array.from({ length: 17 }, (_, i) => session({ session_id: `s${i}` }));
+    const { container } = render(<OpenSessionsPanel sessions={many} onResume={vi.fn()} />);
+
+    const list = container.querySelector(".overflow-y-auto");
+    expect(list?.className).toContain("max-h-");
+    expect(screen.getByText("17")).toBeTruthy(); // the count is visible without scrolling
+  });
+});

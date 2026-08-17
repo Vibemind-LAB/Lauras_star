@@ -2564,6 +2564,29 @@ def list_production_sessions(db: Database, asset_id: str) -> list[dict[str, Any]
         return [dict(r) for r in rows]
 
 
+def delete_production_session(db: Database, session_id: str) -> bool:
+    """Delete one production session row. False when there was nothing to delete.
+
+    The visual-selection draft is removed explicitly rather than leaning only on its
+    ``ON DELETE CASCADE`` — same reason as :func:`delete_conversation`: a connection that
+    forgot ``PRAGMA foreign_keys`` would otherwise leave a draft pointing at nothing.
+
+    Only the session's OWN rows: the asset, its files, scenes and transcripts belong to the
+    project and outlive every production made from them.
+    """
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM visual_selection_drafts WHERE session_id=?", (session_id,))
+        cur = conn.execute("DELETE FROM production_sessions WHERE session_id=?", (session_id,))
+        return cur.rowcount > 0
+
+
+def delete_export(db: Database, export_id: str) -> bool:
+    """Delete one export row (the file on disk is the caller's business)."""
+    with db.transaction() as conn:
+        cur = conn.execute("DELETE FROM exports WHERE id=?", (export_id,))
+        return cur.rowcount > 0
+
+
 def list_production_sessions_by_updated(db: Database) -> list[dict[str, Any]]:
     """List every production session by most recent resumable activity."""
     with db.connection() as conn:

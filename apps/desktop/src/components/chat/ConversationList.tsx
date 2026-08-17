@@ -11,6 +11,7 @@ export interface ConversationListProps {
   onDelete: (id: string) => void;
   openSessions?: OpenProductionSession[];
   onResume?: (session: OpenProductionSession) => void;
+  onDeleteProduction?: (session: OpenProductionSession) => void;
 }
 
 const rowBase =
@@ -109,10 +110,15 @@ export function ConversationList({
   onDelete,
   openSessions = [],
   onResume = () => undefined,
+  onDeleteProduction,
 }: ConversationListProps): ReactElement {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1 p-1.5">
-      <OpenSessionsPanel sessions={openSessions} onResume={onResume} />
+      <OpenSessionsPanel
+        sessions={openSessions}
+        onResume={onResume}
+        onDelete={onDeleteProduction}
+      />
       <button
         type="button"
         onClick={onNew}

@@ -1039,6 +1039,67 @@ def _guard_production_not_busy(
         )
 
 
+def delete_production_session(db: Database, session_id: str) -> dict[str, Any]:
+    """Delete a production and everything it produced. The input footage stays.
+
+    Removed: the run directory (board, its version archive, contact sheets), every export the
+    board's render reports name (row and file), every voice track its voice artifacts name, and
+    the session row itself (with its visual-selection draft).
+
+    Kept: the media asset and its files, the scenes, the transcript, the analyses, the project,
+    and the chat conversation the session was started from — a production is made FROM those,
+    it does not own them. The per-line voice cache under ``voiceovers/lines/`` is keyed by
+    content hash and shared between sessions, so it is left alone too.
+
+    Refuses while the session's own run is queued or running: deleting a board out from under a
+    live job leaves the job writing into a directory that no longer exists.
+    """
+    from ..short_creator.production_orchestrator import board_root_for
+    from ..short_creator.session_cleanup import (
+        collect_session_artifacts,
+        remove_files,
+        remove_tree,
+    )
+
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    _guard_production_not_busy(db, session, action="deleting the production")
+
+    asset = repos.get_asset(db, str(session["asset_id"]))
+    project = (
+        repos.get_project(db, str(asset["project_id"])) if asset is not None else None
+    )
+    exports_deleted: list[str] = []
+    files_deleted: list[str] = []
+    board_removed = False
+    if project is not None:
+        workspace_root = Path(str(project["workspace_root"]))
+        run_dir = board_root_for(db, str(session["asset_id"]), session_id).parent
+        artifacts = collect_session_artifacts(run_dir)
+        for export_id in sorted(artifacts.export_ids):
+            row = repos.get_export(db, export_id)
+            if row is None:
+                continue
+            path = row.get("path")
+            if isinstance(path, str) and path:
+                files_deleted.extend(remove_files({Path(path)}, workspace_root=workspace_root))
+            if repos.delete_export(db, export_id):
+                exports_deleted.append(export_id)
+        files_deleted.extend(
+            remove_files(artifacts.media_paths, workspace_root=workspace_root)
+        )
+        board_removed = remove_tree(run_dir, workspace_root=workspace_root)
+
+    repos.delete_production_session(db, session_id)
+    return {
+        "session_id": session_id,
+        "exports_deleted": exports_deleted,
+        "files_deleted": files_deleted,
+        "board_removed": board_removed,
+    }
+
+
 def confirm_scene_selection(
     db: Database,
     session_id: str,
@@ -1485,6 +1546,16 @@ def confirm_contact_sheet(
         if already_current:
             result["already_current"] = True
         return {**result, **run_production_resume(db, session_id)}
+
+
+@router.delete("/production/{session_id}")
+def delete_production_session_endpoint(
+    session_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Delete a production and everything it produced. See :func:`delete_production_session`."""
+    return delete_production_session(_db(request), session_id)
 
 
 @router.post(

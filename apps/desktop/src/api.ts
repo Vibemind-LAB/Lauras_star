@@ -1249,6 +1249,23 @@ export class LauraClient {
     return this.request<OpenProductionSession[]>("/production-sessions/open");
   }
 
+  /** Delete a production and everything it produced — its board, its renders, its voice. The
+   * video it was cut from, its scenes and its transcript stay: they belong to the project.
+   * Refused (409) while the session's own run is still going. */
+  deleteProductionSession(sessionId: string): Promise<{
+    session_id: string;
+    exports_deleted: string[];
+    files_deleted: string[];
+    board_removed: boolean;
+  }> {
+    return this.request<{
+      session_id: string;
+      exports_deleted: string[];
+      files_deleted: string[];
+      board_removed: boolean;
+    }>(`/production/${sessionId}`, { method: "DELETE" });
+  }
+
   /** Topic in, cross-video montage out: builds an overview sequence over the whole project
    * and enqueues its render. One-shot (no production session) — track `job_id` for the
    * render; the film lands as an export. POST /projects/{pid}/auto-overview -> 202. */

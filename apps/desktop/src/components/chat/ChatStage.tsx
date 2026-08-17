@@ -268,6 +268,26 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
     setResumedOrphan(session);
   }, []);
 
+  const onDeleteProduction = useCallback(
+    (session: OpenProductionSession): void => {
+      void (async () => {
+        try {
+          await client.deleteProductionSession(session.session_id);
+          // The list is polled, but waiting up to 2.5s for a row the user just deleted to
+          // disappear reads as "nothing happened" — drop it now and let the poll confirm.
+          setOpenSessions((current) =>
+            current.filter((s) => s.session_id !== session.session_id),
+          );
+          if (resumedOrphan?.session_id === session.session_id) setResumedOrphan(null);
+          await reloadOpenSessions();
+        } catch (e) {
+          setError(errorText(e));
+        }
+      })();
+    },
+    [client, reloadOpenSessions, resumedOrphan],
+  );
+
   const onDelete = useCallback(
     (id: string): void => {
       void (async () => {
@@ -369,7 +389,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[220px_1fr_380px] gap-px overflow-hidden bg-bezel">
-      <aside aria-label="Unterhaltungen" className="flex min-h-0 flex-col overflow-hidden bg-surface-0">
+      <aside aria-label="Conversations" className="flex min-h-0 flex-col overflow-hidden bg-surface-0">
         <ConversationList
           items={conversations}
           activeId={activeId}
@@ -378,6 +398,7 @@ export function ChatStage({ client, projectId }: ChatStageProps): ReactElement {
           onDelete={onDelete}
           openSessions={openSessions}
           onResume={onResume}
+          onDeleteProduction={onDeleteProduction}
         />
       </aside>
 
