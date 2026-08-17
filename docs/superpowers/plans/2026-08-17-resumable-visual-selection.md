@@ -307,7 +307,7 @@
 - Consumes: Task 1 Draft-Repositories, Task 2 Source-Freshness, `VisualSceneSelection`, `VisualPlan`, `Board.transaction`.
 - Produces: `VisualSelectionDraftView`, `default_visual_selections`, `read_visual_selection_draft`, `save_visual_selection_draft`, Draft GET/PUT, Draft im Produktionsstatus und Freshness-geschütztes Confirm.
 
-- [ ] **Step 1: Domain-Service-RED schreiben**
+- [x] **Step 1: Domain-Service-RED schreiben**
 
   Schreibe reine Service-Tests für:
 
@@ -326,13 +326,13 @@
   assert view.selections[0].candidate_id == plan.scene_choices[0].recommended_candidate_id
   ```
 
-- [ ] **Step 2: Domain-RED ausführen**
+- [x] **Step 2: Domain-RED ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_visual_selection_drafts.py -q`
 
   Expected: FAIL mit fehlendem Modul oder fehlenden Services.
 
-- [ ] **Step 3: Domain-Service minimal implementieren**
+- [x] **Step 3: Domain-Service minimal implementieren**
 
   Definiere:
 
@@ -377,7 +377,7 @@
 
   Der Service validiert zuerst Board/Plan/Quick-Freshness und ruft erst danach Task 1s CAS-Repository auf. Repository-Ausnahmen werden als Domain-Konflikt mit aktuellem View weitergegeben.
 
-- [ ] **Step 4: HTTP-RED für GET, PUT, Status und Restart schreiben**
+- [x] **Step 4: HTTP-RED für GET, PUT, Status und Restart schreiben**
 
   Die API-Matrix prüft:
 
@@ -391,7 +391,7 @@
   - `GET /production/{session_id}` trägt denselben Draft-Snapshot;
   - Autosave verändert `latest_job_id` nicht und legt keinen Job an.
 
-- [ ] **Step 5: Strikte DTOs und Draft-Endpoints implementieren**
+- [x] **Step 5: Strikte DTOs und Draft-Endpoints implementieren**
 
   ```python
   class VisualSelectionDraftRequest(BaseModel):
@@ -422,7 +422,7 @@
 
   Domain-Konflikte werden stabil auf `409` mit `{"code":"revision_conflict","current":{"revision":2,"selections":[]}}` abgebildet; Stale-Fehler auf `409` mit `{"code":"stale_visual_selection","reason":"source_content_changed"}`.
 
-- [ ] **Step 6: Confirm-Freshness- und Heal-RED schreiben**
+- [x] **Step 6: Confirm-Freshness- und Heal-RED schreiben**
 
   Ergänze Tests, die vor `confirm_visual_selection` die Quelldatei bei gleicher Größe verändern, den Board-Plan austauschen und einen bereits bestätigten Plan mit liegengebliebenem Draft simulieren. Erwartung:
 
@@ -431,11 +431,11 @@
   - bestätigter Plan plus Rest-Draft: idempotenter Read/Confirm entfernt Draft und heilt höchstens den bestehenden Resume-Pfad;
   - v1-Confirm bleibt unverändert.
 
-- [ ] **Step 7: Gemeinsame Confirm-Prüfung implementieren**
+- [x] **Step 7: Gemeinsame Confirm-Prüfung implementieren**
 
   Innerhalb des bestehenden `board.transaction()` wird für v2 vor `apply_scene_selections` die starke Task-2-Prüfung ausgeführt. Nach erfolgreichem `board.save` wird der Draft gelöscht; der bestehende Busy-Guard und `run_production_resume` bleiben die einzige Enqueue-Stelle. `_production_status_payload` liest Drafts nur bei pending v2.
 
-- [ ] **Step 8: API-/Confirm-GREEN ausführen**
+- [x] **Step 8: API-/Confirm-GREEN ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_visual_selection_drafts.py tests/test_api_visual_recut.py tests/test_production_api.py tests/test_production_tools_visual_recut.py -q`
 
@@ -445,7 +445,7 @@
 
   Expected: alle Befehle Exit 0.
 
-- [ ] **Step 9: Task 3 committen**
+- [x] **Step 9: Task 3 committen**
 
   ```bash
   git add services/local-api/src/laura/short_creator/visual_selection_drafts.py services/local-api/src/laura/api/short_creator.py services/local-api/tests/test_visual_selection_drafts.py services/local-api/tests/test_api_visual_recut.py services/local-api/tests/test_production_api.py

@@ -8,6 +8,7 @@ real production queue so ``latest_job_id`` proves that the endpoint enqueued a p
 from __future__ import annotations
 
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,9 +44,12 @@ from laura.short_creator.board_models import (
     VisualSceneSelection,
     VisualShotCandidate,
     VoiceArtifact,
+    VoiceSegment,
     content_hash,
 )
 from laura.short_creator.production_orchestrator import board_root_for
+from laura.short_creator.production_tools import _rough_cut_source_hash
+from laura.short_creator.visual_selection_state import capture_source_media_snapshot
 from laura.short_creator.visual_timeline import apply_scene_selections
 
 _NOW = "2026-08-08T12:00:00Z"
@@ -197,6 +201,9 @@ def _seed_board(
     contact_sheet_gate: bool = False,
     request: bool = True,
 ) -> tuple[str, Board]:
+    source_path = tmp_path / session_id / "source.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"visual-source")
     project = repos.create_project(
         db,
         name=f"project-{session_id}",
@@ -210,7 +217,7 @@ def _seed_board(
         project_id=project["id"],
         type="video",
         display_name="source",
-        source_path="/tmp/source.mp4",
+        source_path=str(source_path),
     )
     repos.create_production_session(
         db, session_id=session_id, asset_id=asset["id"], created_utc=_NOW
@@ -242,20 +249,98 @@ def _seed_board(
         language="English",
         lines=[ScriptLine(chapter=1, scene_number=1, text="Approved narration")],
     )
-    voice = VoiceArtifact(script_hash=_HASH_B, mp3_path="/tmp/voice.mp3", voice_s=4.0)
+    voice_s = (
+        float(plan.voice_total_frames) / float(plan.fps)
+        if plan is not None
+        and plan.scene_choices
+        and plan.voice_total_frames is not None
+        and plan.fps is not None
+        else 4.0
+    )
+    voice = VoiceArtifact(
+        script_hash=_HASH_B,
+        mp3_path="/tmp/voice.mp3",
+        voice_s=voice_s,
+        segments=[
+            VoiceSegment(
+                scene_number=1,
+                chapter=1,
+                line_hash="c" * 64,
+                mp3_path="/tmp/voice-1.mp3",
+                duration_s=max(0.1, voice_s - 0.3),
+                offset_s=0.0,
+            )
+        ],
+    )
     board.save("storyline", storyline)
     board.save("script", script)
     board.save("voice", voice)
+    visual_request = VisualRecutRequest(
+        user_request="rebuild visuals",
+        script_version=script.version,
+        script_hash=content_hash(script),
+        voice_version=voice.version,
+        voice_hash=content_hash(voice),
+    )
     if request:
-        board.save(
-            "visual_recut_request",
-            VisualRecutRequest(
-                user_request="rebuild visuals",
-                script_version=script.version,
-                script_hash=content_hash(script),
-                voice_version=voice.version,
-                voice_hash=content_hash(voice),
-            ),
+        board.save("visual_recut_request", visual_request)
+    if plan is not None and plan.scene_choices:
+        assert plan.fps is not None
+        assert plan.voice_total_frames is not None
+        timeline = repos.create_timeline(
+            db,
+            project_id=str(project["id"]),
+            name="Rough Cut",
+            kind="rough_cut",
+            created_from=str(asset["id"]),
+        )
+        scene_frames = 900
+        scene_count = len(plan.scene_choices)
+        repos.add_timeline_clip(
+            db,
+            timeline_id=str(timeline["id"]),
+            asset_id=str(asset["id"]),
+            src_in_frame=0,
+            src_out_frame_exclusive=scene_frames * scene_count,
+            seq_in_frame=0,
+            seq_out_frame_exclusive=scene_frames * scene_count,
+            lane=0,
+            role="base",
+        )
+        repos.replace_scenes(
+            db,
+            str(project["id"]),
+            str(timeline["id"]),
+            [
+                (order * scene_frames, (order + 1) * scene_frames)
+                for order in range(scene_count)
+            ],
+        )
+        rough_cut_hash = _rough_cut_source_hash(db, str(asset["id"]))
+        assert rough_cut_hash is not None
+        snapshot = capture_source_media_snapshot(
+            db,
+            asset_id=str(asset["id"]),
+            rough_cut_hash=rough_cut_hash,
+            fps=plan.fps,
+            voice_hash=content_hash(voice),
+            voice_total_frames=plan.voice_total_frames,
+            script_hash=content_hash(script),
+            request_hash=content_hash(visual_request),
+            strong=True,
+        )
+        assert snapshot.strong_hash is not None
+        plan = plan.model_copy(
+            update={
+                "parents": {
+                    "visual_recut_request": content_hash(visual_request),
+                    "script": content_hash(script),
+                    "voice": content_hash(voice),
+                    "rough_cut": rough_cut_hash,
+                    "source_media": snapshot.strong_hash,
+                    "source_media_quick": snapshot.quick_hash,
+                }
+            }
         )
     if plan is not None:
         board.save("visual_plan", plan)
@@ -331,6 +416,191 @@ def _parallel_outcomes(calls: list[Any]) -> list[tuple[str, int | None]]:
 
 def _production_job_count(db: Database) -> int:
     return sum(job["kind"] == "production.run" for job in repos.list_jobs(db))
+
+
+def test_visual_selection_draft_defaults_save_and_survive_status_reload(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Catches partial choices living only in Electron memory or starting a job."""
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="draft-roundtrip", plan=_v2_plan())
+    plan = cast(VisualPlan, board.load("visual_plan"))
+
+    initial = client.get(
+        "/production/draft-roundtrip/visual-selection/draft", headers=_HEADERS
+    )
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["revision"] is None
+    assert [row["rough_cut_order"] for row in initial.json()["selections"]] == [0, 1, 2, 3]
+
+    selections = _scene_selections(
+        [1, 2, 3, 4], included=[False, False, False, False], first_choice=1
+    )
+    saved = client.put(
+        "/production/draft-roundtrip/visual-selection/draft",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "expected_revision": None,
+            "selections": _selection_json(selections),
+        },
+        headers=_HEADERS,
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["revision"] == 1
+    assert saved.json()["selections"] == _selection_json(selections)
+
+    status_response = client.get("/production/draft-roundtrip", headers=_HEADERS)
+    assert status_response.status_code == 200
+    assert status_response.json()["visual_selection_gate"]["draft"] == saved.json()
+    assert _latest_job_id(db, "draft-roundtrip") is None
+    assert _production_job_count(db) == 0
+
+
+def test_visual_selection_draft_compare_and_swap_returns_current_server_state(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Catches two windows silently overwriting the newer visual-selection revision."""
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="draft-conflict", plan=_v2_plan())
+    plan = cast(VisualPlan, board.load("visual_plan"))
+    first = _scene_selections([2, 2, 2, 2])
+    second = _scene_selections([3, 3, 3, 3], included=[True, True, True, False])
+    stale = _scene_selections([4, 4, 4, 4])
+
+    created = client.put(
+        "/production/draft-conflict/visual-selection/draft",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "expected_revision": None,
+            "selections": _selection_json(first),
+        },
+        headers=_HEADERS,
+    )
+    assert created.status_code == 200
+    updated = client.put(
+        "/production/draft-conflict/visual-selection/draft",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "expected_revision": 1,
+            "selections": _selection_json(second),
+        },
+        headers=_HEADERS,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["revision"] == 2
+
+    conflict = client.put(
+        "/production/draft-conflict/visual-selection/draft",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "expected_revision": 1,
+            "selections": _selection_json(stale),
+        },
+        headers=_HEADERS,
+    )
+    assert conflict.status_code == 409
+    detail = conflict.json()["detail"]
+    assert detail["code"] == "revision_conflict"
+    assert detail["current"]["revision"] == 2
+    assert detail["current"]["selections"] == _selection_json(second)
+    assert _production_job_count(db) == 0
+
+
+def test_visual_selection_draft_rejects_stale_proposal_and_malformed_order(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Catches a structurally unsafe or old proposal becoming the durable draft."""
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="draft-invalid", plan=_v2_plan())
+    plan = cast(VisualPlan, board.load("visual_plan"))
+    selections = _scene_selections([2, 2, 2, 2])
+
+    stale = client.put(
+        "/production/draft-invalid/visual-selection/draft",
+        json={
+            "proposal_hash": "0" * 64,
+            "expected_revision": None,
+            "selections": _selection_json(selections),
+        },
+        headers=_HEADERS,
+    )
+    assert stale.status_code == 409
+
+    malformed = client.put(
+        "/production/draft-invalid/visual-selection/draft",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "expected_revision": None,
+            "selections": _selection_json(list(reversed(selections))),
+        },
+        headers=_HEADERS,
+    )
+    assert malformed.status_code == 422
+    assert repos.get_visual_selection_draft(db, "draft-invalid") is None
+    assert _production_job_count(db) == 0
+
+
+def test_confirm_v2_visual_selection_deletes_saved_draft_before_resume(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Catches a confirmed selection resurfacing later as an open partial draft."""
+    client, db = _client(tmp_path, monkeypatch)
+    _, board = _seed_board(db, tmp_path, session_id="draft-confirm", plan=_v2_plan())
+    plan = cast(VisualPlan, board.load("visual_plan"))
+    selections = _scene_selections([5, 5, 5, 5])
+    saved = client.put(
+        "/production/draft-confirm/visual-selection/draft",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "expected_revision": None,
+            "selections": _selection_json(selections),
+        },
+        headers=_HEADERS,
+    )
+    assert saved.status_code == 200
+
+    confirmed = client.post(
+        "/production/draft-confirm/visual-selection:confirm",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "selections": _selection_json(selections),
+        },
+        headers=_HEADERS,
+    )
+
+    assert confirmed.status_code == 202, confirmed.text
+    assert repos.get_visual_selection_draft(db, "draft-confirm") is None
+    assert _production_job_count(db) == 1
+
+
+def test_confirm_v2_visual_selection_rejects_same_metadata_source_content_change(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Catches final confirmation skipping the strong Drive-file content check."""
+    client, db = _client(tmp_path, monkeypatch)
+    asset_id, board = _seed_board(db, tmp_path, session_id="draft-source-stale", plan=_v2_plan())
+    plan = cast(VisualPlan, board.load("visual_plan"))
+    before = plan.model_dump_json()
+    asset = repos.get_asset(db, asset_id)
+    assert asset is not None
+    source = Path(str(asset["source_path"]))
+    original_stat = source.stat()
+    source.write_bytes(b"changed-video")
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    confirmed = client.post(
+        "/production/draft-source-stale/visual-selection:confirm",
+        json={
+            "proposal_hash": plan.proposal_hash,
+            "selections": _selection_json(_scene_selections([5, 5, 5, 5])),
+        },
+        headers=_HEADERS,
+    )
+
+    assert confirmed.status_code == 409
+    assert "source_content_changed" in confirmed.text
+    assert cast(VisualPlan, board.load("visual_plan")).model_dump_json() == before
+    assert _production_job_count(db) == 0
 
 
 def test_confirm_v2_visual_selection_binds_candidate_inclusion_and_duration(
