@@ -1,5 +1,6 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
+import { LauraApiError } from "../../api";
 import type {
   ChatMessage,
   ChatTurnResult,
@@ -99,7 +100,28 @@ function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMe
   return Array.from(byId.values()).sort((a, b) => a.seq - b.seq);
 }
 
-function errorText(e: unknown): string {
+/** What the user gets to read when a call fails.
+ *
+ * `LauraApiError.message` is `"<status>: <raw body>"`, which for a FastAPI failure means the
+ * chat shows `404: {"detail":"Not Found"}` — JSON punctuation as a user-facing sentence (seen
+ * live 2026-08-17). The server's own `detail` is the sentence worth showing; the status code
+ * stays in front of it because it is what makes a report actionable. Anything else falls back
+ * to the raw message, which is still better than swallowing it. */
+export function errorText(e: unknown): string {
+  if (e instanceof LauraApiError) {
+    const body = e.body;
+    const detail =
+      typeof body === "object" && body !== null && "detail" in body
+        ? (body as { detail: unknown }).detail
+        : null;
+    if (typeof detail === "string" && detail.trim() !== "") {
+      return `${e.status}: ${detail}`;
+    }
+    if (typeof body === "string" && body.trim() !== "") {
+      return `${e.status}: ${body}`;
+    }
+    return `${e.status}: request failed`;
+  }
   return e instanceof Error ? e.message : String(e);
 }
 

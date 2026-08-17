@@ -9,8 +9,9 @@ import type {
   OpenProductionSession,
   ProductionBoardStatus,
 } from "../../api";
+import { LauraApiError } from "../../api";
 import { renderWithQuery } from "../../test-utils";
-import { ChatStage } from "./ChatStage";
+import { ChatStage, errorText } from "./ChatStage";
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return { id: "c1", title: "Erster Chat", updated_at: "2026-08-03T00:00:00Z", ...overrides };
@@ -744,5 +745,28 @@ describe("ChatStage", () => {
       return el;
     });
     expect(video?.getAttribute("src")).toBe("laura-media://media/export/exp-1");
+  });
+});
+
+describe("errorText", () => {
+  it("shows the server's own sentence, not the JSON body it came wrapped in", () => {
+    // Live 2026-08-17: a failing call put `404: {"detail":"Not Found"}` in the chat — JSON
+    // punctuation offered to a human as an explanation.
+    const err = new LauraApiError(404, { detail: "session not found" }, '404: {"detail":"session not found"}');
+    expect(errorText(err)).toBe("404: session not found");
+  });
+
+  it("keeps a plain-text body as-is", () => {
+    expect(errorText(new LauraApiError(502, "upstream gone", "502: upstream gone"))).toBe(
+      "502: upstream gone",
+    );
+  });
+
+  it("never renders an empty explanation", () => {
+    expect(errorText(new LauraApiError(500, {}, "500: "))).toBe("500: request failed");
+  });
+
+  it("passes ordinary errors through untouched", () => {
+    expect(errorText(new Error("Failed to fetch"))).toBe("Failed to fetch");
   });
 });
