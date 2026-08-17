@@ -327,6 +327,26 @@ def update_asset_probe(
         )
 
 
+def set_asset_sha256_if_missing(
+    db: Database, asset_id: str, sha256: str
+) -> str | None:
+    """Set a legacy asset's content identity once and return the persisted value."""
+    with db.transaction(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT sha256 FROM media_assets WHERE id=?", (asset_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        current = row["sha256"]
+        if current is None:
+            conn.execute(
+                "UPDATE media_assets SET sha256=? WHERE id=? AND sha256 IS NULL",
+                (sha256, asset_id),
+            )
+            return sha256
+        return str(current)
+
+
 def set_asset_source(
     db: Database, asset_id: str, *, source_path: str, online: bool
 ) -> None:

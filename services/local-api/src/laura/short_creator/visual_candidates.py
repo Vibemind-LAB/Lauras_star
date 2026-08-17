@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
@@ -371,6 +372,7 @@ def build_rough_cut_visual_plan(
     narration_text: str,
     voice_total_frames: int,
     fps: float,
+    proposal_parents: Mapping[str, str] | None = None,
 ) -> VisualPlan:
     """Build one decision row per Rough-Cut scene without changing scene order."""
     if fps <= 0:
@@ -392,12 +394,14 @@ def build_rough_cut_visual_plan(
         voice_total_frames=voice_total_frames,
         fps=fps,
     )
+    parents = dict(sorted((proposal_parents or {}).items()))
     proposal_hash = _canonical_hash(
         {
             "request_hash": request_hash,
             "voice_total_frames": voice_total_frames,
             "fps": _canonical_fps(fps),
             "rough_cut_scene_count": len(scenes),
+            "parents": parents,
             "scene_choices": [
                 {
                     "rough_cut_order": choice.rough_cut_order,
@@ -421,6 +425,7 @@ def build_rough_cut_visual_plan(
         rough_cut_scene_count=len(scenes),
         voice_total_frames=voice_total_frames,
         fps=fps,
+        parents=parents,
     )
 
 

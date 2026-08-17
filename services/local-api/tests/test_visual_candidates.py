@@ -311,6 +311,39 @@ def test_proposal_hash_binds_voice_frames_and_canonical_fps() -> None:
     assert resolve_selected_shots(confirmed_changed_frames)[-1].final_frames == 299
 
 
+def test_rough_cut_proposal_hash_binds_source_media_parents() -> None:
+    """Catches a replaced Drive source retaining an old confirmable proposal hash."""
+    source_a = {
+        "rough_cut": "1" * 64,
+        "script": "2" * 64,
+        "source_media": "3" * 64,
+        "source_media_quick": "4" * 64,
+        "visual_recut_request": "5" * 64,
+        "voice": "6" * 64,
+    }
+    source_b = {**source_a, "source_media": "7" * 64}
+    first = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=rough_cut_scenes(3),
+        narration_text="organize files and draft mail",
+        voice_total_frames=300,
+        fps=30.0,
+        proposal_parents=source_a,
+    )
+    second = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=rough_cut_scenes(3),
+        narration_text="organize files and draft mail",
+        voice_total_frames=300,
+        fps=30.0,
+        proposal_parents=source_b,
+    )
+
+    assert first.parents == source_a
+    assert second.parents == source_b
+    assert first.proposal_hash != second.proposal_hash
+
+
 def test_subset_recommendation_uses_score_then_rough_cut_order() -> None:
     plan = build_rough_cut_visual_plan(
         request=request(),

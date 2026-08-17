@@ -186,7 +186,7 @@
 - Consumes: `repos.get_asset`, `_rough_cut_source_hash`, `sha256_file`, Visual-v2-Plan-Parents.
 - Produces: `SourceMediaStaleError`, `SourceMediaSnapshot`, `capture_source_media_snapshot(db, *, asset_id, rough_cut_hash, fps, voice_hash, voice_total_frames, script_hash, request_hash, strong)`, `validate_source_media_snapshot(db, *, asset_id, plan, strong)` und `build_rough_cut_visual_plan(request, scenes, narration_text, voice_total_frames, fps, proposal_parents)`.
 
-- [ ] **Step 1: Quell-Freshness-RED schreiben**
+- [x] **Step 1: Quell-Freshness-RED schreiben**
 
   Erzeuge ein echtes temporäres Video-Placeholder-File, einen Asset-Datensatz mit SHA-256 und einen kanonischen Snapshot. Prüfe getrennt:
 
@@ -212,13 +212,13 @@
   assert len(snapshot.strong_hash) == 64
   ```
 
-- [ ] **Step 2: Freshness-RED ausführen**
+- [x] **Step 2: Freshness-RED ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_visual_selection_state.py -q`
 
   Expected: FAIL mit fehlendem Modul oder fehlenden Symbolen.
 
-- [ ] **Step 3: Kanonischen Snapshot minimal implementieren**
+- [x] **Step 3: Kanonischen Snapshot minimal implementieren**
 
   Die Domain-Typen sind strikt und transportneutral:
 
@@ -239,7 +239,7 @@
 
   Quick-JSON enthält Asset-ID, gespeicherten Asset-SHA, `Path.resolve(strict=True)`, Größe, `mtime_ns`, Rough-Cut-Hash, kanonische FPS, Voice-Hash/-Frames, Script- und Request-Hash. Strong-JSON erweitert Quick um den aktuell berechneten Datei-SHA-256. Bei `strong=False` bleibt `strong_hash=None`; Proposal-Erzeugung und finale Bestätigung verwenden `strong=True` und prüfen den Wert vor dem Aufbau der Parent-Map explizit auf `None`. Ist der gespeicherte Asset-SHA leer, wird er einmalig per enger Repository-CAS-Funktion gesetzt; stimmt er nicht, wird bereits Proposal-Erzeugung fail-closed abgebrochen.
 
-- [ ] **Step 4: Proposal-Parent-RED schreiben**
+- [x] **Step 4: Proposal-Parent-RED schreiben**
 
   Ergänze einen Visual-Candidates-Test, der zwei identische v2-Pläne nur mit unterschiedlichem `source_media`-Parent baut und verschiedene `proposal_hash`-Werte erwartet:
 
@@ -258,7 +258,7 @@
   assert first.parents["source_media"] == "a" * 64
   ```
 
-- [ ] **Step 5: Proposal-Erzeugung mit Source-Parents implementieren**
+- [x] **Step 5: Proposal-Erzeugung mit Source-Parents implementieren**
 
   `build_rough_cut_visual_plan` erhält `proposal_parents: Mapping[str, str] | None = None`, sortiert sie vor dem Hashing und setzt sie direkt auf `VisualPlan.parents`. `start_visual_recut` erzeugt vor `board.save` einen starken Snapshot und setzt:
 
@@ -275,7 +275,7 @@
 
   Die bestehende Pending-Idempotenz vergleicht dieselben Parents. Alte pending v2-Pläne ohne Source-Parents werden nicht wiederverwendet, sondern neu aufgebaut.
 
-- [ ] **Step 6: Source-/Proposal-GREEN ausführen**
+- [x] **Step 6: Source-/Proposal-GREEN ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_visual_selection_state.py tests/test_visual_candidates.py tests/test_production_tools_visual_recut.py -q`
 
@@ -285,7 +285,7 @@
 
   Expected: alle Befehle Exit 0; bestehende v1-Tests unverändert grün.
 
-- [ ] **Step 7: Task 2 committen**
+- [x] **Step 7: Task 2 committen**
 
   ```bash
   git add services/local-api/src/laura/short_creator/visual_selection_state.py services/local-api/src/laura/short_creator/visual_candidates.py services/local-api/src/laura/short_creator/production_tools.py services/local-api/tests/test_visual_selection_state.py services/local-api/tests/test_visual_candidates.py services/local-api/tests/test_production_tools_visual_recut.py
