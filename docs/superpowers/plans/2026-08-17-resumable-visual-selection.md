@@ -56,7 +56,7 @@
 - Consumes: bestehende `Database.transaction(immediate=True)`, `production_sessions` und `conversations`.
 - Produces: `DraftRevisionConflict`, `create_production_session(db, *, session_id, asset_id, created_utc, brief_text="")`, `link_production_session_conversation`, `touch_production_session`, `get_visual_selection_draft`, `save_visual_selection_draft`, `delete_visual_selection_draft`, `list_production_sessions_by_updated`.
 
-- [ ] **Step 1: Migration- und Session-Metadaten-RED schreiben**
+- [x] **Step 1: Migration- und Session-Metadaten-RED schreiben**
 
   Ergänze einen Test, der eine alte Datenbank migriert, eine Session mit Brief anlegt, sie mit einem Chat verknüpft und die Rückwärtskompatibilität bestehender Aufrufer prüft:
 
@@ -76,13 +76,13 @@
   assert row["updated_utc"] == "2026-08-17T08:00:00+00:00"
   ```
 
-- [ ] **Step 2: RED ausführen**
+- [x] **Step 2: RED ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_production_sessions_repos.py tests/test_db_backend.py -q`
 
   Expected: FAIL, weil Migration 0036 und die erweiterten Repository-Signaturen fehlen.
 
-- [ ] **Step 3: Additive Migration und Session-Repositories implementieren**
+- [x] **Step 3: Additive Migration und Session-Repositories implementieren**
 
   Die Migration enthält:
 
@@ -110,7 +110,7 @@
 
   `create_production_session` erhält `brief_text: str = ""`, setzt `updated_utc=created_utc` und lässt bestehende Aufrufer unverändert funktionieren.
 
-- [ ] **Step 4: Draft-Roundtrip- und CAS-RED schreiben**
+- [x] **Step 4: Draft-Roundtrip- und CAS-RED schreiben**
 
   Der neue Test öffnet dieselbe SQLite-Datei über zwei `SqliteDatabase`-Instanzen, speichert Revision 1, liest sie nach einem simulierten Neustart und lässt zwei Schreiber mit `expected_revision=1` konkurrieren:
 
@@ -142,7 +142,7 @@
   assert conflict.value.current["revision"] == 2
   ```
 
-- [ ] **Step 5: Draft-Repository minimal implementieren**
+- [x] **Step 5: Draft-Repository minimal implementieren**
 
   `save_visual_selection_draft` verwendet eine `BEGIN IMMEDIATE`-Transaktion, liest die aktuelle Revision innerhalb derselben Transaktion und aktualisiert Draft plus `production_sessions.updated_utc` atomar. JSON wird mit stabilen Separatoren gespeichert und beim Lesen wieder als Liste ausgegeben.
 
@@ -153,7 +153,7 @@
           self.current = current
   ```
 
-- [ ] **Step 6: Repository-GREEN und statische Gates ausführen**
+- [x] **Step 6: Repository-GREEN und statische Gates ausführen**
 
   Run: `cd services/local-api && uv run pytest tests/test_production_sessions_repos.py tests/test_visual_selection_draft_repos.py tests/test_db_backend.py -q`
 
@@ -163,7 +163,7 @@
 
   Expected: alle Befehle Exit 0.
 
-- [ ] **Step 7: Task 1 committen**
+- [x] **Step 7: Task 1 committen**
 
   ```bash
   git add services/local-api/src/laura/db/migrations/0036_resumable_visual_selection.sql services/local-api/src/laura/db/repos.py services/local-api/tests/test_production_sessions_repos.py services/local-api/tests/test_visual_selection_draft_repos.py services/local-api/tests/test_db_backend.py

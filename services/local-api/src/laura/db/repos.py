@@ -2455,15 +2455,45 @@ def revoke_consent_record(db: Database, consent_id: str) -> bool:
 # --- production sessions (agentic short-creator) ----------------------------
 
 
+class DraftRevisionConflict(RuntimeError):
+    """A visual-selection draft write used an outdated expected revision."""
+
+    def __init__(self, current: dict[str, Any] | None) -> None:
+        super().__init__("visual selection draft revision conflict")
+        self.current = current
+
+
 def create_production_session(
-    db: Database, *, session_id: str, asset_id: str, created_utc: str
+    db: Database,
+    *,
+    session_id: str,
+    asset_id: str,
+    created_utc: str,
+    brief_text: str = "",
 ) -> None:
     """Create a production session record. session_id must be unique (PK)."""
     with db.transaction() as conn:
         conn.execute(
-            "INSERT INTO production_sessions (session_id, asset_id, created_utc) "
-            "VALUES (?, ?, ?)",
-            (session_id, asset_id, created_utc),
+            "INSERT INTO production_sessions "
+            "(session_id, asset_id, created_utc, brief_text, updated_utc) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, asset_id, created_utc, brief_text, created_utc),
+        )
+
+
+def link_production_session_conversation(
+    db: Database,
+    session_id: str,
+    conversation_id: str,
+    *,
+    updated_utc: str,
+) -> None:
+    """Link a production session to the chat that started or resumed it."""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE production_sessions "
+            "SET conversation_id=?, updated_utc=? WHERE session_id=?",
+            (conversation_id, updated_utc, session_id),
         )
 
 
@@ -2477,6 +2507,17 @@ def set_production_session_job(db: Database, session_id: str, job_id: str) -> No
         conn.execute(
             "UPDATE production_sessions SET latest_job_id=? WHERE session_id=?",
             (job_id, session_id),
+        )
+
+
+def touch_production_session(
+    db: Database, session_id: str, updated_utc: str
+) -> None:
+    """Record the newest resumable activity on a production session."""
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE production_sessions SET updated_utc=? WHERE session_id=?",
+            (updated_utc, session_id),
         )
 
 
@@ -2497,6 +2538,107 @@ def list_production_sessions(db: Database, asset_id: str) -> list[dict[str, Any]
             (asset_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def list_production_sessions_by_updated(db: Database) -> list[dict[str, Any]]:
+    """List every production session by most recent resumable activity."""
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM production_sessions ORDER BY updated_utc DESC, session_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def _visual_selection_draft_row(row: Any) -> dict[str, Any]:
+    draft = dict(row)
+    draft["selections"] = json.loads(draft.pop("selections_json"))
+    return draft
+
+
+def get_visual_selection_draft(
+    db: Database, session_id: str
+) -> dict[str, Any] | None:
+    """Return the current persisted visual-selection draft, if one exists."""
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM visual_selection_drafts WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        return _visual_selection_draft_row(row) if row is not None else None
+
+
+def save_visual_selection_draft(
+    db: Database,
+    *,
+    session_id: str,
+    proposal_hash: str,
+    source_fingerprint: str,
+    selections: list[dict[str, Any]],
+    expected_revision: int | None,
+    updated_utc: str,
+) -> dict[str, Any]:
+    """Compare-and-swap one complete draft and touch its session atomically."""
+    selections_json = json.dumps(selections, sort_keys=True, separators=(",", ":"))
+    with db.transaction(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT * FROM visual_selection_drafts WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        current = _visual_selection_draft_row(row) if row is not None else None
+        if current is None:
+            if expected_revision is not None:
+                raise DraftRevisionConflict(None)
+            revision = 1
+            conn.execute(
+                "INSERT INTO visual_selection_drafts "
+                "(session_id, proposal_hash, source_fingerprint, selections_json, "
+                "revision, updated_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    proposal_hash,
+                    source_fingerprint,
+                    selections_json,
+                    revision,
+                    updated_utc,
+                ),
+            )
+        else:
+            if expected_revision != int(current["revision"]):
+                raise DraftRevisionConflict(current)
+            revision = int(current["revision"]) + 1
+            conn.execute(
+                "UPDATE visual_selection_drafts SET proposal_hash=?, "
+                "source_fingerprint=?, selections_json=?, revision=?, updated_utc=? "
+                "WHERE session_id=?",
+                (
+                    proposal_hash,
+                    source_fingerprint,
+                    selections_json,
+                    revision,
+                    updated_utc,
+                    session_id,
+                ),
+            )
+        conn.execute(
+            "UPDATE production_sessions SET updated_utc=? WHERE session_id=?",
+            (updated_utc, session_id),
+        )
+    return {
+        "session_id": session_id,
+        "proposal_hash": proposal_hash,
+        "source_fingerprint": source_fingerprint,
+        "selections": selections,
+        "revision": revision,
+        "updated_utc": updated_utc,
+    }
+
+
+def delete_visual_selection_draft(db: Database, session_id: str) -> None:
+    """Delete a visual-selection draft; repeated deletion is a no-op."""
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM visual_selection_drafts WHERE session_id=?", (session_id,)
+        )
 
 
 # --- conversations (chat-first, spec 2026-08-03) -----------------------------
