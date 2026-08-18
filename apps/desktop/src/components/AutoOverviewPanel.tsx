@@ -142,7 +142,7 @@ export function AutoOverviewPanel({
           <ul className="flex flex-col gap-0.5">
             {result.clips.map((c, i) => (
               <li key={`${c.asset_id}-${c.scene_number}-${c.start_frame}`} className="text-content-muted">
-                {i + 1}. <span className="text-content-strong">{c.display_name}</span> · Szene{" "}
+                {i + 1}. <span className="text-content-strong">{c.display_name}</span> · scene{" "}
                 {c.scene_number} — <span className="italic">{c.snippet}</span>
               </li>
             ))}

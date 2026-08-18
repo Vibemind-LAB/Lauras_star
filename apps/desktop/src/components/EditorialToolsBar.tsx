@@ -100,10 +100,10 @@ export function EditorialToolsBar({
           type="button"
           onClick={onRedo ?? (() => undefined)}
           disabled={!canRedo}
-          title={redoLabel ? `Wiederholen: ${redoLabel}` : "Wiederholen"}
+          title={redoLabel ? `Redo: ${redoLabel}` : "Redo"}
           className="rounded bg-accent px-3 py-1 text-[11px] font-medium text-accent-ink hover:bg-accent-glow disabled:opacity-40"
         >
-          ↷ Wiederholen
+          ↷ Redo
         </button>
         <span className="mx-0.5 h-5 w-px self-center bg-bezel/60" aria-hidden="true" />
         <label className="flex items-center gap-1 text-content-muted">

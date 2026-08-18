@@ -1684,7 +1684,7 @@ def replace_scenes(
     ranges: list[tuple[int, int]],
 ) -> None:
     """Replace all scenes of a timeline with ``ranges`` (``(seq_in, seq_out_exclusive)``),
-    ordered. Reassigns ids + ``order_index``; names are positional ("Szene N")."""
+    ordered. Reassigns ids + ``order_index``; names are positional ("Scene N")."""
     now = utcnow_iso()
     with db.transaction() as conn:
         # Drop sequence references to the scenes we're about to delete. Regenerated scenes get
@@ -1700,7 +1700,7 @@ def replace_scenes(
             conn.execute(
                 "INSERT INTO scenes (id, project_id, source_timeline_id, name, order_index, "
                 "seq_in_frame, seq_out_frame_exclusive, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (new_id(), project_id, source_timeline_id, f"Szene {i + 1}", i, sin, sout, now),
+                (new_id(), project_id, source_timeline_id, f"Scene {i + 1}", i, sin, sout, now),
             )
 
 

@@ -20,8 +20,8 @@ def test_replace_scenes_auto_names_and_orders(tmp_path: Path) -> None:
     rows = [(s["name"], s["order_index"], s["seq_in_frame"], s["seq_out_frame_exclusive"])
             for s in scenes]
     assert rows == [
-        ("Szene 1", 0, 0, 30),
-        ("Szene 2", 1, 30, 90),
+        ("Scene 1", 0, 0, 30),
+        ("Scene 2", 1, 30, 90),
     ]
 
 

@@ -13,9 +13,9 @@ describe("EditorialToolsBar undo/redo buttons", () => {
     expect(btn.disabled).toBe(true);
   });
 
-  it("renders ↷ Wiederholen button as disabled when canRedo is false (default)", () => {
+  it("renders ↷ Redo button as disabled when canRedo is false (default)", () => {
     render(<EditorialToolsBar />);
-    const btn = screen.getByRole("button", { name: /Wiederholen/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /Redo/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
 
@@ -31,7 +31,7 @@ describe("EditorialToolsBar undo/redo buttons", () => {
   it("enables ↷ and calls onRedo when canRedo is true and button is clicked", () => {
     const onRedo = vi.fn();
     render(<EditorialToolsBar canRedo={true} onRedo={onRedo} />);
-    const btn = screen.getByRole("button", { name: /Wiederholen/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /Redo/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(onRedo).toHaveBeenCalledTimes(1);

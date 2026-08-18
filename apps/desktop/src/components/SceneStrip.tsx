@@ -139,7 +139,7 @@ function SceneCard({
           if (e.target.value && e.target.value !== scene.name) onRename(scene.id, e.target.value);
         }}
         className="w-full rounded bg-surface-2 px-1 py-0.5 text-[11px] text-content-strong"
-        aria-label="Szenenname"
+        aria-label="Scene name"
       />
       <p className="text-[11px] text-content-faint">{excerptText || "—"}</p>
     </div>

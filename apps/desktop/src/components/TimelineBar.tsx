@@ -841,7 +841,7 @@ export function TimelineBar({
             type="button"
             onClick={() => void redo()}
             disabled={future.length === 0}
-            title="Wiederholen"
+            title="Redo"
             className="rounded bg-surface-0 px-2 py-0.5 text-xs text-content-muted hover:bg-surface-2 disabled:opacity-30"
           >
             ↷ Redo
