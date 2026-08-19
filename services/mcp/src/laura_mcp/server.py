@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import os
 
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from .client import LauraClient, LauraError
 

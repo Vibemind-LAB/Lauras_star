@@ -41,6 +41,7 @@ def test_connect_error_becomes_backend_down_message() -> None:
     with pytest.raises(LauraError) as exc:
         client.request("GET", "/projects")
     assert str(exc.value) == BACKEND_DOWN
+    assert exc.value.message == BACKEND_DOWN
 
 
 def test_get_bytes_returns_raw_body() -> None:

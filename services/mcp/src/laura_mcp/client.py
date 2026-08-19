@@ -16,6 +16,10 @@ DEFAULT_TIMEOUT = 30.0
 class LauraError(Exception):
     """One human-readable sentence per failure; MCP tools surface str(exc) verbatim."""
 
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
 
 class LauraClient:
     def __init__(self, token: str, transport: httpx.BaseTransport | None = None) -> None:

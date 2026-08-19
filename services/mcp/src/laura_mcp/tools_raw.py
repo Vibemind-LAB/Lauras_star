@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from .client import LauraClient
 

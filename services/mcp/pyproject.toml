@@ -3,7 +3,7 @@ name = "laura-mcp"
 version = "0.1.0"
 description = "MCP server exposing the local Laura app (127.0.0.1:8765) to Claude sessions."
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.2", "httpx>=0.27", "fastmcp"]
+dependencies = ["mcp>=1.2", "httpx>=0.27"]
 
 [project.scripts]
 laura-mcp = "laura_mcp.server:main"
