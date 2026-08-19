@@ -23,6 +23,8 @@ def build_client() -> LauraClient:
 def main() -> None:
     from . import (
         tools_analysis,
+        tools_editorial,
+        tools_export,
         tools_jobs,
         tools_media,
         tools_raw,
@@ -40,8 +42,8 @@ def main() -> None:
     tools_raw.register(mcp, client)
     tools_media.register(mcp, client)
     tools_analysis.register(mcp, client)  # Task 2
-    # tools_editorial.register(mcp, client)  # Task 3
-    # tools_export.register(mcp, client)  # Task 4
+    tools_editorial.register(mcp, client)  # Task 3
+    tools_export.register(mcp, client)  # Task 4
     tools_jobs.register(mcp, client)  # Task 5
     # tools_production.register(mcp, client)  # Task 7
     tools_vision.register(mcp, client)  # Task 8
