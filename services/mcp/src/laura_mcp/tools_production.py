@@ -127,8 +127,11 @@ def register(mcp: FastMCP, client: LauraClient) -> None:
     @mcp.tool()
     def propose_scenes(session_id: str, candidates: list[dict[str, Any]]) -> Any:
         """Propose scenes for the short (arms the scene gate, bumps selection_version).
-        candidates: [{scene_number, reason}]. THE USER picks — present the proposal
-        and wait for their answer before confirm_scenes."""
+        candidates: [{scene_number, reason, transcript_snippet, recommended}] —
+        transcript_snippet is a REQUIRED non-empty quote from the scene's transcript,
+        and at least one candidate must set recommended=true (the pre-checked pick).
+        THE USER picks — present the proposal and wait for their answer before
+        confirm_scenes."""
         return _propose_scenes(client, session_id=session_id, candidates=candidates)
 
     @mcp.tool()
@@ -159,10 +162,10 @@ def register(mcp: FastMCP, client: LauraClient) -> None:
     def save_script_chapter(
         session_id: str, chapter: int, lines: list[dict[str, Any]]
     ) -> Any:
-        """Write one script chapter's lines [{chapter, scene_number, text}]. The
-        capacity guard measures real speech rate — respect its rejections and shorten
-        instead of arguing. Ground every claim in the transcript of the chosen
-        material."""
+        """Write one script chapter's lines [{scene_number, text}] — no chapter key
+        inside a line, the chapter number is injected from the path. The capacity
+        guard measures real speech rate — respect its rejections and shorten instead
+        of arguing. Ground every claim in the transcript of the chosen material."""
         return _save_script_chapter(
             client, session_id=session_id, chapter=chapter, lines=lines
         )
