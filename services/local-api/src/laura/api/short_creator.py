@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, Any, Self
+from typing import IO, TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -81,6 +81,9 @@ class ProductionCreateRequest(BaseModel):
     format: Format = "insta"
     # The script's language, named as it should be written ("German", "English").
     language: str = Field(default="German", min_length=2, max_length=40)
+    # "external": create the session + board for an outside author (MCP) — both gates on,
+    # no team job. "team" keeps the existing behavior byte-identical.
+    author: Literal["team", "external"] = "team"
 
 
 class ProjectAutoShortRequest(BaseModel):
@@ -488,6 +491,45 @@ def _create_production_session(
     return session_id, job_id
 
 
+# 409 detail for the team chat path refusing an author-mode session (Task 7). The matching
+# "team session" refusal for the author endpoints refusing a team-mode session is Task 8.
+_AUTHOR_SESSION_DETAIL = "author session — write via the author endpoints, not the team chat"
+
+
+def _create_author_production_session(
+    db: Database,
+    asset_id: str,
+    *,
+    task: str,
+    target_seconds: float,
+    format: Format,
+    language: str,
+) -> str:
+    """Author-mode session: row + board synchronously, gates forced, NO production.run job.
+
+    The board must exist before the create call returns (the author writes against it next),
+    unlike the team path where run_production creates it at job time.
+    """
+    session_id = new_id()
+    created_utc = datetime.now(UTC).isoformat(timespec="seconds")
+    repos.create_production_session(
+        db, session_id=session_id, asset_id=asset_id,
+        created_utc=created_utc, brief_text=task,
+    )
+    from ..short_creator.board import Board
+    from ..short_creator.board_models import BoardMeta
+    from ..short_creator.production_orchestrator import board_root_for
+
+    meta = BoardMeta(
+        session_id=session_id, asset_id=asset_id, created_utc=created_utc,
+        task=task, format=format, language=language,
+        target_seconds=float(target_seconds),
+        script_gate=True, scene_gate=True, author="external",
+    )
+    Board.create(board_root_for(db, asset_id, session_id), meta)
+    return session_id
+
+
 @router.post("/assets/{asset_id}/production", status_code=status.HTTP_202_ACCEPTED)
 def create_production(
     asset_id: str,
@@ -499,11 +541,28 @@ def create_production(
 
     503 if the 'autoshort' extra is missing. See :func:`_create_production_session` for the
     session-row + enqueue mechanics (shared with the project-scoped auto-short endpoint).
+
+    ``body.author == "external"`` takes the author-mode branch instead: session + board created
+    synchronously with both gates forced, no team job (see
+    :func:`_create_author_production_session`). Both prerequisite checks below still run first
+    for that branch too — the board's later gated approval takes the deterministic tail, which
+    needs a usable agent config for its QA stage.
     """
     db = _db(request)
     _get_asset_or_404(db, asset_id)
     _require_autoshort()
     _require_usable_agent_config()
+    if body.author == "external":
+        session_id = _create_author_production_session(
+            db, asset_id, task=body.task, target_seconds=float(body.target_seconds),
+            format=body.format, language=body.language,
+        )
+        from ..short_creator.providers import config_warnings, resolve_from_env
+
+        return {
+            "session_id": session_id, "job_id": None, "board_ready": True,
+            "warnings": config_warnings(resolve_from_env()),
+        }
     session_id, job_id = _create_production_session(
         db,
         asset_id,
@@ -1006,7 +1065,18 @@ def run_production_follow_up(db: Database, session_id: str, text: str) -> dict[s
     on otherwise). ``task``/``target_seconds`` are read back from the board's own meta (fixed at
     session creation, Task 5) rather than accepted again here — the follow-up only supplies the
     new ``message`` text.
+
+    409 if the session is author-mode (``BoardMeta.author == "external"``, Task 7): those boards
+    are written by an outside author through the author endpoints, not by the team here — this
+    is the team chat path's half of the lockout, checked before the (agent-config-requiring)
+    enqueue below runs at all.
     """
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    if board.meta().author == "external":
+        raise HTTPException(status.HTTP_409_CONFLICT, _AUTHOR_SESSION_DETAIL)
     return _enqueue_production_run(db, session_id, text)
 
 

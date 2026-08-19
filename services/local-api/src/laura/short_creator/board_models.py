@@ -821,6 +821,10 @@ class BoardMeta(BaseModel):
     # refuse until the user confirmed a scene selection. Default False so every meta.json
     # written before this gate loads unchanged; only NEW auto-short sessions turn it on.
     scene_gate: bool = False
+    # Who writes the creative artifacts. "team" = the AutoGen production team (default,
+    # every pre-existing board deserializes to this); "external" = an author session driven
+    # through the author endpoints (MCP) — the team/message path refuses these sessions.
+    author: Literal["team", "external"] = "team"
     # Set once, by ``Board.set_script_approved``, when the user approves the script in chat.
     # ``None`` means "not yet approved" — irrespective of whether the gate is even enabled.
     script_approved_utc: str | None = None
