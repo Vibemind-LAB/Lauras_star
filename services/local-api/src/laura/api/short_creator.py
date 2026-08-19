@@ -168,6 +168,22 @@ class ContactSheetConfirmRequest(BaseModel):
     contact_sheet_hash: str = Field(min_length=64, max_length=64)
 
 
+# --- author-mode write bodies (Task 8) — map 1:1 onto the team tool closures'  kwargs ---------
+
+
+class SceneProposalRequest(BaseModel):
+    candidates: list[dict[str, Any]] = Field(min_length=1)
+
+
+class StorylineRequest(BaseModel):
+    red_thread: str = Field(min_length=1)
+    chapters: list[dict[str, Any]] = Field(min_length=1)
+
+
+class ScriptChapterRequest(BaseModel):
+    lines: list[dict[str, Any]] = Field(min_length=1)
+
+
 def _db(request: Request) -> Database:
     db: Database = request.app.state.db
     return db
@@ -2047,3 +2063,58 @@ def revert_production_artifact(
 ) -> dict[str, Any]:
     """Revert a board artifact and heal the suffix. See :func:`run_production_revert`."""
     return run_production_revert(_db(request), session_id, body.artifact, body.version)
+
+
+# --- author-mode write endpoints (Task 8) -------------------------------------------------------
+#
+# An external author writes creative artifacts straight into an author-mode session's board —
+# no team job, no agent turn. Each endpoint is a thin body-to-kwargs mapping onto the SAME tool
+# closure the AutoGen team calls (``laura.short_creator.authoring.call_production_tool``): one
+# guard source (capacity, grounding, gate arming, selection_version) for both callers.
+
+
+@router.put("/production/{session_id}/scene-proposal")
+def put_scene_proposal(
+    session_id: str,
+    body: SceneProposalRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Author mode: propose scenes (arms Gate S, bumps selection_version)."""
+    from ..short_creator.authoring import call_production_tool
+
+    return call_production_tool(
+        _db(request), session_id, "propose_scene_selection", candidates=body.candidates
+    )
+
+
+@router.put("/production/{session_id}/storyline")
+def put_storyline(
+    session_id: str,
+    body: StorylineRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Author mode: write the storyline (window references validated by the tool core)."""
+    from ..short_creator.authoring import call_production_tool
+
+    return call_production_tool(
+        _db(request), session_id, "save_storyline",
+        red_thread=body.red_thread, chapters=body.chapters,
+    )
+
+
+@router.put("/production/{session_id}/script/chapters/{chapter}")
+def put_script_chapter(
+    session_id: str,
+    chapter: int,
+    body: ScriptChapterRequest,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Author mode: write one script chapter (capacity guard replies as in the team path)."""
+    from ..short_creator.authoring import call_production_tool
+
+    return call_production_tool(
+        _db(request), session_id, "save_script_chapter", chapter=chapter, lines=body.lines
+    )
