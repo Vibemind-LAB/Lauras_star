@@ -1674,6 +1674,41 @@ def test_approve_script_http_exception_becomes_honest_text(
     assert messages[0]["content"]["text"] == "session not found"
 
 
+def test_approve_script_missing_board_gets_the_german_no_session_text(
+    tmp_path: Path,
+) -> None:
+    """A production session ROW can exist with no board yet written for it (the team path
+    creates the board at job time, not at session creation) — that must read as "I don't know
+    this session" (``_NO_SESSION_TEXT``), exactly like an unresolved ``session_ref``, not as the
+    service's raw English 404 detail. Distinct from the test above: that one's mocked
+    ``run_production_resume`` raises a 404 with detail ``"session not found"`` (honest
+    passthrough); this one never reaches ``run_production_resume`` at all — the service's own
+    ``Board.open`` 404 (detail ``"session board not found"``) fires first."""
+    db, settings = _setup(tmp_path)
+    conversation_id = _conversation(db)
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "proj"),
+    )
+    asset = repos.create_asset(
+        db, project_id=project["id"], type="video", display_name="a", source_path="/tmp/a.mp4",
+    )
+    repos.create_production_session(
+        db, session_id="sess-1", asset_id=asset["id"], created_utc=_NOW,
+    )
+    _seed_action(db, conversation_id, session_id="sess-1")
+
+    messages = execute_decision(
+        db, settings, conversation_id=conversation_id,
+        decision=_decision("approve_script", {"session_ref": "sess-1"}), now_utc=_NOW,
+    )
+    assert messages[0]["kind"] == "text"
+    assert messages[0]["content"]["text"] == (
+        "Ich finde keine laufende Produktion, auf die sich das beziehen könnte — "
+        "welche Session meinst du?"
+    )
+
+
 # --- approve_script busy-run guard (I2, 2026-08-05 final review) -------------------------------
 # A double "Script freigeben" while the session's latest production job is still queued/running
 # must never enqueue a SECOND concurrent production.run job against the same board files.

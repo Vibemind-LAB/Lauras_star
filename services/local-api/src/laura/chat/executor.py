@@ -32,6 +32,7 @@ from ..api.assets import _enqueue_url_fetch, _expand_playlist_urls
 # `laura.chat.executor.<name>` without touching the real service functions.
 from ..api.short_creator import (
     _APPROVE_BUSY_DETAIL,
+    _BOARD_MISSING_DETAIL,
     _NO_SCRIPT_DETAIL,
     _production_job_busy,
     approve_production_script,
@@ -469,12 +470,21 @@ def _handle_approve_script(
     Maps the service's outcome onto the pre-existing German chat texts:
     :data:`~laura.api.short_creator._NO_SCRIPT_DETAIL` ``->`` ``_NO_SCRIPT_TO_APPROVE_TEXT``,
     :data:`~laura.api.short_creator._APPROVE_BUSY_DETAIL` ``->`` ``_RUN_BUSY_TEXT``,
-    ``"already_done"`` ``->`` ``_SCRIPT_ALREADY_APPROVED_TEXT``, ``"resumed"`` ``->`` the existing
-    action card. Any OTHER ``HTTPException`` (a real failure inside ``run_production_resume``
-    itself — the extra missing, the agent config unusable, a genuine race) keeps the same
-    honest-passthrough text every other chat service call uses (:func:`_detail_reason`),
-    unchanged from before this extraction; anything that is not an ``HTTPException`` at all
-    re-raises into ``execute_decision``'s own catch-all, also unchanged."""
+    :data:`~laura.api.short_creator._BOARD_MISSING_DETAIL` ``->`` ``_NO_SESSION_TEXT`` (the
+    session row exists but its board doesn't — the same "I don't know this session" reply as an
+    unresolved ref, matching the pre-extraction ``Board.open`` try/except that used to live
+    here), ``"already_done"`` ``->`` ``_SCRIPT_ALREADY_APPROVED_TEXT``, ``"resumed"`` ``->`` the
+    existing action card. Any OTHER ``HTTPException`` (a real failure inside
+    ``run_production_resume`` itself — the extra missing, the agent config unusable, a genuine
+    race) keeps the same honest-passthrough text every other chat service call uses
+    (:func:`_detail_reason`), unchanged from before this extraction — this is also why
+    ``_BOARD_MISSING_DETAIL`` gets its own explicit check instead of being folded into a
+    status-code-based rule: :data:`test_approve_script_http_exception_becomes_honest_text` pins
+    a MOCKED ``run_production_resume`` raising ``HTTPException(404, "session not found")``,
+    lexically distinct from ``_BOARD_MISSING_DETAIL`` ("session board not found") but the same
+    404 status, so only an exact detail match can tell the two apart. Anything that is not an
+    ``HTTPException`` at all re-raises into ``execute_decision``'s own catch-all, also
+    unchanged."""
     args = decision["args"]
     session_ref = str(args["session_ref"])
     session_id = _resolve_session_id(messages, session_ref)
@@ -493,6 +503,8 @@ def _handle_approve_script(
             return [_append_text(db, conversation_id, _NO_SCRIPT_TO_APPROVE_TEXT, now_utc)]
         if exc.detail == _APPROVE_BUSY_DETAIL:
             return [_append_text(db, conversation_id, _RUN_BUSY_TEXT, now_utc)]
+        if exc.detail == _BOARD_MISSING_DETAIL:
+            return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
         return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
 
     if result["outcome"] == "already_done":

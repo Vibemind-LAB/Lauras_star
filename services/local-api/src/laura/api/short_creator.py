@@ -1107,6 +1107,7 @@ def run_production_resume(db: Database, session_id: str) -> dict[str, Any]:
 
 _NO_SCRIPT_DETAIL = "no script to approve yet — the production pauses at the gate by itself"
 _APPROVE_BUSY_DETAIL = "a production job is running on this session — wait for it to finish"
+_BOARD_MISSING_DETAIL = "session board not found"
 
 
 def _production_job_busy(db: Database, session: dict[str, Any]) -> bool:
@@ -1151,7 +1152,8 @@ def approve_production_script(
 
     Outcome dict: ``{"outcome": "resumed", "session_id", "job_id"}`` on a fresh or re-triggered
     approval; ``{"outcome": "already_done", "session_id"}`` when the stamp is content-current
-    AND the board is finished. Raises ``HTTPException`` 404 (unknown session/board), 409
+    AND the board is finished. Raises ``HTTPException`` 404 (unknown session, or
+    :data:`_BOARD_MISSING_DETAIL` for a session with no board yet), 409
     (:data:`_NO_SCRIPT_DETAIL` / :data:`_APPROVE_BUSY_DETAIL`).
 
     Approval is bound to the script's CONTENT, not just a bare timestamp
@@ -1203,7 +1205,7 @@ def approve_production_script(
     try:
         board = Board.open(board_root_for(db, asset_id, session_id))
     except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "session board not found") from exc
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _BOARD_MISSING_DETAIL) from exc
 
     script = board.load("script")
     if not isinstance(script, Script):
