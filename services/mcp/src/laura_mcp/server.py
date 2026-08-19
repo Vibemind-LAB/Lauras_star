@@ -42,7 +42,7 @@ def main() -> None:
     tools_analysis.register(mcp, client)  # Task 2
     # tools_editorial.register(mcp, client)  # Task 3
     # tools_export.register(mcp, client)  # Task 4
-    tools_jobs.register(mcp, client)  # Task 4 (+ Task 5 comment for legacy)
+    tools_jobs.register(mcp, client)  # Task 5
     # tools_production.register(mcp, client)  # Task 7
-    tools_vision.register(mcp, client)  # Task 4 (+ Task 8 comment for legacy)
+    tools_vision.register(mcp, client)  # Task 8
     mcp.run()

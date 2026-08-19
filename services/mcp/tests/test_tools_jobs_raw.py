@@ -15,13 +15,17 @@ def call(tool: str, handler: Any, /, **kwargs: Any) -> Any:
 
 
 def test_job_status_no_wait_single_get() -> None:
+    call_count = [0]
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         assert request.url.path == "/jobs/j1"
+        call_count[0] += 1
         return httpx.Response(200, json={"status": "running"})
 
     result = call("job_status", handler, job_id="j1")
     assert result["status"] == "running"
+    assert call_count[0] == 1
 
 
 def test_job_status_wait_polls_until_terminal(monkeypatch: Any) -> None:
