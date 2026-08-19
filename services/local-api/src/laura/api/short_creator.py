@@ -1324,6 +1324,21 @@ def delete_production_session(db: Database, session_id: str) -> dict[str, Any]:
     }
 
 
+def _author_confirm_result(session_id: str) -> dict[str, Any]:
+    """Same shape :func:`run_production_resume` returns (``session_id``, ``job_id``,
+    ``warnings``), minus the actual enqueue: an external author's board continues by the
+    author writing the storyline next, never through a team job, so Gate-S confirm on an
+    author board must not enqueue a resume the way the team path does (C1, 2026-08-19 final
+    review)."""
+    from ..short_creator.providers import config_warnings, resolve_from_env
+
+    return {
+        "session_id": session_id,
+        "job_id": None,
+        "warnings": config_warnings(resolve_from_env()),
+    }
+
+
 def confirm_scene_selection(
     db: Database,
     session_id: str,
@@ -1347,11 +1362,22 @@ def confirm_scene_selection(
     ``latest_job_id`` -> ``repos.get_job`` -> status check) rather than calling
     :func:`_production_job_busy` (same module since Task 9, but predates it here) — kept as its
     own inline copy rather than retrofitted, out of scope for that extraction.
+
+    An EXTERNAL author board (``BoardMeta.author == "external"``, C1+C2+C3, 2026-08-19 final
+    review) never gets a team resume from confirm — the author continues by writing the
+    storyline themselves through the author endpoints. Instead this materializes a default,
+    full-scene-window :class:`SceneReview` for every scene the author has not reviewed yet
+    (:func:`laura.short_creator.authoring.materialize_default_scene_reviews`), on BOTH the
+    fresh-confirm path and the idempotent-heal path below, so the deterministic chain
+    (``Board.resume_point``, ``save_storyline``'s scenes-without-review check, ``build_cutlist``)
+    has real reviews to walk past even though the team's own ``review_scene`` tool never runs
+    on an author board.
     """
     session = repos.get_production_session(db, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
-    board = _open_board_or_404(db, str(session["asset_id"]), session_id)
+    asset_id = str(session["asset_id"])
+    board = _open_board_or_404(db, asset_id, session_id)
     if not board.meta().scene_gate:
         raise HTTPException(status.HTTP_409_CONFLICT, "scene gate is not enabled")
     selection = board.load("scene_selection")
@@ -1392,6 +1418,15 @@ def confirm_scene_selection(
         # done-short-circuit (cheap no-op), on a still-parked one it is exactly the healing
         # this needs. No rollback machinery — heal forward instead, same "heals synchronously"
         # philosophy as run_production_revert (controller decision, 2026-08-06).
+        if board.meta().author == "external":
+            from ..short_creator.authoring import materialize_default_scene_reviews
+
+            materialize_default_scene_reviews(db, board, asset_id)
+            return {
+                "session_id": session_id,
+                "already_current": True,
+                **_author_confirm_result(session_id),
+            }
         return {
             "session_id": session_id,
             "already_current": True,
@@ -1404,6 +1439,11 @@ def confirm_scene_selection(
             update={"selected_scene_numbers": picked, "confirmed_utc": _utc_now_iso()}
         ),
     )
+    if board.meta().author == "external":
+        from ..short_creator.authoring import materialize_default_scene_reviews
+
+        materialize_default_scene_reviews(db, board, asset_id)
+        return {**confirm_result, **_author_confirm_result(session_id)}
     return {**confirm_result, **run_production_resume(db, session_id)}
 
 

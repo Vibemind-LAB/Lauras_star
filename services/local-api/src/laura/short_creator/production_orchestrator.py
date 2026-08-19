@@ -987,6 +987,27 @@ def run_production(
             gate=tail_pending_gate,
         )
 
+    # C1 defense in depth (2026-08-19 final review): an external author board must NEVER reach
+    # a team turn — the author endpoints (MCP) are the only way an author board's creative
+    # artifacts get written, and confirm_scene_selection no longer enqueues a resume for one
+    # (api/short_creator.py). This should be structurally unreachable given those callers, but
+    # if it is ever reached anyway (a future caller message-driven run, a bug upstream), refuse
+    # here rather than silently spinning up an agent team on a board an outside author owns.
+    # Same reported-failure shape as the asset-not-found / project-not-found returns above —
+    # never raised, so callers that only check `ok` degrade the same way.
+    if board.meta().author == "external":
+        return {
+            "ok": False,
+            "error": (
+                "external author session — the team never runs on an author board; only the "
+                "deterministic tail (voice/cutlist/contact-sheet/render/QA) is allowed, reached "
+                "through confirm_scene_selection / approve_production_script, never a team turn"
+            ),
+            "asset_id": asset_id,
+            "session_id": session_id,
+            "restored": restored,
+        }
+
     task_text = build_production_task(
         db, board, asset_id=asset_id, task=task, target_seconds=target_seconds, message=message
     )

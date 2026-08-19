@@ -7,12 +7,17 @@ gate is deterministic and runs via approve, never through this module.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, status
 
 from ..db import repos
 from ..db.database import Database
+from ..util import utcnow_iso
+from .board_models import BestWindow, SceneReview
+
+if TYPE_CHECKING:
+    from .board import Board
 
 logger = logging.getLogger(__name__)
 
@@ -72,3 +77,77 @@ def _reason_of(result: dict[str, Any]) -> str:
         if value:
             return str(value)[:500]
     return "the tool rejected the write"
+
+
+_DEFAULT_REVIEW_NOTE = "author-mode default review: full-scene window"
+# Midline of SceneReview.hook_score's own 0..10 range — the same neutral value review_scene's
+# own no-VLM ("degraded") construction uses (production_tools._DEFAULT_HOOK_SCORE), kept as a
+# literal here rather than importing that private module constant across the package boundary.
+_DEFAULT_HOOK_SCORE = 5
+
+
+def materialize_default_scene_reviews(db: Database, board: Board, asset_id: str) -> list[int]:
+    """Gate-S confirm on an author-mode board (C2+C3, 2026-08-19 final review): stamp a
+    default, full-scene-window :class:`SceneReview` for every EXPECTED scene that does not
+    already have one.
+
+    An author-mode board never runs the team, so ``review_scene`` (production_tools.py) never
+    runs either — without this, ``Board.resume_point`` would sit forever at
+    ``scene_reviews:N``, ``save_storyline``'s "scenes without review" check would refuse every
+    confirmed scene, and ``build_cutlist`` would have no window to cut. The default review
+    mirrors ``review_scene``'s own no-VLM ("degraded") construction exactly (same
+    ``_resolve_scene``/``_fps`` source-of-truth calls, same neutral hook_score, ``windows``
+    left for :class:`SceneReview`'s own validator to default to ``[best_window]`` — the same
+    "windows[0] must equal best_window" idiom every other reviewer path relies on) with ONE
+    deliberate difference: the window spans the WHOLE scene rather than review_scene's short
+    default — an author has not picked a highlight yet, so the honest default is "the whole
+    thing", not a guess at one.
+
+    Idempotent by construction: only scenes missing a review get one, so a re-confirm (the
+    healing branch in :func:`laura.api.short_creator.confirm_scene_selection`) never
+    duplicates or clobbers a review the team wrote earlier, or one this same helper already
+    wrote on a prior call.
+    """
+    # _expected_scenes_for: the same helper confirm_scene_selection's own docstring points at —
+    # imported locally from the api layer (chat/executor.py does the identical import for the
+    # identical reason) rather than duplicated a fourth time in this package.
+    from ..api.short_creator import _expected_scenes_for
+
+    # _fps/_resolve_scene: private to production_tools.py, imported anyway (rather than
+    # re-implemented, as production_orchestrator._expected_scene_numbers does for the much
+    # smaller expected-scenes helper above) because _resolve_scene's real logic — rough-cut
+    # clip mapping, scene source-range resolution, transcript lookup — is exactly what a
+    # default review must be honest about, and duplicating it risks silently drifting from
+    # what review_scene itself resolves.
+    from .production_tools import _fps, _resolve_scene
+
+    expected = _expected_scenes_for(db, asset_id)
+    have = {r.scene_number for r in board.scene_reviews()}
+    asset = repos.get_asset(db, asset_id)
+    fps = _fps(db, asset) if asset is not None else 30.0
+    created: list[int] = []
+    for scene_number in expected:
+        if scene_number in have:
+            continue
+        resolved = _resolve_scene(db, asset_id, scene_number)
+        if resolved is None:
+            # The rough cut and the expected-scenes read disagree (should not happen in
+            # practice — both ultimately read the same rough cut) — skip rather than crash
+            # a Gate-S confirm over an artifact this helper cannot honestly construct.
+            continue
+        src_start, src_end_exclusive, _text = resolved
+        duration_s = max(0.01, (src_end_exclusive - src_start) / fps)
+        review = SceneReview(
+            scene_number=scene_number,
+            src_start_frame=src_start,
+            src_end_frame_exclusive=src_end_exclusive,
+            description=_DEFAULT_REVIEW_NOTE,
+            whats_happening=_DEFAULT_REVIEW_NOTE,
+            hook_score=_DEFAULT_HOOK_SCORE,
+            best_window=BestWindow(offset_s=0.0, duration_s=duration_s),
+            degraded=True,
+            created_utc=utcnow_iso(),
+        )
+        board.save_scene_review(review)
+        created.append(scene_number)
+    return created
