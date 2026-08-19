@@ -112,3 +112,27 @@ def test_search_material_posts_query() -> None:
     assert len(out) == 1
     assert out[0]["text"] == "pricing"
     assert out[0]["score"] == 0.95
+
+
+def test_get_transcript_bare_list_response() -> None:
+    segments = [
+        {"start_frame": 0, "end_frame": 100, "text": "before"},
+        {"start_frame": 100, "end_frame": 200, "text": "middle"},
+        {"start_frame": 200, "end_frame": 300, "text": "after"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/assets/a1/transcript"
+        return httpx.Response(200, json=segments)
+
+    # Test without frame args: full list returned
+    out = call("get_transcript", handler, asset_id="a1")
+    assert out == segments
+
+    # Test with frame args: filtering applied to bare list
+    out_filtered = call("get_transcript", handler, asset_id="a1",
+                       start_frame=100, end_frame_exclusive=200)
+    assert out_filtered == [
+        {"start_frame": 100, "end_frame": 200, "text": "middle"},
+    ]
