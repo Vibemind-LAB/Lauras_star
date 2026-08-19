@@ -31,6 +31,10 @@ from ..api.assets import _enqueue_url_fetch, _expand_playlist_urls
 # Imported BY NAME (not `from ..api import short_creator`) so tests can monkeypatch
 # `laura.chat.executor.<name>` without touching the real service functions.
 from ..api.short_creator import (
+    _APPROVE_BUSY_DETAIL,
+    _NO_SCRIPT_DETAIL,
+    _production_job_busy,
+    approve_production_script,
     confirm_contact_sheet,
     confirm_scene_selection,
     confirm_visual_selection,
@@ -393,27 +397,9 @@ def _handle_start_overview(
 
 _RUN_BUSY_TEXT = "Der Lauf läuft bereits — ich melde mich, wenn er fertig ist."
 
-
-def _production_job_busy(db: Database, session: dict[str, Any]) -> bool:
-    """The session's latest production job is still queued/running. Mirrors
-    ``api/short_creator.py``'s ``run_production_revert`` guard EXACTLY (same
-    ``latest_job_id`` -> ``repos.get_job`` -> status check) so chat and the revert endpoint
-    agree on what "busy" means.
-
-    Two call sites, both BEFORE they touch the board or enqueue anything:
-
-    - ``_handle_approve_script`` (I2, 2026-08-05 review): a double "Script freigeben" while
-      the first run was still in flight used to enqueue a SECOND concurrent
-      ``production.run`` job against the same board files — two runs racing each other.
-      Called before either the approval stamp or the resume enqueue, on both the
-      fresh-approval and the already-current-but-unfinished-resume paths.
-    - ``_handle_follow_up`` (I1, 2026-08-05 final review): a follow_up sent mid-tail used to
-      enqueue unconditionally, starting a CONCURRENT team run (workers=3) on the same board
-      and overwriting ``latest_job_id`` — hiding the still-running tail from the UI.
-    """
-    job_id = session.get("latest_job_id")
-    job = repos.get_job(db, str(job_id)) if job_id else None
-    return job is not None and str(job["status"]) in ("queued", "running")
+# _production_job_busy now lives in api/short_creator.py (Task 9: that module already has a
+# long list of names imported FROM it here, so the reverse import would be circular) and is
+# imported above — both call sites below are unchanged.
 
 
 def _handle_follow_up(
@@ -468,49 +454,27 @@ def _handle_approve_script(
     now_utc: str,
 ) -> list[dict[str, Any]]:
     """Gate B: the user approving the script in chat. Resolves ``session_ref`` exactly like
-    ``follow_up``/``revert`` (:func:`_resolve_session_id`), opens the session's board directly
-    (``board_root_for`` + ``Board.open``, imported locally — mirrors every board-touching helper
-    in ``api/short_creator.py``, and keeps this module import-light for callers without the
-    'autoshort' extra) to read and flip the gate itself, then enqueues a PURE RESUME
-    (:func:`run_production_resume`, spec 2026-08-05 modular production) — no follow-up text, no
-    team turn. An eligible gated board (``production_orchestrator.deterministic_eligible``, MP3)
-    then takes the deterministic post-gate tail instead of spinning up the full agent team for
-    what is mechanically just voice → cutlist → contact sheet → render → QA; that's the whole
-    point of the modular arc, and it only works if this call site never smuggles a ``message``
-    back in.
+    ``follow_up``/``revert`` (:func:`_resolve_session_id`) and confirms the production session
+    itself exists, then hands the rest — opening the board, the no-script guard, the
+    content-hash binding, the busy-check-before-stamp ordering, and the
+    write-then-enqueue-with-compensating-rollback — to
+    :func:`~laura.api.short_creator.approve_production_script` (Task 9 extraction: that used to
+    be this function's own board-touching block, now shared with the HTTP
+    ``script:approve`` endpoint so chat and HTTP agree on what an approval means down to the
+    byte). ``now_utc`` and this module's own name-imported (hence test-patchable)
+    ``run_production_resume`` are passed through explicitly, so a chat approval's stamp and
+    resume call are exactly what they were before this extraction — see
+    :func:`approve_production_script`'s own docstring for why that matters.
 
-    Refuses outright (no stamp, no run) when the board has no script yet — an approval before
-    the team ever wrote one would otherwise land pre-emptively and the gate would never
-    actually pause the run (review finding).
-
-    Approval is bound to the script's CONTENT, not just a bare timestamp
-    (:func:`~laura.short_creator.board_models.content_hash`, the same idiom
-    ``synthesize_script_voice``/``build_cutlist`` already use for staleness): an
-    already-approved board whose stamped hash still matches the CURRENT script is content-current
-    (``already_current`` below), but one whose script has since changed (a team rewrite, or a
-    revert to a DIFFERENT version) is treated as a FRESH approval — the whole point of
-    content-binding is that the old stamp no longer speaks for new text.
-
-    A content-current approval is a genuine no-op (German text, no new run) ONLY when the board
-    is actually finished (``resume_point == "done"``) — approving twice must not burn a second
-    production turn once nothing is left to do. But a content-current approval on an UNFINISHED
-    board (a prior tail died mid-chain, or the user is just re-confirming) must resume again: the
-    whole recovery path after a failed deterministic tail is a second "Script freigeben", so this
-    branch enqueues another :func:`run_production_resume` call instead of only replying.
-
-    The approval stamp must land on the board BEFORE the resume run is enqueued (the voice tool
-    reads ``meta.script_approved_utc``/``script_approved_script_hash`` at job runtime, which can
-    start before the enqueue call here even returns), so a failure to start that run cannot be
-    fixed by reordering the two calls — only by a COMPENSATING rollback once the failure is
-    known (review finding: the stamp used to persist unconditionally, so a session race, a
-    config preflight failure, or any bug in the enqueue call left the gate permanently open
-    while the user read an error implying nothing had happened). The rollback below is
-    conditional on ``not already_current``: it must never erase an approval that was ALREADY on
-    the board before this call started (the double-approve-resume branch above) — only the fresh
-    stamp this call itself just wrote. Both exception paths revert via
-    ``board.clear_script_approval()`` before the existing error text goes out — the known
-    ``HTTPException`` case keeps its honest-passthrough text, and anything else re-raises into
-    ``execute_decision``'s own catch-all, unchanged."""
+    Maps the service's outcome onto the pre-existing German chat texts:
+    :data:`~laura.api.short_creator._NO_SCRIPT_DETAIL` ``->`` ``_NO_SCRIPT_TO_APPROVE_TEXT``,
+    :data:`~laura.api.short_creator._APPROVE_BUSY_DETAIL` ``->`` ``_RUN_BUSY_TEXT``,
+    ``"already_done"`` ``->`` ``_SCRIPT_ALREADY_APPROVED_TEXT``, ``"resumed"`` ``->`` the existing
+    action card. Any OTHER ``HTTPException`` (a real failure inside ``run_production_resume``
+    itself — the extra missing, the agent config unusable, a genuine race) keeps the same
+    honest-passthrough text every other chat service call uses (:func:`_detail_reason`),
+    unchanged from before this extraction; anything that is not an ``HTTPException`` at all
+    re-raises into ``execute_decision``'s own catch-all, also unchanged."""
     args = decision["args"]
     session_ref = str(args["session_ref"])
     session_id = _resolve_session_id(messages, session_ref)
@@ -519,52 +483,21 @@ def _handle_approve_script(
     session = repos.get_production_session(db, session_id)
     if session is None:
         return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
-    asset_id = str(session["asset_id"])
-
-    from ..api.short_creator import _expected_scenes_for
-    from ..short_creator.board import Board
-    from ..short_creator.board_models import Script, content_hash
-    from ..short_creator.production_orchestrator import board_root_for
 
     try:
-        board = Board.open(board_root_for(db, asset_id, session_id))
-    except (ValueError, FileNotFoundError):
-        return [_append_text(db, conversation_id, _NO_SESSION_TEXT, now_utc)]
+        result = approve_production_script(
+            db, session_id, now_utc=now_utc, resume=run_production_resume,
+        )
+    except HTTPException as exc:
+        if exc.detail == _NO_SCRIPT_DETAIL:
+            return [_append_text(db, conversation_id, _NO_SCRIPT_TO_APPROVE_TEXT, now_utc)]
+        if exc.detail == _APPROVE_BUSY_DETAIL:
+            return [_append_text(db, conversation_id, _RUN_BUSY_TEXT, now_utc)]
+        return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
 
-    script = board.load("script")
-    if not isinstance(script, Script):
-        return [_append_text(db, conversation_id, _NO_SCRIPT_TO_APPROVE_TEXT, now_utc)]
-    current_hash = content_hash(script)
-
-    meta = board.meta()
-    already_current = (
-        meta.script_approved_utc is not None
-        and meta.script_approved_script_hash == current_hash
-    )
-    if already_current and board.resume_point(_expected_scenes_for(db, asset_id)) == "done":
+    if result["outcome"] == "already_done":
         return [_append_text(db, conversation_id, _SCRIPT_ALREADY_APPROVED_TEXT, now_utc)]
 
-    # I2: refuse a concurrent second run BEFORE stamping or enqueueing, on BOTH remaining
-    # paths (the already-current-but-unfinished resume above, and a fresh approval below).
-    # Ordering matters: stamping the fresh path FIRST and only then discovering the run is
-    # busy would open the gate for the STILL-RUNNING job mid-flight even though this call
-    # never actually starts a new one — so the busy check runs first, no stamp either way.
-    if _production_job_busy(db, session):
-        return [_append_text(db, conversation_id, _RUN_BUSY_TEXT, now_utc)]
-
-    if not already_current:
-        board.set_script_approved(now_utc, current_hash)
-
-    try:
-        result = run_production_resume(db, session_id)
-    except HTTPException as exc:
-        if not already_current:
-            board.clear_script_approval()
-        return [_append_text(db, conversation_id, _detail_reason(exc.detail), now_utc)]
-    except Exception:
-        if not already_current:
-            board.clear_script_approval()
-        raise
     action_msg = _append(
         db, conversation_id, role="assistant", kind="action",
         content={

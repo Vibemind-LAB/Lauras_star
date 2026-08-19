@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Annotated, Any, Literal, Self
@@ -1105,6 +1105,142 @@ def run_production_resume(db: Database, session_id: str) -> dict[str, Any]:
     return _enqueue_production_run(db, session_id, None)
 
 
+_NO_SCRIPT_DETAIL = "no script to approve yet — the production pauses at the gate by itself"
+_APPROVE_BUSY_DETAIL = "a production job is running on this session — wait for it to finish"
+
+
+def _production_job_busy(db: Database, session: dict[str, Any]) -> bool:
+    """The session's latest production job is still queued/running.
+
+    Lives here — not in ``chat/executor.py``, which already imports a long list of names FROM
+    this module — so :func:`approve_production_script` and both of ``chat/executor.py``'s call
+    sites share one definition; ``chat.executor`` imports it back from here (the reverse import
+    would be circular). Mirrors :func:`run_production_revert`'s own inline guard exactly (same
+    ``latest_job_id`` -> ``repos.get_job`` -> status check), so chat, the revert endpoint, and
+    this service all agree on what "busy" means.
+
+    Two call sites in ``chat/executor.py``, both BEFORE they touch the board or enqueue
+    anything:
+
+    - ``_handle_approve_script`` (via :func:`approve_production_script`, I2, 2026-08-05
+      review): a double "Script freigeben" while the first run was still in flight used to
+      enqueue a SECOND concurrent ``production.run`` job against the same board files — two
+      runs racing each other. Called before either the approval stamp or the resume enqueue,
+      on both the fresh-approval and the already-current-but-unfinished-resume paths.
+    - ``_handle_follow_up`` (I1, 2026-08-05 final review): a follow_up sent mid-tail used to
+      enqueue unconditionally, starting a CONCURRENT team run (workers=3) on the same board
+      and overwriting ``latest_job_id`` — hiding the still-running tail from the UI.
+    """
+    job_id = session.get("latest_job_id")
+    job = repos.get_job(db, str(job_id)) if job_id else None
+    return job is not None and str(job["status"]) in ("queued", "running")
+
+
+def approve_production_script(
+    db: Database,
+    session_id: str,
+    *,
+    now_utc: str | None = None,
+    resume: Callable[[Database, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Gate B core (Task 9 extraction): the exact approval semantics chat's "Script freigeben"
+    has always run, now shared with the HTTP ``script:approve`` endpoint. Previously this whole
+    block lived only in ``chat/executor.py::_handle_approve_script``; that handler now resolves
+    the session and turns this function's outcome/exceptions into chat text, but the actual
+    board mutation happens here for both callers.
+
+    Outcome dict: ``{"outcome": "resumed", "session_id", "job_id"}`` on a fresh or re-triggered
+    approval; ``{"outcome": "already_done", "session_id"}`` when the stamp is content-current
+    AND the board is finished. Raises ``HTTPException`` 404 (unknown session/board), 409
+    (:data:`_NO_SCRIPT_DETAIL` / :data:`_APPROVE_BUSY_DETAIL`).
+
+    Approval is bound to the script's CONTENT, not just a bare timestamp
+    (:func:`~laura.short_creator.board_models.content_hash`, the same idiom
+    ``synthesize_script_voice``/``build_cutlist`` already use for staleness): an
+    already-approved board whose stamped hash still matches the CURRENT script is
+    content-current (``already_current`` below), but one whose script has since changed (a team
+    rewrite, or a revert to a DIFFERENT version) is treated as a FRESH approval — the whole
+    point of content-binding is that the old stamp no longer speaks for new text.
+
+    A content-current approval is a genuine no-op (``"already_done"``, no new run) ONLY when the
+    board is actually finished (``resume_point == "done"``) — approving twice must not burn a
+    second production turn once nothing is left to do. But a content-current approval on an
+    UNFINISHED board (a prior tail died mid-chain, or the user is just re-confirming) must
+    resume again: the whole recovery path after a failed deterministic tail is a second "Script
+    freigeben", so this branch enqueues another :func:`run_production_resume` call instead of
+    only reporting done.
+
+    The busy check runs BEFORE either the approval stamp or the enqueue, on BOTH remaining paths
+    (the already-current-but-unfinished resume above, and a fresh approval below). Ordering
+    matters: stamping the fresh path FIRST and only then discovering the run is busy would open
+    the gate for the STILL-RUNNING job mid-flight even though this call never actually starts a
+    new one — so the busy check runs first, no stamp either way.
+
+    The approval stamp must land on the board BEFORE the resume run is enqueued (the voice tool
+    reads ``meta.script_approved_utc``/``script_approved_script_hash`` at job runtime, which can
+    start before the enqueue call here even returns), so a failure to start that run cannot be
+    fixed by reordering the two calls — only by a COMPENSATING rollback
+    (``board.clear_script_approval()``) once the failure is known. The rollback is conditional
+    on ``not already_current``: it must never erase an approval that was ALREADY on the board
+    before this call started — only the fresh stamp this call itself just wrote.
+
+    ``now_utc``/``resume`` default to the real clock / this module's own
+    :func:`run_production_resume` when omitted — every real caller (the HTTP endpoint, and the
+    direct-service tests) omits both. ``chat/executor.py`` passes its own ``now_utc`` (the same
+    timestamp it stamps every other message in the turn with) and its own name-imported,
+    test-patchable ``run_production_resume`` reference explicitly, so a chat approval's stamp
+    and resume call stay exactly what they were before this extraction.
+    """
+    session = repos.get_production_session(db, session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+    asset_id = str(session["asset_id"])
+
+    from ..short_creator.board import Board
+    from ..short_creator.board_models import Script, content_hash
+    from ..short_creator.production_orchestrator import board_root_for
+
+    try:
+        board = Board.open(board_root_for(db, asset_id, session_id))
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "session board not found") from exc
+
+    script = board.load("script")
+    if not isinstance(script, Script):
+        raise HTTPException(status.HTTP_409_CONFLICT, _NO_SCRIPT_DETAIL)
+    current_hash = content_hash(script)
+
+    meta = board.meta()
+    already_current = (
+        meta.script_approved_utc is not None
+        and meta.script_approved_script_hash == current_hash
+    )
+    if already_current and board.resume_point(_expected_scenes_for(db, asset_id)) == "done":
+        return {"outcome": "already_done", "session_id": session_id}
+
+    if _production_job_busy(db, session):
+        raise HTTPException(status.HTTP_409_CONFLICT, _APPROVE_BUSY_DETAIL)
+
+    stamp_utc = (
+        now_utc if now_utc is not None else datetime.now(UTC).isoformat(timespec="seconds")
+    )
+    if not already_current:
+        board.set_script_approved(stamp_utc, current_hash)
+
+    resume_fn = resume if resume is not None else run_production_resume
+    try:
+        result = resume_fn(db, session_id)
+    except HTTPException:
+        if not already_current:
+            board.clear_script_approval()
+        raise
+    except Exception:
+        if not already_current:
+            board.clear_script_approval()
+        raise
+    return {"outcome": "resumed", "session_id": session_id, "job_id": result["job_id"]}
+
+
 def _utc_now_iso() -> str:
     """Current UTC time, ISO-8601 seconds precision — this module's existing
     ``datetime.now(UTC).isoformat(timespec="seconds")`` idiom (see session creation above)
@@ -1206,10 +1342,9 @@ def confirm_scene_selection(
     acting on the user's behalf) genuinely means.
 
     The busy check mirrors :func:`run_production_revert`'s own inline guard exactly (same
-    ``latest_job_id`` -> ``repos.get_job`` -> status check) rather than importing
-    ``chat.executor``'s ``_production_job_busy`` — that module imports FROM this one, so the
-    reverse import would be circular; this is the one true service-side precedent for "is the
-    session's latest job still alive".
+    ``latest_job_id`` -> ``repos.get_job`` -> status check) rather than calling
+    :func:`_production_job_busy` (same module since Task 9, but predates it here) — kept as its
+    own inline copy rather than retrofitted, out of scope for that extraction.
     """
     session = repos.get_production_session(db, session_id)
     if session is None:
@@ -1720,6 +1855,22 @@ def confirm_contact_sheet_endpoint(
 ) -> dict[str, Any]:
     """Approve the current hash-bound contact sheet and enqueue a pure resume."""
     return confirm_contact_sheet(_db(request), session_id, body.contact_sheet_hash)
+
+
+@router.post("/production/{session_id}/script:approve", status_code=status.HTTP_202_ACCEPTED)
+def approve_script_endpoint(
+    session_id: str,
+    request: Request,
+    principal: Annotated[Principal, Depends(require_permission("timeline:edit"))],
+) -> dict[str, Any]:
+    """Approve the current script (content-hash-bound) and run the deterministic tail.
+
+    The HTTP form of chat's "Script freigeben" — see :func:`approve_production_script`. Serves
+    both team and author-mode sessions alike: unlike ``run_production_follow_up``, this is not
+    a creative write the author/team lockout needs to arbitrate, it is the same gate either kind
+    of session pauses at.
+    """
+    return approve_production_script(_db(request), session_id)
 
 
 @router.post("/production/{session_id}/message", status_code=status.HTTP_202_ACCEPTED)
