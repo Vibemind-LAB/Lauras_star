@@ -746,8 +746,8 @@ durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
 ## Laura-MCP (Skill + Live-Prüfliste)  `[ ]`  (Spec + Plan 2026-08-19)
 Produktionsvertrag als abrufbare Skill + manuelle Live-Prüfung.
 
-- [ ] App starten, MCP registrieren (README), `list_projects` antwortet.
-- [ ] `import_media` mit einer echten URL → `import_status` bis online → `analyze_asset`.
-- [ ] Voller Author-Durchlauf bis abspielbarem Export; parallel in der App sichtbar (Open Productions, Contact Sheet, Export-Tab).
-- [ ] Editorial-Stichprobe: `edit_timeline` trim + `timeline_undo` + `render_timeline`.
-- [ ] Claude Desktop: Registrierung, `list_projects` + `get_frame` (Bild sichtbar).
+- [x] App starten, MCP registrieren (README), `list_projects` antwortet. (2026-08-20: stdio-Smoke, 27 Tools, echter Durchstich)
+- [x] `import_media` mit einer echten URL → `import_status` bis online → `analyze_asset`. (yt-dlp 476 KB, 3 ASR-Segmente, Auto-Rough-Cut 2 Szenen)
+- [x] Voller Author-Durchlauf bis abspielbarem Export; parallel in der App sichtbar (Open Productions, Contact Sheet, Export-Tab). (Session b954e150, Export 93b66f46, 9,8-s-Reel; kein Team-Job, Default-Reviews, deterministischer Tail inkl. QA)
+- [x] Editorial-Stichprobe: `edit_timeline` trim + `timeline_undo` + `render_timeline`. (Trim 0→15 frame-genau, Undo exakt, Render ready)
+- [ ] Claude Desktop: Registrierung, `list_projects` + `get_frame` (Bild sichtbar). — wartet auf den User (Desktop-Config + App-Neustart)
