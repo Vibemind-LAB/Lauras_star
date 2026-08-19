@@ -27,6 +27,7 @@ def main() -> None:
         tools_export,
         tools_jobs,
         tools_media,
+        tools_production,
         tools_raw,
         tools_vision,
     )
@@ -45,6 +46,6 @@ def main() -> None:
     tools_editorial.register(mcp, client)  # Task 3
     tools_export.register(mcp, client)  # Task 4
     tools_jobs.register(mcp, client)  # Task 5
-    # tools_production.register(mcp, client)  # Task 7
+    tools_production.register(mcp, client)  # Task 7
     tools_vision.register(mcp, client)  # Task 8
     mcp.run()
