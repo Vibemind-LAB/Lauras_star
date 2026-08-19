@@ -742,3 +742,15 @@ durchgehende Voice-Spur einfach über die Szenenliste gelegt wurde.
 - [ ] Live-Autosave/Confirm/Render mit einer tatsächlich pending Visual-v2-
       Auswahl bleibt offen, weil der Workspace keine solche offene Auswahl
       enthielt. Kein Erfolg für `gpt-5.6-luna` oder Medien-Render behauptet.
+
+## Laura-MCP (2026-08-19)  `[ ]`  (Skill + Live-Prüfliste)
+> Produktionsvertrag als abrufbare Skill + manuelle Live-Prüfung.
+
+**Spec:** [`docs/superpowers/specs/2026-08-19-laura-mcp-design.md`](docs/superpowers/specs/2026-08-19-laura-mcp-design.md)
+**Plan:** [`docs/superpowers/plans/2026-08-19-laura-mcp.md`](docs/superpowers/plans/2026-08-19-laura-mcp.md)
+
+- [ ] App starten, MCP registrieren (README), `list_projects` antwortet.
+- [ ] `import_media` mit einer echten URL → `import_status` bis online → `analyze_asset`.
+- [ ] Voller Author-Durchlauf bis abspielbarem Export; parallel in der App sichtbar (Open Productions, Contact Sheet, Export-Tab).
+- [ ] Editorial-Stichprobe: `edit_timeline` trim + `timeline_undo` + `render_timeline`.
+- [ ] Claude Desktop: Registrierung, `list_projects` + `get_frame` (Bild sichtbar).
