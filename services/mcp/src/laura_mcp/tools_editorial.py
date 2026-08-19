@@ -8,17 +8,23 @@ from mcp.server.fastmcp import FastMCP
 
 from .client import LauraClient, LauraError
 
+# Exactly the ops services/local-api/src/laura/api/timelines.py's _apply() dispatches on
+# (~line 855-972) plus its _OP_LABELS table (~line 1099) — verified against that source, not
+# assumed. There is no bare "insert"/"append" op on the backend, only insert_clip/append_clip/
+# append_from_words; "split" was previously missing here entirely.
 _VALID_OPS = {
     "trim",
     "move",
     "delete",
     "delete_words",
     "lift",
-    "insert",
-    "append",
     "place_clip",
     "set_speed",
     "set_audio_offset",
+    "split",
+    "append_clip",
+    "insert_clip",
+    "append_from_words",
 }
 
 
@@ -54,7 +60,7 @@ def _edit_scenes(
     if action == "generate":
         return client.request("POST", f"/timelines/{timeline_id}/scenes:generate", json=args)
     if action == "split":
-        scene_id = args["scene_id"]
+        scene_id = _require_scene_id(action, args)
         body = {k: v for k, v in args.items() if k != "scene_id"}
         return client.request(
             "POST", f"/timelines/{timeline_id}/scenes/{scene_id}/split", json=body,
@@ -64,10 +70,16 @@ def _edit_scenes(
     if action == "cut_at_frame":
         return client.request("POST", f"/timelines/{timeline_id}/cut-at-frame", json=args)
     if action == "rename":
-        scene_id = args["scene_id"]
+        scene_id = _require_scene_id(action, args)
         body = {k: v for k, v in args.items() if k != "scene_id"}
         return client.request("PATCH", f"/scenes/{scene_id}", json=body)
     raise LauraError(f"unknown action: {action!r}")
+
+
+def _require_scene_id(action: str, args: dict[str, Any]) -> Any:
+    if "scene_id" not in args:
+        raise LauraError(f"edit_scenes '{action}' requires args.scene_id")
+    return args["scene_id"]
 
 
 def _timeline_undo(client: LauraClient, *, timeline_id: str, redo: bool = False) -> Any:
@@ -97,8 +109,9 @@ def register(mcp: FastMCP, client: LauraClient) -> None:
     @mcp.tool()
     def edit_timeline(timeline_id: str, operation: dict[str, Any]) -> Any:
         """Apply one frame-exact operation to a timeline. operation is a dict with an "op"
-        field (trim, move, delete, delete_words, lift, insert, append, place_clip,
-        set_speed, set_audio_offset) plus op-specific fields, passed through verbatim.
+        field (trim, move, delete, delete_words, lift, place_clip, set_speed,
+        set_audio_offset, split, append_clip, insert_clip, append_from_words) plus
+        op-specific fields, passed through verbatim.
 
         All frames are integers; ranges are end-exclusive (out_frame_exclusive). OTIO is the source of truth — never edit exports, always the timeline.
         """

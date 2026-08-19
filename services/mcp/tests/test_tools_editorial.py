@@ -91,6 +91,55 @@ def test_edit_timeline_rejects_unknown_op() -> None:
     assert call_count[0] == 0
 
 
+def test_valid_ops_matches_backend_exactly() -> None:
+    """Pinned against services/local-api/src/laura/api/timelines.py's _apply() dispatch
+    (~line 855-972) + its _OP_LABELS table (~line 1099) — the backend's real op set, not the
+    bare insert/append this tool used to (wrongly) validate against."""
+    assert tools_editorial._VALID_OPS == {
+        "trim",
+        "move",
+        "delete",
+        "delete_words",
+        "lift",
+        "place_clip",
+        "set_speed",
+        "set_audio_offset",
+        "split",
+        "append_clip",
+        "insert_clip",
+        "append_from_words",
+    }
+
+
+def test_edit_timeline_rejects_bare_insert_and_append() -> None:
+    """The backend has no bare "insert"/"append" op — only insert_clip/append_clip/
+    append_from_words. These used to be wrongly accepted client-side and would have 422'd on
+    the backend; now they are rejected before any HTTP call."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP call expected")
+
+    for bad_op in ("insert", "append"):
+        with pytest.raises(LauraError, match="unknown op"):
+            call("edit_timeline", handler, timeline_id="t1", operation={"op": bad_op})
+
+
+def test_edit_timeline_accepts_every_backend_op() -> None:
+    """Every op the backend's _apply() dispatch actually handles passes through verbatim —
+    including split/append_clip/insert_clip/append_from_words, previously missing here."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body["op"])
+        return httpx.Response(200, json={"ok": True})
+
+    for op in sorted(tools_editorial._VALID_OPS):
+        call("edit_timeline", handler, timeline_id="t1", operation={"op": op})
+
+    assert sorted(seen) == sorted(tools_editorial._VALID_OPS)
+
+
 def test_edit_scenes_split_path() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
@@ -139,6 +188,25 @@ def test_edit_scenes_rename_patches_scene() -> None:
         args={"scene_id": "sc1", "name": "Intro"},
     )
     assert out == {"ok": True}
+
+
+def test_edit_scenes_split_requires_scene_id() -> None:
+    """A missing args.scene_id used to raise a bare KeyError; it must raise a LauraError with
+    a clear message instead, before any HTTP call."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP call expected")
+
+    with pytest.raises(LauraError, match="requires args.scene_id"):
+        call("edit_scenes", handler, timeline_id="t1", action="split", args={"frame": 120})
+
+
+def test_edit_scenes_rename_requires_scene_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP call expected")
+
+    with pytest.raises(LauraError, match="requires args.scene_id"):
+        call("edit_scenes", handler, timeline_id="t1", action="rename", args={"name": "Intro"})
 
 
 def test_edit_scenes_rejects_unknown_action() -> None:

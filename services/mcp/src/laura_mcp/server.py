@@ -31,21 +31,14 @@ def main() -> None:
         tools_raw,
         tools_vision,
     )
-    # Task 2: tools_analysis
-    # Task 3: tools_editorial
-    # Task 4: tools_export
-    # Task 5: tools_jobs
-    # Task 6: tools_media
-    # Task 7: tools_production
-    # Task 8: tools_vision
 
     client = build_client()
     tools_raw.register(mcp, client)
     tools_media.register(mcp, client)
-    tools_analysis.register(mcp, client)  # Task 2
-    tools_editorial.register(mcp, client)  # Task 3
-    tools_export.register(mcp, client)  # Task 4
-    tools_jobs.register(mcp, client)  # Task 5
-    tools_production.register(mcp, client)  # Task 7
-    tools_vision.register(mcp, client)  # Task 8
+    tools_analysis.register(mcp, client)
+    tools_editorial.register(mcp, client)
+    tools_export.register(mcp, client)
+    tools_jobs.register(mcp, client)
+    tools_production.register(mcp, client)
+    tools_vision.register(mcp, client)
     mcp.run()
