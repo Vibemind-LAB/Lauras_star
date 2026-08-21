@@ -151,9 +151,11 @@ def test_render_xfade_path_also_applies_trailing_fade(
     assert "xfade=transition=fade:duration=0.2:offset=1" in fc
     # AND the trailing fade-out reaches the graph: boundary=60f/30fps=2s, d=12f/30fps=0.4s
     assert "fade=t=out:st=1.6:d=0.4" in fc
-    # the (inert, since it lands exactly at stream end) fade-in half is present too --
-    # _video_transition_chain always emits both halves of the dip.
-    assert "fade=t=in:st=2:d=0.4" in fc
+    # the fade-in half must NOT be emitted for a trailing fade (boundary_frame(60) >=
+    # total_frames(60)): ffmpeg's fade=t=in forces EVERY frame before its st to black, not just
+    # frames within its own window -- with no video past the boundary for a ramp-up to apply to,
+    # emitting it would black out the entire preceding stream (live-found regression).
+    assert "fade=t=in" not in fc
 
 
 # --- real ffmpeg smoke -------------------------------------------------------
@@ -179,3 +181,93 @@ def test_real_crossfade_preserves_total_length(tmp_path: Path) -> None:
     vstream = next(s for s in streams if s.get("codec_type") == "video")
     nb = int(vstream["nb_frames"])
     assert abs(nb - 60) <= 1  # 30 + 30, reserve overlap keeps the sum (sync invariant)
+
+
+def _white_src(tmp_path: Path, name: str, *, seconds: float, size: str = "64x64",
+                rate: int = 10) -> Path:
+    p = tmp_path / name
+    run_ffmpeg([
+        "-f", "lavfi", "-i", f"color=c=white:s={size}:r={rate}:d={seconds}",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(p),
+    ])
+    return p
+
+
+def _yavg_series(path: Path, stats_path: Path) -> list[float]:
+    """Per-frame average luma (signalstats ``YAVG``) of ``path``'s video stream, in order.
+
+    Writes the metadata to a bare relative filename via ``run_ffmpeg``'s own ``cwd=`` support
+    (mp4.py's drawtext/ass helper files use the same trick) -- an absolute Windows path inside a
+    filter option string trips over the drive-letter colon, since filter options are themselves
+    colon-delimited.
+    """
+    run_ffmpeg(
+        ["-i", str(path), "-vf", f"signalstats,metadata=print:file={stats_path.name}",
+         "-f", "null", "-"],
+        cwd=stats_path.parent,
+    )
+    text = stats_path.read_text(encoding="utf-8", errors="replace")
+    return [
+        float(line.rsplit("=", 1)[1])
+        for line in text.splitlines()
+        if "lavfi.signalstats.YAVG=" in line
+    ]
+
+
+@pytest.mark.skipif(
+    shutil.which(os.environ.get("LAURA_FFMPEG", "ffmpeg")) is None, reason="ffmpeg"
+)
+def test_real_trailing_fade_concat_path_is_not_all_black(tmp_path: Path) -> None:
+    """Live-found regression: a real narrated-reel render on the xfade path came back entirely
+    black. Root cause: ffmpeg's ``fade=t=in:st=X`` forces EVERY frame before ``X`` to black, not
+    just frames inside its own ``[X, X+d]`` window -- so the (pre-fix) unconditional fade-in half
+    emitted for a TRAILING fade (whose ``st`` sits at the stream's own end) blacked the entire
+    video. The string-only filtergraph assertions in this file would have (and did) pass on that
+    broken build, since they only check which filter strings appear, not what they render to.
+    This is the pixel-level proof, on the plain-concat path (hard cut between the two clips, no
+    crossfade): build two solid-WHITE clips, render with only a trailing "fade", and check via
+    real ffmpeg + signalstats that the output is bright early, still bright right up to the fade
+    window, and near-black only at the very end -- never entirely black."""
+    a = _white_src(tmp_path, "a.mp4", seconds=3)
+    b = _white_src(tmp_path, "b.mp4", seconds=3)
+    dest = tmp_path / "concat_trailing_fade.mp4"
+    render_clips_mp4(
+        [(a, 0, 30), (b, 0, 30)],
+        dest,
+        rate_num=10, rate_den=1,
+        video_transitions=[VideoTransition(kind="fade", boundary_frame=60, duration_frames=30)],
+    )
+    yavg = _yavg_series(dest, tmp_path / "concat_stats.txt")
+    assert len(yavg) == 60
+    assert yavg[5] > 100, f"early frame must be bright, got {yavg[5]}"
+    assert yavg[25] > 100, f"frame before the fade window must still be bright, got {yavg[25]}"
+    assert yavg[-1] < 25, f"final frame must be near-black, got {yavg[-1]}"
+
+
+@pytest.mark.skipif(
+    shutil.which(os.environ.get("LAURA_FFMPEG", "ffmpeg")) is None, reason="ffmpeg"
+)
+def test_real_trailing_fade_xfade_path_is_not_all_black(tmp_path: Path) -> None:
+    """Same regression, on the xfade fold path this time: a real crossfade boundary (so
+    ``has_crossfade`` routes the render through ``_xfade_base_graph``, exactly what a narrated
+    reel with the default ``crossfade_frames`` takes) coexisting with a trailing fade must not
+    black out the whole video either. Both source clips are solid white, so the crossfade blend
+    region itself reads as white too -- the only expected darkening is the trailing fade's own
+    ramp at the very end."""
+    a = _white_src(tmp_path, "a.mp4", seconds=4)  # extra length -> reserve for the crossfade
+    b = _white_src(tmp_path, "b.mp4", seconds=4)
+    dest = tmp_path / "xfade_trailing_fade.mp4"
+    render_clips_mp4(
+        [(a, 0, 30), (b, 0, 30)],
+        dest,
+        rate_num=10, rate_den=1,
+        video_transitions=[
+            VideoTransition(kind="crossfade", boundary_frame=30, duration_frames=10),
+            VideoTransition(kind="fade", boundary_frame=60, duration_frames=30),
+        ],
+    )
+    yavg = _yavg_series(dest, tmp_path / "xfade_stats.txt")
+    assert len(yavg) == 60
+    assert yavg[5] > 100, f"early frame must be bright, got {yavg[5]}"
+    assert yavg[25] > 100, f"frame before the fade window must still be bright, got {yavg[25]}"
+    assert yavg[-1] < 25, f"final frame must be near-black, got {yavg[-1]}"
