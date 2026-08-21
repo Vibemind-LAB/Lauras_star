@@ -217,6 +217,52 @@ def test_voiceover_api_enqueues_job_and_places_synthetic_audio_clip(
     assert clips[0]["label"] == "Voiceover"
 
 
+def test_voiceover_job_writes_word_timing_sidecar(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every successful voiceover synthesis gets a ``<wav>.words.json`` sidecar next to
+    it (spec §4). Whisper is force-disabled here (regardless of whether faster-whisper
+    happens to be installed in this environment) so this deterministically exercises the
+    even-distribution fallback -- the whisper mapping itself is covered by
+    test_vo_words.py."""
+    from laura.ai import vo_words
+
+    monkeypatch.setattr(vo_words, "_transcribe_words", lambda *_a, **_k: None)
+
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline, _, segment_id = _seed_sequence_with_segment(db, tmp_path)
+
+    accepted = client.post(
+        f"/timelines/{timeline['id']}/voiceover",
+        json={
+            "segment_id": segment_id,
+            "seq_in_frame": 12,
+            "seq_out_frame_exclusive": 72,
+            "backend": "stub",
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert app.state.runner.run_once() is True
+    job = repos.get_job(db, accepted.json()["job_id"])
+    assert job is not None and job["status"] == "succeeded", job
+    result = json.loads(job["result_json"])
+
+    asset = repos.get_asset(db, result["asset_id"])
+    assert asset is not None
+    wav_path = Path(asset["source_path"])
+    sidecar_path = Path(f"{wav_path}.words.json")
+    assert sidecar_path.exists()
+
+    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert payload["source"] == "even"
+    assert [w["text"] for w in payload["words"]] == ["Hallo", "Laura"]
+    for word in payload["words"]:
+        assert word["end_frame_exclusive"] > word["start_frame"]
+
+
 def test_voiceover_honors_requested_mix_mode_and_ducking(
     client: TestClient,
     tmp_path: Path,

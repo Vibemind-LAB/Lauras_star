@@ -29,6 +29,7 @@ from .auto_pipeline import plan_lipsync_after_voiceover
 from .lipsync_backend import resolve_lipsync_backend
 from .provenance import write_ai_provenance_manifest
 from .reenact_backend import resolve_reenact_backend
+from .vo_words import write_word_sidecar
 from .voiceover_backend import DEFAULT_VOICEOVER_SAMPLE_RATE, resolve_voiceover_backend
 
 _log = logging.getLogger(__name__)
@@ -585,6 +586,19 @@ def _synthesize_voiceover_asset(
         is_vfr=False,
         sha256=None,
     )
+
+    # Word-timing sidecar for narration captions (spec §4). Applies to both fit modes
+    # (slot: measured_frames == duration_frames; natural: the real measured length) and
+    # is never fatal -- a sidecar problem must not affect this job's result.
+    write_word_sidecar(
+        out_path,
+        text=text,
+        measured_frames=measured_frames,
+        rate_num=rate_num,
+        rate_den=rate_den,
+        language=language,
+    )
+
     return asset, measured_frames, out_path
 
 
