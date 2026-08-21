@@ -60,6 +60,14 @@ class VoiceoverError(RuntimeError):
 _model_lock = threading.Lock()
 _model_state: dict[str, Any] = {"model": None, "device": None}
 
+# ``ThreadingHTTPServer`` serves requests concurrently, and Laura's own job queue
+# (``LAURA_WORKERS``, default 3) can hand this sidecar several ``/voiceover``
+# requests at once. Chatterbox's ``model.generate(...)`` is not documented as
+# thread-safe against a single shared model instance, so every generate+save must
+# be serialized through this lock (distinct from ``_model_lock``, which only
+# guards the one-time model load).
+_generate_lock = threading.Lock()
+
 
 def _get_model(device: str) -> Any:
     """Return the cached ChatterboxTTS model, loading it on first use.
@@ -95,7 +103,11 @@ def _get_model(device: str) -> Any:
 
 
 def _synthesize(model: Any, text: str, voice_ref: Path) -> tuple[torch.Tensor, int]:
-    """Generate speech with the cloned reference voice. Returns (wav, sample_rate)."""
+    """Generate speech with the cloned reference voice. Returns (wav, sample_rate).
+
+    Caller MUST hold ``_generate_lock`` -- concurrent ``generate()`` calls on the
+    one cached model are not known to be safe (see the lock's module comment).
+    """
     try:
         wav = model.generate(
             text,
@@ -109,6 +121,11 @@ def _synthesize(model: Any, text: str, voice_ref: Path) -> tuple[torch.Tensor, i
 
 
 def _save_wav(path: Path, wav: torch.Tensor, sample_rate: int) -> None:
+    """Write the generated tensor to ``path`` as a WAV file.
+
+    Caller MUST hold ``_generate_lock`` -- kept alongside ``_synthesize`` under
+    the same lock so a request's generate+save runs as one uninterrupted unit.
+    """
     import torchaudio  # lazy import: same reason as ChatterboxTTS above
 
     try:
@@ -245,11 +262,16 @@ def handle_voiceover(payload: dict[str, Any]) -> bytes:
         device,
         fit_to_slot,
     )
-    wav, model_sr = _synthesize(model, text, voice_ref)
-
     with tempfile.TemporaryDirectory(prefix="chatterbox_sidecar_") as tmp:
         raw_path = Path(tmp) / "voiceover_raw.wav"
-        _save_wav(raw_path, wav, model_sr)
+
+        # Serialize the actual model use across concurrent request threads (see
+        # ``_generate_lock``'s module comment). The ffmpeg resample below works on
+        # this request's own temp files, so it stays outside the lock and can run
+        # concurrently with other requests' resamples.
+        with _generate_lock:
+            wav, model_sr = _synthesize(model, text, voice_ref)
+            _save_wav(raw_path, wav, model_sr)
 
         out_path = Path(tmp) / "voiceover_out.wav"
         _resample_and_fit(

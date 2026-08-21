@@ -32,7 +32,8 @@ aufruft.
 | `CHATTERBOX_VOICE_REF` | Pfad zur Referenz-WAV fuer Voice-Cloning                               | `felix_ref.wav` neben diesem Skript   |
 | `CHATTERBOX_DEVICE`    | Torch-Device fuer `ChatterboxTTS.from_pretrained`                      | `cuda`                                 |
 | `HF_HOME`              | HuggingFace-Cache-Verzeichnis (respektiert, nicht gesetzt vom Skript)  | HF-Standard (`~/.cache/huggingface`)   |
-| `LAURA_FFMPEG`         | Optionaler expliziter ffmpeg-Pfad fuers Resampling                     | `ffmpeg` von PATH                      |
+| `LAURA_FFMPEG`         | Optionaler expliziter ffmpeg-Pfad fuers Resampling (hoechste Prioritaet) | `ffmpeg` von PATH                    |
+| `FFMPEG_BIN`           | Fallback-ffmpeg-Pfad, falls `LAURA_FFMPEG` nicht gesetzt ist            | `ffmpeg` von PATH                    |
 
 Referenz-Aufloesung pro Request (erste existierende Datei gewinnt):
 `voice_id` aus dem Payload (falls ein existierender Pfad) ->
