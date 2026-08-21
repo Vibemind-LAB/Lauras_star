@@ -114,6 +114,8 @@ def test_builder_voiceover_key_with_text() -> None:
         "voice_id": "en-US-Aria",
         "mix_mode": "duck",
         "ducking_percent": 40,
+        "fit": "slot",
+        "pad_frames": 12,
     }
     key_parts = {
         "timeline_id": "tl-003",
@@ -124,6 +126,8 @@ def test_builder_voiceover_key_with_text() -> None:
         "voice_id": "en-US-Aria",
         "mix_mode": "duck",
         "ducking_percent": 40,
+        "fit": "slot",
+        "pad_frames": 12,
     }
     expected = f"ai.voiceover:{_sha256(key_parts)}"
     assert idempotency_key_for("ai.voiceover", payload) == expected
@@ -145,6 +149,8 @@ def test_builder_voiceover_key_with_segment() -> None:
         "voice_id": "de-DE-Conrad",
         "mix_mode": "replace",
         "ducking_percent": 0,
+        "fit": "natural",
+        "pad_frames": 8,
     }
     key_parts = {
         "timeline_id": "tl-004",
@@ -155,6 +161,8 @@ def test_builder_voiceover_key_with_segment() -> None:
         "voice_id": "de-DE-Conrad",
         "mix_mode": "replace",
         "ducking_percent": 0,
+        "fit": "natural",
+        "pad_frames": 8,
     }
     expected = f"ai.voiceover:{_sha256(key_parts)}"
     assert idempotency_key_for("ai.voiceover", payload) == expected

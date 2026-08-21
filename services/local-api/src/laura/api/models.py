@@ -577,6 +577,14 @@ class VoiceoverRequest(BaseModel):
     # backward-compatible (full-volume mix); the UI picks an audible default (duck the original).
     mix_mode: Literal["mix", "replace_original", "mute_original"] = "mix"
     ducking_percent: int = Field(default=100, ge=0, le=100)
+    # Clip-span strategy (narrated-reel spec §3): 'slot' (default) pads/trims the synthesized
+    # speech to exactly [seq_in_frame, seq_out_frame_exclusive) as before. 'natural' derives the
+    # span from the measured speech length instead; seq_out_frame_exclusive is then only an
+    # UPPER BOUND (the clip can end earlier, never later), so undo/idempotency stay unchanged and
+    # nothing can grow unboundedly. pad_frames is the trailing silence added after natural-length
+    # speech before the upper bound is applied; it is ignored in slot mode.
+    fit: Literal["slot", "natural"] = "slot"
+    pad_frames: int = Field(default=12, ge=0, le=120)
 
     @model_validator(mode="after")
     def _valid_voiceover_range(self) -> VoiceoverRequest:

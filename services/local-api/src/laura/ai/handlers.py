@@ -8,13 +8,16 @@ handler raises immediately and creates nothing.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 from .. import audit
 from ..db import repos
 from ..db.database import Database
+from ..ingest.ffmpeg import probe as probe_media
 from ..jobs.keys import idempotency_key_for
 from ..jobs.queues import queue_for
 from ..jobs.runner import JobContext, JobHandler, enqueue
@@ -421,54 +424,67 @@ def _maybe_enqueue_lipsync_after_vo(
         return None, "probe_error"
 
 
-def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
-    """Generate a synthetic voiceover WAV and place it on the timeline's A2 lane."""
-    payload = ctx.payload
-    timeline_id = str(payload["timeline_id"])
-    timeline = repos.get_timeline(ctx.db, timeline_id)
-    if timeline is None:
-        raise ValueError(f"ai.voiceover: timeline not found: {timeline_id!r}")
+def _measure_wav_frames_ceil(path: Path, *, rate_num: int, rate_den: int) -> int:
+    """The WAV's real length in project frames per ffprobe, rounded UP.
 
-    project = repos.get_project(ctx.db, timeline["project_id"])
-    if project is None:
-        raise ValueError(f"ai.voiceover: project not found: {timeline['project_id']!r}")
+    Natural-fit clips must never be a frame short of the speech they actually contain
+    (spec §3) -- rounding up trades a few extra trailing samples for that guarantee
+    instead of risking truncation from float/duration-string rounding.
+    """
+    data = probe_media(path)
+    raw_duration = data.get("format", {}).get("duration")
+    if raw_duration is None:
+        streams = data.get("streams") or []
+        audio_stream = next(
+            (s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"),
+            None,
+        )
+        raw_duration = audio_stream.get("duration") if audio_stream else None
+    if raw_duration is None:
+        raise RuntimeError(f"ai.voiceover: could not measure natural-length duration of {path}")
+    duration = Fraction(str(raw_duration))
+    frames = duration * Fraction(rate_num, rate_den)
+    return math.ceil(frames)
 
-    seq_in = int(payload["seq_in_frame"])
-    seq_out = int(payload["seq_out_frame_exclusive"])
-    if seq_out <= seq_in:
-        raise ValueError("ai.voiceover: seq_out_frame_exclusive must be greater than seq_in_frame")
 
-    text = str(payload.get("text") or "").strip()
-    segment_id = payload.get("segment_id")
-    if segment_id:
-        segment = repos.get_segment(ctx.db, str(segment_id))
-        if segment is None:
-            raise ValueError(f"ai.voiceover: segment not found: {segment_id!r}")
-        source_asset = repos.get_asset(ctx.db, segment["asset_id"])
-        if source_asset is None:
-            raise ValueError(f"ai.voiceover: segment asset not found: {segment['asset_id']!r}")
-        if source_asset["project_id"] != timeline["project_id"]:
-            raise ValueError("ai.voiceover: segment does not belong to this timeline project")
-        if not text:
-            text = str(segment["text"]).strip()
-    if not text:
-        raise ValueError("ai.voiceover: text is required")
+def _synthesize_voiceover_asset(
+    ctx: JobContext,
+    *,
+    project: dict[str, Any],
+    timeline: dict[str, Any],
+    text: str,
+    backend_config: RuntimeBackendConfig,
+    language: str | None,
+    voice_id: str | None,
+    duration_frames: int,
+    fit_to_slot: bool,
+    sample_rate: int = DEFAULT_VOICEOVER_SAMPLE_RATE,
+    provenance_source: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int, Path]:
+    """Synthesize one voiceover WAV, register it as a project asset, and probe it.
 
-    duration_frames = seq_out - seq_in
+    Shared building block for ``handle_voiceover`` (both fit modes) and the future
+    narrated-reel collage job (spec §6), so both paths produce an identical asset /
+    provenance / probe shape.
+
+    ``duration_frames`` is always the caller's SLOT hint (never the desired natural
+    length) -- backends that need a budget get one either way; only ``fit_to_slot``
+    changes what they do with it.
+
+    * ``fit_to_slot=True`` (slot mode): the backend pads/trims to exactly
+      ``duration_frames`` and the existing sync guard normalizes any drift, unchanged
+      from before this task. The returned ``measured_frames`` equals ``duration_frames``.
+    * ``fit_to_slot=False`` (natural mode): the backend writes the full natural-length
+      speech; the real WAV duration is then measured via ffprobe and rounded UP
+      (:func:`_measure_wav_frames_ceil`). No sync-fix runs -- the measured length IS the
+      clip's true length, there is nothing to normalize against.
+
+    Returns ``(asset_row, measured_frames, out_path)``.
+    """
     rate_num = int(project["sequence_rate_num"])
     rate_den = int(project["sequence_rate_den"])
-    sample_rate = DEFAULT_VOICEOVER_SAMPLE_RATE
 
-    backend_config = _backend_config_from_runtime(
-        ctx.db,
-        payload.get("runtime_id"),
-        payload.get("backend"),
-        "voice",
-    )
-    backend = resolve_voiceover_backend(
-        backend_config.name,
-        base_url=backend_config.base_url,
-    )
+    backend = resolve_voiceover_backend(backend_config.name, base_url=backend_config.base_url)
     if not backend.available():
         raise RuntimeError(f"ai.voiceover: voiceover backend '{backend.name}' is not installed")
 
@@ -484,17 +500,24 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
             fps_num=rate_num,
             fps_den=rate_den,
             sample_rate=sample_rate,
-            language=payload.get("language"),
-            voice_id=payload.get("voice_id"),
+            language=language,
+            voice_id=voice_id,
+            fit_to_slot=fit_to_slot,
         )
-        assert_or_fix_media_sync(
-            out_path,
-            expected_frames=duration_frames,
-            rate_num=rate_num,
-            rate_den=rate_den,
-            require_audio=True,
-            fix=True,
-        )
+        if fit_to_slot:
+            measured_frames = duration_frames
+            assert_or_fix_media_sync(
+                out_path,
+                expected_frames=duration_frames,
+                rate_num=rate_num,
+                rate_den=rate_den,
+                require_audio=True,
+                fix=True,
+            )
+        else:
+            measured_frames = _measure_wav_frames_ceil(
+                out_path, rate_num=rate_num, rate_den=rate_den
+            )
     except Exception:
         out_path.unlink(missing_ok=True)
         raise
@@ -516,26 +539,26 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         size_bytes=out_path.stat().st_size,
         is_proxy=False,
     )
+    source: dict[str, Any] = {
+        "timeline_id": timeline["id"],
+        "backend": backend.name,
+        "voice_id": voice_id,
+        "language": language,
+    }
+    if provenance_source:
+        source.update(provenance_source)
     write_ai_provenance_manifest(
         media_path=out_path,
         asset_id=asset["id"],
         project_id=timeline["project_id"],
         ai_effect="voiceover",
-        source={
-            "timeline_id": timeline["id"],
-            "segment_id": segment_id,
-            "backend": backend.name,
-            "voice_id": payload.get("voice_id"),
-            "language": payload.get("language"),
-            "seq_in_frame": seq_in,
-            "seq_out_frame_exclusive": seq_out,
-        },
+        source=source,
     )
     repos.update_asset_probe(
         ctx.db,
         asset["id"],
         type="audio",
-        duration_frames=duration_frames,
+        duration_frames=measured_frames,
         rate_num=rate_num,
         rate_den=rate_den,
         audio_sample_rate=sample_rate,
@@ -547,6 +570,81 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         is_vfr=False,
         sha256=None,
     )
+    return asset, measured_frames, out_path
+
+
+def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
+    """Generate a synthetic voiceover WAV and place it on the timeline's A2 lane.
+
+    ``fit="slot"`` (default): pads/trims to the requested span -- unchanged behavior.
+    ``fit="natural"``: the clip span is derived from the measured speech length instead;
+    the requested ``seq_out_frame_exclusive`` acts only as an UPPER BOUND (spec §3), so
+    the clip can end earlier than requested but never later.
+    """
+    payload = ctx.payload
+    timeline_id = str(payload["timeline_id"])
+    timeline = repos.get_timeline(ctx.db, timeline_id)
+    if timeline is None:
+        raise ValueError(f"ai.voiceover: timeline not found: {timeline_id!r}")
+
+    project = repos.get_project(ctx.db, timeline["project_id"])
+    if project is None:
+        raise ValueError(f"ai.voiceover: project not found: {timeline['project_id']!r}")
+
+    seq_in = int(payload["seq_in_frame"])
+    seq_out_requested = int(payload["seq_out_frame_exclusive"])
+    if seq_out_requested <= seq_in:
+        raise ValueError("ai.voiceover: seq_out_frame_exclusive must be greater than seq_in_frame")
+
+    text = str(payload.get("text") or "").strip()
+    segment_id = payload.get("segment_id")
+    if segment_id:
+        segment = repos.get_segment(ctx.db, str(segment_id))
+        if segment is None:
+            raise ValueError(f"ai.voiceover: segment not found: {segment_id!r}")
+        source_asset = repos.get_asset(ctx.db, segment["asset_id"])
+        if source_asset is None:
+            raise ValueError(f"ai.voiceover: segment asset not found: {segment['asset_id']!r}")
+        if source_asset["project_id"] != timeline["project_id"]:
+            raise ValueError("ai.voiceover: segment does not belong to this timeline project")
+        if not text:
+            text = str(segment["text"]).strip()
+    if not text:
+        raise ValueError("ai.voiceover: text is required")
+
+    slot_frames = seq_out_requested - seq_in
+    fit = str(payload.get("fit") or "slot")
+    fit_to_slot = fit != "natural"
+    pad_frames = int(payload["pad_frames"]) if payload.get("pad_frames") is not None else 12
+
+    backend_config = _backend_config_from_runtime(
+        ctx.db,
+        payload.get("runtime_id"),
+        payload.get("backend"),
+        "voice",
+    )
+
+    asset, measured_frames, out_path = _synthesize_voiceover_asset(
+        ctx,
+        project=project,
+        timeline=timeline,
+        text=text,
+        backend_config=backend_config,
+        language=payload.get("language"),
+        voice_id=payload.get("voice_id"),
+        duration_frames=slot_frames,
+        fit_to_slot=fit_to_slot,
+        provenance_source={
+            "segment_id": segment_id,
+            "seq_in_frame": seq_in,
+            "seq_out_frame_exclusive": seq_out_requested,
+        },
+    )
+
+    if fit_to_slot:
+        seq_out_eff = seq_out_requested
+    else:
+        seq_out_eff = min(seq_in + measured_frames + pad_frames, seq_out_requested)
 
     # Remove any prior synthetic VO clips overlapping this span so editing the same span
     # twice (different text or voice) never stacks two replace_original clips.
@@ -558,7 +656,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
             ctx.db,
             timeline_id=timeline["id"],
             seq_in=seq_in,
-            seq_out_excl=seq_out,
+            seq_out_excl=seq_out_eff,
             mix_mode=effective_mix_mode,
         )
 
@@ -567,7 +665,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         timeline_id=timeline["id"],
         asset_id=asset["id"],
         seq_in_frame=seq_in,
-        seq_out_frame_exclusive=seq_out,
+        seq_out_frame_exclusive=seq_out_eff,
         asset_in_frame=0,
         gain_percent=int(payload.get("gain_percent") or 100),
         fade_in_frames=int(payload.get("fade_in_frames") or 0),
@@ -585,7 +683,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         project=project,
         vo_asset_id=asset["id"],
         seq_in=seq_in,
-        seq_out=seq_out,
+        seq_out=seq_out_eff,
     )
 
     try:
@@ -599,7 +697,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
                 "timeline_id": timeline["id"],
                 "audio_clip_id": clip["id"],
                 "seq_in_frame": seq_in,
-                "seq_out_frame_exclusive": seq_out,
+                "seq_out_frame_exclusive": seq_out_eff,
             },
         )
     except Exception:
@@ -610,7 +708,8 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         "audio_clip_id": clip["id"],
         "out_path": str(out_path),
         "seq_in_frame": seq_in,
-        "seq_out_frame_exclusive": seq_out,
+        "seq_out_frame_exclusive": seq_out_eff,
+        "measured_frames": measured_frames,
         "lipsync_job_id": lipsync_job_id,
         "lipsync_skip_reason": lipsync_skip_reason,
     }

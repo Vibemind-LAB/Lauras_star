@@ -27,8 +27,11 @@ Kinds covered
 ``ai.voiceover``
     ``ai.voiceover:{sha256( timeline_id | seq_in_frame | seq_out_frame_exclusive
                             | segment_id | text* | voice_id | mix_mode
-                            | ducking_percent )}``
+                            | ducking_percent | fit | pad_frames )}``
     *text is included only when segment_id is absent/None (matches Task-1 logic).
+    fit/pad_frames were added in the natural-length-fit task (2026-08-21 narrated-reel
+    design §3): they change the rendered clip span, so two otherwise-identical requests
+    that differ only in fit mode must not dedupe to the same job.
 
 All other kinds return ``None`` — no dedup key.
 """
@@ -91,6 +94,8 @@ def idempotency_key_for(kind: str, payload: dict[str, Any]) -> str | None:
             "voice_id": payload.get("voice_id"),
             "mix_mode": payload.get("mix_mode"),
             "ducking_percent": payload.get("ducking_percent"),
+            "fit": payload.get("fit"),
+            "pad_frames": payload.get("pad_frames"),
         }
         return f"ai.voiceover:{_sha256_of(parts)}"
 
