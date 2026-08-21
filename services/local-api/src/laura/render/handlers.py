@@ -18,7 +18,7 @@ from ..sequences.music import sequence_music_tracks
 from ..sequences.transcript import sequence_transcript_blocks
 from .audio import AudioOverlay
 from .captions import build_ass, group_caption_lines
-from .captions_source import timeline_caption_words
+from .captions_source import timeline_caption_words, voiceover_caption_words
 from .mp4 import _DEFAULT_DISCLOSURE, VideoTransition, render_clips_mp4, render_multilane_mp4
 from .srt import sequence_transcript_to_srt
 from .sync import assert_or_fix_media_sync
@@ -412,21 +412,40 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
 
     caption_ass: str | None = None
     if opts.get("captions"):
-        words = timeline_caption_words(ctx.db, exp["timeline_id"])
+        # caption_source (spec §5): "voiceover" -> narration-authored words only (never
+        # falls back -- an empty result means no captions, matching "transcript"'s
+        # equally strict behavior); "transcript" -> ASR words only; "auto" (default) ->
+        # prefer voiceover words, fall back to transcript only when voiceover is empty
+        # (e.g. no voiceover clips, or clips without a sidecar).
+        source_mode = _option_str(
+            opts, "caption_source", "auto", {"auto", "voiceover", "transcript"}
+        )
+        if source_mode == "voiceover":
+            words = voiceover_caption_words(ctx.db, exp["timeline_id"])
+        elif source_mode == "transcript":
+            words = timeline_caption_words(ctx.db, exp["timeline_id"])
+        else:
+            words = voiceover_caption_words(ctx.db, exp["timeline_id"])
+            if not words:
+                words = timeline_caption_words(ctx.db, exp["timeline_id"])
         lines = group_caption_lines(words)
         if lines:
             preset = _option_str(
                 opts, "caption_preset", "reels", {"reels", "tiktok", "shorts", "wide"}
             )
             play_w, play_h = _CAPTION_PRESETS[preset]
+            # "wide" (16:9, landscape) reads better with a smaller relative fontsize and
+            # margin than the portrait presets' 72/250 -- only applied when the caller
+            # did not explicitly set caption_fontsize/caption_safe_margin.
+            default_fontsize, default_margin_v = (54, 48) if preset == "wide" else (72, 250)
             caption_ass = build_ass(
                 lines,
                 rate_num=project["sequence_rate_num"],
                 rate_den=project["sequence_rate_den"],
                 play_w=play_w,
                 play_h=play_h,
-                fontsize=_option_int(opts, "caption_fontsize", 72, lo=24, hi=160),
-                margin_v=_option_int(opts, "caption_safe_margin", 250, lo=0, hi=800),
+                fontsize=_option_int(opts, "caption_fontsize", default_fontsize, lo=24, hi=160),
+                margin_v=_option_int(opts, "caption_safe_margin", default_margin_v, lo=0, hi=800),
                 mode=_option_str(opts, "caption_mode", "karaoke", {"karaoke", "normal"}),
                 position=_option_str(
                     opts, "caption_position", "bottom", {"top", "middle", "bottom"}

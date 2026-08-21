@@ -44,3 +44,47 @@ def test_render_creates_export_and_lists_it(tmp_path: Path) -> None:
 def test_render_unknown_timeline_404(tmp_path: Path) -> None:
     client, _ = _client_db(tmp_path)
     assert client.post("/timelines/nope/render", json={"format": "mp4"}).status_code == 404
+
+
+def test_render_threads_caption_options_into_export_options(tmp_path: Path) -> None:
+    """captions/caption_source/caption_preset from the request body land in the export's
+    stored options dict, alongside the unchanged burn_captions (Task 4, spec §5)."""
+    client, db = _client_db(tmp_path)
+    pid = _project(client)
+    tl = repos.create_timeline(db, project_id=pid, name="cut", kind="rough_cut")
+    r = client.post(
+        f"/timelines/{tl['id']}/render",
+        json={
+            "format": "mp4",
+            "captions": True,
+            "caption_source": "voiceover",
+            "caption_preset": "wide",
+            "burn_captions": True,
+        },
+    )
+    assert r.status_code == 202
+    export_id = r.json()["export_id"]
+
+    exp = repos.get_export(db, export_id)
+    assert exp is not None
+    options = exp["options"]
+    assert options["captions"] is True
+    assert options["caption_source"] == "voiceover"
+    assert options["caption_preset"] == "wide"
+    assert options["burn_captions"] is True
+
+
+def test_render_caption_options_default_when_omitted(tmp_path: Path) -> None:
+    client, db = _client_db(tmp_path)
+    pid = _project(client)
+    tl = repos.create_timeline(db, project_id=pid, name="cut", kind="rough_cut")
+    r = client.post(f"/timelines/{tl['id']}/render", json={"format": "mp4"})
+    assert r.status_code == 202
+    export_id = r.json()["export_id"]
+
+    exp = repos.get_export(db, export_id)
+    assert exp is not None
+    options = exp["options"]
+    assert options["captions"] is False
+    assert options["caption_source"] == "auto"
+    assert options["caption_preset"] == "reels"

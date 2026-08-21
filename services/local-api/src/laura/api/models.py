@@ -748,6 +748,14 @@ class RenderRequest(BaseModel):
     # Only effective for format="mp4"; other formats ignore this flag.
     # Defaults to False so existing exports are byte-identical to before.
     burn_captions: bool = False
+    # Styled karaoke captions (spec §5, narrated-reel). Independent of burn_captions
+    # (the plain-SRT path); defaults to False so existing exports are unaffected.
+    captions: bool = False
+    # Word source for karaoke captions: "auto" prefers voiceover-authored words, falling
+    # back to the source-video transcript when no voiceover words exist; "voiceover" and
+    # "transcript" pin one source with no fallback.
+    caption_source: Literal["auto", "voiceover", "transcript"] = "auto"
+    caption_preset: Literal["reels", "tiktok", "shorts", "wide"] = "reels"
 
 
 class ReelRenderRequest(BaseModel):
