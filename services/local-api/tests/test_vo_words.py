@@ -70,32 +70,38 @@ def test_map_words_to_slots_one_to_one() -> None:
     ]
 
 
-def test_map_words_to_slots_proportional_expansion_fewer_words_than_slots() -> None:
-    """n_w=2 authored words, n_a=5 timing slots (whisper split the speech finer):
-    slot j -> word min(n_w-1, j*n_w//n_a)."""
+def test_map_words_to_slots_proportional_more_slots_than_words() -> None:
+    """One output entry PER AUTHORED WORD (never per slot): n_w=2 authored words,
+    n_a=5 timing slots (whisper split the speech finer than the authored text) ->
+    exactly 2 entries, both authored words present in order, each picking up the
+    proportionally-chosen slot's timing: word j -> slot min(n_a-1, j*n_a//n_w)."""
     words = ["hello", "world"]
     slots = [(0, 2), (2, 4), (4, 6), (6, 8), (8, 10)]
     result = vo_words.map_words_to_slots(words, slots)
-    assert [entry["text"] for entry in result] == [
-        "hello",
-        "hello",
-        "hello",
-        "world",
-        "world",
-    ]
-    # Frames always come from the slot, regardless of which word occupies it.
-    assert [(entry["start_frame"], entry["end_frame_exclusive"]) for entry in result] == slots
+    assert len(result) == len(words) == 2
+    assert [entry["text"] for entry in result] == ["hello", "world"]
+    # word 0 -> slot min(4, 0*5//2)=0 ; word 1 -> slot min(4, 1*5//2)=2
+    assert (result[0]["start_frame"], result[0]["end_frame_exclusive"]) == slots[0]
+    assert (result[1]["start_frame"], result[1]["end_frame_exclusive"]) == slots[2]
 
 
-def test_map_words_to_slots_proportional_compression_more_words_than_slots() -> None:
-    """n_w=5 authored words, n_a=2 timing slots (whisper under-split the speech):
-    slot j -> word min(n_w-1, j*n_w//n_a)."""
+def test_map_words_to_slots_proportional_fewer_slots_than_words() -> None:
+    """One output entry PER AUTHORED WORD, no drops: n_w=5 authored words, n_a=2 timing
+    slots (whisper under-split the speech) -> exactly 5 entries, all five authored words
+    present in order (none dropped) -- several words legitimately share one slot's
+    timing: word j -> slot min(n_a-1, j*n_a//n_w)."""
     words = ["a", "b", "c", "d", "e"]
     slots = [(0, 3), (3, 6)]
     result = vo_words.map_words_to_slots(words, slots)
+    assert len(result) == len(words) == 5
+    assert [entry["text"] for entry in result] == ["a", "b", "c", "d", "e"]
+    # word j -> slot min(1, j*2//5): j=0,1,2 -> slot0 ; j=3,4 -> slot1
     assert result == [
         {"text": "a", "start_frame": 0, "end_frame_exclusive": 3},
-        {"text": "c", "start_frame": 3, "end_frame_exclusive": 6},
+        {"text": "b", "start_frame": 0, "end_frame_exclusive": 3},
+        {"text": "c", "start_frame": 0, "end_frame_exclusive": 3},
+        {"text": "d", "start_frame": 3, "end_frame_exclusive": 6},
+        {"text": "e", "start_frame": 3, "end_frame_exclusive": 6},
     ]
 
 
@@ -260,6 +266,33 @@ def test_write_word_sidecar_never_raises_on_write_failure(
     it must never propagate and fail the voiceover job."""
     wav_path = tmp_path / "missing_dir" / "voice.wav"  # parent dir does not exist
     monkeypatch.setattr(vo_words, "_transcribe_words", lambda _wav_path, _language: None)
+
+    result = vo_words.write_word_sidecar(
+        wav_path,
+        text="Hallo",
+        measured_frames=30,
+        rate_num=30,
+        rate_den=1,
+        language=None,
+    )
+    assert result is None
+
+
+def test_write_word_sidecar_never_raises_on_unicode_encode_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A payload that cannot be UTF-8 encoded (e.g. a lone/unpaired surrogate that
+    survived json.dumps) must not raise -- the write guard also catches
+    ValueError/UnicodeError (UnicodeEncodeError is a ValueError subclass), not just
+    OSError."""
+    wav_path = tmp_path / "voice.wav"
+    wav_path.write_bytes(b"RIFF....WAVEfmt ")
+    monkeypatch.setattr(vo_words, "_transcribe_words", lambda _wav_path, _language: None)
+    # A lone surrogate cannot be encoded as UTF-8 -- forces write_text() to raise
+    # UnicodeEncodeError regardless of what the real json.dumps would have produced.
+    # `json` is the same module object vo_words.py imported, so patching it here
+    # reaches vo_words's call site too.
+    monkeypatch.setattr(json, "dumps", lambda _payload: "\ud800")
 
     result = vo_words.write_word_sidecar(
         wav_path,

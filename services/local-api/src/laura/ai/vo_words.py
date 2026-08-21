@@ -37,12 +37,14 @@ def map_words_to_slots(
 ) -> list[dict[str, object]]:
     """Map authored *words* onto timing *slots* (``(start_frame, end_frame_exclusive)``).
 
-    Produces one entry per slot (so the result always has ``len(slots)`` entries): when
-    the counts are equal each slot takes the word at the same index; otherwise slot *j*
-    takes word ``min(n_w-1, j*n_w//n_a)`` (proportional compression/expansion when the
-    whisper-detected word count ``n_a`` differs from the authored word count ``n_w`` --
-    the equal-count case is the same formula's fixed point, so no special branch is
-    needed). Every returned span is at least 1 frame wide.
+    Produces one entry PER AUTHORED WORD (so the result always has ``len(words)``
+    entries -- no drops, no duplicated words, every authored word appears exactly once
+    and in order): when the counts are equal, word *j* takes the slot at the same index;
+    otherwise word *j* takes the slot ``min(n_a-1, j*n_a//n_w)`` (proportional mapping,
+    with ``n_w = len(words)`` and ``n_a = len(slots)`` -- the equal-count case is the
+    same formula's fixed point, so no special branch is needed). Several words can
+    legitimately share one slot's timing when there are fewer slots than words; that is
+    expected, not a bug. Every returned span is at least 1 frame wide.
     """
     n_w = len(words)
     n_a = len(slots)
@@ -50,12 +52,13 @@ def map_words_to_slots(
         return []
 
     out: list[dict[str, object]] = []
-    for j, (start, end) in enumerate(slots):
-        word_idx = min(n_w - 1, (j * n_w) // n_a)
+    for j, word in enumerate(words):
+        slot_idx = min(n_a - 1, (j * n_a) // n_w)
+        start, end = slots[slot_idx]
         end_excl = end if end > start else start + 1
         out.append(
             {
-                "text": words[word_idx],
+                "text": word,
                 "start_frame": start,
                 "end_frame_exclusive": end_excl,
             }
@@ -169,7 +172,10 @@ def write_word_sidecar(
     payload: dict[str, Any] = {"words": entries, "source": source}
     try:
         sidecar_path.write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError, UnicodeError):
+        # ValueError/UnicodeError: e.g. an authored word containing a lone surrogate
+        # (unpaired UTF-16 surrogate in the source text) fails UTF-8 encoding at write
+        # time -- must degrade the same as a disk/permission failure, never raise.
         _log.warning(
             "voiceover word sidecar: failed to write %s", sidecar_path, exc_info=True
         )
