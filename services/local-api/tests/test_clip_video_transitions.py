@@ -59,6 +59,36 @@ def test_clip_video_transitions_hard_clips_yield_nothing(tmp_path: Path) -> None
 def test_clip_video_transitions_ignores_transition_on_last_clip(tmp_path: Path) -> None:
     db = _db(tmp_path)
     tl_id, clip_ids = _seed_rough_cut_3(db)
-    # a transition AFTER the final clip has no following clip -> not emitted
+    # a trailing CROSSFADE has no following clip to fold into -> still not emitted
     repos.set_clip_transition(db, clip_id=clip_ids[2], kind="crossfade", frames=12)
     assert _clip_video_transitions(db, tl_id) == []
+
+
+def test_clip_video_transitions_emits_trailing_fade_on_last_clip(tmp_path: Path) -> None:
+    """I-1: a trailing "fade" (final fade-out) on the LAST clip has no following clip to
+    fold into, but unlike crossfade it is still meaningful (a fade-out at stream end) and
+    must be emitted, boundary = the last clip's own seq_out (== total video length)."""
+    db = _db(tmp_path)
+    tl_id, clip_ids = _seed_rough_cut_3(db)
+    repos.set_clip_transition(db, clip_id=clip_ids[2], kind="fade", frames=12)
+    tr = _clip_video_transitions(db, tl_id)
+    assert len(tr) == 1
+    assert tr[0].kind == "fade"
+    assert tr[0].boundary_frame == 240  # seq_out of the last (3rd) clip
+    assert tr[0].duration_frames == 12
+
+
+def test_clip_video_transitions_mixes_boundary_crossfade_and_trailing_fade(
+    tmp_path: Path,
+) -> None:
+    db = _db(tmp_path)
+    tl_id, clip_ids = _seed_rough_cut_3(db)
+    repos.set_clip_transition(db, clip_id=clip_ids[0], kind="crossfade", frames=8)
+    repos.set_clip_transition(db, clip_id=clip_ids[2], kind="fade", frames=12)
+    tr = _clip_video_transitions(db, tl_id)
+    assert len(tr) == 2
+    by_boundary = {t.boundary_frame: t for t in tr}
+    assert by_boundary[100].kind == "crossfade"
+    assert by_boundary[100].duration_frames == 8
+    assert by_boundary[240].kind == "fade"
+    assert by_boundary[240].duration_frames == 12

@@ -690,12 +690,26 @@ def render_clips_mp4(
                 rate_num=rate_num,
                 rate_den=rate_den,
             )
+            # The xfade fold above only handles kind=="crossfade" boundaries (via `xdur`);
+            # any other non-hard transition (e.g. a trailing "fade" on the final clip, spec
+            # §6 "letzter Clip Fade-out") is NOT part of the fold and would otherwise be
+            # silently dropped on this path (I-1 reader gap 2). Apply it here, mirroring the
+            # concat path below: same dip-to-black chain, same position (before reel/captions).
+            fold_transitions = [
+                t for t in (video_transitions or []) if t.kind not in ("hard", "crossfade")
+            ]
+            transition_chain = _video_transition_chain(
+                fold_transitions, rate_num=rate_num, rate_den=rate_den
+            )
             if use_blur_fill:
                 # Insert blur-fill sub-graph between the xfade output and captions.
                 # The sub-graph takes [v_label] → [_rbout]; captions are applied after.
-                blur_in = f"[{v_label}]"
+                blur_in_label = f"[{v_label}]"
+                if transition_chain:
+                    fold_parts.append(f"[{v_label}]{transition_chain}[_xftrans]")
+                    blur_in_label = "[_xftrans]"
                 blur_out = "[_rbout]"
-                blur_graph = reel_blur_fill_graph(blur_in, blur_out, out_w=out_w, out_h=out_h)
+                blur_graph = reel_blur_fill_graph(blur_in_label, blur_out, out_w=out_w, out_h=out_h)
                 fold_parts.append(blur_graph)
                 post_caption = ",".join(p for p in (reel, caption_filter) if p)
                 if post_caption:
@@ -703,7 +717,7 @@ def render_clips_mp4(
                 else:
                     fold_parts.append(f"{blur_out}null[out]")
             else:
-                post = ",".join(p for p in (reel, caption_filter) if p)
+                post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
                 fold_parts.append(
                     f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
                 )

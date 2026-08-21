@@ -130,6 +130,32 @@ def test_render_crossfade_without_reserve_falls_back_to_hard(
     assert "xfade" not in fc and "concat=n=2:v=1" in fc
 
 
+def test_render_xfade_path_also_applies_trailing_fade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """I-1 reader gap 2: a narrated reel with a real crossfade boundary (so the xfade fold
+    path is taken) AND a trailing "fade" on the last clip must still render the fade-out --
+    the xfade fold only handles kind=="crossfade" boundaries; the trailing fade is a
+    separate, coexisting transition that must not be silently dropped."""
+    calls = _patch(monkeypatch)
+    tr = [
+        VideoTransition(kind="crossfade", boundary_frame=30, duration_frames=6),
+        VideoTransition(kind="fade", boundary_frame=60, duration_frames=12),
+    ]
+    render_clips_mp4(
+        [(tmp_path / "a.mp4", 0, 30), (tmp_path / "b.mp4", 0, 30)],
+        tmp_path / "o.mp4", rate_num=30, rate_den=1, video_transitions=tr,
+    )
+    fc = _fc(calls[-1])
+    # the crossfade boundary still folds into xfade (unaffected by the fade addition)
+    assert "xfade=transition=fade:duration=0.2:offset=1" in fc
+    # AND the trailing fade-out reaches the graph: boundary=60f/30fps=2s, d=12f/30fps=0.4s
+    assert "fade=t=out:st=1.6:d=0.4" in fc
+    # the (inert, since it lands exactly at stream end) fade-in half is present too --
+    # _video_transition_chain always emits both halves of the dip.
+    assert "fade=t=in:st=2:d=0.4" in fc
+
+
 # --- real ffmpeg smoke -------------------------------------------------------
 
 @pytest.mark.skipif(

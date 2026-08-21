@@ -44,6 +44,20 @@ def test_is_job_cancel_requested(seeded_rough_cut: tuple[Any, str, str]) -> None
     assert repos.is_job_cancel_requested(db, jid) is True
 
 
+def test_request_cancel_flags_running_narrated_reel_job(
+    seeded_rough_cut: tuple[Any, str, str],
+) -> None:
+    """I-2: ``ai.narrated_reel`` must be in ``_AI_KINDS`` so ``/undo`` on a timeline with a
+    running collage-builder job cooperatively cancels it (otherwise the job keeps writing
+    its full in-memory clip list on top of the undone snapshot)."""
+    db, tl, _ = seeded_rough_cut
+    jid = _insert_job(db, kind="ai.narrated_reel", timeline_id=tl, status="running")
+    assert repos.is_job_cancel_requested(db, jid) is False
+    flagged = repos.request_timeline_jobs_cancel(db, tl)
+    assert jid in flagged
+    assert repos.is_job_cancel_requested(db, jid) is True
+
+
 @pytest.mark.skipif(shutil.which(_FFMPEG) is None, reason="ffmpeg not on PATH")
 def test_handle_voiceover_aborts_when_cancel_requested(tmp_path: Path) -> None:
     """handle_voiceover must not write any audio clip when cancel_requested=1."""

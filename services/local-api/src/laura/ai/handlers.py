@@ -50,6 +50,15 @@ _EFFECT_BACKENDS = {
     "lipsync": "vibevideo",
 }
 
+# Natural-mode voiceover hint cap (Task 5 narrated-reel, I-3): `duration_frames` is a hint,
+# never a target (see `_synthesize_voiceover_asset`'s docstring), but `StubVoiceoverBackend`
+# takes it literally and writes exactly that many frames of audio regardless. Without a cap,
+# hinting with the full remaining source-asset length (often minutes) makes the stub backend
+# synthesize a multi-megabyte WAV per beat that then clips straight back down to the asset
+# end anyway. Real backends (SAPI/EL/Chatterbox) ignore the hint in natural mode, so this cap
+# only changes stub-backend behavior.
+_NATURAL_MODE_HINT_CAP_SECONDS = 90
+
 
 def _runtime_base_url(runtime: dict[str, Any]) -> str | None:
     raw = runtime.get("base_url")
@@ -758,7 +767,10 @@ def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
       1. cancel-check FIRST (before any mutation for this beat) — cooperative cancellation
          must never leave a half-synthesized beat behind.
       2. synthesize a natural-length voiceover (:func:`_synthesize_voiceover_asset`,
-         ``fit_to_slot=False``), hinted with the asset's remaining frames from ``src_in``.
+         ``fit_to_slot=False``), hinted with the asset's remaining frames from ``src_in``,
+         capped at ``_NATURAL_MODE_HINT_CAP_SECONDS`` (the hint is only a budget for backends
+         that need one; a stub/placeholder backend takes it literally, so an uncapped hint on
+         a long source asset would make it synthesize minutes of audio for nothing).
       3. the beat's clip length is the measured speech + ``pad_frames``, clamped so the
          clip never runs past the source asset's end (a clamp appends a warning).
       4. the video clip is appended (repos-level, same primitive as the operations
@@ -797,6 +809,11 @@ def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
     backend_config = _backend_config_from_runtime(
         ctx.db, payload.get("runtime_id"), payload.get("backend"), "voice",
     )
+    natural_hint_cap_frames = (
+        _NATURAL_MODE_HINT_CAP_SECONDS
+        * int(project["sequence_rate_num"])
+        // int(project["sequence_rate_den"])
+    )
 
     beats_result: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -833,6 +850,11 @@ def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
                         f"ai.narrated_reel: beat {i}: src_in_frame is at/after the asset end"
                     )
 
+                # Natural-mode hint only -- never the desired length (see
+                # `_synthesize_voiceover_asset`'s docstring). `remaining` (uncapped) still
+                # governs the actual clip/clamp math below; only the SLOT HINT handed to the
+                # backend is capped (I-3).
+                hint_frames = min(remaining, natural_hint_cap_frames)
                 voice_asset, measured_frames, _out_path = _synthesize_voiceover_asset(
                     ctx,
                     project=project,
@@ -841,7 +863,7 @@ def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
                     backend_config=backend_config,
                     language=language,
                     voice_id=voice_id,
-                    duration_frames=remaining,
+                    duration_frames=hint_frames,
                     fit_to_slot=False,
                     provenance_source={
                         "narrated_reel_timeline_id": timeline_id,

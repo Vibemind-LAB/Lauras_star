@@ -206,7 +206,7 @@ def is_import_cancelled(db: Database, asset_id: str) -> bool:
 
 
 _NON_TERMINAL = ("queued", "leased", "running")
-_AI_KINDS = ("ai.voiceover", "ai.lipsync", "ai.reenact")
+_AI_KINDS = ("ai.voiceover", "ai.lipsync", "ai.reenact", "ai.narrated_reel")
 
 
 def is_job_cancel_requested(db: Database, job_id: str) -> bool:

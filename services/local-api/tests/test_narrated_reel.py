@@ -446,6 +446,75 @@ def test_narrated_reel_beat_clips_to_asset_end_with_warning(
 
 
 # ---------------------------------------------------------------------------
+# (h) I-3: the natural-mode synthesis hint is capped, never the full remaining asset length
+# ---------------------------------------------------------------------------
+
+
+class _CapturingBackend:
+    """Records the ``duration_frames`` hint each ``synthesize`` call receives, then writes a
+    tiny fixed-length WAV regardless (fast -- unlike the real stub, which would take the
+    (possibly huge, pre-fix) hint literally and write that many frames of audio)."""
+
+    name = "stub"
+
+    def __init__(self) -> None:
+        self.hints: list[int] = []
+
+    def available(self) -> bool:
+        return True
+
+    def synthesize(
+        self,
+        *,
+        text: str,
+        out_path: Path,
+        duration_frames: int,
+        fps_num: int,
+        fps_den: int,
+        sample_rate: int,
+        language: str | None = None,
+        voice_id: str | None = None,
+        fit_to_slot: bool = True,
+    ) -> None:
+        self.hints.append(duration_frames)
+        StubVoiceoverBackend().synthesize(
+            text=text, out_path=out_path, duration_frames=30, fps_num=fps_num,
+            fps_den=fps_den, sample_rate=sample_rate, language=language, voice_id=voice_id,
+            fit_to_slot=fit_to_slot,
+        )
+
+
+def test_narrated_reel_natural_hint_is_capped_not_full_remaining(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    project = _seed_project(db, tmp_path)
+    # A long source asset (100,000 frames @ 30fps ~= 55 min) -- pre-fix, the hint passed to
+    # the backend was `remaining` == this full length; post-fix it must be capped at
+    # ai_handlers._NATURAL_MODE_HINT_CAP_SECONDS worth of frames.
+    asset = _seed_video_asset(db, project, tmp_path, name="a", duration_frames=100_000)
+
+    backend = _CapturingBackend()
+    monkeypatch.setattr(ai_handlers, "resolve_voiceover_backend", lambda *_a, **_kw: backend)
+
+    body = {
+        "beats": [_beat(asset, text="one", src_in_frame=0, pad_frames=12)],
+        "backend": "stub",
+        "render": False,
+    }
+    accepted = client.post(f"/projects/{project['id']}/narrated-reel", json=body)
+    assert accepted.status_code == 202, accepted.text
+
+    assert app.state.runner.run_once() is True
+    job = repos.get_job(db, accepted.json()["job_id"])
+    assert job is not None and job["status"] == "succeeded", job
+
+    expected_cap = ai_handlers._NATURAL_MODE_HINT_CAP_SECONDS * 30 // 1  # rate 30/1
+    assert backend.hints == [expected_cap]
+
+
+# ---------------------------------------------------------------------------
 # (e) cancel between beat 0 and beat 1 -> clean abort, no half voice track
 # ---------------------------------------------------------------------------
 
@@ -672,3 +741,43 @@ def test_narrated_reel_changed_beat_text_creates_a_new_job(
 
     assert len(repos.list_timelines(db, project["id"])) == 2
     assert len(repos.list_jobs_of_kind(db, "ai.narrated_reel")) == 2
+
+
+def test_narrated_reel_failed_prior_job_is_not_reused(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Live finding: the idempotency pre-check must not hand back a dead (failed/cancelled)
+    job -- only ``queued``/``leased``/``running``/``succeeded`` are reusable. An identical
+    retry after the first job failed must create a fresh timeline + job, not resolve to the
+    dead one."""
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    project = _seed_project(db, tmp_path)
+    asset = _seed_video_asset(db, project, tmp_path, name="a", duration_frames=1000)
+
+    body = {"beats": [_beat(asset, text="hello there")], "backend": "stub"}
+
+    first = client.post(f"/projects/{project['id']}/narrated-reel", json=body)
+    assert first.status_code == 202, first.text
+    first_job_id = first.json()["job_id"]
+    first_timeline_id = first.json()["timeline_id"]
+
+    # Force the first job to "failed" directly, as a real worker run would leave it.
+    with db.transaction() as conn:
+        conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (first_job_id,))
+
+    second = client.post(f"/projects/{project['id']}/narrated-reel", json=body)
+    assert second.status_code == 202, second.text
+    second_job_id = second.json()["job_id"]
+    second_timeline_id = second.json()["timeline_id"]
+
+    assert second_job_id != first_job_id
+    assert second_timeline_id != first_timeline_id
+
+    # The first (orphaned) timeline is left behind -- accepted per the endpoint's own
+    # "orphan timeline" comment, same class as the concurrent-POST race. What matters here
+    # is that the DEAD job is never handed back: `enqueue()`'s own dedup (keyed on the same
+    # idempotency_key) drops the failed row and inserts a fresh "queued" one under it.
+    assert len(repos.list_timelines(db, project["id"])) == 2
+    jobs = repos.list_jobs_of_kind(db, "ai.narrated_reel")
+    assert {j["id"]: j["status"] for j in jobs} == {second_job_id: "queued"}

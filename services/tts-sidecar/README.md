@@ -25,6 +25,10 @@ beruehrt das Modell nicht und antwortet sofort mit `200 ok` -- das ist die
 schnelle Readiness-Probe, die Lauras `SidecarVoiceoverBackend.available()`
 aufruft.
 
+Sobald die Gewichte einmal gecacht sind, vor dem Start zusaetzlich
+`$env:HF_HUB_OFFLINE = "1"` setzen -- Details und Begruendung siehe `HF_HUB_OFFLINE`
+in den Env Vars unten.
+
 ## Env Vars
 
 | Variable              | Zweck                                                                 | Default                              |
@@ -32,8 +36,17 @@ aufruft.
 | `CHATTERBOX_VOICE_REF` | Pfad zur Referenz-WAV fuer Voice-Cloning                               | `felix_ref.wav` neben diesem Skript   |
 | `CHATTERBOX_DEVICE`    | Torch-Device fuer `ChatterboxTTS.from_pretrained`                      | `cuda`                                 |
 | `HF_HOME`              | HuggingFace-Cache-Verzeichnis (respektiert, nicht gesetzt vom Skript)  | HF-Standard (`~/.cache/huggingface`)   |
+| `HF_HUB_OFFLINE`       | `1` unterdrueckt HuggingFace-Netzwerk-Calls komplett (nur Cache)       | nicht gesetzt (online)                |
 | `LAURA_FFMPEG`         | Optionaler expliziter ffmpeg-Pfad fuers Resampling (hoechste Prioritaet) | `ffmpeg` von PATH                    |
 | `FFMPEG_BIN`           | Fallback-ffmpeg-Pfad, falls `LAURA_FFMPEG` nicht gesetzt ist            | `ffmpeg` von PATH                    |
+
+Sobald die Modellgewichte einmal lokal gecacht sind, `HF_HUB_OFFLINE=1` setzen: ohne
+offline-Modus macht `from_pretrained(...)` bei jedem (auch gecachten) Ladevorgang
+HuggingFace-HEAD-Requests, um auf neue Revisionen zu pruefen -- unter Drosselung/hoher
+Latenz kann das den kalten Modell-Load ueber Lauras 180-Sekunden-Sidecar-Timeout
+(`DEFAULT_VOICEOVER_TIMEOUT_SECONDS` in `voiceover_backend.py`) hinaus verzoegern
+(live beobachtet). Mit `HF_HUB_OFFLINE=1` liest `from_pretrained(...)` ausschliesslich
+aus dem `HF_HOME`-Cache, ganz ohne Netzwerk-Roundtrip.
 
 Referenz-Aufloesung pro Request (erste existierende Datei gewinnt):
 `voice_id` aus dem Payload (falls ein existierender Pfad) ->
@@ -45,6 +58,7 @@ Beispiel fuer diese Workstation:
 
 ```powershell
 $env:HF_HOME = "E:\huggingface_cache"
+$env:HF_HUB_OFFLINE = "1"  # nach dem ersten (Online-)Lauf: Gewichte sind gecacht
 $env:CHATTERBOX_VOICE_REF = "E:\chatterbox\felix_ref.wav"
 $env:CHATTERBOX_DEVICE = "cuda"
 ```
