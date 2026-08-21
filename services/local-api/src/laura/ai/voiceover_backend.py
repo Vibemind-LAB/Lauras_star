@@ -24,6 +24,8 @@ from urllib.request import Request, urlopen
 DEFAULT_VOICEOVER_URL = "http://127.0.0.1:8898"
 DEFAULT_VOICEOVER_TIMEOUT_SECONDS = 180.0
 DEFAULT_VOICEOVER_SAMPLE_RATE = 48_000
+DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_TTS_URL_TEMPLATE = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
 
 @runtime_checkable
@@ -45,8 +47,14 @@ class VoiceoverBackend(Protocol):
         sample_rate: int,
         language: str | None = None,
         voice_id: str | None = None,
+        fit_to_slot: bool = True,
     ) -> None:
-        """Write a WAV voiceover to *out_path*."""
+        """Write a WAV voiceover to *out_path*.
+
+        ``fit_to_slot=True`` (the default, preserving today's behavior) pads/trims the clip to
+        exactly ``duration_frames``. ``fit_to_slot=False`` writes the full natural-length
+        speech instead -- the caller measures the resulting duration itself.
+        """
         ...
 
 
@@ -75,6 +83,7 @@ class StubVoiceoverBackend:
         sample_rate: int,
         language: str | None = None,  # noqa: ARG002 - stub is language-independent
         voice_id: str | None = None,  # noqa: ARG002 - stub has a single tone
+        fit_to_slot: bool = True,  # noqa: ARG002 - stub always emits duration_frames worth
     ) -> None:
         if duration_frames <= 0:
             raise ValueError("voiceover duration must be positive")
@@ -126,6 +135,7 @@ class WindowsSapiVoiceoverBackend:
         sample_rate: int,
         language: str | None = None,
         voice_id: str | None = None,
+        fit_to_slot: bool = True,
     ) -> None:
         if duration_frames <= 0:
             raise ValueError("voiceover duration must be positive")
@@ -167,19 +177,14 @@ class WindowsSapiVoiceoverBackend:
                 detail = (proc.stderr or proc.stdout or "").strip()[:300]
                 raise RuntimeError(f"windows SAPI synthesis failed: {detail}")
 
-            # Canonical mono rate + fit the slot: ``apad`` pads short speech, ``-t`` trims long.
-            seconds = duration_frames * fps_den / fps_num
-            run_ffmpeg(
-                [
-                    "-i", str(raw_wav),
-                    "-ac", "1",
-                    "-ar", str(sample_rate),
-                    "-af", "apad",
-                    "-t", f"{seconds:.6f}",
-                    "-c:a", "pcm_s16le",
-                    str(out_path),
-                ]
-            )
+            # Canonical mono rate; fit the slot when requested (``apad`` pads short speech,
+            # ``-t`` trims long) -- ``fit_to_slot=False`` writes the natural-length speech as-is.
+            args = ["-i", str(raw_wav), "-ac", "1", "-ar", str(sample_rate)]
+            if fit_to_slot:
+                seconds = duration_frames * fps_den / fps_num
+                args += ["-af", "apad", "-t", f"{seconds:.6f}"]
+            args += ["-c:a", "pcm_s16le", str(out_path)]
+            run_ffmpeg(args)
 
 
 class SidecarVoiceoverBackend:
@@ -227,6 +232,7 @@ class SidecarVoiceoverBackend:
         sample_rate: int,
         language: str | None = None,
         voice_id: str | None = None,
+        fit_to_slot: bool = True,
     ) -> None:
         payload = {
             "text": text,
@@ -236,6 +242,7 @@ class SidecarVoiceoverBackend:
             "sample_rate": sample_rate,
             "language": language,
             "voice_id": voice_id,
+            "fit_to_slot": fit_to_slot,
         }
         data = json.dumps(payload).encode("utf-8")
         request = Request(
@@ -283,8 +290,110 @@ class UnavailableVoiceoverBackend:
         sample_rate: int,  # noqa: ARG002
         language: str | None = None,  # noqa: ARG002
         voice_id: str | None = None,  # noqa: ARG002
+        fit_to_slot: bool = True,  # noqa: ARG002
     ) -> None:
         raise RuntimeError(f"voiceover backend '{self.name}' is not installed")
+
+
+class ElevenLabsVoiceoverBackend:
+    """Cloud TTS via the ElevenLabs REST API (stdlib ``urllib`` only, no SDK dependency).
+
+    A real neural voice as an *explicit* opt-in path -- never implied by ``"auto"`` (heavy/paid
+    backends are optional extras, per the repo invariant). Requires
+    ``LAURA_ELEVENLABS_API_KEY``; voice and model default from env but can be overridden per call.
+    """
+
+    name = "elevenlabs"
+
+    def __init__(self, *, timeout_seconds: float | None = None) -> None:
+        self.timeout_seconds = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else _float_env("LAURA_VOICEOVER_TIMEOUT", DEFAULT_VOICEOVER_TIMEOUT_SECONDS)
+        )
+
+    def available(self) -> bool:
+        """True iff an API key is configured. No network round-trip: request errors (bad key,
+        payment issues, rate limits) surface at synthesis time, same as the sidecar backend."""
+        return bool(os.environ.get("LAURA_ELEVENLABS_API_KEY"))
+
+    def synthesize(
+        self,
+        *,
+        text: str,
+        out_path: Path,
+        duration_frames: int,
+        fps_num: int,
+        fps_den: int,
+        sample_rate: int,
+        language: str | None = None,  # noqa: ARG002 - ElevenLabs infers language from the voice
+        voice_id: str | None = None,
+        fit_to_slot: bool = True,
+    ) -> None:
+        if duration_frames <= 0:
+            raise ValueError("voiceover duration must be positive")
+        if fps_num <= 0 or fps_den <= 0:
+            raise ValueError("voiceover fps must be positive")
+        if sample_rate <= 0:
+            raise ValueError("voiceover sample rate must be positive")
+
+        api_key = os.environ.get("LAURA_ELEVENLABS_API_KEY")
+        if not api_key:
+            raise RuntimeError(f"voiceover backend '{self.name}' is not installed")
+        voice = voice_id or os.environ.get("LAURA_ELEVENLABS_VOICE")
+        if not voice:
+            raise RuntimeError(
+                "elevenlabs voiceover requires a voice id "
+                "(set LAURA_ELEVENLABS_VOICE or pass voice_id)"
+            )
+        model = os.environ.get("LAURA_ELEVENLABS_MODEL") or DEFAULT_ELEVENLABS_MODEL
+
+        data = json.dumps({"text": text, "model_id": model}).encode("utf-8")
+        request = Request(
+            ELEVENLABS_TTS_URL_TEMPLATE.format(voice_id=voice),
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+                "xi-api-key": api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                status = int(response.status)
+                mp3_bytes = response.read()
+        except HTTPError as exc:
+            # The body (e.g. {"detail": {"status": "payment_issue"}}) goes verbatim into the
+            # message -- it never contains the request headers, so the API key cannot leak here.
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"elevenlabs voiceover failed with HTTP {exc.code}: {detail}"
+            ) from exc
+        except (OSError, TimeoutError, URLError) as exc:
+            raise RuntimeError(f"elevenlabs voiceover unavailable: {exc}") from exc
+
+        if not 200 <= status < 300:
+            raise RuntimeError(f"elevenlabs voiceover failed with HTTP {status}")
+        if not mp3_bytes:
+            raise RuntimeError("elevenlabs voiceover returned an empty response")
+
+        # Lazy import keeps the module light for the dependency-free stub path.
+        from ..ingest.ffmpeg import run_ffmpeg
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_mp3 = Path(tmp) / "voiceover_raw.mp3"
+            raw_mp3.write_bytes(mp3_bytes)
+
+            # Canonical mono rate; fit the slot when requested (``apad`` pads short speech,
+            # ``-t`` trims long) -- ``fit_to_slot=False`` writes the natural-length speech as-is.
+            args = ["-i", str(raw_mp3), "-ac", "1", "-ar", str(sample_rate)]
+            if fit_to_slot:
+                seconds = duration_frames * fps_den / fps_num
+                args += ["-af", "apad", "-t", f"{seconds:.6f}"]
+            args += ["-c:a", "pcm_s16le", str(out_path)]
+            run_ffmpeg(args)
 
 
 @lru_cache(maxsize=1)
@@ -383,6 +492,8 @@ def resolve_voiceover_backend(
         return WindowsSapiVoiceoverBackend()
     if chosen in {"sidecar", "vibevideo"}:
         return SidecarVoiceoverBackend(base_url=base_url)
+    if chosen in {"elevenlabs", "el"}:
+        return ElevenLabsVoiceoverBackend()
     return UnavailableVoiceoverBackend(chosen)
 
 
