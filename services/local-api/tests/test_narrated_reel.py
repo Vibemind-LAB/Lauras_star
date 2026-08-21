@@ -16,6 +16,12 @@ Test plan (brief (a)-(e)):
       asset end instead, with a warning naming the beat.
   (e) Cancelling between beat 0 and beat 1 aborts cleanly (status "cancelled") with no
       clip/voice-track for beat 1 -- only beat 0's work is committed.
+  (f) A mid-build exception (beat 2's synthesis raises after beats 0/1 already
+      committed) rolls the WHOLE timeline back to its pre-job state and re-raises --
+      zero clips, zero VO clips, zero export.render jobs afterwards.
+  (g) Idempotency is reachable: two identical POSTs resolve to the same timeline_id/
+      job_id (one timeline, one job in the DB); a POST with a changed beat text creates
+      a new one.
 """
 
 from __future__ import annotations
@@ -530,3 +536,139 @@ def test_narrated_reel_cancel_between_beats_aborts_cleanly(
     # render step is ever reached.
     render_jobs = repos.list_jobs_of_kind(db, "export.render")
     assert render_jobs == []
+
+
+# ---------------------------------------------------------------------------
+# (f) a mid-build exception rolls the whole timeline back to its pre-job state
+# ---------------------------------------------------------------------------
+
+
+def test_narrated_reel_exception_mid_build_rolls_back_to_pre_job_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Spec's Fehlerfälle: "Timeline bleibt im letzten konsistenten Zustand (Checkpoint
+    vor dem Job)". Beat 2's synthesis raises after beats 0 and 1 already committed their
+    clips -- the handler must undo ALL of it (not just skip beat 2), then re-raise the
+    original error so the job still fails."""
+    from laura.config import Settings
+    from laura.db.database import SqliteDatabase
+
+    settings = Settings(workspace_root=tmp_path / "ws", start_runner=False)
+    db = SqliteDatabase(settings.db_path)
+    db.migrate()
+
+    project = repos.create_project(
+        db, name="p", rate_num=30, rate_den=1, drop_frame=False,
+        workspace_root=str(tmp_path / "ws" / "p"),
+    )
+    asset_a = _seed_video_asset(db, project, tmp_path, name="a", duration_frames=1000)
+    asset_b = _seed_video_asset(db, project, tmp_path, name="b", duration_frames=1000)
+    timeline = repos.create_timeline(
+        db, project_id=project["id"], name="Narrated Reel", kind="rough_cut"
+    )
+
+    _patch_queued_backend(monkeypatch, [30, 60])
+
+    real_synthesize = ai_handlers._synthesize_voiceover_asset
+    calls = {"n": 0}
+
+    def _wrapped(ctx: JobContext, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("synthesis backend exploded on beat 2")
+        return real_synthesize(ctx, **kwargs)
+
+    monkeypatch.setattr(ai_handlers, "_synthesize_voiceover_asset", _wrapped)
+
+    payload: dict[str, Any] = {
+        "timeline_id": timeline["id"],
+        "project_id": project["id"],
+        "beats": [
+            _beat(asset_a, text="one", src_in_frame=0, pad_frames=12),
+            _beat(asset_b, text="two", src_in_frame=0, pad_frames=12),
+            _beat(asset_a, text="three", src_in_frame=500, pad_frames=12),
+        ],
+        "crossfade_frames": 8,
+        "final_fade_frames": 12,
+        "backend": "stub",
+        "voice_id": None,
+        "language": None,
+        "runtime_id": None,
+        "render": True,
+        "caption_preset": "wide",
+    }
+    job_id = enqueue(
+        db,
+        queue=queue_for("ai.narrated_reel", default="ai"),
+        kind="ai.narrated_reel",
+        payload=payload,
+        max_attempts=1,
+    )
+    ctx = JobContext(
+        job_id=job_id,
+        kind="ai.narrated_reel",
+        queue=queue_for("ai.narrated_reel", default="ai"),
+        payload=payload,
+        db=db,
+    )
+
+    with pytest.raises(RuntimeError, match="synthesis backend exploded"):
+        ai_handlers.handle_narrated_reel(ctx)
+
+    # Beats 0 and 1 DID commit their clips before beat 2 blew up -- the rollback must
+    # remove them too, not just skip the failed beat.
+    assert repos.list_timeline_clips(db, timeline["id"]) == []
+    assert repos.list_timeline_audio_clips(db, timeline["id"]) == []
+    assert repos.list_jobs_of_kind(db, "export.render") == []
+
+
+# ---------------------------------------------------------------------------
+# (g) idempotency is reachable: identical requests dedupe BEFORE a timeline is created
+# ---------------------------------------------------------------------------
+
+
+def test_narrated_reel_identical_requests_dedupe_to_one_job(
+    client: TestClient, tmp_path: Path
+) -> None:
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    project = _seed_project(db, tmp_path)
+    asset = _seed_video_asset(db, project, tmp_path, name="a", duration_frames=1000)
+
+    body = {"beats": [_beat(asset, text="hello there")], "backend": "stub"}
+
+    first = client.post(f"/projects/{project['id']}/narrated-reel", json=body)
+    assert first.status_code == 202, first.text
+    second = client.post(f"/projects/{project['id']}/narrated-reel", json=body)
+    assert second.status_code == 202, second.text
+
+    assert first.json() == second.json()
+
+    assert len(repos.list_timelines(db, project["id"])) == 1
+    assert len(repos.list_jobs_of_kind(db, "ai.narrated_reel")) == 1
+
+
+def test_narrated_reel_changed_beat_text_creates_a_new_job(
+    client: TestClient, tmp_path: Path
+) -> None:
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    project = _seed_project(db, tmp_path)
+    asset = _seed_video_asset(db, project, tmp_path, name="a", duration_frames=1000)
+
+    first = client.post(
+        f"/projects/{project['id']}/narrated-reel",
+        json={"beats": [_beat(asset, text="hello there")], "backend": "stub"},
+    )
+    assert first.status_code == 202, first.text
+    second = client.post(
+        f"/projects/{project['id']}/narrated-reel",
+        json={"beats": [_beat(asset, text="a completely different line")], "backend": "stub"},
+    )
+    assert second.status_code == 202, second.text
+
+    assert first.json()["job_id"] != second.json()["job_id"]
+    assert first.json()["timeline_id"] != second.json()["timeline_id"]
+
+    assert len(repos.list_timelines(db, project["id"])) == 2
+    assert len(repos.list_jobs_of_kind(db, "ai.narrated_reel")) == 2

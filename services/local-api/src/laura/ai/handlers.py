@@ -17,7 +17,7 @@ from typing import Any
 from .. import audit
 from ..db import repos
 from ..db.database import Database
-from ..editing.history import timeline_checkpoint
+from ..editing.history import perform_undo, timeline_checkpoint
 from ..editing.operations import EditClip, append_clip, ordered
 from ..ingest.ffmpeg import probe as probe_media
 from ..jobs.keys import idempotency_key_for
@@ -769,6 +769,15 @@ def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
     optional chained render are applied once, after all beats, against the FINAL stable
     clip ids — ``replace_timeline_clips`` reassigns every clip a fresh id on every call,
     so setting transitions mid-loop would silently be wiped out by the next beat's append.
+
+    A mid-build exception (a beat's synthesis/backend failing, a DB error, ...) rolls the
+    ENTIRE timeline back to its pre-job state via :func:`laura.editing.history.perform_undo`
+    — the same machinery the ``/undo`` endpoint uses — before re-raising, so the job still
+    fails with a clear error but never leaves a half-built collage (a partial run of clips
+    with no matching voice track, or vice versa) sitting on the timeline (spec's
+    Fehlerfälle: "Timeline bleibt im letzten konsistenten Zustand"). Cooperative
+    cancellation is NOT an error path — it returns normally (see below), so already
+    -completed beats stay committed on cancel, unlike on a genuine failure.
     """
     payload = ctx.payload
     timeline_id = str(payload["timeline_id"])
@@ -794,146 +803,162 @@ def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
     cancelled = False
 
     with timeline_checkpoint(ctx.db, timeline_id, "Narrated Reel erstellt"):
-        edit_clips: list[EditClip] = [
-            EditClip.from_row(c) for c in repos.list_timeline_clips(ctx.db, timeline_id)
-        ]
-        for i, beat in enumerate(beats_in):
-            if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
-                cancelled = True
-                break
+        try:
+            edit_clips: list[EditClip] = [
+                EditClip.from_row(c) for c in repos.list_timeline_clips(ctx.db, timeline_id)
+            ]
+            for i, beat in enumerate(beats_in):
+                if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
+                    cancelled = True
+                    break
 
-            text = str(beat["text"])
-            asset_id = str(beat["asset_id"])
-            src_in = int(beat["src_in_frame"])
-            pad_frames = (
-                int(beat["pad_frames"]) if beat.get("pad_frames") is not None else 12
-            )
-
-            asset = repos.get_asset(ctx.db, asset_id)
-            if asset is None:
-                raise ValueError(f"ai.narrated_reel: beat {i}: asset not found: {asset_id!r}")
-            asset_duration = asset.get("duration_frames")
-            if asset_duration is None:
-                raise ValueError(f"ai.narrated_reel: beat {i}: asset has no known duration")
-            remaining = int(asset_duration) - src_in
-            if remaining <= 0:
-                raise ValueError(
-                    f"ai.narrated_reel: beat {i}: src_in_frame is at/after the asset end"
+                text = str(beat["text"])
+                asset_id = str(beat["asset_id"])
+                src_in = int(beat["src_in_frame"])
+                pad_frames = (
+                    int(beat["pad_frames"]) if beat.get("pad_frames") is not None else 12
                 )
 
-            voice_asset, measured_frames, _out_path = _synthesize_voiceover_asset(
-                ctx,
-                project=project,
-                timeline=timeline,
-                text=text,
-                backend_config=backend_config,
-                language=language,
-                voice_id=voice_id,
-                duration_frames=remaining,
-                fit_to_slot=False,
-                provenance_source={
-                    "narrated_reel_timeline_id": timeline_id,
-                    "narrated_reel_beat_index": i,
-                    "asset_id": asset_id,
-                },
-            )
-
-            wanted_len = measured_frames + pad_frames
-            beat_len = min(wanted_len, remaining)
-            if wanted_len > remaining:
-                warnings.append(f"beat {i}: clipped to asset end")
-
-            clip = EditClip(
-                asset_id=asset_id,
-                src_in_frame=src_in,
-                src_out_frame_exclusive=src_in + beat_len,
-                seq_in_frame=0,
-                seq_out_frame_exclusive=0,
-                lane=0,
-            )
-            edit_clips = ordered(append_clip(edit_clips, clip))
-            repos.replace_timeline_clips(
-                ctx.db, timeline_id, [c.to_row() for c in edit_clips]
-            )
-            placed = edit_clips[-1]
-            seq_in = placed.seq_in_frame
-            seq_out = placed.seq_out_frame_exclusive
-
-            repos.add_timeline_audio_clip(
-                ctx.db,
-                timeline_id=timeline_id,
-                asset_id=voice_asset["id"],
-                seq_in_frame=seq_in,
-                seq_out_frame_exclusive=seq_out,
-                asset_in_frame=0,
-                gain_percent=100,
-                fade_in_frames=3,
-                fade_out_frames=4,
-                mix_mode="replace_original",
-                ducking_percent=100,
-                label=f"reel-beat-{i}",
-            )
-
-            beats_result.append({
-                "voice_asset_id": voice_asset["id"],
-                "measured_frames": measured_frames,
-                "seq_in": seq_in,
-                "seq_out": seq_out,
-            })
-
-        # Resolve stable clip ids for whichever video clips exist now (whether every
-        # beat ran, or the loop stopped early on cancellation) and fold them into the
-        # per-beat results in the same append order (one video clip per completed beat,
-        # on a timeline this job alone builds -- order-by-seq_in is beat order).
-        video_clips = [
-            c for c in repos.list_timeline_clips(ctx.db, timeline_id)
-            if c.get("role", "base") != "replace"
-        ]
-        for entry, row in zip(beats_result, video_clips, strict=False):
-            entry["clip_id"] = row["id"]
-
-        if cancelled:
-            return {
-                "status": "cancelled",
-                "beats": beats_result,
-                "export_id": None,
-                "warnings": warnings,
-            }
-
-        n = len(video_clips)
-        for idx, row in enumerate(video_clips):
-            if idx == n - 1:
-                if final_fade_frames > 0:
-                    repos.set_clip_transition(
-                        ctx.db, clip_id=row["id"], kind="fade", frames=final_fade_frames
+                asset = repos.get_asset(ctx.db, asset_id)
+                if asset is None:
+                    raise ValueError(
+                        f"ai.narrated_reel: beat {i}: asset not found: {asset_id!r}"
                     )
-            elif crossfade_frames > 0:
-                repos.set_clip_transition(
-                    ctx.db, clip_id=row["id"], kind="crossfade", frames=crossfade_frames
+                asset_duration = asset.get("duration_frames")
+                if asset_duration is None:
+                    raise ValueError(f"ai.narrated_reel: beat {i}: asset has no known duration")
+                remaining = int(asset_duration) - src_in
+                if remaining <= 0:
+                    raise ValueError(
+                        f"ai.narrated_reel: beat {i}: src_in_frame is at/after the asset end"
+                    )
+
+                voice_asset, measured_frames, _out_path = _synthesize_voiceover_asset(
+                    ctx,
+                    project=project,
+                    timeline=timeline,
+                    text=text,
+                    backend_config=backend_config,
+                    language=language,
+                    voice_id=voice_id,
+                    duration_frames=remaining,
+                    fit_to_slot=False,
+                    provenance_source={
+                        "narrated_reel_timeline_id": timeline_id,
+                        "narrated_reel_beat_index": i,
+                        "asset_id": asset_id,
+                    },
                 )
 
-        export_id: str | None = None
-        if bool(payload.get("render", True)):
-            options: dict[str, Any] = {
-                "captions": True,
-                "caption_source": "voiceover",
-                "caption_preset": payload.get("caption_preset") or "wide",
-            }
-            exp = repos.create_export(
-                ctx.db,
-                project_id=timeline["project_id"],
-                timeline_id=timeline_id,
-                format="mp4",
-                options=options,
-            )
-            export_id = exp["id"]
-            enqueue(
-                ctx.db,
-                queue=queue_for("export.render"),
-                kind="export.render",
-                payload={"export_id": export_id},
-                idempotency_key=f"render:{export_id}",
-            )
+                wanted_len = measured_frames + pad_frames
+                beat_len = min(wanted_len, remaining)
+                if wanted_len > remaining:
+                    warnings.append(f"beat {i}: clipped to asset end")
+
+                clip = EditClip(
+                    asset_id=asset_id,
+                    src_in_frame=src_in,
+                    src_out_frame_exclusive=src_in + beat_len,
+                    seq_in_frame=0,
+                    seq_out_frame_exclusive=0,
+                    lane=0,
+                )
+                edit_clips = ordered(append_clip(edit_clips, clip))
+                repos.replace_timeline_clips(
+                    ctx.db, timeline_id, [c.to_row() for c in edit_clips]
+                )
+                placed = edit_clips[-1]
+                seq_in = placed.seq_in_frame
+                seq_out = placed.seq_out_frame_exclusive
+
+                repos.add_timeline_audio_clip(
+                    ctx.db,
+                    timeline_id=timeline_id,
+                    asset_id=voice_asset["id"],
+                    seq_in_frame=seq_in,
+                    seq_out_frame_exclusive=seq_out,
+                    asset_in_frame=0,
+                    gain_percent=100,
+                    fade_in_frames=3,
+                    fade_out_frames=4,
+                    mix_mode="replace_original",
+                    ducking_percent=100,
+                    label=f"reel-beat-{i}",
+                )
+
+                beats_result.append({
+                    "voice_asset_id": voice_asset["id"],
+                    "measured_frames": measured_frames,
+                    "seq_in": seq_in,
+                    "seq_out": seq_out,
+                })
+
+            # Resolve stable clip ids for whichever video clips exist now (whether every
+            # beat ran, or the loop stopped early on cancellation) and fold them into the
+            # per-beat results in the same append order (one video clip per completed
+            # beat, on a timeline this job alone builds -- order-by-seq_in is beat order).
+            # strict=True: a length mismatch here is an invariant break (one video clip
+            # per completed beat, always), not a recoverable condition -- fail loudly.
+            video_clips = [
+                c for c in repos.list_timeline_clips(ctx.db, timeline_id)
+                if c.get("role", "base") != "replace"
+            ]
+            for entry, row in zip(beats_result, video_clips, strict=True):
+                entry["clip_id"] = row["id"]
+
+            if cancelled:
+                return {
+                    "status": "cancelled",
+                    "beats": beats_result,
+                    "export_id": None,
+                    "warnings": warnings,
+                }
+
+            n = len(video_clips)
+            for idx, row in enumerate(video_clips):
+                if idx == n - 1:
+                    if final_fade_frames > 0:
+                        repos.set_clip_transition(
+                            ctx.db, clip_id=row["id"], kind="fade", frames=final_fade_frames
+                        )
+                elif crossfade_frames > 0:
+                    repos.set_clip_transition(
+                        ctx.db, clip_id=row["id"], kind="crossfade", frames=crossfade_frames
+                    )
+
+            export_id: str | None = None
+            if bool(payload.get("render", True)):
+                options: dict[str, Any] = {
+                    "captions": True,
+                    "caption_source": "voiceover",
+                    "caption_preset": payload.get("caption_preset") or "wide",
+                }
+                exp = repos.create_export(
+                    ctx.db,
+                    project_id=timeline["project_id"],
+                    timeline_id=timeline_id,
+                    format="mp4",
+                    options=options,
+                )
+                export_id = exp["id"]
+                enqueue(
+                    ctx.db,
+                    queue=queue_for("export.render"),
+                    kind="export.render",
+                    payload={"export_id": export_id},
+                    idempotency_key=f"render:{export_id}",
+                )
+        except Exception:
+            # A mid-build failure must never leave a half-built collage on the timeline
+            # (spec's Fehlerfälle: "Timeline bleibt im letzten konsistenten Zustand").
+            # perform_undo pops exactly the checkpoint pushed above (nothing else pushes
+            # one during this job) and restores clips/audio clips/transitions/scenes to
+            # the empty pre-job snapshot -- the SAME machinery the /undo endpoint uses.
+            # Synthetic voice assets already created stay (project-level, harmless), but
+            # every timeline clip and VO clip from this run is gone. Re-raise so the job
+            # still fails with the original, clear error.
+            perform_undo(ctx.db, timeline_id)
+            raise
 
     return {
         "beats": beats_result,

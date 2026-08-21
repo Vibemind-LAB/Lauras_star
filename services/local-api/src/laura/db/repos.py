@@ -156,6 +156,22 @@ def get_fetch_job(db: Database, asset_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
+def get_job_by_idempotency_key(db: Database, idempotency_key: str) -> dict[str, Any] | None:
+    """Generic lookup by a job's dedup key (any kind).
+
+    Used by endpoints whose idempotency key must be computable BEFORE any side effect
+    that would make a naive retry non-idempotent (e.g. narrated-reel: the key excludes
+    the freshly-minted ``timeline_id``, so the endpoint must check for a reusable job
+    before creating a new timeline, not rely on ``enqueue``'s own internal dedup — which
+    only fires after the timeline already exists).
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def set_job_progress(db: Database, job_id: str, progress_json: str) -> None:
     """Store the latest progress sample for a job (throttled by the caller)."""
     with db.connection() as conn:
