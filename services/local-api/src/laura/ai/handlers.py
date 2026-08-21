@@ -430,6 +430,12 @@ def _measure_wav_frames_ceil(path: Path, *, rate_num: int, rate_den: int) -> int
     Natural-fit clips must never be a frame short of the speech they actually contain
     (spec §3) -- rounding up trades a few extra trailing samples for that guarantee
     instead of risking truncation from float/duration-string rounding.
+
+    A missing, zero/negative, ``"N/A"`` (ffprobe's own sentinel for "unknown"), or
+    otherwise unparseable duration means the synthesized WAV cannot be measured --
+    treated as a hard failure rather than silently producing a zero/near-zero-length
+    clip that would still report job success. Mirrors the ``"N/A"`` handling in
+    ``render.sync._duration_seconds``.
     """
     data = probe_media(path)
     raw_duration = data.get("format", {}).get("duration")
@@ -440,9 +446,18 @@ def _measure_wav_frames_ceil(path: Path, *, rate_num: int, rate_den: int) -> int
             None,
         )
         raw_duration = audio_stream.get("duration") if audio_stream else None
-    if raw_duration is None:
-        raise RuntimeError(f"ai.voiceover: could not measure natural-length duration of {path}")
-    duration = Fraction(str(raw_duration))
+    duration: Fraction | None = None
+    if isinstance(raw_duration, str) and raw_duration and raw_duration != "N/A":
+        try:
+            duration = Fraction(raw_duration)
+        except ValueError:
+            duration = None
+    elif isinstance(raw_duration, (int, float)):
+        duration = Fraction(str(raw_duration))
+    if duration is None or duration <= 0:
+        raise RuntimeError(
+            f"ai.voiceover: synthesized WAV has no measurable duration ({path})"
+        )
     frames = duration * Fraction(rate_num, rate_den)
     return math.ceil(frames)
 

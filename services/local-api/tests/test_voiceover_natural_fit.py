@@ -87,6 +87,28 @@ def _patch_fixed_length_backend(monkeypatch: pytest.MonkeyPatch, frames: int) ->
     )
 
 
+def _patch_probe_duration(monkeypatch: pytest.MonkeyPatch, *, raw_duration: str) -> None:
+    """Force the ffprobe call inside ``_measure_wav_frames_ceil`` to report a fixed,
+    caller-chosen duration string -- independent of whatever WAV the (real) stub
+    backend actually wrote to disk."""
+    monkeypatch.setattr(
+        ai_handlers,
+        "probe_media",
+        lambda _path: {"format": {"duration": raw_duration}, "streams": []},
+    )
+
+
+def _drain(runner: Any, limit: int = 10) -> int:
+    """Run jobs until the queue is empty (a retriable failure requeues once before
+    the runner marks it permanently failed at max_attempts)."""
+    ran = 0
+    while runner.run_once():
+        ran += 1
+        if ran >= limit:
+            break
+    return ran
+
+
 def _seed_project_and_sequence(
     db: Database, tmp_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -298,3 +320,84 @@ def test_natural_fit_overlap_delete_uses_effective_span(
     )
     replace_clips = [c for c in clips if c["mix_mode"] == "replace_original"]
     assert len(replace_clips) == 2  # the survivor + the new VO clip
+
+
+# ---------------------------------------------------------------------------
+# (e) unmeasurable probed duration ("0.000000" / "N/A") -> hard job failure,
+#     never a silent zero-length clip reported as success.
+# ---------------------------------------------------------------------------
+
+
+def test_natural_fit_zero_duration_probe_fails_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ffprobe reporting duration "0.000000" for the synthesized WAV must fail the
+    job outright, not silently create a zero-length clip that reports success."""
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline = _seed_project_and_sequence(db, tmp_path)
+    assets_before = repos.list_assets(db, timeline["project_id"])
+    _patch_probe_duration(monkeypatch, raw_duration="0.000000")
+
+    accepted = _post_voiceover(
+        client,
+        timeline["id"],
+        seq_in_frame=0,
+        seq_out_frame_exclusive=300,
+        fit="natural",
+        pad_frames=12,
+    )
+    assert accepted.status_code == 202, accepted.text
+    _drain(app.state.runner)
+
+    job = repos.get_job(db, accepted.json()["job_id"])
+    assert job is not None and job["status"] == "failed", job
+    trace = json.loads(job["error_json"])
+    assert "RuntimeError" in trace["error"], trace
+    assert "no measurable duration" in trace["error"], trace
+
+    clips = repos.list_timeline_audio_clips(db, timeline["id"])
+    assert clips == [], "a zero-length clip must never be created"
+    assets_after = repos.list_assets(db, timeline["project_id"])
+    assert len(assets_after) == len(assets_before), "no orphan asset row on failure"
+
+
+def test_natural_fit_na_duration_probe_fails_cleanly(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ffprobe's "N/A" duration sentinel must fail cleanly with a RuntimeError --
+    not blow up as a raw ``Fraction("N/A")`` parse crash. Mirrors the "N/A" handling
+    in ``render.sync._duration_seconds``."""
+    app = cast(Any, client.app)
+    db: Database = app.state.db
+    _, timeline = _seed_project_and_sequence(db, tmp_path)
+    assets_before = repos.list_assets(db, timeline["project_id"])
+    _patch_probe_duration(monkeypatch, raw_duration="N/A")
+
+    accepted = _post_voiceover(
+        client,
+        timeline["id"],
+        seq_in_frame=0,
+        seq_out_frame_exclusive=300,
+        fit="natural",
+        pad_frames=12,
+    )
+    assert accepted.status_code == 202, accepted.text
+    _drain(app.state.runner)
+
+    job = repos.get_job(db, accepted.json()["job_id"])
+    assert job is not None and job["status"] == "failed", job
+    trace = json.loads(job["error_json"])
+    assert "RuntimeError" in trace["error"], (
+        f"expected a clean RuntimeError, got a raw parse crash: {trace['error']!r}"
+    )
+    assert "no measurable duration" in trace["error"], trace
+
+    clips = repos.list_timeline_audio_clips(db, timeline["id"])
+    assert clips == [], "a zero-length clip must never be created"
+    assets_after = repos.list_assets(db, timeline["project_id"])
+    assert len(assets_after) == len(assets_before), "no orphan asset row on failure"
