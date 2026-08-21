@@ -115,6 +115,9 @@ def create_narrated_reel(
         "caption_preset": body.caption_preset,
     }
     idempotency_key = idempotency_key_for("ai.narrated_reel", key_payload)
+    # Accepted race: two simultaneous identical POSTs both read "no existing job" here and
+    # both proceed to create_timeline below, orphaning one timeline. Single-user local app —
+    # accepted rather than adding cross-request locking for this narrow window.
     if idempotency_key is not None:
         existing = repos.get_job_by_idempotency_key(db, idempotency_key)
         if existing is not None and existing["status"] in _REUSABLE_JOB_STATUSES:

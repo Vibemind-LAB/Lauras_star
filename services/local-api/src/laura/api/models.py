@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    sequence_rate_num: int = Field(gt=0, description="e.g. 30000 for 29.97")
+    sequence_rate_num: int = Field(default=30, gt=0, description="e.g. 30000 for 29.97")
     sequence_rate_den: int = Field(default=1, gt=0, description="e.g. 1001 for 29.97")
     drop_frame: bool = False
 

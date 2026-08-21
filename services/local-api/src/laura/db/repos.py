@@ -2433,9 +2433,17 @@ def pop_top(conn: Any, timeline_id: str, stack: str) -> dict[str, Any] | None:
 
 
 def push_undo_checkpoint(db: Database, timeline_id: str, label: str) -> None:
-    """Snapshot the current editorial state onto the undo stack; clear redo; cap depth."""
+    """Snapshot the current editorial state onto the undo stack; clear redo; cap depth.
+
+    immediate=True (pattern: ae01228): push_row reads MAX(seq_no) before its INSERT. A
+    deferred BEGIN takes a read snapshot at that SELECT, and if another connection (a
+    concurrent editorial write on another timeline route) commits before the INSERT
+    upgrades to a write, SQLite fails with SQLITE_BUSY_SNAPSHOT without ever consulting
+    busy_timeout. Starting as a writer makes contention wait on busy_timeout instead of
+    throwing "database is locked" out of every timeline_checkpoint call.
+    """
     snapshot = capture_timeline_snapshot(db, timeline_id)
-    with db.transaction() as conn:
+    with db.transaction(immediate=True) as conn:
         push_row(conn, timeline_id, "undo", label, snapshot)
         conn.execute(
             "DELETE FROM timeline_history WHERE timeline_id=? AND stack='redo'",

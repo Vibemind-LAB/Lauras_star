@@ -44,6 +44,28 @@ def test_create_get_list_project(client: TestClient) -> None:
     assert any(p["id"] == created["id"] for p in listed.json())
 
 
+def test_create_project_defaults_rate_and_dropframe(client: TestClient) -> None:
+    # POST /projects with only a name -> 201 with the 30/1/False defaults (Task 8 hardening).
+    resp = client.post("/projects", json={"name": "Nur ein Name"})
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    assert created["sequence_rate_num"] == 30
+    assert created["sequence_rate_den"] == 1
+    assert created["drop_frame"] is False
+
+    # Explicit values still win over the defaults.
+    resp2 = client.post(
+        "/projects",
+        json={"name": "Mit Rate", "sequence_rate_num": 24, "sequence_rate_den": 1,
+              "drop_frame": False},
+    )
+    assert resp2.status_code == 201, resp2.text
+    created2 = resp2.json()
+    assert created2["sequence_rate_num"] == 24
+    assert created2["sequence_rate_den"] == 1
+    assert created2["drop_frame"] is False
+
+
 def test_create_demo_project(client: TestClient, monkeypatch: MonkeyPatch) -> None:
     def fake_clip(path: Path, _label: str, _color: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
