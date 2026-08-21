@@ -31,6 +31,7 @@ from .api import (
     generate,
     jobs,
     lipsync,
+    narrated_reel,
     orchestration,
     overlays,
     projects,
@@ -162,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sequences.router)
     app.include_router(voiceover.router)
     app.include_router(lipsync.router)
+    app.include_router(narrated_reel.router)
     app.include_router(orchestration.router)
     app.include_router(demo.router)
     app.include_router(generate.router)

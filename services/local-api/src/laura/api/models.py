@@ -920,6 +920,50 @@ class LipsyncAccepted(BaseModel):
     job_id: str
 
 
+# --- narrated reel (collage builder, spec §6) --------------------------------
+class NarratedReelBeat(BaseModel):
+    """One beat of a narrated-reel collage: a spoken line over a slice of source video.
+
+    ``src_in_frame`` is the asset source frame the clip starts at; its length is derived
+    from the synthesized voiceover's measured speech (spec §3 natural-fit), not requested
+    here. ``pad_frames`` is trailing silence added after the measured speech before the
+    beat's clip is clamped to the asset's end.
+    """
+
+    text: str = Field(min_length=1)
+    asset_id: str
+    src_in_frame: int = Field(ge=0)
+    pad_frames: int = Field(default=12, ge=0, le=120)
+
+
+class NarratedReelRequest(BaseModel):
+    """Request body for POST /projects/{project_id}/narrated-reel (spec §6).
+
+    Builds a fresh timeline from ``beats`` sequentially: each beat synthesizes its own
+    natural-length voiceover, appends a video clip sized to the measured speech (clamped
+    to the source asset's end), and places the voice track over it. ``crossfade_frames``
+    is applied between every clip but the last; ``final_fade_frames`` fades the last clip
+    out. ``render=True`` (default) chains an ``export.render`` job with captions burned
+    from the voiceover words.
+    """
+
+    name: str | None = None
+    beats: list[NarratedReelBeat] = Field(min_length=1, max_length=64)
+    crossfade_frames: int = Field(default=8, ge=0, le=60)
+    final_fade_frames: int = Field(default=12, ge=0, le=120)
+    backend: str | None = None
+    voice_id: str | None = None
+    language: str | None = None
+    runtime_id: str | None = None
+    render: bool = True
+    caption_preset: Literal["reels", "tiktok", "shorts", "wide"] = "wide"
+
+
+class NarratedReelAccepted(BaseModel):
+    timeline_id: str
+    job_id: str
+
+
 # --- ai runtimes / personas -------------------------------------------------
 RuntimeKind = Literal["stub", "external_http", "container"]
 RuntimeEffect = Literal["voice", "reenact", "lipsync", "faceswap", "restore"]

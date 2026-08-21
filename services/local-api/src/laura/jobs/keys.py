@@ -33,6 +33,12 @@ Kinds covered
     design §3): they change the rendered clip span, so two otherwise-identical requests
     that differ only in fit mode must not dedupe to the same job.
 
+``ai.narrated_reel``
+    ``ai.narrated_reel:{sha256(full payload)}`` — the collage builder (2026-08-21
+    narrated-reel design §6) hashes the WHOLE payload (not a curated subset): every
+    field (including ``timeline_id``, which is always freshly created per request)
+    changes the built collage, so nothing is safe to omit from the key.
+
 All other kinds return ``None`` — no dedup key.
 """
 
@@ -98,5 +104,8 @@ def idempotency_key_for(kind: str, payload: dict[str, Any]) -> str | None:
             "pad_frames": payload.get("pad_frames"),
         }
         return f"ai.voiceover:{_sha256_of(parts)}"
+
+    if kind == "ai.narrated_reel":
+        return f"ai.narrated_reel:{_sha256_of(payload)}"
 
     return None
