@@ -119,7 +119,13 @@ check_python() {
         add_row "python" "missing" ">=3.11" "missing" "https://www.python.org/downloads/"
         return
     fi
-    ver="$("$cmd" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    # `|| true` matters here: under `set -o pipefail`, if grep finds no match
+    # (an unparseable/non-3-component version string), grep exits 1, and the
+    # pipeline's exit status becomes 1 too -- which, in a bare (non-if-guarded)
+    # assignment, silently kills the whole script via `set -e` before the
+    # "unknown" fallback below ever runs. `|| true` makes "no match" degrade to
+    # an empty $ver (caught by the fallback) instead of aborting.
+    ver="$("$cmd" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
     [ -z "$ver" ] && ver="unknown"
     if [ "$ver" != "unknown" ] && version_ge "$ver" "3.11.0"; then
         add_row "python" "$ver" ">=3.11" "ok" "https://www.python.org/downloads/"
@@ -134,7 +140,7 @@ check_uv() {
         return
     fi
     local ver
-    ver="$(uv --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    ver="$(uv --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"  # see note in check_python
     [ -z "$ver" ] && ver="unknown"
     add_row "uv" "$ver" "any" "ok" "https://docs.astral.sh/uv/getting-started/installation/"
 }
@@ -145,7 +151,7 @@ check_node() {
         return
     fi
     local ver
-    ver="$(node --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    ver="$(node --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"  # see note in check_python
     [ -z "$ver" ] && ver="unknown"
     if [ "$ver" != "unknown" ] && version_ge "$ver" "22.0.0"; then
         add_row "node" "$ver" ">=22" "ok" "https://nodejs.org/en/download"
@@ -160,7 +166,7 @@ check_pnpm() {
         return
     fi
     local ver
-    ver="$(pnpm --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    ver="$(pnpm --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"  # see note in check_python
     [ -z "$ver" ] && ver="unknown"
     add_row "pnpm" "$ver" "any" "ok" "https://pnpm.io/installation"
 }
@@ -171,7 +177,7 @@ check_ffmpeg() {
         return
     fi
     local ver
-    ver="$(ffmpeg -version 2>&1 | head -n1 | awk '{print $3}')"
+    ver="$(ffmpeg -version 2>&1 | head -n1 | awk '{print $3}' || true)"  # see note in check_python
     [ -z "$ver" ] && ver="unknown"
     add_row "ffmpeg" "$ver" "any" "ok" "https://ffmpeg.org/download.html"
 }
@@ -182,7 +188,7 @@ check_ffprobe() {
         return
     fi
     local ver
-    ver="$(ffprobe -version 2>&1 | head -n1 | awk '{print $3}')"
+    ver="$(ffprobe -version 2>&1 | head -n1 | awk '{print $3}' || true)"  # see note in check_python
     [ -z "$ver" ] && ver="unknown"
     add_row "ffprobe" "$ver" "any" "ok" "https://ffmpeg.org/download.html"
 }
@@ -287,7 +293,49 @@ step_pnpm_install() {
     (cd "$repo_root" && pnpm install --frozen-lockfile)
 }
 
+# generate_token: print a 32-hex-char (128-bit) token from a cryptographically
+# sound source: openssl (preferred), then python's `secrets` module, then
+# /dev/urandom -- whichever is available first. Returns non-zero only if none
+# of the three exist (extremely unlikely on any real machine).
+generate_token() {
+    local t
+    if command -v openssl >/dev/null 2>&1 && t="$(openssl rand -hex 16 2>/dev/null)" && [ -n "$t" ]; then
+        printf '%s\n' "$t"
+        return 0
+    fi
+    local pycmd=""
+    if command -v python3 >/dev/null 2>&1; then
+        pycmd=python3
+    elif command -v python >/dev/null 2>&1; then
+        pycmd=python
+    fi
+    if [ -n "$pycmd" ] && t="$("$pycmd" -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null)" && [ -n "$t" ]; then
+        printf '%s\n' "$t"
+        return 0
+    fi
+    if [ -r /dev/urandom ] && t="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')" && [ -n "$t" ]; then
+        printf '%s\n' "$t"
+        return 0
+    fi
+    return 1
+}
+
+# env_has_empty_token: true (0) if $1 is an existing .env whose LAURA_TOKEN=
+# line has no value -- meaning security.py's require_token() short-circuits
+# (settings.token is falsy) and the API has NO auth check at all.
+env_has_empty_token() {
+    local f="$1" line val
+    line="$(grep -E '^LAURA_TOKEN=' "$f" 2>/dev/null | tail -n1)"
+    if [ -z "$line" ]; then
+        return 1
+    fi
+    val="${line#LAURA_TOKEN=}"
+    val="$(printf '%s' "$val" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [ -z "$val" ]
+}
+
 step_dotenv() {
+    # Never touch an existing .env -- not even to fill in a missing token.
     if [ -f "$repo_root/.env" ]; then
         return 0
     fi
@@ -296,6 +344,22 @@ step_dotenv() {
         return 1
     fi
     cp "$repo_root/.env.example" "$repo_root/.env"
+    local token
+    if ! token="$(generate_token)"; then
+        echo "error: could not generate a LAURA_TOKEN (no openssl, python, or /dev/urandom found)" >&2
+        return 1
+    fi
+    # config.py does `os.environ.get("LAURA_TOKEN") or None` and security.py's
+    # require_token() no-ops when settings.token is falsy -- an empty
+    # LAURA_TOKEN= line means NO auth check at all. Fill in a real one instead
+    # of shipping the empty placeholder from .env.example.
+    # -b (binary): .env.example ships CRLF line endings; without -b this
+    # GNU sed build silently rewrites EVERY line of the file to LF, not just
+    # the one being edited. The `(\r?)` capture + `\1` back-reference keeps
+    # whichever line ending the LAURA_TOKEN line itself already had.
+    local tmp
+    tmp="$(mktemp)"
+    sed -E -b "s/^LAURA_TOKEN=[^\r]*(\r?)\$/LAURA_TOKEN=${token}\1/" "$repo_root/.env" > "$tmp" && mv "$tmp" "$repo_root/.env"
 }
 
 echo ""
@@ -305,9 +369,13 @@ run_step "uv sync (services/mcp)" "" step_mcp_sync
 run_step "pnpm install (workspace root)" "" step_pnpm_install
 
 if [ -f "$repo_root/.env" ]; then
-    env_detail="kept existing .env (not overwritten)"
+    if env_has_empty_token "$repo_root/.env"; then
+        env_detail="kept existing .env (not overwritten) - WARNING: LAURA_TOKEN is empty, so the API has NO auth check (security.py no-ops); fix: set LAURA_TOKEN in .env (e.g. openssl rand -hex 16) and restart the backend"
+    else
+        env_detail="kept existing .env (not overwritten)"
+    fi
 else
-    env_detail="created .env from .env.example"
+    env_detail="created .env from .env.example (generated a random LAURA_TOKEN)"
 fi
 run_step ".env" "$env_detail" step_dotenv
 

@@ -110,6 +110,13 @@ function Write-Table {
 }
 
 function Test-PythonPrereq {
+    # Same PS 5.1 hazard as the install/verify action blocks: a --version probe
+    # that writes even one line to stderr (exit 0 or not) gets promoted into a
+    # terminating NativeCommandError under script-wide $ErrorActionPreference =
+    # 'Stop', which would otherwise kill the ENTIRE prerequisite check with no
+    # output. Scope it back to 'Continue' for this probe (local to the
+    # function, does not leak to the caller).
+    $ErrorActionPreference = 'Continue'
     $cmd = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) { $cmd = Get-Command python3 -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if (-not $cmd) {
@@ -126,6 +133,7 @@ function Test-PythonPrereq {
 }
 
 function Test-UvPrereq {
+    $ErrorActionPreference = 'Continue'  # see note in Test-PythonPrereq
     $cmd = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) {
         Add-Row 'uv' 'missing' 'any' 'missing' 'https://docs.astral.sh/uv/getting-started/installation/'
@@ -137,6 +145,7 @@ function Test-UvPrereq {
 }
 
 function Test-NodePrereq {
+    $ErrorActionPreference = 'Continue'  # see note in Test-PythonPrereq
     $cmd = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) {
         Add-Row 'node' 'missing' '>=22' 'missing' 'https://nodejs.org/en/download'
@@ -152,6 +161,7 @@ function Test-NodePrereq {
 }
 
 function Test-PnpmPrereq {
+    $ErrorActionPreference = 'Continue'  # see note in Test-PythonPrereq
     $cmd = Get-Command pnpm -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) {
         Add-Row 'pnpm' 'missing' 'any' 'missing' 'https://pnpm.io/installation'
@@ -163,6 +173,7 @@ function Test-PnpmPrereq {
 }
 
 function Test-FfmpegPrereq {
+    $ErrorActionPreference = 'Continue'  # see note in Test-PythonPrereq
     $cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) {
         Add-Row 'ffmpeg' 'missing' 'any' 'missing' 'https://ffmpeg.org/download.html'
@@ -174,6 +185,7 @@ function Test-FfmpegPrereq {
 }
 
 function Test-FfprobePrereq {
+    $ErrorActionPreference = 'Continue'  # see note in Test-PythonPrereq
     $cmd = Get-Command ffprobe -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) {
         Add-Row 'ffprobe' 'missing' 'any' 'missing' 'https://ffmpeg.org/download.html'
@@ -313,12 +325,74 @@ $pnpmInstallAction = {
     }
 }
 
+# Get-RandomToken: return a 32-hex-char (128-bit) token from a
+# cryptographically sound source: openssl (preferred), then python's
+# `secrets` module, then .NET's own RandomNumberGenerator -- the last of
+# which is always available, so this function never fails to produce a
+# token.
+function Get-RandomToken {
+    $ErrorActionPreference = 'Continue'  # see note in Test-PythonPrereq
+    try {
+        $opensslCmd = Get-Command openssl -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($opensslCmd) {
+            $result = ((& $opensslCmd.Source rand -hex 16) 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and $result) { return $result }
+        }
+    } catch { }
+    try {
+        $pyCmd = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $pyCmd) { $pyCmd = Get-Command python3 -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        if ($pyCmd) {
+            $result = ((& $pyCmd.Source -c "import secrets;print(secrets.token_hex(16))") 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and $result) { return $result }
+        }
+    } catch { }
+    $bytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    return -join ($bytes | ForEach-Object { $_.ToString('x2') })
+}
+
+# Test-EnvHasEmptyToken: $true if $Path is an existing .env whose LAURA_TOKEN=
+# line has no value -- meaning security.py's require_token() short-circuits
+# (settings.token is falsy) and the API has NO auth check at all.
+function Test-EnvHasEmptyToken {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $false }
+    # [System.Text.Encoding]::UTF8 (not Get-Content's PS-5.1-default ANSI
+    # codepage for BOM-less files) -- see note in $dotEnvAction.
+    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    $m = [regex]::Match($text, '(?m)^LAURA_TOKEN=([^\r\n]*)')
+    if (-not $m.Success) { return $false }
+    $val = $m.Groups[1].Value.Trim()
+    return [string]::IsNullOrEmpty($val)
+}
+
 $dotEnvAction = {
+    # Never touch an existing .env -- not even to fill in a missing token.
     if (Test-Path $envFile) { return }
     if (-not (Test-Path $envExampleFile)) {
         throw "error: .env.example not found at $envExampleFile"
     }
     Copy-Item $envExampleFile $envFile
+    $token = Get-RandomToken
+    # config.py does `os.environ.get("LAURA_TOKEN") or None` and security.py's
+    # require_token() no-ops when settings.token is falsy -- an empty
+    # LAURA_TOKEN= line means NO auth check at all. Fill in a real one instead
+    # of shipping the empty placeholder from .env.example.
+    #
+    # Read/write via .NET directly, NOT Get-Content/Set-Content:
+    # - .env.example has no BOM, and PS 5.1's Get-Content defaults to the
+    #   system ANSI codepage (not UTF-8) for BOM-less files -- it silently
+    #   mangles every non-ASCII byte (the file's em dashes etc.) into mojibake.
+    #   [System.Text.Encoding]::UTF8 forces correct UTF-8 decoding regardless.
+    # - Writing back via UTF8Encoding($false) keeps it BOM-less, matching the
+    #   original file (Set-Content's default would add one).
+    # - [^\r\n]* (not .*) leaves each line's existing CRLF/LF terminator
+    #   completely untouched instead of collapsing it while replacing the
+    #   value.
+    $text = [System.IO.File]::ReadAllText($envFile, [System.Text.Encoding]::UTF8)
+    $text = [regex]::Replace($text, '(?m)^LAURA_TOKEN=[^\r\n]*', "LAURA_TOKEN=$token")
+    [System.IO.File]::WriteAllText($envFile, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 Write-Host ""
@@ -328,9 +402,13 @@ Invoke-Step "uv sync (services/mcp)" "" $mcpSyncAction
 Invoke-Step "pnpm install (workspace root)" "" $pnpmInstallAction
 
 if (Test-Path $envFile) {
-    $envDetail = "kept existing .env (not overwritten)"
+    if (Test-EnvHasEmptyToken $envFile) {
+        $envDetail = "kept existing .env (not overwritten) - WARNING: LAURA_TOKEN is empty, so the API has NO auth check (security.py no-ops); fix: set LAURA_TOKEN in .env (e.g. via openssl rand -hex 16) and restart the backend"
+    } else {
+        $envDetail = "kept existing .env (not overwritten)"
+    }
 } else {
-    $envDetail = "created .env from .env.example"
+    $envDetail = "created .env from .env.example (generated a random LAURA_TOKEN)"
 }
 Invoke-Step ".env" $envDetail $dotEnvAction
 
