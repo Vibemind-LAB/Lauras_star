@@ -339,3 +339,43 @@ def test_real_degraded_crossfade_concat_path_is_not_all_black(tmp_path: Path) ->
     assert yavg[5] > 100, f"early frame (clip A) must be bright, got {yavg[5]}"
     assert yavg[45] > 100, f"middle frame (clip B) must be bright, got {yavg[45]}"
     assert yavg[85] > 100, f"late frame (clip C) must be bright, got {yavg[85]}"
+
+
+@pytest.mark.skipif(
+    shutil.which(os.environ.get("LAURA_FFMPEG", "ffmpeg")) is None, reason="ffmpeg"
+)
+def test_real_mid_timeline_fade_dips_only_its_own_window(tmp_path: Path) -> None:
+    """Reported regression: a user-selectable mid-timeline dip-to-black (``kind="fade"`` at a
+    boundary strictly BEFORE the end of the stream, e.g. ``transition_style="fade"`` on a cut
+    between two clips) blacked the ENTIRE video, not just the window around the boundary.
+
+    Root cause (two independent empirical checks): ffmpeg's ``fade=t=out:st=A:d=D`` does not
+    merely ramp down during ``[A, A+D]`` -- it STAYS black for the whole remainder AFTER that
+    window. Symmetrically ``fade=t=in:st=B:d=D`` force-blacks EVERY frame BEFORE ``B``, not just
+    ramping up inside ``[B, B+D]``. ``_video_transition_chain`` chains exactly this pair
+    (fade-out ending at the boundary, fade-in starting at the boundary) on one stream for every
+    non-hard, non-trailing transition -- so before the fix the fade-out's "stays black after"
+    covered everything from the window to the stream's end, and the fade-in's "blacks everything
+    before" covered everything from the stream's start to the window, together blacking the
+    whole video instead of just the intended dip.
+
+    Two solid-white clips (3s/30f each @ 10fps, 60f total), hard-cut boundary at frame 30 (the
+    stream's midpoint, NOT its end -- boundary_frame(30) < total_frames(60), so this is a true
+    mid-timeline dip, unlike the trailing-fade regression tests above) with a 1s (10-frame)
+    ``kind="fade"`` transition. Fade-out window [2.0s,3.0s], fade-in window [3.0s,4.0s]. Checked
+    via real ffmpeg + signalstats: bright well before the dip, dark at the boundary, bright
+    again well after -- never black outside the dip's own window."""
+    a = _white_src(tmp_path, "a.mp4", seconds=3)
+    b = _white_src(tmp_path, "b.mp4", seconds=3)
+    dest = tmp_path / "mid_timeline_fade.mp4"
+    render_clips_mp4(
+        [(a, 0, 30), (b, 0, 30)],
+        dest,
+        rate_num=10, rate_den=1,
+        video_transitions=[VideoTransition(kind="fade", boundary_frame=30, duration_frames=10)],
+    )
+    yavg = _yavg_series(dest, tmp_path / "mid_fade_stats.txt")
+    assert len(yavg) == 60
+    assert yavg[5] > 100, f"frame well before the dip must be bright, got {yavg[5]}"
+    assert yavg[30] < 40, f"frame at the boundary must be dark, got {yavg[30]}"
+    assert yavg[55] > 100, f"frame well after the dip must be bright again, got {yavg[55]}"

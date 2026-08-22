@@ -146,18 +146,34 @@ def _video_transition_chain(
 
     ``total_frames`` is the assembled stream's own total length (frames). It exists to guard
     against a ffmpeg ``fade`` filter trap, live-found on a narrated-reel trailing fade
-    (I-1 follow-up): ``fade=t=in:st=X`` does NOT merely ramp up during ``[X, X+d]`` and leave
-    everything before ``X`` untouched -- it forces EVERY frame before ``X`` to black, no matter
-    how far before. Empirically confirmed: a solid-white clip run through nothing but
-    ``fade=t=in:st=<its own duration>`` measures ``YAVG=16`` (full black, limited-range floor)
-    for every frame up to the fade window, then ramps up only inside it. For a MID-timeline dip
-    (boundary strictly before the stream's end) that half is exactly what's wanted -- there IS
-    real video after the boundary for the ramp-up to apply to, and the preceding ``fade=t=out``
-    half already carries the video down to black right up to the same point. But a TRAILING fade
-    (``boundary_frame >= total_frames``, spec §6 "letzter Clip Fade-out") has no frames at or
-    after the boundary at all -- emitting its fade-in half doesn't ramp anything back up, it just
-    force-blacks the entire stream that precedes it. So a trailing transition emits ONLY the
-    fade-out half.
+    (I-1 follow-up) and confirmed independently on a MID-timeline dip (I-2): ``fade=t=in:st=X``
+    does NOT merely ramp up during ``[X, X+d]`` and leave everything before ``X`` untouched --
+    it forces EVERY frame before ``X`` to black, no matter how far before. Symmetrically,
+    ``fade=t=out:st=X:d=D`` does not merely ramp down during ``[X, X+D]`` and leave the frames
+    after that window untouched -- it STAYS black for the whole remainder after its own window.
+    Empirically confirmed both ways with a solid-white clip + ``signalstats`` YAVG. Chained
+    unguarded over one stream (fade-out then fade-in around a boundary) the two halves therefore
+    black EVERYTHING: fade-out blacks from its start to the stream's end, fade-in blacks from
+    the stream's start to its own start -- together covering the whole timeline, not just the
+    intended dip window around the boundary.
+
+    The fix: each half carries ``enable='between(t,A,B)'`` (ffmpeg's per-filter timeline
+    gating) so it only applies inside its own window ``[A, B]``; outside that window the
+    filter is bypassed and the frame passes through unmodified (still bright). ``fade``'s
+    st/d-based alpha is a pure function of the frame's own timestamp (not a running counter),
+    so gating it with ``enable`` does not disturb the ramp shape inside the window -- verified
+    via a real-ffmpeg lavfi probe (white source -> fade+enable -> signalstats) before relying on
+    it here: bright before the window, dark at the boundary, bright again after.
+
+    For a MID-timeline dip (boundary strictly before the stream's end) both halves are wanted --
+    there IS real video after the boundary for the fade-in to ramp back up on, and the preceding
+    fade-out already carries the video down to black right up to the same point. But a TRAILING
+    fade (``boundary_frame >= total_frames``, spec §6 "letzter Clip Fade-out") has no frames at
+    or after the boundary at all -- emitting its fade-in half doesn't ramp anything back up, it
+    just force-blacks the stream that precedes it. So a trailing transition emits ONLY the
+    fade-out half (its ``enable`` window still ends at ``boundary``, but since the stream has no
+    frames past that point the gating is a no-op there -- verified this still stays black through
+    the end, matching the pre-existing trailing-fade tests).
     """
     if not video_transitions:
         return ""
@@ -168,13 +184,17 @@ def _video_transition_chain(
         duration = transition.duration_frames * rate_den / rate_num
         boundary = transition.boundary_frame * rate_den / rate_num
         fade_out_start = max(0.0, boundary - duration)
+        fade_out_end = _seconds(boundary)
         filters.append(
-            f"fade=t=out:st={_seconds(fade_out_start)}:d={_seconds(duration)}"
+            f"fade=t=out:st={_seconds(fade_out_start)}:d={_seconds(duration)}:"
+            f"enable='between(t,{_seconds(fade_out_start)},{fade_out_end})'"
         )
         if transition.boundary_frame >= total_frames:
             continue  # trailing fade: no frames past the boundary for a fade-in to ramp up
+        fade_in_end = _seconds(boundary + duration)
         filters.append(
-            f"fade=t=in:st={_seconds(boundary)}:d={_seconds(duration)}"
+            f"fade=t=in:st={_seconds(boundary)}:d={_seconds(duration)}:"
+            f"enable='between(t,{_seconds(boundary)},{fade_in_end})'"
         )
     return ",".join(filters)
 
