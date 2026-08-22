@@ -143,7 +143,7 @@ services/
   mcp/                  stdio MCP server — 27 typed tools + raw API escape hatch
   tts-sidecar/          Optional local neural TTS (own venv, HTTP contract)
   ai-runtimes/          Optional GPU analysis runtimes
-docs/                   Implementation documentation (00–16), ADRs, research report
+docs/                   Implementation documentation (00–17), ADRs, research report
   superpowers/          Specs and implementation plans per feature arc
 scripts/                Setup, prerequisite checks, optional installers
 fixtures/               Golden fixtures for time-model and interchange tests
@@ -172,6 +172,7 @@ These are the engineering heart of the product; violating one is a bug, not a tr
 | [`docs/03-time-model.md`](docs/03-time-model.md) | The time core — frames, samples, rational time |
 | [`docs/04-api.md`](docs/04-api.md) | HTTP API surface |
 | [`docs/09-security.md`](docs/09-security.md) | Security model |
+| [`docs/17-runbook.md`](docs/17-runbook.md) | Operations runbook — processes, ports, real-world failure modes |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
 | [`docs/research/deep-research-report.md`](docs/research/deep-research-report.md) | The original research report this product is derived from |
 
