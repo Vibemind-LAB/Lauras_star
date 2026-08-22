@@ -4,13 +4,13 @@ Eigenstaendiger Chatterbox-Voiceover-Sidecar fuer Laura. Erfuellt den
 `SidecarVoiceoverBackend`-Kontrakt aus
 `services/local-api/src/laura/ai/voiceover_backend.py`: Laura spricht nur HTTP,
 importiert nie Torch/CUDA/Chatterbox selbst. Das Skript laeuft in Chatterbox'
-eigenem venv (`E:\chatterbox`) -- **kein** Eintrag in `services/local-api`s
+eigenem venv (`<chatterbox-venv>`) -- **kein** Eintrag in `services/local-api`s
 `pyproject.toml`.
 
 ## Start-Rezept
 
 ```powershell
-E:\chatterbox\.venv\Scripts\python.exe `
+<chatterbox-venv>\.venv\Scripts\python.exe `
   C:\Users\User\Desktop\Laura\services\tts-sidecar\chatterbox_sidecar.py `
   --port 8898
 ```
@@ -33,7 +33,7 @@ in den Env Vars unten.
 
 | Variable              | Zweck                                                                 | Default                              |
 |------------------------|------------------------------------------------------------------------|----------------------------------------|
-| `CHATTERBOX_VOICE_REF` | Pfad zur Referenz-WAV fuer Voice-Cloning                               | `felix_ref.wav` neben diesem Skript   |
+| `CHATTERBOX_VOICE_REF` | Pfad zur Referenz-WAV fuer Voice-Cloning                               | `reference.wav` neben diesem Skript   |
 | `CHATTERBOX_DEVICE`    | Torch-Device fuer `ChatterboxTTS.from_pretrained`                      | `cuda`                                 |
 | `HF_HOME`              | HuggingFace-Cache-Verzeichnis (respektiert, nicht gesetzt vom Skript)  | HF-Standard (`~/.cache/huggingface`)   |
 | `HF_HUB_OFFLINE`       | `1` unterdrueckt HuggingFace-Netzwerk-Calls komplett (nur Cache)       | nicht gesetzt (online)                |
@@ -50,17 +50,18 @@ aus dem `HF_HOME`-Cache, ganz ohne Netzwerk-Roundtrip.
 
 Referenz-Aufloesung pro Request (erste existierende Datei gewinnt):
 `voice_id` aus dem Payload (falls ein existierender Pfad) ->
-`CHATTERBOX_VOICE_REF` -> `felix_ref.wav` neben dem Skript. Existiert keine der
+`CHATTERBOX_VOICE_REF` -> `reference.wav` neben dem Skript. Existiert keine der
 drei, antwortet der Sidecar mit `500` und nennt alle drei versuchten Pfade im
 Klartext-Body.
 
-Beispiel fuer diese Workstation:
+Beispiel (Pfade an die eigene Maschine anpassen):
 
 ```powershell
-$env:HF_HOME = "E:\huggingface_cache"
+$env:HF_HOME = "D:\huggingface_cache"            # wohin die Gewichte gecacht werden
 $env:HF_HUB_OFFLINE = "1"  # nach dem ersten (Online-)Lauf: Gewichte sind gecacht
-$env:CHATTERBOX_VOICE_REF = "E:\chatterbox\felix_ref.wav"
-$env:CHATTERBOX_DEVICE = "cuda"
+$env:CHATTERBOX_VOICE_REF = "D:oices
+eference.wav"   # 10-20 s saubere Sprache der Zielstimme
+$env:CHATTERBOX_DEVICE = "cuda"                  # oder "cpu"
 ```
 
 ## Kontrakt
@@ -97,9 +98,9 @@ Damit loest `resolve_voiceover_backend()` in `voiceover_backend.py` auf
 
 `chatterbox-tts` zieht Abhaengigkeiten, die zur Laufzeit `pkg_resources`
 importieren. Mit `setuptools>=81` ist `pkg_resources` aus dem Paket entfernt
--- der Import schlaegt fehl. Falls `E:\chatterbox\.venv` neu aufgesetzt
+-- der Import schlaegt fehl. Falls `<chatterbox-venv>\.venv` neu aufgesetzt
 werden muss: `setuptools<81` pinnen (z.B.
-`E:\chatterbox\.venv\Scripts\pip.exe install "setuptools<81"`), bevor
+`<chatterbox-venv>\.venv\Scripts\pip.exe install "setuptools<81"`), bevor
 `chatterbox-tts` installiert/importiert wird.
 
 ## Syntax-/Typcheck (kein Modell-Lauf)

@@ -157,7 +157,7 @@ class ElevenLabsVoiceoverBackend:
 - Eigenständiges Skript `chatterbox_sidecar.py` (+ README): stdlib-`http.server` oder
   FastAPI-frei; Endpunkte laut Kontrakt. Lädt `ChatterboxTTS.from_pretrained(cuda)` einmal,
   `POST /voiceover` synthesisiert mit `audio_prompt_path` aus `CHATTERBOX_VOICE_REF`
-  (Env; Default `felix_ref.wav` neben dem Skript), resampelt auf `sample_rate` mono WAV.
+  (Env; Default `reference.wav` neben dem Skript), resampelt auf `sample_rate` mono WAV.
   Läuft im eigenen venv (E:\chatterbox); KEIN Eintrag in pyproject des Backends.
 - README dokumentiert Start (`.venv\Scripts\python.exe chatterbox_sidecar.py --port 8898`)
   und die Env-Kopplung (`LAURA_VOICEOVER_BACKEND=sidecar`, `LAURA_VOICEOVER_URL`).

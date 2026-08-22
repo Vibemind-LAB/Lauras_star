@@ -16,7 +16,9 @@ Wiederholungen bleiben bewusst aus.
 | TTS-Sidecar (Voice-Cloning) | `127.0.0.1:8898` | nein | eigenes venv, siehe [`services/tts-sidecar/README.md`](../services/tts-sidecar/README.md) |
 | Qdrant (semantische Suche) | `127.0.0.1:6333` | nein | Docker-Container; ohne ihn fällt die Suche still auf einen leeren In-Memory-Index zurück |
 
-Alles bindet auf Loopback. Es gibt keinen Netzwerkdienst, der von außen erreichbar ist.
+Alle Dienste binden per Default auf Loopback (`LAURA_HOST`, Default `127.0.0.1`) — von außen
+ist damit nichts erreichbar. Wer `LAURA_HOST` auf `0.0.0.0` setzt, öffnet den Dienst bewusst
+im Netz und braucht dann zwingend einen gesetzten `LAURA_TOKEN` (siehe unten).
 
 ## Die zwei wichtigsten Betriebsregeln
 
@@ -45,8 +47,11 @@ curl -s http://127.0.0.1:8765/healthz            # Backend lebt
 curl -s http://127.0.0.1:8898/healthz            # Sidecar lebt (falls genutzt)
 ```
 
-Die API ist token-geschützt: jeder Aufruf außer `/healthz` braucht den Header
-`X-Laura-Token` mit dem Wert aus `LAURA_TOKEN`.
+Die API ist token-geschützt, **sobald `LAURA_TOKEN` gesetzt ist**: dann braucht jeder Aufruf
+außer `/healthz` den Header `X-Laura-Token` mit diesem Wert. Ist die Variable leer, ist die
+Prüfung ein No-op (`api/security.py`) — für einen reinen Entwicklungslauf auf Loopback
+vertretbar, für alles andere nicht. Das Setup-Skript legt beim Anlegen der `.env` einen
+zufälligen Token an; die Desktop-App verwaltet ihren eigenen Session-Token.
 
 ## Wo die Daten liegen
 
@@ -86,5 +91,5 @@ Nach jeder Änderung am Betrieb gilt dieselbe Kette wie in der CI — die drei G
 [README](../README.md#verify-it). Für schnelle Rückversicherung reicht der Zeitkern:
 
 ```bash
-cd services/local-api && uv run pytest -q -k "time or range"
+cd services/local-api && uv run pytest -q tests/test_timecode.py tests/test_ranges.py
 ```

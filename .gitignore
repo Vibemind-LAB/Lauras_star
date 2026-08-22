@@ -52,5 +52,9 @@ fixtures/_generated/
 *.mp4
 *.mov
 *.wav
-!fixtures/**
+# ... except the small golden fixtures that ARE part of the repo. Scoped to media
+# extensions so this never re-includes fixtures/_generated/ above.
+!fixtures/**/*.mp4
+!fixtures/**/*.mov
+!fixtures/**/*.wav
 

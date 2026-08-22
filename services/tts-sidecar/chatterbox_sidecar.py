@@ -44,7 +44,7 @@ logger = logging.getLogger("chatterbox_sidecar")
 DEFAULT_PORT = 8898
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_DEVICE = "cuda"
-DEFAULT_VOICE_REF_FILENAME = "felix_ref.wav"
+DEFAULT_VOICE_REF_FILENAME = "reference.wav"
 DEFAULT_EXAGGERATION = 0.5
 DEFAULT_CFG_WEIGHT = 0.5
 
@@ -141,7 +141,7 @@ def _save_wav(path: Path, wav: torch.Tensor, sample_rate: int) -> None:
 
 def _resolve_voice_ref(voice_id: str | None) -> Path:
     """Pick the reference wav: ``voice_id`` (if it is an existing file) overrides
-    ``CHATTERBOX_VOICE_REF``, which overrides ``felix_ref.wav`` next to this script."""
+    ``CHATTERBOX_VOICE_REF``, which overrides ``reference.wav`` next to this script."""
     candidates: list[tuple[str, str]] = []
     if voice_id:
         candidates.append(("voice_id", voice_id))

@@ -26,7 +26,9 @@ editor already uses.
 Three properties define it:
 
 - **Local-first.** Ingest, analysis, rough cut and export run without internet. Footage stays
-  on the machine; the backend binds to loopback only.
+  on the machine; the backend listens on loopback by default and requires an
+  `X-Laura-Token` header whenever a token is configured (the setup script generates one,
+  and the desktop app manages its own session token).
 - **Frame-accurate.** All edits are integer frames relative to the sequence, all ranges are
   end-exclusive, audio is stored in samples. Timecode drift is treated as a bug, not a
   rounding detail.
@@ -57,7 +59,7 @@ Resolve, Premiere and Final Cut instead of competing with them.
                     +------------------+-------------------+
                                        v
                        Local service - FastAPI on 127.0.0.1:8765
-                       (token-protected, loopback only)
+                       (loopback by default, token-guarded)
                                        |
         +--------------+---------------+------------+------------------+
         v              v               v            v                  v
@@ -114,6 +116,21 @@ Optional extras — local neural voice cloning
 ([`services/tts-sidecar/README.md`](services/tts-sidecar/README.md)), URL ingest for site
 links (`scripts/setup-fetch.sh`), and GPU analysis runtimes (`scripts/ai-runtimes.sh`) — are
 documented where they live and are never required for the core path.
+
+## See it work (no footage needed)
+
+With the backend running, this renders a finished video on your machine in about a minute —
+no API keys, no models, nothing to download:
+
+```bash
+python scripts/demo.py
+```
+
+It generates a synthetic source clip, creates a project, and drives the real
+`narrated-reel` endpoint: three narration lines are synthesized, each clip is cut to the
+length of its spoken line, crossfades and a fade-out are applied, karaoke captions are burnt
+in, and the finished MP4 path is printed. Same pipeline the desktop app and the MCP tools
+use — not a mock.
 
 ## Verify it
 

@@ -6,10 +6,20 @@
   "scripts": {
     "dev": "pnpm --filter @laura/desktop dev",
     "build:renderer": "pnpm --filter @laura/desktop build:renderer",
-    "typecheck": "pnpm --filter @laura/desktop typecheck"
+    "typecheck": "pnpm --filter @laura/desktop typecheck",
+    "test": "pnpm --filter @laura/desktop test",
+    "lint": "pnpm --filter @laura/desktop lint"
   },
   "packageManager": "pnpm@10.30.1",
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "electron-winstaller"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "electron-winstaller"
+    ]
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
   }
 }
