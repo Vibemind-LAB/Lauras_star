@@ -1,0 +1,27 @@
+Laura
+Copyright 2026 VibeMind
+
+This product includes software developed by VibeMind and contributors,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product bundles or depends on third-party open-source components,
+each of which remains under its own license. Notably (non-exhaustive):
+
+  - FFmpeg / ffprobe        (LGPL/GPL, build-dependent) — media I/O and probing
+  - OpenTimelineIO          (Apache-2.0) — canonical editorial interchange model
+  - faster-whisper          (MIT) — speech-to-text (optional `asr` extra)
+  - WhisperX                (BSD-2-Clause) — forced alignment (optional `align` extra)
+  - PySceneDetect           (BSD-3-Clause) — shot/scene detection (optional `scene` extra)
+  - TransNetV2 (transnetv2-pytorch) (MIT) — learned shot detection (optional `scene-ml` extra)
+  - pyannote.audio          (MIT) — speaker diarization (optional `diarize` extra)
+  - Electron                (MIT) — desktop application shell
+  - React                   (MIT) — renderer UI framework
+  - FastAPI                 (MIT) — local HTTP API framework
+
+None of the above grants any additional rights beyond each project's own
+license terms, and none of them are relicensed under Apache-2.0 by virtue
+of being used by Laura. See each project's own repository for its full
+license text and copyright notices. Optional/heavy components (marked
+"extra" above) are not installed by default; consult
+`services/local-api/pyproject.toml` for the current dependency and
+extras list before relying on this notice as exhaustive.

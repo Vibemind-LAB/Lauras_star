@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Vibemind-LAB/Lauras_star/security/advisories/new
+    about: >
+      Please do not open a public issue for security vulnerabilities.
+      Use GitHub's private vulnerability reporting instead — see SECURITY.md.
+  - name: Project documentation
+    url: https://github.com/Vibemind-LAB/Lauras_star/blob/main/docs/00-overview.md
+    about: Start here for architecture, data model, time model, and API docs.

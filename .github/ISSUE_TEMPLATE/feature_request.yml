@@ -1,0 +1,60 @@
+name: Feature request
+description: Propose a new capability or improvement for Laura.
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything touching the time core (frames/samples), interchange (OTIO), or
+        another non-negotiable invariant (see `CONTRIBUTING.md`), please explain how
+        your proposal respects those invariants — that's usually the first review
+        question.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, or what's painful? Prefer a concrete workflow over an abstract ask.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like to see. Sketch the UX or API shape if you have one in mind.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      multiple: true
+      options:
+        - services/local-api (backend/API)
+        - services/mcp (MCP server)
+        - apps/desktop (Electron/React app)
+        - services/tts-sidecar
+        - services/ai-runtimes / analysis-runtime
+        - docs
+        - other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, and why you didn't pick them.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links to related issues/discussions, mockups, or references.
+    validations:
+      required: false
