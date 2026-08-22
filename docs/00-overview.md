@@ -73,6 +73,8 @@ Laut Report **nicht** STT/Shot-Detection, sondern:
 | [13-packaging](13-packaging.md) | Packaging, Signing, Release |
 | [14-enterprise](14-enterprise.md) | Mandanten, RBAC, Audit, Observability, Deployment |
 | [15-gap-closure-plan](15-gap-closure-plan.md) | Plan für alle offenen Lücken (Wave A/B/C) |
+| [16-execution-plan](16-execution-plan.md) | Ausführungsplan |
+| [17-runbook](17-runbook.md) | Betrieb & Fehlerbehebung — Prozesse, Ports, Praxis-Fehlerbilder |
 | [adr/](adr/) | Architecture Decision Records |
 
 ## Arbeitsannahmen (aus dem Report)
