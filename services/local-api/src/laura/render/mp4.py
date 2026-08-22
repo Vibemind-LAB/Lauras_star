@@ -624,6 +624,18 @@ def render_clips_mp4(
     # (which also renders the dip-to-black ``fade`` transition via _video_transition_chain).
     xdur = _crossfade_durations(clips, video_transitions)
     has_crossfade = any(d > 0 for d in xdur)
+    # Transitions eligible for the dip-to-black chain (_video_transition_chain): "hard" cuts
+    # never dip, and "crossfade" boundaries are either folded into the xfade graph above OR
+    # degraded to a silent hard cut by _crossfade_durations when the outgoing clip has no
+    # post-cut reserve -- either way they must NOT also reach _video_transition_chain, which
+    # would emit a dip-to-black fade=t=out/fade=t=in pair for them. A degraded crossfade still
+    # carries kind="crossfade" with its original (unclamped) duration, so filtering by kind here
+    # (not by xdur) is what keeps a "shortened 8->0" boundary from becoming a dip-to-black.
+    # Computed ONCE so the xfade and concat branches below share one value and cannot drift
+    # apart on this filter again (live 2026-08-22: the concat branch had never gotten it).
+    dip_transitions = [
+        t for t in (video_transitions or []) if t.kind not in ("hard", "crossfade")
+    ]
 
     # Reel overlay text goes through drawtext ``textfile=`` (basename, resolved via
     # ffmpeg's cwd), NOT inline ``text='…'`` — inline text cannot be escaped reliably
@@ -721,11 +733,8 @@ def render_clips_mp4(
             # §6 "letzter Clip Fade-out") is NOT part of the fold and would otherwise be
             # silently dropped on this path (I-1 reader gap 2). Apply it here, mirroring the
             # concat path below: same dip-to-black chain, same position (before reel/captions).
-            fold_transitions = [
-                t for t in (video_transitions or []) if t.kind not in ("hard", "crossfade")
-            ]
             transition_chain = _video_transition_chain(
-                fold_transitions, rate_num=rate_num, rate_den=rate_den, total_frames=total_frames
+                dip_transitions, rate_num=rate_num, rate_den=rate_den, total_frames=total_frames
             )
             if use_blur_fill:
                 # Insert blur-fill sub-graph between the xfade output and captions.
@@ -783,7 +792,7 @@ def render_clips_mp4(
                 else "".join(f"[v{i}]" for i in range(len(clips)))
             )
             transition_chain = _video_transition_chain(
-                video_transitions, rate_num=rate_num, rate_den=rate_den, total_frames=total_frames
+                dip_transitions, rate_num=rate_num, rate_den=rate_den, total_frames=total_frames
             )
             if use_blur_fill:
                 # Blur-fill path: concat output goes to [vcat], blur-fill sub-graph takes it
