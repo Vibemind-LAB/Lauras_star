@@ -140,7 +140,25 @@ def _video_transition_chain(
     *,
     rate_num: int,
     rate_den: int,
+    total_frames: int,
 ) -> str:
+    """Build the dip-to-black filter chain for the concat/xfade video streams.
+
+    ``total_frames`` is the assembled stream's own total length (frames). It exists to guard
+    against a ffmpeg ``fade`` filter trap, live-found on a narrated-reel trailing fade
+    (I-1 follow-up): ``fade=t=in:st=X`` does NOT merely ramp up during ``[X, X+d]`` and leave
+    everything before ``X`` untouched -- it forces EVERY frame before ``X`` to black, no matter
+    how far before. Empirically confirmed: a solid-white clip run through nothing but
+    ``fade=t=in:st=<its own duration>`` measures ``YAVG=16`` (full black, limited-range floor)
+    for every frame up to the fade window, then ramps up only inside it. For a MID-timeline dip
+    (boundary strictly before the stream's end) that half is exactly what's wanted -- there IS
+    real video after the boundary for the ramp-up to apply to, and the preceding ``fade=t=out``
+    half already carries the video down to black right up to the same point. But a TRAILING fade
+    (``boundary_frame >= total_frames``, spec §6 "letzter Clip Fade-out") has no frames at or
+    after the boundary at all -- emitting its fade-in half doesn't ramp anything back up, it just
+    force-blacks the entire stream that precedes it. So a trailing transition emits ONLY the
+    fade-out half.
+    """
     if not video_transitions:
         return ""
     filters: list[str] = []
@@ -153,6 +171,8 @@ def _video_transition_chain(
         filters.append(
             f"fade=t=out:st={_seconds(fade_out_start)}:d={_seconds(duration)}"
         )
+        if transition.boundary_frame >= total_frames:
+            continue  # trailing fade: no frames past the boundary for a fade-in to ramp up
         filters.append(
             f"fade=t=in:st={_seconds(boundary)}:d={_seconds(duration)}"
         )
@@ -591,6 +611,12 @@ def render_clips_mp4(
     inputs: list[str] = []
     audio_flags = [_source_has_audio(src) for src, _, _ in clips]
     has_base_audio = any(audio_flags)
+    # Total assembled length in frames -- the sync invariant (module docstring) holds this equal
+    # to the sum of clip content lengths on BOTH the concat and xfade paths (a crossfade extends
+    # clip A into its post-cut reserve rather than shortening the timeline). Used to detect a
+    # TRAILING fade transition (boundary_frame >= this) so _video_transition_chain can skip the
+    # poisonous fade-in half (see its docstring).
+    total_frames = sum(fout - fin for _src, fin, fout in clips)
     for src, _fin, _fout in clips:
         inputs += ["-i", str(src)]
     # Per-boundary crossfade durations (frames; 0 = hard cut). Any non-zero entry switches the
@@ -690,12 +716,26 @@ def render_clips_mp4(
                 rate_num=rate_num,
                 rate_den=rate_den,
             )
+            # The xfade fold above only handles kind=="crossfade" boundaries (via `xdur`);
+            # any other non-hard transition (e.g. a trailing "fade" on the final clip, spec
+            # §6 "letzter Clip Fade-out") is NOT part of the fold and would otherwise be
+            # silently dropped on this path (I-1 reader gap 2). Apply it here, mirroring the
+            # concat path below: same dip-to-black chain, same position (before reel/captions).
+            fold_transitions = [
+                t for t in (video_transitions or []) if t.kind not in ("hard", "crossfade")
+            ]
+            transition_chain = _video_transition_chain(
+                fold_transitions, rate_num=rate_num, rate_den=rate_den, total_frames=total_frames
+            )
             if use_blur_fill:
                 # Insert blur-fill sub-graph between the xfade output and captions.
                 # The sub-graph takes [v_label] → [_rbout]; captions are applied after.
-                blur_in = f"[{v_label}]"
+                blur_in_label = f"[{v_label}]"
+                if transition_chain:
+                    fold_parts.append(f"[{v_label}]{transition_chain}[_xftrans]")
+                    blur_in_label = "[_xftrans]"
                 blur_out = "[_rbout]"
-                blur_graph = reel_blur_fill_graph(blur_in, blur_out, out_w=out_w, out_h=out_h)
+                blur_graph = reel_blur_fill_graph(blur_in_label, blur_out, out_w=out_w, out_h=out_h)
                 fold_parts.append(blur_graph)
                 post_caption = ",".join(p for p in (reel, caption_filter) if p)
                 if post_caption:
@@ -703,7 +743,7 @@ def render_clips_mp4(
                 else:
                     fold_parts.append(f"{blur_out}null[out]")
             else:
-                post = ",".join(p for p in (reel, caption_filter) if p)
+                post = ",".join(p for p in (transition_chain, reel, caption_filter) if p)
                 fold_parts.append(
                     f"[{v_label}]{post}[out]" if post else f"[{v_label}]null[out]"
                 )
@@ -743,7 +783,7 @@ def render_clips_mp4(
                 else "".join(f"[v{i}]" for i in range(len(clips)))
             )
             transition_chain = _video_transition_chain(
-                video_transitions, rate_num=rate_num, rate_den=rate_den
+                video_transitions, rate_num=rate_num, rate_den=rate_den, total_frames=total_frames
             )
             if use_blur_fill:
                 # Blur-fill path: concat output goes to [vcat], blur-fill sub-graph takes it

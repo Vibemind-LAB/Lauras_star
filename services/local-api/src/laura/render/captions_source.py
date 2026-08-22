@@ -17,10 +17,15 @@ Invariant: all frame values are integer end-exclusive (CLAUDE.md §1-2).
 
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import Any
 
 from ..db import repos
 from ..db.database import Database
+
+_log = logging.getLogger(__name__)
 
 # (text, start_frame, end_frame) — end-exclusive. For timeline_caption_words these are
 # sequence frames; for candidate_caption_words they are clip-local frames.
@@ -101,6 +106,89 @@ def timeline_caption_words(db: Database, timeline_id: str) -> list[Word]:
                 end=seq_end,
                 is_punct=bool(w["is_punctuation"]),
             )
+
+    return result
+
+
+def voiceover_caption_words(db: Database, timeline_id: str) -> list[Word]:
+    """Return AUTHORED-text caption words for *timeline_id* from voiceover sidecars.
+
+    Narration captions (spec §5) should show the words the narrator was given to say,
+    not ASR guesses -- ASR mishears names. Each voiceover WAV synthesized by
+    ``ai.voiceover``/the narrated-reel collage job gets a ``<wav>.words.json`` sidecar
+    (schema: ``{"words": [{"text", "start_frame", "end_frame_exclusive"}], "source": ...}``,
+    frames relative to the WAV start -- see :mod:`..ai.vo_words`).
+
+    Algorithm (per audio-lane clip, in seq order):
+    1. Resolve the clip's asset and its ``<source_path>.words.json`` sidecar. Skip the
+       clip if the asset is missing or no sidecar file exists next to it.
+    2. Parse the sidecar defensively: invalid JSON, a missing/malformed ``"words"`` list,
+       or a malformed word entry skips the WHOLE clip (never raises) -- a corrupt sidecar
+       must not break the render.
+    3. Map each word's WAV frame to sequence frames via the same integer affine formula
+       as :func:`timeline_caption_words`:  ``seq = seq_in_frame + (frame - asset_in_frame)``.
+       Words fully outside the clip's seq span ``[seq_in_frame, seq_out_frame_exclusive)``
+       are dropped; partial overlaps are clamped into that span (end kept >= start + 1).
+    4. Return the full list -- already in seq order because clips are seq-ordered and a
+       sidecar's words are written in chronological (start_frame-ascending) order.
+    """
+    clips = repos.list_timeline_audio_clips(db, timeline_id)
+    if not clips:
+        return []
+
+    result: list[Word] = []
+
+    for clip in clips:
+        asset = repos.get_asset(db, clip["asset_id"])
+        if asset is None:
+            continue
+        source_path = asset.get("source_path")
+        if not source_path:
+            continue
+
+        sidecar_path = Path(f"{source_path}.words.json")
+        if not sidecar_path.exists():
+            continue
+
+        asset_in: int = int(clip["asset_in_frame"])
+        seq_in: int = int(clip["seq_in_frame"])
+        seq_out: int = int(clip["seq_out_frame_exclusive"])
+
+        try:
+            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            raw_words = payload["words"]
+            if not isinstance(raw_words, list):
+                raise ValueError("sidecar 'words' is not a list")
+
+            clip_words: list[Word] = []
+            for w in raw_words:
+                text = str(w["text"])
+                w_start = int(w["start_frame"])
+                w_end = int(w["end_frame_exclusive"])
+
+                seq_word_start = seq_in + (w_start - asset_in)
+                seq_word_end = seq_in + (w_end - asset_in)
+
+                # Drop words fully outside the clip's seq span.
+                if seq_word_end <= seq_in or seq_word_start >= seq_out:
+                    continue
+
+                # Clamp partial overlaps to [seq_in, seq_out).
+                clamped_start = max(seq_in, seq_word_start)
+                clamped_end = min(seq_out, seq_word_end)
+                if clamped_end <= clamped_start:
+                    clamped_end = clamped_start + 1
+
+                clip_words.append((text, clamped_start, clamped_end))
+        except Exception:  # noqa: BLE001 - a corrupt/malformed sidecar must never raise
+            _log.warning(
+                "voiceover_caption_words: skipping clip with malformed sidecar %s",
+                sidecar_path,
+                exc_info=True,
+            )
+            continue
+
+        result.extend(clip_words)
 
     return result
 

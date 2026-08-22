@@ -27,8 +27,24 @@ Kinds covered
 ``ai.voiceover``
     ``ai.voiceover:{sha256( timeline_id | seq_in_frame | seq_out_frame_exclusive
                             | segment_id | text* | voice_id | mix_mode
-                            | ducking_percent )}``
+                            | ducking_percent | fit | pad_frames )}``
     *text is included only when segment_id is absent/None (matches Task-1 logic).
+    fit/pad_frames were added in the natural-length-fit task (2026-08-21 narrated-reel
+    design §3): they change the rendered clip span, so two otherwise-identical requests
+    that differ only in fit mode must not dedupe to the same job.
+
+``ai.narrated_reel``
+    ``ai.narrated_reel:{sha256( project_id | beats | crossfade_frames |
+                                final_fade_frames | backend | voice_id | language |
+                                runtime_id | render | caption_preset )}``
+    ``timeline_id`` is DELIBERATELY EXCLUDED (not merely absent-tolerant — the branch
+    below only ever reads the named fields, so a payload that happens to carry
+    ``timeline_id`` hashes identically to one that doesn't). The endpoint
+    (api/narrated_reel.py) must look up an existing job by this key BEFORE creating a
+    timeline: since ``timeline_id`` is freshly minted per request, including it in the
+    hash would make every request's key unique and the dedup path unreachable. Once a
+    reusable job is found, the endpoint returns that job's own ``timeline_id`` (read
+    back from its stored payload) instead of creating a second one.
 
 All other kinds return ``None`` — no dedup key.
 """
@@ -91,7 +107,26 @@ def idempotency_key_for(kind: str, payload: dict[str, Any]) -> str | None:
             "voice_id": payload.get("voice_id"),
             "mix_mode": payload.get("mix_mode"),
             "ducking_percent": payload.get("ducking_percent"),
+            "fit": payload.get("fit"),
+            "pad_frames": payload.get("pad_frames"),
         }
         return f"ai.voiceover:{_sha256_of(parts)}"
+
+    if kind == "ai.narrated_reel":
+        # timeline_id is NEVER read here, even if present in payload -- see the module
+        # docstring on why this must stay reachable across the create-timeline-first flow.
+        parts = {
+            "project_id": payload.get("project_id"),
+            "beats": payload.get("beats"),
+            "crossfade_frames": payload.get("crossfade_frames"),
+            "final_fade_frames": payload.get("final_fade_frames"),
+            "backend": payload.get("backend"),
+            "voice_id": payload.get("voice_id"),
+            "language": payload.get("language"),
+            "runtime_id": payload.get("runtime_id"),
+            "render": payload.get("render"),
+            "caption_preset": payload.get("caption_preset"),
+        }
+        return f"ai.narrated_reel:{_sha256_of(parts)}"
 
     return None

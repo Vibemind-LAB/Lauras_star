@@ -156,6 +156,22 @@ def get_fetch_job(db: Database, asset_id: str) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
+def get_job_by_idempotency_key(db: Database, idempotency_key: str) -> dict[str, Any] | None:
+    """Generic lookup by a job's dedup key (any kind).
+
+    Used by endpoints whose idempotency key must be computable BEFORE any side effect
+    that would make a naive retry non-idempotent (e.g. narrated-reel: the key excludes
+    the freshly-minted ``timeline_id``, so the endpoint must check for a reusable job
+    before creating a new timeline, not rely on ``enqueue``'s own internal dedup — which
+    only fires after the timeline already exists).
+    """
+    with db.connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def set_job_progress(db: Database, job_id: str, progress_json: str) -> None:
     """Store the latest progress sample for a job (throttled by the caller)."""
     with db.connection() as conn:
@@ -190,7 +206,7 @@ def is_import_cancelled(db: Database, asset_id: str) -> bool:
 
 
 _NON_TERMINAL = ("queued", "leased", "running")
-_AI_KINDS = ("ai.voiceover", "ai.lipsync", "ai.reenact")
+_AI_KINDS = ("ai.voiceover", "ai.lipsync", "ai.reenact", "ai.narrated_reel")
 
 
 def is_job_cancel_requested(db: Database, job_id: str) -> bool:
@@ -2417,9 +2433,17 @@ def pop_top(conn: Any, timeline_id: str, stack: str) -> dict[str, Any] | None:
 
 
 def push_undo_checkpoint(db: Database, timeline_id: str, label: str) -> None:
-    """Snapshot the current editorial state onto the undo stack; clear redo; cap depth."""
+    """Snapshot the current editorial state onto the undo stack; clear redo; cap depth.
+
+    immediate=True (pattern: ae01228): push_row reads MAX(seq_no) before its INSERT. A
+    deferred BEGIN takes a read snapshot at that SELECT, and if another connection (a
+    concurrent editorial write on another timeline route) commits before the INSERT
+    upgrades to a write, SQLite fails with SQLITE_BUSY_SNAPSHOT without ever consulting
+    busy_timeout. Starting as a writer makes contention wait on busy_timeout instead of
+    throwing "database is locked" out of every timeline_checkpoint call.
+    """
     snapshot = capture_timeline_snapshot(db, timeline_id)
-    with db.transaction() as conn:
+    with db.transaction(immediate=True) as conn:
         push_row(conn, timeline_id, "undo", label, snapshot)
         conn.execute(
             "DELETE FROM timeline_history WHERE timeline_id=? AND stack='redo'",

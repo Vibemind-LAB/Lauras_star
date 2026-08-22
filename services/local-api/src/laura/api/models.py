@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    sequence_rate_num: int = Field(gt=0, description="e.g. 30000 for 29.97")
+    sequence_rate_num: int = Field(default=30, gt=0, description="e.g. 30000 for 29.97")
     sequence_rate_den: int = Field(default=1, gt=0, description="e.g. 1001 for 29.97")
     drop_frame: bool = False
 
@@ -577,6 +577,14 @@ class VoiceoverRequest(BaseModel):
     # backward-compatible (full-volume mix); the UI picks an audible default (duck the original).
     mix_mode: Literal["mix", "replace_original", "mute_original"] = "mix"
     ducking_percent: int = Field(default=100, ge=0, le=100)
+    # Clip-span strategy (narrated-reel spec §3): 'slot' (default) pads/trims the synthesized
+    # speech to exactly [seq_in_frame, seq_out_frame_exclusive) as before. 'natural' derives the
+    # span from the measured speech length instead; seq_out_frame_exclusive is then only an
+    # UPPER BOUND (the clip can end earlier, never later), so undo/idempotency stay unchanged and
+    # nothing can grow unboundedly. pad_frames is the trailing silence added after natural-length
+    # speech before the upper bound is applied; it is ignored in slot mode.
+    fit: Literal["slot", "natural"] = "slot"
+    pad_frames: int = Field(default=12, ge=0, le=120)
 
     @model_validator(mode="after")
     def _valid_voiceover_range(self) -> VoiceoverRequest:
@@ -740,6 +748,14 @@ class RenderRequest(BaseModel):
     # Only effective for format="mp4"; other formats ignore this flag.
     # Defaults to False so existing exports are byte-identical to before.
     burn_captions: bool = False
+    # Styled karaoke captions (spec §5, narrated-reel). Independent of burn_captions
+    # (the plain-SRT path); defaults to False so existing exports are unaffected.
+    captions: bool = False
+    # Word source for karaoke captions: "auto" prefers voiceover-authored words, falling
+    # back to the source-video transcript when no voiceover words exist; "voiceover" and
+    # "transcript" pin one source with no fallback.
+    caption_source: Literal["auto", "voiceover", "transcript"] = "auto"
+    caption_preset: Literal["reels", "tiktok", "shorts", "wide"] = "reels"
 
 
 class ReelRenderRequest(BaseModel):
@@ -901,6 +917,50 @@ class LipsyncRequest(BaseModel):
 
 
 class LipsyncAccepted(BaseModel):
+    job_id: str
+
+
+# --- narrated reel (collage builder, spec §6) --------------------------------
+class NarratedReelBeat(BaseModel):
+    """One beat of a narrated-reel collage: a spoken line over a slice of source video.
+
+    ``src_in_frame`` is the asset source frame the clip starts at; its length is derived
+    from the synthesized voiceover's measured speech (spec §3 natural-fit), not requested
+    here. ``pad_frames`` is trailing silence added after the measured speech before the
+    beat's clip is clamped to the asset's end.
+    """
+
+    text: str = Field(min_length=1)
+    asset_id: str
+    src_in_frame: int = Field(ge=0)
+    pad_frames: int = Field(default=12, ge=0, le=120)
+
+
+class NarratedReelRequest(BaseModel):
+    """Request body for POST /projects/{project_id}/narrated-reel (spec §6).
+
+    Builds a fresh timeline from ``beats`` sequentially: each beat synthesizes its own
+    natural-length voiceover, appends a video clip sized to the measured speech (clamped
+    to the source asset's end), and places the voice track over it. ``crossfade_frames``
+    is applied between every clip but the last; ``final_fade_frames`` fades the last clip
+    out. ``render=True`` (default) chains an ``export.render`` job with captions burned
+    from the voiceover words.
+    """
+
+    name: str | None = None
+    beats: list[NarratedReelBeat] = Field(min_length=1, max_length=64)
+    crossfade_frames: int = Field(default=8, ge=0, le=60)
+    final_fade_frames: int = Field(default=12, ge=0, le=120)
+    backend: str | None = None
+    voice_id: str | None = None
+    language: str | None = None
+    runtime_id: str | None = None
+    render: bool = True
+    caption_preset: Literal["reels", "tiktok", "shorts", "wide"] = "wide"
+
+
+class NarratedReelAccepted(BaseModel):
+    timeline_id: str
     job_id: str
 
 

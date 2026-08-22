@@ -7,12 +7,13 @@ tests/test_timeline_captions.py: SqliteDatabase + repos helpers.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from laura.db import repos
 from laura.db.database import SqliteDatabase
 from laura.render.captions import group_caption_lines
-from laura.render.captions_source import timeline_caption_words
+from laura.render.captions_source import timeline_caption_words, voiceover_caption_words
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -249,3 +250,181 @@ def test_caption_words_no_transcript_run(tmp_path: Path) -> None:
     )
     # No analysis run created → should return empty list, not raise.
     assert timeline_caption_words(db, timeline["id"]) == []
+
+
+# ---------------------------------------------------------------------------
+# voiceover_caption_words — requires DB
+# ---------------------------------------------------------------------------
+
+
+def _write_sidecar(wav_path: Path, words: list[dict[str, object]]) -> None:
+    sidecar = Path(f"{wav_path}.words.json")
+    sidecar.write_text(json.dumps({"words": words, "source": "even"}), encoding="utf-8")
+
+
+def _make_project_and_timeline(db: SqliteDatabase, name: str) -> tuple[str, str]:
+    project = repos.create_project(
+        db, name=name, rate_num=30, rate_den=1,
+        drop_frame=False, workspace_root=f"/tmp/{name}"
+    )
+    timeline = repos.create_timeline(
+        db, project_id=project["id"], name="VO", kind="rough_cut"
+    )
+    return project["id"], timeline["id"]
+
+
+def _add_vo_clip(
+    db: SqliteDatabase,
+    *,
+    project_id: str,
+    timeline_id: str,
+    wav_path: Path,
+    seq_in_frame: int,
+    seq_out_frame_exclusive: int,
+    asset_in_frame: int = 0,
+) -> str:
+    asset = repos.create_asset(
+        db, project_id=project_id, type="audio",
+        display_name="vo.wav", source_path=str(wav_path),
+    )
+    repos.add_timeline_audio_clip(
+        db,
+        timeline_id=timeline_id,
+        asset_id=asset["id"],
+        seq_in_frame=seq_in_frame,
+        seq_out_frame_exclusive=seq_out_frame_exclusive,
+        asset_in_frame=asset_in_frame,
+    )
+    return str(asset["id"])
+
+
+def test_voiceover_caption_words_mapping(tmp_path: Path) -> None:
+    """Word frames map seq_start = seq_in + (start - asset_in); exact-fit clip."""
+    db = _make_db(tmp_path)
+    project_id, timeline_id = _make_project_and_timeline(db, "vo1")
+    wav_path = tmp_path / "vo1.wav"
+    _write_sidecar(
+        wav_path,
+        [
+            {"text": "Hallo", "start_frame": 0, "end_frame_exclusive": 5},
+            {"text": "Welt", "start_frame": 5, "end_frame_exclusive": 10},
+        ],
+    )
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_path,
+        seq_in_frame=100, seq_out_frame_exclusive=110, asset_in_frame=0,
+    )
+
+    words = voiceover_caption_words(db, timeline_id)
+
+    assert words == [("Hallo", 100, 105), ("Welt", 105, 110)]
+
+
+def test_voiceover_caption_words_clips_partial_overlap(tmp_path: Path) -> None:
+    """A word straddling the clip boundary is clamped, one fully outside is dropped."""
+    db = _make_db(tmp_path)
+    project_id, timeline_id = _make_project_and_timeline(db, "vo2")
+    wav_path = tmp_path / "vo2.wav"
+    _write_sidecar(
+        wav_path,
+        [
+            {"text": "Hallo", "start_frame": 0, "end_frame_exclusive": 5},
+            {"text": "Welt", "start_frame": 5, "end_frame_exclusive": 10},
+            {"text": "Draussen", "start_frame": 10, "end_frame_exclusive": 15},
+        ],
+    )
+    # asset_in_frame=3 -> clip covers wav frames [3, 7) mapped to seq [100, 104).
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_path,
+        seq_in_frame=100, seq_out_frame_exclusive=104, asset_in_frame=3,
+    )
+
+    words = voiceover_caption_words(db, timeline_id)
+
+    # "Hallo" [0,5) straddles asset_in=3 -> seq [97,102) clamped to [100,102).
+    # "Welt" [5,10) -> seq [102,107) clamped to [102,104).
+    # "Draussen" [10,15) -> seq [107,112), fully outside [100,104) -> dropped.
+    assert words == [("Hallo", 100, 102), ("Welt", 102, 104)]
+
+
+def test_voiceover_caption_words_ordering_across_clips(tmp_path: Path) -> None:
+    """Two VO clips return words in seq order (clip order, then word order)."""
+    db = _make_db(tmp_path)
+    project_id, timeline_id = _make_project_and_timeline(db, "vo3")
+    wav_a = tmp_path / "a.wav"
+    wav_b = tmp_path / "b.wav"
+    _write_sidecar(wav_a, [{"text": "Eins", "start_frame": 0, "end_frame_exclusive": 5}])
+    _write_sidecar(wav_b, [{"text": "Zwei", "start_frame": 0, "end_frame_exclusive": 5}])
+    # Insert clip B (later seq position) before clip A to prove ordering comes from
+    # seq_in_frame, not insertion order.
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_b,
+        seq_in_frame=200, seq_out_frame_exclusive=205,
+    )
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_a,
+        seq_in_frame=100, seq_out_frame_exclusive=105,
+    )
+
+    words = voiceover_caption_words(db, timeline_id)
+
+    assert words == [("Eins", 100, 105), ("Zwei", 200, 205)]
+
+
+def test_voiceover_caption_words_clip_without_sidecar_skipped(tmp_path: Path) -> None:
+    """A VO clip whose asset has no `.words.json` sidecar is silently skipped."""
+    db = _make_db(tmp_path)
+    project_id, timeline_id = _make_project_and_timeline(db, "vo4")
+    wav_with = tmp_path / "with.wav"
+    wav_without = tmp_path / "without.wav"
+    _write_sidecar(wav_with, [{"text": "Hallo", "start_frame": 0, "end_frame_exclusive": 5}])
+    # wav_without gets NO sidecar file written.
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_without,
+        seq_in_frame=100, seq_out_frame_exclusive=105,
+    )
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_with,
+        seq_in_frame=200, seq_out_frame_exclusive=205,
+    )
+
+    words = voiceover_caption_words(db, timeline_id)
+
+    assert words == [("Hallo", 200, 205)]
+
+
+def test_voiceover_caption_words_malformed_sidecar_skipped_no_raise(tmp_path: Path) -> None:
+    """Invalid JSON / bad schema skips the clip instead of raising."""
+    db = _make_db(tmp_path)
+    project_id, timeline_id = _make_project_and_timeline(db, "vo5")
+    wav_bad_json = tmp_path / "bad_json.wav"
+    wav_bad_schema = tmp_path / "bad_schema.wav"
+    wav_good = tmp_path / "good.wav"
+    Path(f"{wav_bad_json}.words.json").write_text("{not valid json", encoding="utf-8")
+    Path(f"{wav_bad_schema}.words.json").write_text(
+        json.dumps({"words": [{"text": "oops"}]}), encoding="utf-8"
+    )
+    _write_sidecar(wav_good, [{"text": "Gut", "start_frame": 0, "end_frame_exclusive": 5}])
+
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_bad_json,
+        seq_in_frame=100, seq_out_frame_exclusive=105,
+    )
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_bad_schema,
+        seq_in_frame=200, seq_out_frame_exclusive=205,
+    )
+    _add_vo_clip(
+        db, project_id=project_id, timeline_id=timeline_id, wav_path=wav_good,
+        seq_in_frame=300, seq_out_frame_exclusive=305,
+    )
+
+    words = voiceover_caption_words(db, timeline_id)
+
+    assert words == [("Gut", 300, 305)]
+
+
+def test_voiceover_caption_words_empty_timeline(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    _project_id, timeline_id = _make_project_and_timeline(db, "vo6")
+    assert voiceover_caption_words(db, timeline_id) == []

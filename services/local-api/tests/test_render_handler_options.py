@@ -4,6 +4,7 @@ to render_clips_mp4. Uses monkeypatching — no ffmpeg required.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -401,3 +402,270 @@ def test_export_render_marks_export_failed_when_sync_guard_rejects(
     assert export is not None
     assert export["status"] == "error"
     assert "video frame drift" in export["error"]
+
+
+# ---------------------------------------------------------------------------
+# caption_source (Task 4): voiceover vs transcript word source selection
+# ---------------------------------------------------------------------------
+
+
+def _add_vo_clip_with_sidecar(
+    db: Any,
+    tl_id: str,
+    project_id: str,
+    tmp_path: Path,
+    *,
+    name: str,
+    words: list[dict[str, object]],
+    seq_in_frame: int = 0,
+    seq_out_frame_exclusive: int = 10,
+) -> None:
+    """Create a VO audio asset, place it on the timeline's audio lane, and write a REAL
+    `.words.json` sidecar next to its (stub, never-rendered) wav path — proving the full
+    voiceover_caption_words plumbing (asset lookup -> sidecar read -> frame mapping), not
+    just a monkeypatched stand-in."""
+    wav_path = tmp_path / f"{name}.wav"
+    sidecar = Path(f"{wav_path}.words.json")
+    sidecar.write_text(json.dumps({"words": words, "source": "even"}), encoding="utf-8")
+    vo_asset = repos.create_asset(
+        db, project_id=project_id, type="audio",
+        display_name=f"{name}.wav", source_path=str(wav_path),
+    )
+    repos.add_timeline_audio_clip(
+        db,
+        timeline_id=tl_id,
+        asset_id=vo_asset["id"],
+        seq_in_frame=seq_in_frame,
+        seq_out_frame_exclusive=seq_out_frame_exclusive,
+    )
+
+
+def _add_vo_clip_without_sidecar(
+    db: Any, tl_id: str, project_id: str, tmp_path: Path, *, name: str
+) -> None:
+    vo_asset = repos.create_asset(
+        db, project_id=project_id, type="audio",
+        display_name=f"{name}.wav", source_path=str(tmp_path / f"{name}.wav"),
+    )
+    repos.add_timeline_audio_clip(
+        db,
+        timeline_id=tl_id,
+        asset_id=vo_asset["id"],
+        seq_in_frame=0,
+        seq_out_frame_exclusive=10,
+    )
+
+
+def test_captions_auto_uses_real_voiceover_sidecar(monkeypatch: Any, tmp_path: Path) -> None:
+    """auto (default) mode: a real .words.json sidecar next to the VO wav produces
+    caption_ass from the AUTHORED words, and the transcript path is never consulted."""
+    captured: dict[str, Any] = {}
+    transcript_calls: list[bool] = []
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_timeline_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        transcript_calls.append(True)
+        return [("ASR-Woerter", 0, 15)]
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_timeline_caption_words)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    _add_vo_clip_with_sidecar(
+        db, tl["id"], project["id"], tmp_path,
+        name="vo",
+        words=[
+            {"text": "Servus", "start_frame": 0, "end_frame_exclusive": 5},
+            {"text": "Welt", "start_frame": 5, "end_frame_exclusive": 10},
+        ],
+    )
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
+        options={"captions": True},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    ass = captured.get("caption_ass")
+    assert isinstance(ass, str)
+    assert "Servus" in ass
+    assert "Welt" in ass
+    assert "ASR-Woerter" not in ass
+    assert transcript_calls == []  # transcript fallback must not run when VO words exist
+
+
+def test_captions_auto_falls_back_to_transcript_without_sidecar(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """auto mode: a VO clip whose asset has NO sidecar yields empty VO words, so the
+    handler falls back to the transcript word source (existing behavior)."""
+    captured: dict[str, Any] = {}
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_timeline_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        return [("Hallo", 0, 15), ("Welt", 15, 30)]
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_timeline_caption_words)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    _add_vo_clip_without_sidecar(db, tl["id"], project["id"], tmp_path, name="vo")
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
+        options={"captions": True},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    ass = captured.get("caption_ass")
+    assert isinstance(ass, str)
+    assert "Hallo" in ass
+    assert "Welt" in ass
+
+
+def test_caption_source_voiceover_never_falls_back_to_transcript(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """caption_source='voiceover': even with empty VO words, the transcript source is
+    never consulted (no silent fallback in explicit mode)."""
+    captured: dict[str, Any] = {}
+    transcript_calls: list[bool] = []
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_timeline_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        transcript_calls.append(True)
+        return [("Hallo", 0, 15)]
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_timeline_caption_words)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    _add_vo_clip_without_sidecar(db, tl["id"], project["id"], tmp_path, name="vo")
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
+        options={"captions": True, "caption_source": "voiceover"},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    assert captured.get("caption_ass") is None
+    assert transcript_calls == []
+
+
+def test_caption_source_transcript_ignores_voiceover_words(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """caption_source='transcript': voiceover_caption_words is never consulted, even
+    when a real VO sidecar with words is present."""
+    captured: dict[str, Any] = {}
+    vo_calls: list[bool] = []
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_timeline_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        return [("Hallo", 0, 15)]
+
+    def fake_voiceover_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        vo_calls.append(True)
+        return [("Servus", 0, 15)]
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_timeline_caption_words)
+    monkeypatch.setattr(render_handlers, "voiceover_caption_words", fake_voiceover_caption_words)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
+        options={"captions": True, "caption_source": "transcript"},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    ass = captured.get("caption_ass")
+    assert isinstance(ass, str)
+    assert "Hallo" in ass
+    assert "Servus" not in ass
+    assert vo_calls == []
+
+
+# ---------------------------------------------------------------------------
+# caption_preset "wide": default fontsize/margin_v, explicit overrides preserved
+# ---------------------------------------------------------------------------
+
+
+def test_caption_preset_wide_defaults_fontsize_and_margin(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+    captured_ass: dict[str, Any] = {}
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        return [("Hallo", 0, 15)]
+
+    def fake_build_ass(*args: Any, **kwargs: Any) -> str:
+        captured_ass["kwargs"] = kwargs
+        return "ASS"
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_caption_words)
+    monkeypatch.setattr(render_handlers, "build_ass", fake_build_ass)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
+        options={"captions": True, "caption_preset": "wide"},
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    assert captured_ass["kwargs"]["play_w"] == 1920
+    assert captured_ass["kwargs"]["play_h"] == 1080
+    assert captured_ass["kwargs"]["fontsize"] == 54
+    assert captured_ass["kwargs"]["margin_v"] == 48
+
+
+def test_caption_preset_wide_explicit_overrides_preserved(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+    captured_ass: dict[str, Any] = {}
+
+    def fake_render(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    def fake_caption_words(_db: Any, _timeline_id: str) -> list[tuple[str, int, int]]:
+        return [("Hallo", 0, 15)]
+
+    def fake_build_ass(*args: Any, **kwargs: Any) -> str:
+        captured_ass["kwargs"] = kwargs
+        return "ASS"
+
+    monkeypatch.setattr(render_handlers, "render_clips_mp4", fake_render)
+    monkeypatch.setattr(render_handlers, "timeline_caption_words", fake_caption_words)
+    monkeypatch.setattr(render_handlers, "build_ass", fake_build_ass)
+
+    db, project, tl, _ = _build_db(tmp_path)
+    exp = repos.create_export(
+        db, project_id=project["id"], timeline_id=tl["id"], format="mp4",
+        options={
+            "captions": True,
+            "caption_preset": "wide",
+            "caption_fontsize": 90,
+            "caption_safe_margin": 120,
+        },
+    )
+
+    _run_render_job(db, project, tl, exp)
+
+    assert captured_ass["kwargs"]["fontsize"] == 90
+    assert captured_ass["kwargs"]["margin_v"] == 120

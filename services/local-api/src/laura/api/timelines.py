@@ -1421,7 +1421,13 @@ def render_timeline(
     if tl is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "timeline not found")
     gate = evaluate_quality_gate(db, timeline_id, body.min_quality)
-    options: dict[str, object] = {**gate, "burn_captions": body.burn_captions}
+    options: dict[str, object] = {
+        **gate,
+        "burn_captions": body.burn_captions,
+        "captions": body.captions,
+        "caption_source": body.caption_source,
+        "caption_preset": body.caption_preset,
+    }
     exp = repos.create_export(
         db,
         project_id=tl["project_id"],

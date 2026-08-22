@@ -85,11 +85,13 @@ def create_voiceover(
         "voice_id": body.voice_id,
         "mix_mode": body.mix_mode,
         "ducking_percent": body.ducking_percent,
+        "fit": body.fit,
+        "pad_frames": body.pad_frames,
     }
     # Deterministic dedup key so identical re-enqueues resolve to the same job.
     # segment_id is preferred over text when present (text is the segment's content
-    # and may drift); voice_id / mix_mode / ducking_percent are part of the rendered
-    # output, so they must be included in the key.
+    # and may drift); voice_id / mix_mode / ducking_percent / fit / pad_frames are part
+    # of the rendered output, so they must be included in the key.
     idempotency_key = idempotency_key_for("ai.voiceover", payload)
     # Push a pre-VO undo checkpoint so the edit is reversible. The audio clip is
     # added asynchronously by the job; undoing restores this pre-request snapshot

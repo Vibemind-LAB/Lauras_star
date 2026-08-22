@@ -8,13 +8,18 @@ handler raises immediately and creates nothing.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 from .. import audit
 from ..db import repos
 from ..db.database import Database
+from ..editing.history import perform_undo, timeline_checkpoint
+from ..editing.operations import EditClip, append_clip, ordered
+from ..ingest.ffmpeg import probe as probe_media
 from ..jobs.keys import idempotency_key_for
 from ..jobs.queues import queue_for
 from ..jobs.runner import JobContext, JobHandler, enqueue
@@ -26,6 +31,7 @@ from .auto_pipeline import plan_lipsync_after_voiceover
 from .lipsync_backend import resolve_lipsync_backend
 from .provenance import write_ai_provenance_manifest
 from .reenact_backend import resolve_reenact_backend
+from .vo_words import write_word_sidecar
 from .voiceover_backend import DEFAULT_VOICEOVER_SAMPLE_RATE, resolve_voiceover_backend
 
 _log = logging.getLogger(__name__)
@@ -43,6 +49,15 @@ _EFFECT_BACKENDS = {
     "reenact": "liveportrait",
     "lipsync": "vibevideo",
 }
+
+# Natural-mode voiceover hint cap (Task 5 narrated-reel, I-3): `duration_frames` is a hint,
+# never a target (see `_synthesize_voiceover_asset`'s docstring), but `StubVoiceoverBackend`
+# takes it literally and writes exactly that many frames of audio regardless. Without a cap,
+# hinting with the full remaining source-asset length (often minutes) makes the stub backend
+# synthesize a multi-megabyte WAV per beat that then clips straight back down to the asset
+# end anyway. Real backends (SAPI/EL/Chatterbox) ignore the hint in natural mode, so this cap
+# only changes stub-backend behavior.
+_NATURAL_MODE_HINT_CAP_SECONDS = 90
 
 
 def _runtime_base_url(runtime: dict[str, Any]) -> str | None:
@@ -321,6 +336,7 @@ def register_ai_handlers(registry: dict[str, JobHandler]) -> None:
     registry["ai.reenact"] = handle_reenact
     registry["ai.voiceover"] = handle_voiceover
     registry["ai.lipsync"] = handle_lipsync
+    registry["ai.narrated_reel"] = handle_narrated_reel
 
 
 def _maybe_enqueue_lipsync_after_vo(
@@ -421,54 +437,82 @@ def _maybe_enqueue_lipsync_after_vo(
         return None, "probe_error"
 
 
-def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
-    """Generate a synthetic voiceover WAV and place it on the timeline's A2 lane."""
-    payload = ctx.payload
-    timeline_id = str(payload["timeline_id"])
-    timeline = repos.get_timeline(ctx.db, timeline_id)
-    if timeline is None:
-        raise ValueError(f"ai.voiceover: timeline not found: {timeline_id!r}")
+def _measure_wav_frames_ceil(path: Path, *, rate_num: int, rate_den: int) -> int:
+    """The WAV's real length in project frames per ffprobe, rounded UP.
 
-    project = repos.get_project(ctx.db, timeline["project_id"])
-    if project is None:
-        raise ValueError(f"ai.voiceover: project not found: {timeline['project_id']!r}")
+    Natural-fit clips must never be a frame short of the speech they actually contain
+    (spec §3) -- rounding up trades a few extra trailing samples for that guarantee
+    instead of risking truncation from float/duration-string rounding.
 
-    seq_in = int(payload["seq_in_frame"])
-    seq_out = int(payload["seq_out_frame_exclusive"])
-    if seq_out <= seq_in:
-        raise ValueError("ai.voiceover: seq_out_frame_exclusive must be greater than seq_in_frame")
+    A missing, zero/negative, ``"N/A"`` (ffprobe's own sentinel for "unknown"), or
+    otherwise unparseable duration means the synthesized WAV cannot be measured --
+    treated as a hard failure rather than silently producing a zero/near-zero-length
+    clip that would still report job success. Mirrors the ``"N/A"`` handling in
+    ``render.sync._duration_seconds``.
+    """
+    data = probe_media(path)
+    raw_duration = data.get("format", {}).get("duration")
+    if raw_duration is None:
+        streams = data.get("streams") or []
+        audio_stream = next(
+            (s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"),
+            None,
+        )
+        raw_duration = audio_stream.get("duration") if audio_stream else None
+    duration: Fraction | None = None
+    if isinstance(raw_duration, str) and raw_duration and raw_duration != "N/A":
+        try:
+            duration = Fraction(raw_duration)
+        except ValueError:
+            duration = None
+    elif isinstance(raw_duration, (int, float)):
+        duration = Fraction(str(raw_duration))
+    if duration is None or duration <= 0:
+        raise RuntimeError(
+            f"ai.voiceover: synthesized WAV has no measurable duration ({path})"
+        )
+    frames = duration * Fraction(rate_num, rate_den)
+    return math.ceil(frames)
 
-    text = str(payload.get("text") or "").strip()
-    segment_id = payload.get("segment_id")
-    if segment_id:
-        segment = repos.get_segment(ctx.db, str(segment_id))
-        if segment is None:
-            raise ValueError(f"ai.voiceover: segment not found: {segment_id!r}")
-        source_asset = repos.get_asset(ctx.db, segment["asset_id"])
-        if source_asset is None:
-            raise ValueError(f"ai.voiceover: segment asset not found: {segment['asset_id']!r}")
-        if source_asset["project_id"] != timeline["project_id"]:
-            raise ValueError("ai.voiceover: segment does not belong to this timeline project")
-        if not text:
-            text = str(segment["text"]).strip()
-    if not text:
-        raise ValueError("ai.voiceover: text is required")
 
-    duration_frames = seq_out - seq_in
+def _synthesize_voiceover_asset(
+    ctx: JobContext,
+    *,
+    project: dict[str, Any],
+    timeline: dict[str, Any],
+    text: str,
+    backend_config: RuntimeBackendConfig,
+    language: str | None,
+    voice_id: str | None,
+    duration_frames: int,
+    fit_to_slot: bool,
+    sample_rate: int = DEFAULT_VOICEOVER_SAMPLE_RATE,
+    provenance_source: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int, Path]:
+    """Synthesize one voiceover WAV, register it as a project asset, and probe it.
+
+    Shared building block for ``handle_voiceover`` (both fit modes) and the future
+    narrated-reel collage job (spec §6), so both paths produce an identical asset /
+    provenance / probe shape.
+
+    ``duration_frames`` is always the caller's SLOT hint (never the desired natural
+    length) -- backends that need a budget get one either way; only ``fit_to_slot``
+    changes what they do with it.
+
+    * ``fit_to_slot=True`` (slot mode): the backend pads/trims to exactly
+      ``duration_frames`` and the existing sync guard normalizes any drift, unchanged
+      from before this task. The returned ``measured_frames`` equals ``duration_frames``.
+    * ``fit_to_slot=False`` (natural mode): the backend writes the full natural-length
+      speech; the real WAV duration is then measured via ffprobe and rounded UP
+      (:func:`_measure_wav_frames_ceil`). No sync-fix runs -- the measured length IS the
+      clip's true length, there is nothing to normalize against.
+
+    Returns ``(asset_row, measured_frames, out_path)``.
+    """
     rate_num = int(project["sequence_rate_num"])
     rate_den = int(project["sequence_rate_den"])
-    sample_rate = DEFAULT_VOICEOVER_SAMPLE_RATE
 
-    backend_config = _backend_config_from_runtime(
-        ctx.db,
-        payload.get("runtime_id"),
-        payload.get("backend"),
-        "voice",
-    )
-    backend = resolve_voiceover_backend(
-        backend_config.name,
-        base_url=backend_config.base_url,
-    )
+    backend = resolve_voiceover_backend(backend_config.name, base_url=backend_config.base_url)
     if not backend.available():
         raise RuntimeError(f"ai.voiceover: voiceover backend '{backend.name}' is not installed")
 
@@ -484,17 +528,24 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
             fps_num=rate_num,
             fps_den=rate_den,
             sample_rate=sample_rate,
-            language=payload.get("language"),
-            voice_id=payload.get("voice_id"),
+            language=language,
+            voice_id=voice_id,
+            fit_to_slot=fit_to_slot,
         )
-        assert_or_fix_media_sync(
-            out_path,
-            expected_frames=duration_frames,
-            rate_num=rate_num,
-            rate_den=rate_den,
-            require_audio=True,
-            fix=True,
-        )
+        if fit_to_slot:
+            measured_frames = duration_frames
+            assert_or_fix_media_sync(
+                out_path,
+                expected_frames=duration_frames,
+                rate_num=rate_num,
+                rate_den=rate_den,
+                require_audio=True,
+                fix=True,
+            )
+        else:
+            measured_frames = _measure_wav_frames_ceil(
+                out_path, rate_num=rate_num, rate_den=rate_den
+            )
     except Exception:
         out_path.unlink(missing_ok=True)
         raise
@@ -516,26 +567,26 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         size_bytes=out_path.stat().st_size,
         is_proxy=False,
     )
+    source: dict[str, Any] = {
+        "timeline_id": timeline["id"],
+        "backend": backend.name,
+        "voice_id": voice_id,
+        "language": language,
+    }
+    if provenance_source:
+        source.update(provenance_source)
     write_ai_provenance_manifest(
         media_path=out_path,
         asset_id=asset["id"],
         project_id=timeline["project_id"],
         ai_effect="voiceover",
-        source={
-            "timeline_id": timeline["id"],
-            "segment_id": segment_id,
-            "backend": backend.name,
-            "voice_id": payload.get("voice_id"),
-            "language": payload.get("language"),
-            "seq_in_frame": seq_in,
-            "seq_out_frame_exclusive": seq_out,
-        },
+        source=source,
     )
     repos.update_asset_probe(
         ctx.db,
         asset["id"],
         type="audio",
-        duration_frames=duration_frames,
+        duration_frames=measured_frames,
         rate_num=rate_num,
         rate_den=rate_den,
         audio_sample_rate=sample_rate,
@@ -548,6 +599,94 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         sha256=None,
     )
 
+    # Word-timing sidecar for narration captions (spec §4). Applies to both fit modes
+    # (slot: measured_frames == duration_frames; natural: the real measured length) and
+    # is never fatal -- a sidecar problem must not affect this job's result.
+    write_word_sidecar(
+        out_path,
+        text=text,
+        measured_frames=measured_frames,
+        rate_num=rate_num,
+        rate_den=rate_den,
+        language=language,
+    )
+
+    return asset, measured_frames, out_path
+
+
+def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
+    """Generate a synthetic voiceover WAV and place it on the timeline's A2 lane.
+
+    ``fit="slot"`` (default): pads/trims to the requested span -- unchanged behavior.
+    ``fit="natural"``: the clip span is derived from the measured speech length instead;
+    the requested ``seq_out_frame_exclusive`` acts only as an UPPER BOUND (spec §3), so
+    the clip can end earlier than requested but never later.
+    """
+    payload = ctx.payload
+    timeline_id = str(payload["timeline_id"])
+    timeline = repos.get_timeline(ctx.db, timeline_id)
+    if timeline is None:
+        raise ValueError(f"ai.voiceover: timeline not found: {timeline_id!r}")
+
+    project = repos.get_project(ctx.db, timeline["project_id"])
+    if project is None:
+        raise ValueError(f"ai.voiceover: project not found: {timeline['project_id']!r}")
+
+    seq_in = int(payload["seq_in_frame"])
+    seq_out_requested = int(payload["seq_out_frame_exclusive"])
+    if seq_out_requested <= seq_in:
+        raise ValueError("ai.voiceover: seq_out_frame_exclusive must be greater than seq_in_frame")
+
+    text = str(payload.get("text") or "").strip()
+    segment_id = payload.get("segment_id")
+    if segment_id:
+        segment = repos.get_segment(ctx.db, str(segment_id))
+        if segment is None:
+            raise ValueError(f"ai.voiceover: segment not found: {segment_id!r}")
+        source_asset = repos.get_asset(ctx.db, segment["asset_id"])
+        if source_asset is None:
+            raise ValueError(f"ai.voiceover: segment asset not found: {segment['asset_id']!r}")
+        if source_asset["project_id"] != timeline["project_id"]:
+            raise ValueError("ai.voiceover: segment does not belong to this timeline project")
+        if not text:
+            text = str(segment["text"]).strip()
+    if not text:
+        raise ValueError("ai.voiceover: text is required")
+
+    slot_frames = seq_out_requested - seq_in
+    fit = str(payload.get("fit") or "slot")
+    fit_to_slot = fit != "natural"
+    pad_frames = int(payload["pad_frames"]) if payload.get("pad_frames") is not None else 12
+
+    backend_config = _backend_config_from_runtime(
+        ctx.db,
+        payload.get("runtime_id"),
+        payload.get("backend"),
+        "voice",
+    )
+
+    asset, measured_frames, out_path = _synthesize_voiceover_asset(
+        ctx,
+        project=project,
+        timeline=timeline,
+        text=text,
+        backend_config=backend_config,
+        language=payload.get("language"),
+        voice_id=payload.get("voice_id"),
+        duration_frames=slot_frames,
+        fit_to_slot=fit_to_slot,
+        provenance_source={
+            "segment_id": segment_id,
+            "seq_in_frame": seq_in,
+            "seq_out_frame_exclusive": seq_out_requested,
+        },
+    )
+
+    if fit_to_slot:
+        seq_out_eff = seq_out_requested
+    else:
+        seq_out_eff = min(seq_in + measured_frames + pad_frames, seq_out_requested)
+
     # Remove any prior synthetic VO clips overlapping this span so editing the same span
     # twice (different text or voice) never stacks two replace_original clips.
     if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
@@ -558,7 +697,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
             ctx.db,
             timeline_id=timeline["id"],
             seq_in=seq_in,
-            seq_out_excl=seq_out,
+            seq_out_excl=seq_out_eff,
             mix_mode=effective_mix_mode,
         )
 
@@ -567,7 +706,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         timeline_id=timeline["id"],
         asset_id=asset["id"],
         seq_in_frame=seq_in,
-        seq_out_frame_exclusive=seq_out,
+        seq_out_frame_exclusive=seq_out_eff,
         asset_in_frame=0,
         gain_percent=int(payload.get("gain_percent") or 100),
         fade_in_frames=int(payload.get("fade_in_frames") or 0),
@@ -585,7 +724,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         project=project,
         vo_asset_id=asset["id"],
         seq_in=seq_in,
-        seq_out=seq_out,
+        seq_out=seq_out_eff,
     )
 
     try:
@@ -599,7 +738,7 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
                 "timeline_id": timeline["id"],
                 "audio_clip_id": clip["id"],
                 "seq_in_frame": seq_in,
-                "seq_out_frame_exclusive": seq_out,
+                "seq_out_frame_exclusive": seq_out_eff,
             },
         )
     except Exception:
@@ -610,9 +749,243 @@ def handle_voiceover(ctx: JobContext) -> dict[str, Any]:
         "audio_clip_id": clip["id"],
         "out_path": str(out_path),
         "seq_in_frame": seq_in,
-        "seq_out_frame_exclusive": seq_out,
+        "seq_out_frame_exclusive": seq_out_eff,
+        "measured_frames": measured_frames,
         "lipsync_job_id": lipsync_job_id,
         "lipsync_skip_reason": lipsync_skip_reason,
+    }
+
+
+def handle_narrated_reel(ctx: JobContext) -> dict[str, Any]:
+    """Collage-builder job (spec §6): a beat list -> a finished narrated-reel timeline.
+
+    Runs the whole build inside ONE undo checkpoint (``timeline_checkpoint``): pushing it
+    before the loop captures the empty pre-job timeline, so a single undo reverts the
+    entire collage rather than one beat at a time.
+
+    Per beat, sequentially:
+      1. cancel-check FIRST (before any mutation for this beat) — cooperative cancellation
+         must never leave a half-synthesized beat behind.
+      2. synthesize a natural-length voiceover (:func:`_synthesize_voiceover_asset`,
+         ``fit_to_slot=False``), hinted with the asset's remaining frames from ``src_in``,
+         capped at ``_NATURAL_MODE_HINT_CAP_SECONDS`` (the hint is only a budget for backends
+         that need one; a stub/placeholder backend takes it literally, so an uncapped hint on
+         a long source asset would make it synthesize minutes of audio for nothing).
+      3. the beat's clip length is the measured speech + ``pad_frames``, clamped so the
+         clip never runs past the source asset's end (a clamp appends a warning).
+      4. the video clip is appended (repos-level, same primitive as the operations
+         endpoint's ``append_clip``) and the voice clip is placed ``replace_original``
+         over the beat's span.
+
+    Transitions (crossfade between every clip but the last, fade on the last) and the
+    optional chained render are applied once, after all beats, against the FINAL stable
+    clip ids — ``replace_timeline_clips`` reassigns every clip a fresh id on every call,
+    so setting transitions mid-loop would silently be wiped out by the next beat's append.
+
+    A mid-build exception (a beat's synthesis/backend failing, a DB error, ...) rolls the
+    ENTIRE timeline back to its pre-job state via :func:`laura.editing.history.perform_undo`
+    — the same machinery the ``/undo`` endpoint uses — before re-raising, so the job still
+    fails with a clear error but never leaves a half-built collage (a partial run of clips
+    with no matching voice track, or vice versa) sitting on the timeline (spec's
+    Fehlerfälle: "Timeline bleibt im letzten konsistenten Zustand"). Cooperative
+    cancellation is NOT an error path — it returns normally (see below), so already
+    -completed beats stay committed on cancel, unlike on a genuine failure.
+    """
+    payload = ctx.payload
+    timeline_id = str(payload["timeline_id"])
+    timeline = repos.get_timeline(ctx.db, timeline_id)
+    if timeline is None:
+        raise ValueError(f"ai.narrated_reel: timeline not found: {timeline_id!r}")
+
+    project = repos.get_project(ctx.db, timeline["project_id"])
+    if project is None:
+        raise ValueError(f"ai.narrated_reel: project not found: {timeline['project_id']!r}")
+
+    beats_in = list(payload.get("beats") or [])
+    crossfade_frames = int(payload.get("crossfade_frames") or 0)
+    final_fade_frames = int(payload.get("final_fade_frames") or 0)
+    language = payload.get("language")
+    voice_id = payload.get("voice_id")
+    backend_config = _backend_config_from_runtime(
+        ctx.db, payload.get("runtime_id"), payload.get("backend"), "voice",
+    )
+    natural_hint_cap_frames = (
+        _NATURAL_MODE_HINT_CAP_SECONDS
+        * int(project["sequence_rate_num"])
+        // int(project["sequence_rate_den"])
+    )
+
+    beats_result: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    cancelled = False
+
+    with timeline_checkpoint(ctx.db, timeline_id, "Narrated Reel erstellt"):
+        try:
+            edit_clips: list[EditClip] = [
+                EditClip.from_row(c) for c in repos.list_timeline_clips(ctx.db, timeline_id)
+            ]
+            for i, beat in enumerate(beats_in):
+                if repos.is_job_cancel_requested(ctx.db, ctx.job_id):
+                    cancelled = True
+                    break
+
+                text = str(beat["text"])
+                asset_id = str(beat["asset_id"])
+                src_in = int(beat["src_in_frame"])
+                pad_frames = (
+                    int(beat["pad_frames"]) if beat.get("pad_frames") is not None else 12
+                )
+
+                asset = repos.get_asset(ctx.db, asset_id)
+                if asset is None:
+                    raise ValueError(
+                        f"ai.narrated_reel: beat {i}: asset not found: {asset_id!r}"
+                    )
+                asset_duration = asset.get("duration_frames")
+                if asset_duration is None:
+                    raise ValueError(f"ai.narrated_reel: beat {i}: asset has no known duration")
+                remaining = int(asset_duration) - src_in
+                if remaining <= 0:
+                    raise ValueError(
+                        f"ai.narrated_reel: beat {i}: src_in_frame is at/after the asset end"
+                    )
+
+                # Natural-mode hint only -- never the desired length (see
+                # `_synthesize_voiceover_asset`'s docstring). `remaining` (uncapped) still
+                # governs the actual clip/clamp math below; only the SLOT HINT handed to the
+                # backend is capped (I-3).
+                hint_frames = min(remaining, natural_hint_cap_frames)
+                voice_asset, measured_frames, _out_path = _synthesize_voiceover_asset(
+                    ctx,
+                    project=project,
+                    timeline=timeline,
+                    text=text,
+                    backend_config=backend_config,
+                    language=language,
+                    voice_id=voice_id,
+                    duration_frames=hint_frames,
+                    fit_to_slot=False,
+                    provenance_source={
+                        "narrated_reel_timeline_id": timeline_id,
+                        "narrated_reel_beat_index": i,
+                        "asset_id": asset_id,
+                    },
+                )
+
+                wanted_len = measured_frames + pad_frames
+                beat_len = min(wanted_len, remaining)
+                if wanted_len > remaining:
+                    warnings.append(f"beat {i}: clipped to asset end")
+
+                clip = EditClip(
+                    asset_id=asset_id,
+                    src_in_frame=src_in,
+                    src_out_frame_exclusive=src_in + beat_len,
+                    seq_in_frame=0,
+                    seq_out_frame_exclusive=0,
+                    lane=0,
+                )
+                edit_clips = ordered(append_clip(edit_clips, clip))
+                repos.replace_timeline_clips(
+                    ctx.db, timeline_id, [c.to_row() for c in edit_clips]
+                )
+                placed = edit_clips[-1]
+                seq_in = placed.seq_in_frame
+                seq_out = placed.seq_out_frame_exclusive
+
+                repos.add_timeline_audio_clip(
+                    ctx.db,
+                    timeline_id=timeline_id,
+                    asset_id=voice_asset["id"],
+                    seq_in_frame=seq_in,
+                    seq_out_frame_exclusive=seq_out,
+                    asset_in_frame=0,
+                    gain_percent=100,
+                    fade_in_frames=3,
+                    fade_out_frames=4,
+                    mix_mode="replace_original",
+                    ducking_percent=100,
+                    label=f"reel-beat-{i}",
+                )
+
+                beats_result.append({
+                    "voice_asset_id": voice_asset["id"],
+                    "measured_frames": measured_frames,
+                    "seq_in": seq_in,
+                    "seq_out": seq_out,
+                })
+
+            # Resolve stable clip ids for whichever video clips exist now (whether every
+            # beat ran, or the loop stopped early on cancellation) and fold them into the
+            # per-beat results in the same append order (one video clip per completed
+            # beat, on a timeline this job alone builds -- order-by-seq_in is beat order).
+            # strict=True: a length mismatch here is an invariant break (one video clip
+            # per completed beat, always), not a recoverable condition -- fail loudly.
+            video_clips = [
+                c for c in repos.list_timeline_clips(ctx.db, timeline_id)
+                if c.get("role", "base") != "replace"
+            ]
+            for entry, row in zip(beats_result, video_clips, strict=True):
+                entry["clip_id"] = row["id"]
+
+            if cancelled:
+                return {
+                    "status": "cancelled",
+                    "beats": beats_result,
+                    "export_id": None,
+                    "warnings": warnings,
+                }
+
+            n = len(video_clips)
+            for idx, row in enumerate(video_clips):
+                if idx == n - 1:
+                    if final_fade_frames > 0:
+                        repos.set_clip_transition(
+                            ctx.db, clip_id=row["id"], kind="fade", frames=final_fade_frames
+                        )
+                elif crossfade_frames > 0:
+                    repos.set_clip_transition(
+                        ctx.db, clip_id=row["id"], kind="crossfade", frames=crossfade_frames
+                    )
+
+            export_id: str | None = None
+            if bool(payload.get("render", True)):
+                options: dict[str, Any] = {
+                    "captions": True,
+                    "caption_source": "voiceover",
+                    "caption_preset": payload.get("caption_preset") or "wide",
+                }
+                exp = repos.create_export(
+                    ctx.db,
+                    project_id=timeline["project_id"],
+                    timeline_id=timeline_id,
+                    format="mp4",
+                    options=options,
+                )
+                export_id = exp["id"]
+                enqueue(
+                    ctx.db,
+                    queue=queue_for("export.render"),
+                    kind="export.render",
+                    payload={"export_id": export_id},
+                    idempotency_key=f"render:{export_id}",
+                )
+        except Exception:
+            # A mid-build failure must never leave a half-built collage on the timeline
+            # (spec's Fehlerfälle: "Timeline bleibt im letzten konsistenten Zustand").
+            # perform_undo pops exactly the checkpoint pushed above (nothing else pushes
+            # one during this job) and restores clips/audio clips/transitions/scenes to
+            # the empty pre-job snapshot -- the SAME machinery the /undo endpoint uses.
+            # Synthetic voice assets already created stay (project-level, harmless), but
+            # every timeline clip and VO clip from this run is gone. Re-raise so the job
+            # still fails with the original, clear error.
+            perform_undo(ctx.db, timeline_id)
+            raise
+
+    return {
+        "beats": beats_result,
+        "export_id": export_id,
+        "warnings": warnings,
     }
 
 
