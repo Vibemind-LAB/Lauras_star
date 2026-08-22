@@ -46,4 +46,11 @@ Thumbs.db
 
 # --- Test/fixtures: keep small golden fixtures, ignore large generated media ---
 fixtures/_generated/
-*.mp4 filter=lfs
+# Rendered/generated media anywhere in the tree. workspace*/ already covers the
+# runtime dirs; this catches strays (a demo render dropped next to the code).
+# Golden fixtures stay tracked.
+*.mp4
+*.mov
+*.wav
+!fixtures/**
+
