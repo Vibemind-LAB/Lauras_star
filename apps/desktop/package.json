@@ -11,6 +11,7 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "typecheck": "tsc --noEmit",
+    "build:embed": "vite build -c vite.renderer.config.ts --outDir dist",
     "build:renderer": "vite build -c vite.renderer.config.ts",
     "lint": "eslint .",
     "lint:tokens": "node scripts/lint-tokens.mjs",
