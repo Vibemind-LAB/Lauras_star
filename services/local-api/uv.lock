@@ -1701,6 +1701,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "numpy" },
     { name = "opentimelineio" },
     { name = "prometheus-client" },
     { name = "pydantic" },
@@ -1770,6 +1771,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.8.0" },
     { name = "faster-whisper", marker = "extra == 'asr'", specifier = ">=1.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", marker = "extra == 'scene'", specifier = ">=4.9" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.42.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.42.1" },

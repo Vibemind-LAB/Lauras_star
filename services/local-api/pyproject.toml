@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
     "pydantic>=2.9",
+    "numpy>=1.26",                  # core analysis and startup registration import numpy
     "opentimelineio>=0.17",      # canonical editorial interchange model (ADR-0001)
     "prometheus-client>=0.20",   # observability metrics (docs/10, docs/14)
 ]
