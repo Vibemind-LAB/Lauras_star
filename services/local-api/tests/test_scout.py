@@ -386,3 +386,41 @@ def test_empty_ranking_raises_value_error(tmp_path: Path, monkeypatch: Any) -> N
         scout.run_scout(
             db, _config(), project_id=project["id"], topic="mission", material=material, runner=run
         )
+
+
+def test_scene_context_readonly_rejects_an_asset_from_another_project(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The scout's get_scene_context tool must not read across project boundaries: asked for an
+    asset that belongs to a DIFFERENT project, it reports "no rough cut" and leaks no transcript
+    text. The scoping lives in ``discovery._scene_ranges`` -> ``repos.get_asset_rough_cut``,
+    whose SQL filters on project_id; the transcript reads after it take the asset id alone, so
+    the guarantee rests entirely on that first lookup failing. This test pins it.
+
+    Salvaged from the superseded ``codex/auto-short`` branch, where it covered the older
+    ``_run_agent``-era tool; the invariant holds on the current code but was untested here.
+    """
+    monkeypatch.setattr(discovery, "get_index", lambda: None)
+    db = _db(tmp_path)
+    owner = repos.create_project(
+        db, name="owner", rate_num=FPS, rate_den=1, drop_frame=False, workspace_root="/tmp/own"
+    )
+    stranger = repos.create_project(
+        db, name="stranger", rate_num=FPS, rate_den=1, drop_frame=False,
+        workspace_root="/tmp/strange",
+    )
+    asset_id = _seed_asset_with_scenes(
+        db, owner["id"], "confidential.mp4",
+        segments=[(10, 60, "the acquisition closes on friday")],
+    )
+
+    leaked = scout._scene_context_readonly(db, stranger["id"], asset_id, 1)
+
+    assert leaked == {"ok": False, "reason": "no rough cut"}
+
+    # Positive control: the very same asset, asked for by its OWN project, does return the
+    # text. Without this, a broken seed would make the assertion above pass for the wrong
+    # reason and the test would guard nothing.
+    own = scout._scene_context_readonly(db, owner["id"], asset_id, 1)
+    assert own["ok"] is True
+    assert "acquisition closes on friday" in own["text"]
