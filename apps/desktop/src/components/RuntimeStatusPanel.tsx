@@ -21,7 +21,7 @@ function runtimeTone(runtime: AiRuntime): string {
   const ready = readStatusReady(runtime);
   const state = readStatusState(runtime);
   if (ready === true || state === "ready" || state === "running") {
-    return "border-emerald-800/80 bg-emerald-950/30 text-emerald-200";
+    return "border-accent/80 bg-accent/30 text-status-ok";
   }
   if (state === "stopped" || state === "disabled") {
     return "border-amber-800/80 bg-amber-950/30 text-amber-200";
@@ -29,7 +29,7 @@ function runtimeTone(runtime: AiRuntime): string {
   if (state === "error" || state === "failed" || runtime.enabled === false) {
     return "border-red-800/80 bg-red-950/30 text-red-200";
   }
-  return "border-edge bg-panel text-slate-300";
+  return "border-bezel bg-surface-1 text-content-muted";
 }
 
 function runtimeMeta(runtime: AiRuntime): string {
@@ -158,17 +158,17 @@ export function RuntimeStatusPanel({
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded border border-edge bg-panel/50 p-3">
+    <section className="flex flex-col gap-3 rounded border border-bezel bg-surface-1/50 p-3">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <div className="text-xs font-semibold text-slate-200">AI Runtimes</div>
-          <div className="text-[11px] text-slate-600">Status, Refresh, Start/Stop und letzte Events</div>
+          <div className="text-xs font-semibold text-content-strong">AI Runtimes</div>
+          <div className="text-[11px] text-content-faint">Status, Refresh, Start/Stop und letzte Events</div>
         </div>
         <button
           type="button"
           onClick={() => void load({ invalidateEvents: true, refreshExpandedEvents: true })}
           disabled={loading}
-          className="rounded border border-edge bg-ink px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+          className="rounded border border-bezel bg-surface-0 px-2 py-1 text-[11px] text-content-muted hover:bg-surface-2 disabled:opacity-40"
         >
           {loading ? "Lädt..." : "Neu laden"}
         </button>
@@ -181,7 +181,7 @@ export function RuntimeStatusPanel({
       )}
 
       {sortedRuntimes.length === 0 ? (
-        <div className="text-xs text-slate-500">Noch keine Runtime registriert.</div>
+        <div className="text-xs text-content-faint">Noch keine Runtime registriert.</div>
       ) : (
         <div className="flex flex-col gap-2">
           {sortedRuntimes.map((runtime) => {
@@ -189,13 +189,13 @@ export function RuntimeStatusPanel({
             const busy = busyActionId === runtime.id;
 
             return (
-              <article key={runtime.id} className="rounded border border-edge bg-ink/60 p-2">
+              <article key={runtime.id} className="rounded border border-bezel bg-surface-0/60 p-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="truncate text-xs font-medium text-slate-100">
+                    <div className="truncate text-xs font-medium text-content-strong">
                       {runtime.display_name}
                     </div>
-                    <div className="text-[11px] text-slate-500">{runtimeMeta(runtime)}</div>
+                    <div className="text-[11px] text-content-faint">{runtimeMeta(runtime)}</div>
                   </div>
                   <span
                     className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-medium ${runtimeTone(runtime)}`}
@@ -210,7 +210,7 @@ export function RuntimeStatusPanel({
                     aria-label={`Refresh ${runtime.display_name}`}
                     onClick={() => void runAction(runtime.id, client.refreshAiRuntime.bind(client))}
                     disabled={busy}
-                    className="rounded bg-slate-700 px-2 py-1 text-[11px] text-slate-100 hover:bg-slate-600 disabled:opacity-40"
+                    className="rounded bg-surface-2 px-2 py-1 text-[11px] text-content-strong hover:bg-surface-2 disabled:opacity-40"
                   >
                     Refresh
                   </button>
@@ -220,7 +220,7 @@ export function RuntimeStatusPanel({
                         type="button"
                         onClick={() => void runAction(runtime.id, client.startAiRuntime.bind(client))}
                         disabled={busy}
-                        className="rounded bg-emerald-700 px-2 py-1 text-[11px] text-white hover:bg-emerald-600 disabled:opacity-40"
+                        className="rounded bg-accent px-2 py-1 text-[11px] text-white hover:bg-accent disabled:opacity-40"
                       >
                         Start
                       </button>
@@ -239,39 +239,39 @@ export function RuntimeStatusPanel({
                     onClick={() =>
                       setExpandedStatusId((current) => (current === runtime.id ? null : runtime.id))
                     }
-                    className="rounded border border-edge bg-panel px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+                    className="rounded border border-bezel bg-surface-1 px-2 py-1 text-[11px] text-content-muted hover:bg-surface-2"
                   >
                     Status
                   </button>
                   <button
                     type="button"
                     onClick={() => void toggleEvents(runtime.id)}
-                    className="rounded border border-edge bg-panel px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+                    className="rounded border border-bezel bg-surface-1 px-2 py-1 text-[11px] text-content-muted hover:bg-surface-2"
                   >
                     Events
                   </button>
                 </div>
 
                 {expandedStatusId === runtime.id && (
-                  <pre className="mt-2 overflow-x-auto rounded border border-edge bg-panel p-2 text-[10px] leading-relaxed text-slate-300">
+                  <pre className="mt-2 overflow-x-auto rounded border border-bezel bg-surface-1 p-2 text-[10px] leading-relaxed text-content-muted">
                     {formatStatusPayload(runtime.status)}
                   </pre>
                 )}
 
                 {expandedEventsId === runtime.id && (
-                  <div className="mt-2 flex flex-col gap-1 rounded border border-edge bg-panel p-2">
+                  <div className="mt-2 flex flex-col gap-1 rounded border border-bezel bg-surface-1 p-2">
                     {runtimeEvents.length === 0 ? (
-                      <div className="text-[11px] text-slate-500">Keine Events.</div>
+                      <div className="text-[11px] text-content-faint">Keine Events.</div>
                     ) : (
                       runtimeEvents.map((event) => (
-                        <div key={event.id} className="rounded bg-ink/70 px-2 py-1 text-[11px]">
+                        <div key={event.id} className="rounded bg-surface-0/70 px-2 py-1 text-[11px]">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-slate-200">{event.message}</span>
-                            <span className="shrink-0 uppercase text-slate-500">
+                            <span className="font-medium text-content-strong">{event.message}</span>
+                            <span className="shrink-0 uppercase text-content-faint">
                               {event.level}
                             </span>
                           </div>
-                          <div className="text-slate-500">
+                          <div className="text-content-faint">
                             {event.event_type} · {event.created_at}
                           </div>
                         </div>

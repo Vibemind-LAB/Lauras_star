@@ -16,8 +16,8 @@ export function RuntimeSelect({
   onChange,
   disabled = false,
   reloadKey = 0,
-  labelClassName = "flex flex-col gap-1 text-xs text-slate-400",
-  selectClassName = "rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-200 disabled:opacity-50",
+  labelClassName = "flex flex-col gap-1 text-xs text-content-muted",
+  selectClassName = "rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50",
 }: {
   client: LauraClient;
   effect: RuntimeEffect;

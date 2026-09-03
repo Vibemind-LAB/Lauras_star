@@ -139,13 +139,13 @@ export function PersonaKitPanel({
   );
 
   return (
-    <section className="rounded border border-edge bg-panel/50 p-3">
+    <section className="rounded border border-bezel bg-surface-1/50 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div>
-          <div className="text-xs font-semibold text-slate-200">AI Persona Kit</div>
-          <div className="text-[11px] text-slate-600">Consent, Referenzen und Runtime-Präferenzen</div>
+          <div className="text-xs font-semibold text-content-strong">AI Persona Kit</div>
+          <div className="text-[11px] text-content-faint">Consent, Referenzen und Runtime-Präferenzen</div>
         </div>
-        <span className="text-[11px] text-slate-500">{sortedPersonas.length} Personas</span>
+        <span className="text-[11px] text-content-faint">{sortedPersonas.length} Personas</span>
       </div>
 
       {error !== null && (
@@ -155,7 +155,7 @@ export function PersonaKitPanel({
       )}
 
       <div className="grid grid-cols-1 gap-2">
-        <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+        <label className="flex flex-col gap-1 text-[11px] text-content-muted">
           Persona-Name
           <input
             aria-label="Persona-Name"
@@ -163,11 +163,11 @@ export function PersonaKitPanel({
             onChange={(event) => setName(event.target.value)}
             disabled={busy || projectId === null}
             placeholder="Persona-Name"
-            className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100 disabled:opacity-50"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
           />
         </label>
         <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+          <label className="flex flex-col gap-1 text-[11px] text-content-muted">
             Face-Reference-Asset
             <input
               aria-label="Face-Reference-Asset"
@@ -175,10 +175,10 @@ export function PersonaKitPanel({
               onChange={(event) => setFaceReferenceAssetId(event.target.value)}
               disabled={busy || projectId === null}
               placeholder="asset-face-123"
-              className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100 disabled:opacity-50"
+              className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
             />
           </label>
-          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+          <label className="flex flex-col gap-1 text-[11px] text-content-muted">
             Voice-Reference-Asset
             <input
               aria-label="Voice-Reference-Asset"
@@ -186,7 +186,7 @@ export function PersonaKitPanel({
               onChange={(event) => setVoiceReferenceAssetId(event.target.value)}
               disabled={busy || projectId === null}
               placeholder="asset-voice-456"
-              className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100 disabled:opacity-50"
+              className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
             />
           </label>
         </div>
@@ -196,8 +196,8 @@ export function PersonaKitPanel({
             const enabled = effects.includes(effect);
 
             return (
-              <div key={effect} className="flex flex-col gap-1 rounded border border-edge/70 bg-ink/50 p-2">
-                <label className="flex items-center gap-2 text-xs text-slate-300">
+              <div key={effect} className="flex flex-col gap-1 rounded border border-bezel/70 bg-surface-0/50 p-2">
+                <label className="flex items-center gap-2 text-xs text-content-muted">
                   <input
                     type="checkbox"
                     checked={enabled}
@@ -206,7 +206,7 @@ export function PersonaKitPanel({
                   />
                   {effect}
                 </label>
-                <label className="flex flex-col gap-1 text-[11px] text-slate-500">
+                <label className="flex flex-col gap-1 text-[11px] text-content-faint">
                   Runtime
                   <select
                     aria-label={`Bevorzugte Runtime für ${effect}`}
@@ -218,7 +218,7 @@ export function PersonaKitPanel({
                       }))
                     }
                     disabled={!enabled || busy || projectId === null}
-                    className="rounded border border-edge bg-panel px-2 py-1 text-xs text-slate-100 disabled:opacity-50"
+                    className="rounded border border-bezel bg-surface-1 px-2 py-1 text-xs text-content-strong disabled:opacity-50"
                   >
                     <option value="">automatisch</option>
                     {effectRuntimes.map((runtime) => (
@@ -242,27 +242,27 @@ export function PersonaKitPanel({
         </button>
       </div>
 
-      <div className="mt-3 border-t border-edge/80 pt-2">
+      <div className="mt-3 border-t border-bezel/80 pt-2">
         {sortedPersonas.length === 0 ? (
-          <div className="text-xs text-slate-500">Noch keine Persona.</div>
+          <div className="text-xs text-content-faint">Noch keine Persona.</div>
         ) : (
           <div className="flex flex-col divide-y divide-edge/70">
             {sortedPersonas.map((persona) => (
               <div key={persona.id} className="py-2 text-xs">
-                <div className="font-medium text-slate-100">{persona.name}</div>
-                <div className="mt-1 text-[11px] text-slate-500">{persona.consent_id}</div>
-                <div className="text-[11px] text-slate-500">
+                <div className="font-medium text-content-strong">{persona.name}</div>
+                <div className="mt-1 text-[11px] text-content-faint">{persona.consent_id}</div>
+                <div className="text-[11px] text-content-faint">
                   Face: <span>{persona.face_reference_asset_id ?? "keine"}</span>
                 </div>
-                <div className="text-[11px] text-slate-500">
+                <div className="text-[11px] text-content-faint">
                   Voice: <span>{persona.voice_reference_asset_id ?? "keine"}</span>
                 </div>
-                <div className="text-[11px] text-slate-500">
+                <div className="text-[11px] text-content-faint">
                   {persona.allowed_effects.length > 0
                     ? persona.allowed_effects.join(", ")
                     : "keine Effekte"}
                 </div>
-                <div className="text-[11px] text-slate-500">
+                <div className="text-[11px] text-content-faint">
                   {preferredRuntimeSummary(persona.preferred_runtimes)}
                 </div>
               </div>

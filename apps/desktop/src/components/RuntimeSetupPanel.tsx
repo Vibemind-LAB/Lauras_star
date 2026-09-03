@@ -82,27 +82,27 @@ export function RuntimeSetupPanel({
   }
 
   return (
-    <section className="rounded border border-edge bg-panel/50 p-3">
-      <div className="mb-2 text-xs font-semibold text-slate-200">Runtime Setup</div>
+    <section className="rounded border border-bezel bg-surface-1/50 p-3">
+      <div className="mb-2 text-xs font-semibold text-content-strong">Runtime Setup</div>
       {error !== null && <div className="mb-2 text-xs text-red-400">{error}</div>}
       <div className="flex flex-col gap-2">
-        <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+        <label className="flex flex-col gap-1 text-[11px] text-content-muted">
           Runtime-Name
           <input
             aria-label="Runtime-Name"
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
-            className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+            className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
           />
         </label>
         <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+          <label className="flex flex-col gap-1 text-[11px] text-content-muted">
             Runtime-Art
             <select
               aria-label="Runtime-Art"
               value={kind}
               onChange={(event) => setKind(event.target.value as RuntimeKind)}
-              className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+              className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
             >
               {KINDS.map((value) => (
                 <option key={value} value={value}>
@@ -111,13 +111,13 @@ export function RuntimeSetupPanel({
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+          <label className="flex flex-col gap-1 text-[11px] text-content-muted">
             Effekt
             <select
               aria-label="Effekt"
               value={effect}
               onChange={(event) => setEffect(event.target.value as RuntimeEffect)}
-              className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+              className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
             >
               {EFFECTS.map((value) => (
                 <option key={value} value={value}>
@@ -128,49 +128,49 @@ export function RuntimeSetupPanel({
           </label>
         </div>
         {kind === "external_http" && (
-          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+          <label className="flex flex-col gap-1 text-[11px] text-content-muted">
             Base-URL
             <input
               aria-label="Base-URL"
               value={baseUrl}
               onChange={(event) => setBaseUrl(event.target.value)}
-              className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+              className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
             />
           </label>
         )}
         {kind === "container" && (
           <>
-            <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+            <label className="flex flex-col gap-1 text-[11px] text-content-muted">
               Container-Image
               <input
                 aria-label="Container-Image"
                 value={containerImage}
                 onChange={(event) => setContainerImage(event.target.value)}
-                className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+                className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
               />
             </label>
             <div className="grid grid-cols-2 gap-2">
-              <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+              <label className="flex flex-col gap-1 text-[11px] text-content-muted">
                 Port
                 <input
                   aria-label="Port"
                   value={port}
                   onChange={(event) => setPort(event.target.value)}
                   inputMode="numeric"
-                  className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+                  className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+              <label className="flex flex-col gap-1 text-[11px] text-content-muted">
                 Modellpfad
                 <input
                   aria-label="Modellpfad"
                   value={modelMount}
                   onChange={(event) => setModelMount(event.target.value)}
-                  className="rounded border border-edge bg-ink px-2 py-1 text-xs text-slate-100"
+                  className="rounded border border-bezel bg-surface-0 px-2 py-1 text-xs text-content-strong"
                 />
               </label>
             </div>
-            <label className="flex items-center gap-2 text-xs text-slate-300">
+            <label className="flex items-center gap-2 text-xs text-content-muted">
               <input
                 aria-label="GPU verwenden"
                 type="checkbox"
@@ -181,7 +181,7 @@ export function RuntimeSetupPanel({
             </label>
           </>
         )}
-        <label className="flex items-center gap-2 text-xs text-slate-300">
+        <label className="flex items-center gap-2 text-xs text-content-muted">
           <input
             aria-label="Lizenz akzeptiert"
             type="checkbox"
