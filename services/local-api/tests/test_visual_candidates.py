@@ -716,3 +716,60 @@ def test_insufficient_candidates_name_the_uncovered_beat() -> None:
             scenes=[too_short],
             fps=_FPS,
         )
+
+
+def _short_window_scenes(count: int, *, frames_per_scene: int) -> list[SceneMaterial]:
+    """Scenes whose source windows are shorter than one second at 29.97 fps."""
+    return [
+        SceneMaterial(
+            scene_number=index + 1,
+            src_start_frame=index * frames_per_scene,
+            src_end_frame_exclusive=(index + 1) * frames_per_scene,
+            description=f"rough-cut scene {index + 1}",
+            transcript=f"workflow step {index + 1}",
+            transcript_spans=(),
+            review=None,
+        )
+        for index in range(count)
+    ]
+
+
+def test_sub_second_windows_at_ntsc_fps_raise_insufficient_not_stopiteration() -> None:
+    """A window of 29 frames at 29.97 fps carries 0 s, but the recommendation is
+    always built with recommended_duration_s=1.
+
+    `max_duration_s` is floor(frames / fps) while the frame demand is
+    round(duration_s * fps): at 29.97 fps a 29-frame window yields capacity 0
+    while one second needs 30 frames. The existing guard only checks *whether*
+    candidates exist -- its own message already promises "no one-second source
+    window" -- so a zero-capacity candidate slips through and the recommendation
+    lookup finds nothing. Every test in this file used fps=30.0, where the gap
+    cannot open, which is why this survived.
+    """
+    with pytest.raises(InsufficientVisualCandidates):
+        build_rough_cut_visual_plan(
+            request=request(),
+            scenes=_short_window_scenes(4, frames_per_scene=29),
+            narration_text="organize files and draft mail",
+            voice_total_frames=120,
+            fps=29.97,
+        )
+
+
+def test_exactly_one_second_window_at_ntsc_fps_still_works() -> None:
+    """The fix must not reject windows that genuinely carry one second."""
+    plan = build_rough_cut_visual_plan(
+        request=request(),
+        scenes=_short_window_scenes(4, frames_per_scene=300),
+        narration_text="organize files and draft mail",
+        voice_total_frames=120,
+        fps=29.97,
+    )
+    assert len(plan.scene_choices) == 4
+    for choice in plan.scene_choices:
+        recommended = next(
+            candidate
+            for candidate in choice.candidates
+            if candidate.candidate_id == choice.recommended_candidate_id
+        )
+        assert recommended.max_duration_s >= choice.recommended_duration_s
