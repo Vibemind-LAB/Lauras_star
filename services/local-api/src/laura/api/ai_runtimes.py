@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from ..ai.runtime_manager import refresh_runtime, start_runtime, stop_runtime
 from ..db import repos
 from ..db.database import Database
-from .models import AiRuntimeCreate, AiRuntimeEventOut, AiRuntimeOut
+from .models import (
+    AiPersonaCreate,
+    AiPersonaOut,
+    AiRuntimeCreate,
+    AiRuntimeEventOut,
+    AiRuntimeOut,
+)
 from .security import require_token
 
 router = APIRouter(tags=["ai-runtimes"], dependencies=[Depends(require_token)])
@@ -63,4 +71,102 @@ def list_runtime_events(runtime_id: str, request: Request) -> list[AiRuntimeEven
     return [
         AiRuntimeEventOut(**row)
         for row in repos.list_ai_runtime_events(_db(request), runtime_id)
+    ]
+
+
+# --- personas -----------------------------------------------------------------------
+#
+# A persona is a consented likeness: it binds a consent record to the face/voice
+# material an effect may use, plus the runtimes preferred for each effect. The table,
+# the repos functions and the models shipped with migration 0025; only these two routes
+# were missing, so a persona could be stored but never created or read over the API.
+
+
+def _require_reference_asset(
+    db: Database, asset_id: str | None, *, field_label: str, project_id: str
+) -> None:
+    """Reference material must live in the project that holds the consent.
+
+    Without this an otherwise valid consent record could be pointed at footage from a
+    different project -- material nobody consented to.
+    """
+    if asset_id is None:
+        return
+    asset = repos.get_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{field_label} asset not found")
+    if asset["project_id"] != project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{field_label} asset belongs to another project",
+        )
+
+
+def _validate_preferred_runtimes(
+    db: Database, preferred_runtimes: dict[str, str], *, allowed_effects: Iterable[str]
+) -> None:
+    """Every preferred runtime must exist, be enabled, and match an allowed effect."""
+    allowed = set(allowed_effects)
+    for effect, runtime_id in preferred_runtimes.items():
+        if effect not in allowed:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "preferred runtime effect is not allowed",
+            )
+        runtime = repos.get_ai_runtime(db, runtime_id)
+        if runtime is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "preferred runtime not found")
+        if runtime["effect"] != effect:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"preferred runtime effect must be {effect}",
+            )
+        if not runtime["enabled"]:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "preferred runtime is disabled"
+            )
+
+
+@router.post(
+    "/ai/personas", response_model=AiPersonaOut, status_code=status.HTTP_201_CREATED
+)
+def create_persona(body: AiPersonaCreate, request: Request) -> AiPersonaOut:
+    db = _db(request)
+    consent = repos.get_consent_record(db, body.consent_id)
+    if consent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "consent record not found")
+    if consent.get("revoked_at") is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "consent has been revoked")
+    if body.project_id is not None and consent["project_id"] != body.project_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "consent belongs to another project"
+        )
+    # The consent record owns the project, not the caller: a mismatch is rejected above,
+    # and an omitted project_id is filled in from the consent rather than guessed.
+    project_id = str(consent["project_id"])
+    _require_reference_asset(
+        db, body.face_reference_asset_id, field_label="face reference", project_id=project_id
+    )
+    _require_reference_asset(
+        db,
+        body.voice_reference_asset_id,
+        field_label="voice reference",
+        project_id=project_id,
+    )
+    _validate_preferred_runtimes(
+        db, body.preferred_runtimes, allowed_effects=body.allowed_effects
+    )
+    persona = repos.create_ai_persona(
+        db, **body.model_dump(exclude={"project_id"}), project_id=project_id
+    )
+    return AiPersonaOut(**persona)
+
+
+@router.get("/ai/personas", response_model=list[AiPersonaOut])
+def list_personas(
+    request: Request, project_id: str | None = Query(default=None)
+) -> list[AiPersonaOut]:
+    return [
+        AiPersonaOut(**row)
+        for row in repos.list_ai_personas(_db(request), project_id=project_id)
     ]
