@@ -445,6 +445,8 @@ export interface VoiceoverOptions {
   duckingPercent?: number;
   /** Explicit TTS voice name; omitted picks a voice by language, else the system default. */
   voiceId?: string;
+  /** Which registered AI runtime performs the effect; omitted lets the backend pick. */
+  runtimeId?: string;
 }
 
 export interface VoiceoverAccepted {
@@ -465,6 +467,8 @@ export interface LipsyncOptions {
   licenseAccepted: boolean;
   backend?: string;
   qualityThreshold?: number;
+  /** Which registered AI runtime performs the effect; omitted lets the backend pick. */
+  runtimeId?: string;
 }
 
 export interface LipsyncAccepted {
@@ -1693,6 +1697,7 @@ export class LauraClient {
     if (opts.mixMode !== undefined) body.mix_mode = opts.mixMode;
     if (opts.duckingPercent !== undefined) body.ducking_percent = opts.duckingPercent;
     if (opts.voiceId !== undefined) body.voice_id = opts.voiceId;
+    if (opts.runtimeId !== undefined) body.runtime_id = opts.runtimeId;
     return this.request<VoiceoverAccepted>(`/timelines/${timelineId}/voiceover`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -1714,6 +1719,7 @@ export class LauraClient {
     };
     if (opts.backend !== undefined) body.backend = opts.backend;
     if (opts.qualityThreshold !== undefined) body.quality_threshold = opts.qualityThreshold;
+    if (opts.runtimeId !== undefined) body.runtime_id = opts.runtimeId;
     return this.request<LipsyncAccepted>(`/timelines/${timelineId}/lipsync`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -2056,6 +2062,8 @@ export class LauraClient {
       portraitAssetId: string;
       consentId: string;
       backend?: string;
+      /** Which registered AI runtime performs the effect; omitted lets the backend pick. */
+      runtimeId?: string;
     },
   ): Promise<{ job_id: string }> {
     return this.request<{ job_id: string }>(`/timelines/${timelineId}/reenact`, {
@@ -2066,6 +2074,7 @@ export class LauraClient {
         portrait_asset_id: opts.portraitAssetId,
         consent_id: opts.consentId,
         backend: opts.backend,
+        runtime_id: opts.runtimeId,
       }),
     });
   }

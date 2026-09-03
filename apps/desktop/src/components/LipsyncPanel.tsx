@@ -3,6 +3,7 @@ import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { type Asset, type LauraClient } from "../api";
 import { useJobStatus } from "../hooks/useJobStatus";
 import { log } from "../shared/log";
+import { RuntimeSelect } from "./RuntimeSelect";
 
 function jobChipClass(status: string): string {
   if (status === "failed") return "border-status-err bg-status-err/15 text-status-err";
@@ -45,6 +46,8 @@ export function LipsyncPanel({
   const [seqIn, setSeqIn] = useState(0);
   const [seqOut, setSeqOut] = useState(0);
   const [backend, setBackend] = useState<"stub" | "vibevideo">("stub");
+  // Empty = let the backend choose; a value pins the effect to one registered runtime.
+  const [runtimeId, setRuntimeId] = useState("");
   const [licenseAccepted, setLicenseAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +122,7 @@ export function LipsyncPanel({
         licenseAccepted,
         backend,
         qualityThreshold: 0.6,
+        ...(runtimeId === "" ? {} : { runtimeId }),
       });
       setJobId(accepted.job_id);
     } catch (e) {
@@ -266,6 +270,14 @@ export function LipsyncPanel({
             <option value="vibevideo">VibeVideo Sidecar</option>
           </select>
         </label>
+        <RuntimeSelect
+          client={client}
+          effect="lipsync"
+          label="Lipsync runtime"
+          value={runtimeId}
+          onChange={setRuntimeId}
+          disabled={busy}
+        />
       </div>
 
       <button

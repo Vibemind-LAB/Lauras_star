@@ -4,6 +4,7 @@ import { type LauraClient } from "../api";
 import { useJobStatus } from "../hooks/useJobStatus";
 import { log } from "../shared/log";
 import { framesToTimecode } from "../shared/timecode";
+import { RuntimeSelect } from "./RuntimeSelect";
 
 export interface ReenactPanelProps {
   client: LauraClient;
@@ -74,6 +75,8 @@ export function ReenactPanel({
   const [seqIn, setSeqIn] = useState<number>(0);
   const [seqOut, setSeqOut] = useState<number>(0);
   const [backend, setBackend] = useState<"stub" | "liveportrait">("stub");
+  // Empty = let the backend choose; a value pins the effect to one registered runtime.
+  const [runtimeId, setRuntimeId] = useState("");
   const [reenactBusy, setReenactBusy] = useState(false);
   const [reenactError, setReenactError] = useState<string | null>(null);
   const [lastJobId, setLastJobId] = useState<string | null>(null);
@@ -143,6 +146,7 @@ export function ReenactPanel({
         portraitAssetId,
         consentId,
         backend,
+        ...(runtimeId === "" ? {} : { runtimeId }),
       });
       setLastJobId(result.job_id);
       log.info(
@@ -283,6 +287,15 @@ export function ReenactPanel({
             <option value="stub">Stub</option>
             <option value="liveportrait">LivePortrait Sidecar</option>
           </select>
+
+          <RuntimeSelect
+            client={client}
+            effect="reenact"
+            label="Reenact runtime"
+            value={runtimeId}
+            onChange={setRuntimeId}
+            disabled={reenactBusy || isRunning}
+          />
 
           {/* seq in */}
           <div className="flex flex-col gap-0.5">

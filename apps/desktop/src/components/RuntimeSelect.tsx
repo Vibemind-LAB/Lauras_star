@@ -86,7 +86,7 @@ export function RuntimeSelect({
           </option>
         ))}
       </select>
-      {error !== null && <span className="text-[11px] text-red-300">{error}</span>}
+      {error !== null && <span className="text-[11px] text-status-err">{error}</span>}
     </label>
   );
 }

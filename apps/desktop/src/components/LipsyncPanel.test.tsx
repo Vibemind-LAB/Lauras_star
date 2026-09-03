@@ -44,6 +44,7 @@ function client(overrides: Partial<LauraClient> = {}): LauraClient {
     }),
     lipsync: vi.fn().mockResolvedValue({ job_id: "lip-job-1" }),
     getJob: vi.fn().mockResolvedValue({ id: "lip-job-1", status: "succeeded" }),
+    listAiRuntimes: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as LauraClient;
 }
@@ -175,5 +176,55 @@ describe("LipsyncPanel", () => {
     expect(document.body.textContent).toContain("Done ✓");
     expect(onChange).toHaveBeenCalledOnce();
     vi.useRealTimers();
+  });
+
+  it("passes the chosen runtime through to the lipsync call", async () => {
+    // The default path omits runtimeId entirely (asserted by the test above); this is
+    // the other half: once a runtime is picked, it must reach the request.
+    const lipsync = vi.fn().mockResolvedValue({ job_id: "lip-job-1" });
+    const c = client({
+      lipsync,
+      listAiRuntimes: vi.fn().mockResolvedValue([
+        {
+          id: "rt-1",
+          kind: "container",
+          effect: "lipsync",
+          display_name: "MuseTalk",
+          enabled: true,
+          license_status: "accepted",
+          status: {},
+          capabilities: {},
+        },
+      ]),
+    });
+    const { getByLabelText, getByRole, findByText } = renderWithQuery(
+      <LipsyncPanel
+        client={c}
+        projectId="p"
+        timelineId="tl-1"
+        assets={[asset("audio-1", "audio", "voice.wav")]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(getByLabelText("Subject label for lipsync consent"), {
+      target: { value: "Person A" },
+    });
+    fireEvent.click(getByRole("button", { name: "Confirm consent" }));
+    await findByText(/Consent for Person A/);
+    fireEvent.click(getByLabelText("Licence and use confirmed"));
+    fireEvent.change(getByLabelText("Lipsync seq in"), { target: { value: "5" } });
+    fireEvent.change(getByLabelText("Lipsync seq out"), { target: { value: "45" } });
+
+    await waitFor(() =>
+      expect(getByLabelText("Lipsync runtime").textContent).toContain("MuseTalk"));
+    fireEvent.change(getByLabelText("Lipsync runtime"), { target: { value: "rt-1" } });
+    fireEvent.click(getByRole("button", { name: "Lipsync (stub)" }));
+
+    await waitFor(() =>
+      expect(lipsync).toHaveBeenCalledWith(
+        "tl-1",
+        expect.objectContaining({ runtimeId: "rt-1" }),
+      ));
   });
 });

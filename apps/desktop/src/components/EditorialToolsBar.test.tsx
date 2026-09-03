@@ -64,6 +64,7 @@ describe("EditorialToolsBar", () => {
     const c = {
       listVoiceoverVoices: vi.fn().mockResolvedValue([]),
       listConsent: vi.fn().mockResolvedValue([]),
+      listAiRuntimes: vi.fn().mockResolvedValue([]),
     } as unknown as LauraClient;
     const { getByRole, queryByText } = renderWithQuery(
       <EditorialToolsBar
