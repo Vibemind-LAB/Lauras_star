@@ -27,6 +27,9 @@ import { log } from "../shared/log";
 import { AudioLaneControls } from "./AudioLaneControls";
 import { DemoAssistantPanel } from "./DemoAssistantPanel";
 import { OverlayControls } from "./OverlayControls";
+import { PersonaKitPanel } from "./PersonaKitPanel";
+import { RuntimeSetupPanel } from "./RuntimeSetupPanel";
+import { RuntimeStatusPanel } from "./RuntimeStatusPanel";
 import { SequencePlayer } from "./SequencePlayer";
 import { TimelineBar } from "./TimelineBar";
 
@@ -343,6 +346,9 @@ export function AssembleView({
   const [seqClips, setSeqClips] = useState<TimelineClip[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
   const [railTab, setRailTab] = useState<"transcript" | "tools">("transcript");
+  // Bumped when a runtime is created, so the status list below reloads without a
+  // manual refresh. Separate from `reloadKey`, which drives the timeline reloads.
+  const [runtimeReloadKey, setRuntimeReloadKey] = useState(0);
   const [seqFrame, setSeqFrame] = useState(0);
   const [captionPreview, setCaptionPreview] = useState(true);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -879,6 +885,12 @@ export function AssembleView({
               rateNum={rateNum}
               rateDen={rateDen}
             />
+            <RuntimeSetupPanel
+              client={client}
+              onCreated={() => setRuntimeReloadKey((k) => k + 1)}
+            />
+            <RuntimeStatusPanel client={client} reloadKey={runtimeReloadKey} />
+            <PersonaKitPanel client={client} projectId={projectId} />
           </div>
         )}
       </aside>
