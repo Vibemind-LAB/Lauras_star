@@ -81,8 +81,17 @@ class Database(ABC):
 
     # --- migrations (shared) ----------------------------------------------
     def migrate(self) -> list[int]:
+        """Apply every pending migration, as ONE transaction.
+
+        All-or-nothing per run: a script that fails takes the whole run with it, so the
+        schema is never left half-applied (SQLite connects with ``isolation_level=None``,
+        i.e. autocommit -- without this wrapper each statement would commit on its own).
+        Versions already recorded in ``schema_meta`` by an EARLIER run are skipped and
+        therefore never at risk. The single commit also turns ~122 fsyncs into one,
+        which is what makes a test suite that migrates per test affordable at all.
+        """
         applied_now: list[int] = []
-        with self.connection() as conn:
+        with self.transaction() as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS schema_meta ("
                 "  version INTEGER PRIMARY KEY,"
