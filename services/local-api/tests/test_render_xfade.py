@@ -130,6 +130,28 @@ def test_render_crossfade_without_reserve_falls_back_to_hard(
     assert "xfade" not in fc and "concat=n=2:v=1" in fc
 
 
+def test_render_degraded_crossfade_emits_no_dip_to_black(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A degraded crossfade (no post-cut reserve -> ``_crossfade_durations`` clamps it to 0 ->
+    ``has_crossfade`` False -> concat path) must fall through as a silent hard cut. Before the
+    fix, the concat path passed the UNFILTERED ``video_transitions`` list into
+    ``_video_transition_chain``, which only skips ``kind=="hard"`` -- the degraded boundary
+    still carries ``kind="crossfade"`` with its original (unclamped) duration, so it still
+    emitted a dip-to-black ``fade=t=out``/``fade=t=in`` pair. (A mid-timeline pair like this one
+    blacks the ENTIRE assembled stream, not just the boundary's neighbourhood -- see the
+    real-ffmpeg pixel test below for the measured proof.)"""
+    calls = _patch(monkeypatch, nb_frames="30")  # clip ends at 30, source has 30 -> no reserve
+    tr = [VideoTransition(kind="crossfade", boundary_frame=30, duration_frames=8)]
+    render_clips_mp4(
+        [(tmp_path / "a.mp4", 0, 30), (tmp_path / "b.mp4", 0, 30)],
+        tmp_path / "o.mp4", rate_num=30, rate_den=1, video_transitions=tr,
+    )
+    fc = _fc(calls[-1])
+    assert "concat=n=2:v=1" in fc and "xfade" not in fc
+    assert "fade=t=" not in fc, f"degraded crossfade must not leave a dip-to-black filter: {fc}"
+
+
 def test_render_xfade_path_also_applies_trailing_fade(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -271,3 +293,89 @@ def test_real_trailing_fade_xfade_path_is_not_all_black(tmp_path: Path) -> None:
     assert yavg[5] > 100, f"early frame must be bright, got {yavg[5]}"
     assert yavg[25] > 100, f"frame before the fade window must still be bright, got {yavg[25]}"
     assert yavg[-1] < 25, f"final frame must be near-black, got {yavg[-1]}"
+
+
+@pytest.mark.skipif(
+    shutil.which(os.environ.get("LAURA_FFMPEG", "ffmpeg")) is None, reason="ffmpeg"
+)
+def test_real_degraded_crossfade_concat_path_is_not_all_black(tmp_path: Path) -> None:
+    """Live-reproduced regression (2026-08-22): a narrated reel whose clips end exactly at the
+    source's last frame rendered ENTIRELY black (measured YAVG ~17 at every timestamp), while
+    the same timeline with crossfade_frames=0 rendered correctly bright.
+
+    Root cause: ``_crossfade_durations`` correctly clamps a crossfade to the post-cut reserve
+    available in the outgoing clip's source; with zero reserve the boundary degrades to a hard
+    cut (duration 0), so ``has_crossfade`` is False and ``render_clips_mp4`` takes the plain
+    concat path. That path used to feed the UNFILTERED ``video_transitions`` list into
+    ``_video_transition_chain``, which only skips ``kind=="hard"`` -- the degraded boundary
+    still carries ``kind="crossfade"`` with its ORIGINAL (unclamped) duration, so it still
+    emitted a dip-to-black ``fade=t=out``/``fade=t=in`` pair for a boundary that was supposed to
+    be a silent hard cut.
+
+    Per real ffmpeg's own ``fade`` semantics (confirmed empirically while diagnosing this bug):
+    ``fade=t=in:st=X`` forces every frame before X to black, and ``fade=t=out`` STAYS black
+    after its own window ends -- so this one mid-timeline dip-to-black pair does not just darken
+    the boundary's neighbourhood, it blacks the ENTIRE assembled stream (both sides), which is
+    exactly the reported all-black symptom.
+
+    Three solid-white clips, each fully consumed by its cut (src_out == the source's own frame
+    count -- no reserve for a crossfade). A crossfade is requested only at the first boundary
+    (A/B); the second boundary (B/C) is a plain hard cut. After the fix, the degraded crossfade
+    falls through as a silent hard cut and early/middle/late frames all stay bright."""
+    a = _white_src(tmp_path, "a.mp4", seconds=3)  # exactly 30 frames -- fully used, no reserve
+    b = _white_src(tmp_path, "b.mp4", seconds=3)
+    c = _white_src(tmp_path, "c.mp4", seconds=3)
+    dest = tmp_path / "degraded_crossfade.mp4"
+    render_clips_mp4(
+        [(a, 0, 30), (b, 0, 30), (c, 0, 30)],
+        dest,
+        rate_num=10, rate_den=1,
+        video_transitions=[
+            VideoTransition(kind="crossfade", boundary_frame=30, duration_frames=8),
+        ],
+    )
+    yavg = _yavg_series(dest, tmp_path / "degraded_stats.txt")
+    assert len(yavg) == 90
+    assert yavg[5] > 100, f"early frame (clip A) must be bright, got {yavg[5]}"
+    assert yavg[45] > 100, f"middle frame (clip B) must be bright, got {yavg[45]}"
+    assert yavg[85] > 100, f"late frame (clip C) must be bright, got {yavg[85]}"
+
+
+@pytest.mark.skipif(
+    shutil.which(os.environ.get("LAURA_FFMPEG", "ffmpeg")) is None, reason="ffmpeg"
+)
+def test_real_mid_timeline_fade_dips_only_its_own_window(tmp_path: Path) -> None:
+    """Reported regression: a user-selectable mid-timeline dip-to-black (``kind="fade"`` at a
+    boundary strictly BEFORE the end of the stream, e.g. ``transition_style="fade"`` on a cut
+    between two clips) blacked the ENTIRE video, not just the window around the boundary.
+
+    Root cause (two independent empirical checks): ffmpeg's ``fade=t=out:st=A:d=D`` does not
+    merely ramp down during ``[A, A+D]`` -- it STAYS black for the whole remainder AFTER that
+    window. Symmetrically ``fade=t=in:st=B:d=D`` force-blacks EVERY frame BEFORE ``B``, not just
+    ramping up inside ``[B, B+D]``. ``_video_transition_chain`` chains exactly this pair
+    (fade-out ending at the boundary, fade-in starting at the boundary) on one stream for every
+    non-hard, non-trailing transition -- so before the fix the fade-out's "stays black after"
+    covered everything from the window to the stream's end, and the fade-in's "blacks everything
+    before" covered everything from the stream's start to the window, together blacking the
+    whole video instead of just the intended dip.
+
+    Two solid-white clips (3s/30f each @ 10fps, 60f total), hard-cut boundary at frame 30 (the
+    stream's midpoint, NOT its end -- boundary_frame(30) < total_frames(60), so this is a true
+    mid-timeline dip, unlike the trailing-fade regression tests above) with a 1s (10-frame)
+    ``kind="fade"`` transition. Fade-out window [2.0s,3.0s], fade-in window [3.0s,4.0s]. Checked
+    via real ffmpeg + signalstats: bright well before the dip, dark at the boundary, bright
+    again well after -- never black outside the dip's own window."""
+    a = _white_src(tmp_path, "a.mp4", seconds=3)
+    b = _white_src(tmp_path, "b.mp4", seconds=3)
+    dest = tmp_path / "mid_timeline_fade.mp4"
+    render_clips_mp4(
+        [(a, 0, 30), (b, 0, 30)],
+        dest,
+        rate_num=10, rate_den=1,
+        video_transitions=[VideoTransition(kind="fade", boundary_frame=30, duration_frames=10)],
+    )
+    yavg = _yavg_series(dest, tmp_path / "mid_fade_stats.txt")
+    assert len(yavg) == 60
+    assert yavg[5] > 100, f"frame well before the dip must be bright, got {yavg[5]}"
+    assert yavg[30] < 40, f"frame at the boundary must be dark, got {yavg[30]}"
+    assert yavg[55] > 100, f"frame well after the dip must be bright again, got {yavg[55]}"

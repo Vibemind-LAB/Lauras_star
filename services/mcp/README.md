@@ -21,7 +21,7 @@ To use the Laura MCP server with Claude Desktop, add the following entry to your
   "mcpServers": {
     "laura": {
       "command": "uv",
-      "args": ["run", "--directory", "C:/Users/User/Desktop/Laura/services/mcp", "laura-mcp"],
+      "args": ["run", "--directory", "<path-to-repo>/services/mcp", "laura-mcp"],
       "env": { "LAURA_TOKEN": "<token>" }
     }
   }

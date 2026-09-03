@@ -1,0 +1,124 @@
+name: Bug report
+description: Something in Laura is broken or behaves unexpectedly.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please check open issues first to
+        avoid duplicates. For a suspected security vulnerability, use
+        [private vulnerability reporting](../../security/advisories/new) instead of
+        a public issue — see `SECURITY.md`.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: |
+        What I did:
+        What I expected:
+        What happened instead:
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce, ideally against a fixture in `fixtures/` or a small test file.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Laura is affected?
+      multiple: true
+      options:
+        - services/local-api (backend/API)
+        - services/mcp (MCP server)
+        - apps/desktop (Electron/React app)
+        - services/tts-sidecar
+        - services/ai-runtimes / analysis-runtime
+        - docs
+        - other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: OS and version (e.g. Windows 11 23H2, macOS 14.5, Ubuntu 24.04).
+      placeholder: Windows 11 Pro 10.0.26200
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version` / `uv run python --version`. Only needed for local-api / mcp / analysis bugs.
+      placeholder: Python 3.11.9
+    validations:
+      required: false
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`. Only needed for desktop app bugs.
+      placeholder: v22.x
+    validations:
+      required: false
+
+  - type: input
+    id: ffmpeg-version
+    attributes:
+      label: FFmpeg / ffprobe version
+      description: Output of `ffmpeg -version`. Only needed for ingest/proxy/export/render bugs.
+      placeholder: ffmpeg version 7.x
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Backend log excerpt
+      description: >
+        Relevant lines from the local-api backend log around the time of the failure
+        (redact file paths or content you consider private). If you don't have logs,
+        say so.
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: fresh-workspace
+    attributes:
+      label: Does this reproduce with a fresh workspace?
+      description: >
+        Try with a new/empty `workspace/` (or `LAURA_WORKSPACE` pointed at an empty
+        directory) and a fresh project. This tells us whether it's data-state-specific
+        or a general bug.
+      options:
+        - "Yes — reproduces with a fresh workspace"
+        - "No — only happens with my existing workspace/project"
+        - "Haven't tried"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else — screenshots, related issues, workarounds you tried.
+    validations:
+      required: false
