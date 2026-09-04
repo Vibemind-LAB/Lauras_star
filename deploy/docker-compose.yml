@@ -10,6 +10,13 @@ services:
   api:
     build:
       context: ../services/local-api
+    # Ohne Regel kommt der Dienst nach einem Docker-Neustart nicht wieder:
+    # gemessen 04.09.2026 waren alle laura-Container zurueck, nur dieser
+    # fehlte — und der Marketing-Agent meldete "Laura nicht erreichbar",
+    # obwohl nichts kaputt war. Die Datendienste unten halten ihre Daten in
+    # Volumes und werden bei Bedarf mitgestartet; dieser hier ist der, den
+    # von aussen jemand erwartet.
+    restart: unless-stopped
     environment:
       LAURA_HOST: 0.0.0.0
       LAURA_PORT: "8765"
