@@ -1701,6 +1701,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "numpy" },
     { name = "opentimelineio" },
     { name = "prometheus-client" },
@@ -1756,7 +1757,6 @@ server = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -1770,6 +1770,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.8.0" },
     { name = "faster-whisper", marker = "extra == 'asr'", specifier = ">=1.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", marker = "extra == 'scene'", specifier = ">=4.9" },
@@ -1797,7 +1798,6 @@ provides-extras = ["fetch", "scene", "scene-ml", "asr", "align", "diarize", "ser
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },

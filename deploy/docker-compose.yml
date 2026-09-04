@@ -15,8 +15,15 @@ services:
       LAURA_PORT: "8765"
       LAURA_WORKSPACE: /data/workspace
       LAURA_TOKEN: ${LAURA_TOKEN:-}
-      # Server-mode targets (used once the server backends are enabled):
-      DATABASE_URL: postgresql://laura:laura@postgres:5432/laura
+      # Server-mode targets (used once the server backends are enabled).
+      # DATABASE_URL bleibt auskommentiert: create_database() waehlt allein anhand
+      # dieser Variable Postgres statt SQLite (db/database.py:17-23) und importiert
+      # dann psycopg, das nur im Extra `server` steckt — das Image baut mit
+      # `uv sync --frozen --no-dev` ohne Extras und stuerzt beim Start ab.
+      # Der Kopf dieser Datei sagt es selbst: der Dienst laeuft auf SQLite.
+      # Einschalten heisst: Zeile aktivieren UND das Image mit --extra server bauen.
+      # DATABASE_URL: postgresql://laura:laura@postgres:5432/laura
+      # REDIS_URL und QDRANT_URL liest heute kein Code — reine Vorausplanung.
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
     ports:
