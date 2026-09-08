@@ -60,6 +60,17 @@ class Settings:
     database_url: str | None = None  # postgresql://… for server mode; else SQLite
     rate_limit_rpm: int = 0  # per-identity requests/minute; 0 disables the limiter
     rate_limit_burst: int = 0  # bucket capacity; 0 -> falls back to rpm
+    # Object storage for finished material, so other machines (marketing, sales) can
+    # fetch a video instead of being handed a path that only exists here. OFF unless
+    # both url and key are set: a desktop install keeps working with local files only,
+    # and the test suite never touches a network.
+    storage_url: str | None = None  # e.g. http://127.0.0.1:8000/storage/v1
+    storage_key: str | None = None  # service key, sent as Bearer
+    storage_bucket: str = "laura"
+
+    @property
+    def storage_enabled(self) -> bool:
+        return bool(self.storage_url and self.storage_key)
 
     @property
     def db_path(self) -> Path:
@@ -85,6 +96,9 @@ class Settings:
             database_url=os.environ.get("DATABASE_URL") or None,
             rate_limit_rpm=int(os.environ.get("LAURA_RATE_LIMIT_RPM", "0")),
             rate_limit_burst=int(os.environ.get("LAURA_RATE_LIMIT_BURST", "0")),
+            storage_url=(os.environ.get("LAURA_STORAGE_URL") or "").rstrip("/") or None,
+            storage_key=os.environ.get("LAURA_STORAGE_KEY") or None,
+            storage_bucket=os.environ.get("LAURA_STORAGE_BUCKET", "laura"),
         )
 
 

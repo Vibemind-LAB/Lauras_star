@@ -16,6 +16,7 @@ from ..jobs.runner import JobContext, JobHandler
 from ..ledger import get_ledger_store
 from ..sequences.music import sequence_music_tracks
 from ..sequences.transcript import sequence_transcript_blocks
+from ..storage import publish, store_from_env
 from .audio import AudioOverlay
 from .captions import build_ass, group_caption_lines
 from .captions_source import timeline_caption_words, voiceover_caption_words
@@ -547,6 +548,13 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
         raise
 
     repos.set_export_done(ctx.db, export_id, path=str(dest), size_bytes=size_bytes)
+    # Best-effort copy into object storage so other machines can fetch the video
+    # instead of being handed a path that exists only here. `publish` never raises:
+    # the export above is already 'ready', and an unreachable bucket must not undo
+    # an hour of rendering.
+    schluessel = publish(store_from_env(), f"exports/{export_id}{dest.suffix}", dest)
+    if schluessel is not None:
+        repos.set_export_object(ctx.db, export_id, schluessel)
     try:
         audit.record(
             ctx.db,

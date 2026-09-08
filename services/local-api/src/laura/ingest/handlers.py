@@ -25,6 +25,7 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import JobContext, JobHandler, enqueue
+from ..storage import publish, store_from_env
 from .aria2 import Aria2Cancelled, aria2_available, aria2_download
 from .audio import extract_mix48k, extract_mono16k
 from .download import download_resumable
@@ -244,6 +245,9 @@ def _finalize_media_asset(
         )
         return False
     repos.set_asset_source(ctx.db, asset["id"], source_path=str(media), online=True)
+    schluessel = publish(store_from_env(), f"assets/{asset['id']}{media.suffix}", media)
+    if schluessel is not None:
+        repos.set_asset_object(ctx.db, asset["id"], schluessel)
     enqueue(
         ctx.db, queue="ingest.io", kind="ingest.probe",
         payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",
@@ -434,6 +438,9 @@ def _run_fetch(
         shutil.rmtree(dest.with_name(dest.name + ".parts"), ignore_errors=True)
         raise ValueError(f"integrity check failed: {report.detail}")
     repos.set_asset_source(ctx.db, asset["id"], source_path=str(dest), online=True)
+    schluessel = publish(store_from_env(), f"assets/{asset['id']}{dest.suffix}", dest)
+    if schluessel is not None:
+        repos.set_asset_object(ctx.db, asset["id"], schluessel)
     enqueue(
         ctx.db, queue="ingest.io", kind="ingest.probe",
         payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",

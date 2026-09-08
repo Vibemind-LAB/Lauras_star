@@ -1312,6 +1312,23 @@ def set_export_done(db: Database, export_id: str, *, path: str, size_bytes: int)
                      (path, size_bytes, export_id))
 
 
+def set_export_object(db: Database, export_id: str, object_key: str) -> None:
+    """Record where a copy of this export lives in object storage.
+
+    Separate from `set_export_done` on purpose: the export is already 'ready' and
+    usable at that point. Uploading is a best-effort afterthought that must never be
+    able to undo it, so it gets its own small write.
+    """
+    with db.transaction() as conn:
+        conn.execute("UPDATE exports SET object_key=? WHERE id=?", (object_key, export_id))
+
+
+def set_asset_object(db: Database, asset_id: str, object_key: str) -> None:
+    """Record where a copy of this asset's source file lives in object storage."""
+    with db.transaction() as conn:
+        conn.execute("UPDATE media_assets SET object_key=? WHERE id=?", (object_key, asset_id))
+
+
 def set_export_error(db: Database, export_id: str, error: str) -> None:
     with db.transaction() as conn:
         conn.execute("UPDATE exports SET status='error', error=? WHERE id=?", (error, export_id))
