@@ -79,6 +79,18 @@ class Database(ABC):
         """Atomically claim one queued job and mark it running. Returns it or None."""
         raise NotImplementedError
 
+    # --- dialect ----------------------------------------------------------
+    def ddl(self, statement: str) -> str:
+        """Spell one migration statement for this backend.
+
+        The migration files are written in SQLite's dialect -- it is the source
+        of truth and what every developer runs locally. A backend whose type
+        names differ translates here, and ONLY here: `split_statements` has
+        already stripped comments, so a substitution can no longer hit prose,
+        and data queries never pass through this path.
+        """
+        return statement
+
     # --- migrations (shared) ----------------------------------------------
     def migrate(self) -> list[int]:
         """Apply every pending migration, as ONE transaction.
@@ -104,7 +116,7 @@ class Database(ABC):
                 if version in applied:
                     continue
                 for statement in split_statements(path.read_text(encoding="utf-8")):
-                    conn.execute(statement)
+                    conn.execute(self.ddl(statement))
                 conn.execute(
                     "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
                     (version, utcnow_iso()),

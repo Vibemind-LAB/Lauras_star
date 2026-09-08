@@ -7,6 +7,7 @@ so multiple workers never grab the same job.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,17 @@ class _PgConn:
 
 
 class PostgresDatabase(Database):
+
+    # SQLite type names that Postgres spells differently. The migration files are
+    # written in SQLite's dialect; 0031's `vector BLOB` is what broke every Postgres
+    # deployment from 2026-06-25 on with `type "blob" does not exist`.
+    _DDL_TYPES = ((re.compile(r"\bBLOB\b", re.IGNORECASE), "BYTEA"),)
+
+    def ddl(self, statement: str) -> str:
+        for muster, ersatz in self._DDL_TYPES:
+            statement = muster.sub(ersatz, statement)
+        return statement
+
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
 

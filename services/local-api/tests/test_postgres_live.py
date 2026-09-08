@@ -20,29 +20,41 @@ pytest.importorskip("psycopg")
 
 from laura.auth.keys import generate_api_key  # noqa: E402
 from laura.db import repos  # noqa: E402
+from laura.db.base import migration_files  # noqa: E402
 from laura.db.postgres import PostgresDatabase  # noqa: E402
 from laura.jobs import JobRunner, default_registry, enqueue  # noqa: E402
-
-_TABLES = [
-    "audit_events", "api_keys", "memberships", "users", "organizations", "exports",
-    "timeline_clips", "timelines", "transcript_words", "transcript_segments", "speakers",
-    "shots", "analysis_runs", "asset_files", "media_assets", "projects", "jobs", "schema_meta",
-]
 
 
 @pytest.fixture
 def pg() -> PostgresDatabase:
+    """A freshly migrated database.
+
+    DESTRUCTIVE: drops and recreates the whole `public` schema, so point
+    LAURA_TEST_PG_DSN at a throwaway database, never at anything you keep.
+
+    This used to drop a hand-written list of 18 table names. The schema has since
+    grown to 37 tables, so 19 survived every teardown and the second test in the
+    file died on "relation already exists" -- invisible for months, because the
+    whole file skips without the DSN. Dropping the schema cannot go stale.
+    """
     assert DSN
     db = PostgresDatabase(DSN)
     with db.connection() as conn:
-        for table in _TABLES:
-            conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        # Dropping the schema takes its default grants with it. Without USAGE the
+        # RLS test's non-superuser role cannot even SEE a table, and Postgres
+        # reports that as "relation does not exist" rather than a permission error.
+        conn.execute("GRANT USAGE ON SCHEMA public TO PUBLIC")
     db.migrate()
     return db
 
 
 def test_pg_migrations_apply(pg: PostgresDatabase) -> None:
-    assert pg.schema_version() == 5
+    # Derived, not hard-coded: the old literal `== 5` was written when the schema
+    # had five migrations and was never touched again.
+    neueste = max(version for version, _ in migration_files())
+    assert pg.schema_version() == neueste
 
 
 def test_pg_project_crud(pg: PostgresDatabase) -> None:
