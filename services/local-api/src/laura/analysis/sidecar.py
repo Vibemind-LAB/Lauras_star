@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import asr
+from .shots import scenedetect_available
 from .types import SegmentResult, ShotResult, WordResult
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,33 @@ def sidecar_healthy(url: str | None = None, *, timeout: float = HEALTH_TIMEOUT_S
 def asr_available() -> bool:
     """ASR can run if a healthy sidecar is configured OR the local extra is installed."""
     return sidecar_healthy() or asr.faster_whisper_available()
+
+
+def scene_available() -> bool:
+    """Shot detection can run if the local extra is installed OR a healthy sidecar serves
+    ``/scenes``.
+
+    This mirrors :func:`asr_available` deliberately. Before it existed the scene stage
+    gated on the local extra alone, so a GPU worker with ``/scenes`` wired was
+    unreachable: measured 2026-09-08 on a container built ``--no-dev`` without the
+    ``scene`` extra, every run answered ``{"scene": {"status": "skipped", "reason":
+    "scene extra not installed"}}`` while the worker next door reported ``device=cuda``.
+    No shots means no ``from-shots`` rough cut, so that deployment could not cut at all.
+    """
+    return scenedetect_available() or sidecar_healthy()
+
+
+def detector_for(desired: str) -> str:
+    """The detector that can actually run here, given what is installed.
+
+    Only ``transnet`` reaches the worker (:func:`detect_shots_via_sidecar`); every other
+    detector imports ``scenedetect`` in-process. So when the local extra is missing, the
+    desired detector must be REWRITTEN rather than merely allowed past the gate —
+    otherwise the stage raises ImportError, falls back to ``adaptive``, and raises again.
+    """
+    if scenedetect_available():
+        return desired
+    return "transnet"
 
 
 def _parse_segments(payload: dict[str, Any]) -> list[SegmentResult]:

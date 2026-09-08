@@ -160,3 +160,70 @@ def test_asr_available_false_without_sidecar_or_local(monkeypatch: pytest.Monkey
     monkeypatch.delenv("LAURA_ANALYSIS_URL", raising=False)
     monkeypatch.setattr(asr, "faster_whisper_available", lambda: False)
     assert sidecar.asr_available() is False
+
+
+# --- scene availability -----------------------------------------------------
+# The ASR gate above asks "healthy sidecar OR local extra". The scene gate asked
+# only "local extra" — so a GPU worker serving /scenes was unreachable: measured
+# 2026-09-08 on a container without the `scene` extra, every analysis run
+# answered {"scene": {"status": "skipped", "reason": "scene extra not installed"}}
+# while the worker next door reported device=cuda and had /scenes wired
+# (sidecar.detect_shots_via_sidecar). Without shots there is no rough cut, so the
+# whole from-shots timeline path was dead on that deployment.
+
+
+def test_scene_available_true_when_sidecar_healthy(
+    stub_worker: tuple[str, type[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A healthy worker is enough — the local extra is not required."""
+    url, _ = stub_worker
+    monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
+    monkeypatch.setattr(sidecar, "scenedetect_available", lambda: False)
+    assert sidecar.scene_available() is True
+
+
+def test_scene_available_true_with_local_extra_and_no_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LAURA_ANALYSIS_URL", raising=False)
+    monkeypatch.setattr(sidecar, "scenedetect_available", lambda: True)
+    assert sidecar.scene_available() is True
+
+
+def test_scene_available_false_without_either(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LAURA_ANALYSIS_URL", raising=False)
+    monkeypatch.setattr(sidecar, "scenedetect_available", lambda: False)
+    assert sidecar.scene_available() is False
+
+
+def test_scene_available_false_when_sidecar_unhealthy_and_no_local(
+    stub_worker: tuple[str, type[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url, handler = stub_worker
+    handler.healthz_ok = False
+    monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
+    monkeypatch.setattr(sidecar, "scenedetect_available", lambda: False)
+    assert sidecar.scene_available() is False
+
+
+def test_detector_for_falls_to_transnet_without_local_extra(
+    stub_worker: tuple[str, type[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only ``transnet`` reaches the worker; every other detector imports
+    ``scenedetect`` in-process and would raise ImportError. So when the local
+    extra is missing the desired detector must be rewritten, not merely allowed
+    through the gate."""
+    url, _ = stub_worker
+    monkeypatch.setenv("LAURA_ANALYSIS_URL", url)
+    monkeypatch.setattr(sidecar, "scenedetect_available", lambda: False)
+    assert sidecar.detector_for("adaptive") == "transnet"
+    assert sidecar.detector_for("hybrid") == "transnet"
+    assert sidecar.detector_for("transnet") == "transnet"
+
+
+def test_detector_for_keeps_the_choice_when_local_extra_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sidecar, "scenedetect_available", lambda: True)
+    assert sidecar.detector_for("adaptive") == "adaptive"
+    assert sidecar.detector_for("hybrid") == "hybrid"
