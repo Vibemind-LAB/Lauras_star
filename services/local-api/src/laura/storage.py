@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.error import HTTPError
@@ -117,13 +118,27 @@ def build_store(settings: Settings) -> SupabaseStorage | None:
 def store_from_env() -> SupabaseStorage | None:
     """The store a job handler should use, or ``None`` when storage is off.
 
-    Job handlers get a `JobContext` that carries the database but no settings, and the
-    backends in this codebase read their configuration from the environment for the
-    same reason (see `ai/voiceover_backend.py`). Deliberately NOT cached: a render
-    takes minutes, so re-reading the environment costs nothing, and a cached value
-    would survive a configuration change until the service restarts.
+    Job handlers get a `JobContext` carrying the database but no settings, so this
+    reads the three variables straight from the environment -- exactly like the other
+    backends here (`ai/voiceover_backend.py`, `chatterbox_sidecar.py`).
+
+    It must NOT go through `Settings.load()`, even though that would be tidier.
+    `Settings.load()` calls `_load_dotenv()`, which layers EVERY `.env` from the cwd
+    upward into `os.environ` via setdefault -- a process-wide side effect. Called once
+    per render inside the test suite, that imported the repo-root `.env` (which sets
+    LAURA_VLM_MODEL) into the running process, and `test_stub_vlm_backend` then failed
+    because a global it asserts to be unset had quietly become set. A helper that
+    reads configuration must not also install it.
+
+    Deliberately not cached: a render takes minutes, so re-reading three variables
+    costs nothing, and a cached value would survive a configuration change until the
+    service restarts.
     """
-    return build_store(Settings.load())
+    url = (os.environ.get("LAURA_STORAGE_URL") or "").rstrip("/")
+    key = os.environ.get("LAURA_STORAGE_KEY") or ""
+    if not (url and key):
+        return None
+    return SupabaseStorage(url, key, os.environ.get("LAURA_STORAGE_BUCKET") or "laura")
 
 
 def guess_content_type(path: Path) -> str:

@@ -55,9 +55,19 @@ def _make_emb(frame: int, *values: float) -> FrameEmbedding:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_36_after_migrate(tmp_path: Path) -> None:
+def test_schema_version_matches_the_newest_migration(tmp_path: Path) -> None:
+    """A finished `migrate()` leaves the schema at the newest migration on disk.
+
+    Derived, not hard-coded. The literal this replaced (`== 36`) had to be edited by
+    hand every time a migration was added -- adding 0037 broke it, and the same trap
+    had already gone stale unnoticed in tests/test_postgres_live.py, where it still
+    asserted 5 while the schema had reached 36.
+    """
+    from laura.db.base import migration_files
+
     db = _db(tmp_path)
-    assert db.schema_version() == 36
+
+    assert db.schema_version() == max(version for version, _ in migration_files())
 
 
 # ---------------------------------------------------------------------------

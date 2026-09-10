@@ -17,6 +17,7 @@ The rules pinned here are the ones that decide whether this is safe to switch on
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,46 @@ def test_storage_needs_both_url_and_key(tmp_path: Path) -> None:
 
     assert build_store(nur_url) is None
     assert build_store(nur_key) is None
+
+
+def test_store_from_env_does_not_import_a_dotenv_into_the_process(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Reading configuration must not INSTALL configuration.
+
+    `store_from_env` first went through `Settings.load()`, which calls `_load_dotenv()`
+    and layers every `.env` from the cwd upward into `os.environ` via setdefault. Since
+    it runs once per render, a full suite run imported the repo-root `.env` -- including
+    LAURA_VLM_MODEL -- into the live process, and `test_stub_vlm_backend` then failed on
+    a global it asserts to be unset. The failure appeared far away from its cause, which
+    is exactly why this is pinned here.
+    """
+    from laura.storage import store_from_env
+
+    marke = "LAURA_TEST_DOTENV_CANARY"
+    monkeypatch.delenv(marke, raising=False)
+    monkeypatch.delenv("LAURA_STORAGE_URL", raising=False)
+    monkeypatch.delenv("LAURA_STORAGE_KEY", raising=False)
+    (tmp_path / ".env").write_text(f"{marke}=vergiftet\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert store_from_env() is None
+
+    assert marke not in os.environ, "store_from_env pulled a .env into the process"
+
+
+def test_store_from_env_reads_its_own_three_variables(monkeypatch: Any) -> None:
+    monkeypatch.setenv("LAURA_STORAGE_URL", "http://example.invalid/storage/v1/")
+    monkeypatch.setenv("LAURA_STORAGE_KEY", "k")
+    monkeypatch.setenv("LAURA_STORAGE_BUCKET", "eigener")
+
+    from laura.storage import store_from_env
+
+    store = store_from_env()
+
+    assert store is not None
+    assert store.bucket == "eigener"
+    assert store.base_url == "http://example.invalid/storage/v1", "trailing slash trimmed"
 
 
 def test_store_is_built_when_configured(tmp_path: Path) -> None:
