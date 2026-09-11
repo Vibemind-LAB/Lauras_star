@@ -10,15 +10,45 @@ services:
   api:
     build:
       context: ../services/local-api
+    # Ohne Regel kommt der Dienst nach einem Docker-Neustart nicht wieder:
+    # gemessen 04.09.2026 waren alle laura-Container zurueck, nur dieser
+    # fehlte — und der Marketing-Agent meldete "Laura nicht erreichbar",
+    # obwohl nichts kaputt war. Die Datendienste unten halten ihre Daten in
+    # Volumes und werden bei Bedarf mitgestartet; dieser hier ist der, den
+    # von aussen jemand erwartet.
+    restart: unless-stopped
     environment:
       LAURA_HOST: 0.0.0.0
       LAURA_PORT: "8765"
       LAURA_WORKSPACE: /data/workspace
       LAURA_TOKEN: ${LAURA_TOKEN:-}
-      # Server-mode targets (used once the server backends are enabled):
-      DATABASE_URL: postgresql://laura:laura@postgres:5432/laura
+      # Server-mode targets (used once the server backends are enabled).
+      # DATABASE_URL bleibt auskommentiert: create_database() waehlt allein anhand
+      # dieser Variable Postgres statt SQLite (db/database.py:17-23) und importiert
+      # dann psycopg, das nur im Extra `server` steckt — das Image baut mit
+      # `uv sync --frozen --no-dev` ohne Extras und stuerzt beim Start ab.
+      # Der Kopf dieser Datei sagt es selbst: der Dienst laeuft auf SQLite.
+      # Einschalten heisst: Zeile aktivieren UND das Image mit --extra server bauen.
+      # DATABASE_URL: postgresql://laura:laura@postgres:5432/laura
+      # REDIS_URL und QDRANT_URL liest heute kein Code — reine Vorausplanung.
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
+      # Transkription an die GPU-Laufzeit abgeben (04.09.2026). Ohne diese
+      # Zeile transkribiert das Backend in-process auf der CPU — und im
+      # gebauten Image fehlt faster_whisper ganz, es kann es also gar nicht.
+      # Die Laufzeit laeuft daneben und meldet `device: cuda`.
+      #
+      # WARUM UEBER DEN HOST und nicht ueber den Containernamen: die Laufzeit
+      # gehoert einem ANDEREN compose-Projekt (analysis-runtime_default). Ein
+      # `docker network connect` waere nach jedem Neuanlegen wieder weg — so
+      # wie beim `laura-qdrant`, der seinen Alias `qdrant` nur zur Laufzeit
+      # traegt. Ihr Port ist ohnehin veroeffentlicht (8896:8896), und dieser
+      # Weg ueberlebt das Neuanlegen beider Seiten.
+      LAURA_ANALYSIS_URL: http://host.docker.internal:8896
+    extra_hosts:
+      # Docker Desktop legt den Namen von selbst an; auf einem Linux-Host
+      # nicht. Damit laeuft dieselbe Datei auf beiden.
+      - "host.docker.internal:host-gateway"
     ports:
       - "8765:8765"
     volumes:

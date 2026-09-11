@@ -36,7 +36,7 @@ from .mapping import map_segment
 from .quality import batch_shot_metrics, compute_shot_metrics, decide_keep, mark_duplicates
 from .semantic_sync import segment_index_item
 from .shots import detect_shots, detect_shots_hybrid, scenedetect_available
-from .sidecar import asr_available, transcribe
+from .sidecar import asr_available, detector_for, scene_available, transcribe
 from .transition_review import default_backend, run_transition_review
 from .types import SegmentResult, ShotResult, WordResult
 
@@ -155,14 +155,18 @@ def _run_scene(
     files: dict[str, dict[str, Any]],
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    if not scenedetect_available():
-        return {"status": "skipped", "reason": "scene extra not installed"}
+    if not scene_available():
+        return {"status": "skipped",
+                "reason": "scene detection unavailable (no sidecar, no local extra)"}
     video = files["proxy"]["path"] if "proxy" in files else asset["source_path"]
     # Detect on a small same-fps proxy (frame indices unchanged, ~9x faster decode);
     # thumbnails/metrics below still use the full ``video``.
     detect_video, detect_tmp = _resolve_detect_video(db, asset, video)
 
-    desired = config.get("detector", "adaptive")
+    # Ohne die lokale Bibliothek kann NUR `transnet` laufen — der geht ueber den
+    # Worker. Jeder andere Detektor importiert scenedetect im Prozess und wuerde
+    # samt Rueckfall auf "adaptive" scheitern.
+    desired = detector_for(config.get("detector", "adaptive"))
     detector = desired
     notes: dict[str, Any] = {}
     try:
