@@ -89,6 +89,10 @@ class AssetOut(BaseModel):
     synthetic: bool = False
     ai_effect: str | None = None
     created_at: str
+    # Wo eine Kopie der Bytes ausserhalb dieser Maschine liegt ("laura/assets/<id>.mp4"),
+    # oder None ohne Objektspeicher -- der Normalfall auf dem Desktop. `source_path`
+    # daneben bleibt der lokale Arbeitsweg und wird NIE ersetzt.
+    object_key: str | None = None
     files: list[AssetFileOut] = Field(default_factory=list)
 
 
@@ -796,6 +800,11 @@ class RenderExportOut(BaseModel):
     # Machine-readable quality stamp (P1-T2b). Populated from export options.
     quality_status: str | None = None
     quality_verified: bool | None = None
+    # Wo eine Kopie des fertigen Videos ausserhalb dieser Maschine liegt
+    # ("laura/exports/<id>.mp4"), oder None ohne Objektspeicher. `path` daneben bleibt
+    # die lokale Datei und wird NIE ersetzt. Ohne dieses Feld blieb der Objektspeicher
+    # fuer jeden Konsumenten unsichtbar: der Wert stand in der Datenbank und kam nie heraus.
+    object_key: str | None = None
 
 
 # --- sequence (stage 5) ------------------------------------------------------
