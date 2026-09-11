@@ -15,10 +15,30 @@ services:
       LAURA_PORT: "8765"
       LAURA_WORKSPACE: /data/workspace
       LAURA_TOKEN: ${LAURA_TOKEN:-}
-      # Server-mode targets (used once the server backends are enabled):
-      DATABASE_URL: postgresql://laura:laura@postgres:5432/laura
-      REDIS_URL: redis://redis:6379/0
-      QDRANT_URL: http://qdrant:6333
+      # Objektspeicher: eine Kopie jedes fertigen Renders und jedes importierten
+      # Quellvideos landet im Bucket, damit marketing und sales-claw das Material
+      # HOLEN koennen statt nur zu wissen, dass es existiert. Werte gehoeren nach
+      # deploy/.env (gitignoriert). `host.docker.internal` ist aus diesem Container
+      # gemessen erreichbar (HTTP 200); `127.0.0.1` waere der Container selbst.
+      # Ohne URL UND Key bleibt der Speicher aus und Laura arbeitet rein lokal.
+      LAURA_STORAGE_URL: ${LAURA_STORAGE_URL:-}
+      LAURA_STORAGE_KEY: ${LAURA_STORAGE_KEY:-}
+      LAURA_STORAGE_BUCKET: ${LAURA_STORAGE_BUCKET:-laura}
+      # Server-mode targets: hier bewusst NICHT gesetzt.
+      #
+      # `create_database()` schaltet allein durch das VORHANDENSEIN von DATABASE_URL
+      # auf den Postgres-Zweig um -- unabhaengig davon, ob dort etwas laeuft. Diese
+      # Datei setzte sie fest verdrahtet, obwohl ihr eigener Kopf sagt, die API nutze
+      # SQLite, und obwohl postgres/redis/qdrant hier ueblicherweise nicht gestartet
+      # werden. Der laufende Container hatte sie folgerichtig NICHT -- ein `up -d`
+      # haette ihn auf einen Postgres umgelegt, den es nicht gibt. Dieselbe Falle hat
+      # am 04.09. schon einmal zugeschlagen.
+      #
+      # Wer den Server-Modus will, setzt sie in deploy/.env und startet die
+      # zugehoerigen Dienste mit.
+      # DATABASE_URL: postgresql://laura:laura@postgres:5432/laura
+      # REDIS_URL: redis://redis:6379/0
+      # QDRANT_URL: http://qdrant:6333
     ports:
       - "8765:8765"
     volumes:

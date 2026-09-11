@@ -15,8 +15,19 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY src ./src
 
-# Install locked deps (no dev). Add --extra scene/asr/diarize/server as needed.
-RUN uv sync --frozen --no-dev
+# Install locked deps (no dev).
+#
+# `scene` und `otel` sind KEINE Kuer: `laura.main` importiert `analysis.handlers`,
+# das `analysis/quality.py` zieht, und das importiert `numpy` ungeschuetzt auf
+# Modulebene. numpy kommt hier ueber `scene` (opencv-python) herein. Ohne die Extras
+# baut dieses Dockerfile ein Image, das beim Start sofort mit
+# `ModuleNotFoundError: No module named 'numpy'` stirbt -- am 11.09. genau so
+# passiert, als das Image zum ersten Mal seit laengerem neu gebaut wurde.
+# Dieselbe Kombination fahrt die CI (.github/workflows/ci.yml).
+#
+# Weitere Extras (asr/diarize/align/autoshort) bleiben draussen: sie ziehen torch
+# und Modelle und gehoeren in die Sidecars, nicht in die API.
+RUN uv sync --frozen --no-dev --extra scene --extra otel
 
 ENV PATH="/app/.venv/bin:$PATH" \
     LAURA_HOST=0.0.0.0 \

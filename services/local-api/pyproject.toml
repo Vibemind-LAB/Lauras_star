@@ -9,6 +9,11 @@ dependencies = [
     "pydantic>=2.9",
     "opentimelineio>=0.17",      # canonical editorial interchange model (ADR-0001)
     "prometheus-client>=0.20",   # observability metrics (docs/10, docs/14)
+    # Laufzeit, nicht nur Test: `ingest/download.py` importiert httpx ungeschuetzt
+    # auf Modulebene, und `main.py` zieht ueber ingest.handlers genau diesen Pfad.
+    # Es stand bis 11.09. in [dependency-groups].dev -- ein Image ohne dev-Gruppe
+    # startete damit gar nicht (`ModuleNotFoundError: No module named 'httpx'`).
+    "httpx>=0.27",
 ]
 
 # Heavy ML components are OPTIONAL extras — the backend must start and do
@@ -55,7 +60,6 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.11",
-    "httpx>=0.27",
 ]
 
 [build-system]
