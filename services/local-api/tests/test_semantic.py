@@ -2,6 +2,19 @@
 
 Uses an in-memory Qdrant so no server is needed; fastembed downloads a small CPU model
 on first run. Skips when the extra is absent (e.g. CI without it).
+
+WENN DIESE TESTS MIT ``onnxruntime ... NO_SUCHFILE`` FALLEN, ist der Modell-Cache
+kaputt, nicht der Code. fastembed legt ihn unter ``tempfile.gettempdir()`` ab -- auf
+dieser Maschine ist TEMP das Laufwerk E:, also ein Verzeichnis, das aufgeraeumt wird.
+Bleibt dabei ein halber Stand zurueck (Blobs da, snapshots-Symlinks ins Leere), glaubt
+fastembed, das Modell zu haben, und kann es nicht laden. Heilung: den betroffenen
+Ordner unter ``$TEMP/fastembed_cache/models--*`` loeschen und neu laden lassen (~40s).
+Dauerhaft: ``FASTEMBED_CACHE_PATH`` auf ein Verzeichnis zeigen lassen, das niemand
+aufraeumt.
+
+Der Waechter oben prueft nur, ob die BIBLIOTHEK importierbar ist -- nicht, ob das
+MODELL benutzbar ist. Das ist Absicht: ein kaputter Cache soll auffallen und repariert
+werden, nicht stillschweigend uebersprungen. (2026-09-12 genau so passiert.)
 """
 
 from __future__ import annotations
