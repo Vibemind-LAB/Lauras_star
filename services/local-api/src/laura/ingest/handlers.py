@@ -127,6 +127,26 @@ def handle_probe(ctx: JobContext) -> dict[str, Any]:
         ctx.db, asset_id=asset["id"], kind="original", path=src,
         size_bytes=os.path.getsize(src), checksum=sha,
     )
+    # Die Kopie in den Bucket gehoert HIERHER, nicht in die Download-Zweige.
+    #
+    # Bis zum 16.09.2026 stand sie in `_finalize_media_asset` und im httpx-Zweig --
+    # also nur auf den Wegen, die etwas HERUNTERLADEN. Ein Import per lokalem Pfad
+    # (`POST /projects/{id}/assets/import` mit `source_path`) beruehrt keinen von
+    # beiden und kam nie im Bucket an. Am laufenden Dienst gemessen waren ALLE
+    # vorhandenen Assets genau so importiert, und alle trugen object_key NULL --
+    # die Kette war fuer Quellvideos in der Praxis tot, waehrend die Tests gruen
+    # blieben, weil sie nur den Render-Zweig fahren.
+    #
+    # `handle_probe` ist die einzige Stelle, die JEDER Importweg erreicht: der
+    # lokale Pfad direkt, beide Download-Zweige ueber ihr `enqueue` hierher.
+    # Idempotent wie der Rest der Kette -- der Schluessel haengt an der Asset-Id,
+    # ein erneuter Lauf (import-retry) ueberschreibt dasselbe Objekt.
+    quelle = Path(src)
+    schluessel = publish(
+        store_from_env(), f"assets/{asset['id']}{quelle.suffix}", quelle
+    )
+    if schluessel is not None:
+        repos.set_asset_object(ctx.db, asset["id"], schluessel)
 
     root = _project_root(ctx.db, asset)
     if pr.type == "video" and pr.height:
@@ -245,9 +265,7 @@ def _finalize_media_asset(
         )
         return False
     repos.set_asset_source(ctx.db, asset["id"], source_path=str(media), online=True)
-    schluessel = publish(store_from_env(), f"assets/{asset['id']}{media.suffix}", media)
-    if schluessel is not None:
-        repos.set_asset_object(ctx.db, asset["id"], schluessel)
+    # Der Upload liegt jetzt in `handle_probe`, den der folgende enqueue ausloest.
     enqueue(
         ctx.db, queue="ingest.io", kind="ingest.probe",
         payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",
@@ -438,9 +456,7 @@ def _run_fetch(
         shutil.rmtree(dest.with_name(dest.name + ".parts"), ignore_errors=True)
         raise ValueError(f"integrity check failed: {report.detail}")
     repos.set_asset_source(ctx.db, asset["id"], source_path=str(dest), online=True)
-    schluessel = publish(store_from_env(), f"assets/{asset['id']}{dest.suffix}", dest)
-    if schluessel is not None:
-        repos.set_asset_object(ctx.db, asset["id"], schluessel)
+    # Der Upload liegt jetzt in `handle_probe`, den der folgende enqueue ausloest.
     enqueue(
         ctx.db, queue="ingest.io", kind="ingest.probe",
         payload={"asset_id": asset["id"]}, idempotency_key=f"probe:{asset['id']}",
