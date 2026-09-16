@@ -92,7 +92,19 @@ class AssetOut(BaseModel):
     # Wo eine Kopie der Bytes ausserhalb dieser Maschine liegt ("laura/assets/<id>.mp4"),
     # oder None ohne Objektspeicher -- der Normalfall auf dem Desktop. `source_path`
     # daneben bleibt der lokale Arbeitsweg und wird NIE ersetzt.
-    object_key: str | None = None
+    object_key: str | None = Field(
+        default=None,
+        description=(
+            "Bucket-qualifizierter Schluessel der Kopie ausserhalb dieser Maschine, "
+            "z.B. 'laura/assets/<id>.mp4'; None ohne Objektspeicher -- der Normalfall "
+            "auf dem Desktop. `source_path` daneben ist ein Pfad, der nur auf Lauras "
+            "Rechner etwas bedeutet; dieser Schluessel gilt ueberall. "
+            "Er wird beim Probe gesetzt, also kurz NACH dem Import -- ein Asset, das "
+            "gerade erst angenommen wurde, hat ihn noch nicht. "
+            "Assets, die vor dem 16.09.2026 importiert wurden, haben ihn gar nicht: "
+            "bis dahin lud nur der Download-Zweig hoch, nie der Import per lokalem Pfad."
+        ),
+    )
     files: list[AssetFileOut] = Field(default_factory=list)
 
 
@@ -804,7 +816,20 @@ class RenderExportOut(BaseModel):
     # ("laura/exports/<id>.mp4"), oder None ohne Objektspeicher. `path` daneben bleibt
     # die lokale Datei und wird NIE ersetzt. Ohne dieses Feld blieb der Objektspeicher
     # fuer jeden Konsumenten unsichtbar: der Wert stand in der Datenbank und kam nie heraus.
-    object_key: str | None = None
+    object_key: str | None = Field(
+        default=None,
+        description=(
+            "Bucket-qualifizierter Schluessel der Kopie ausserhalb dieser Maschine, "
+            "z.B. 'laura/exports/<id>.mp4'; None, wenn kein Objektspeicher "
+            "konfiguriert ist oder der Upload fehlschlug. `path` daneben bleibt die "
+            "lokale Datei und wird nie ersetzt. "
+            "ACHTUNG BEIM POLLEN: status='ready' heisst NICHT, dass der Schluessel "
+            "schon da ist. Der Render wird zuerst als fertig vermerkt, danach erst "
+            "hochgeladen -- damit ein voller oder unerreichbarer Bucket keine Stunde "
+            "Rendern kostet. Wer den Schluessel braucht, fragt nach 'ready' weiter, "
+            "bis er auftaucht, und faellt sonst auf `path` zurueck."
+        ),
+    )
 
 
 # --- sequence (stage 5) ------------------------------------------------------
