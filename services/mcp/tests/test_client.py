@@ -3,7 +3,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from laura_mcp.client import BACKEND_DOWN, LauraError
+from laura_mcp.client import (
+    BACKEND_DOWN,
+    DEFAULT_BASE_URL,
+    LauraClient,
+    LauraError,
+    base_url,
+)
 
 from .conftest import make_client
 
@@ -50,3 +56,38 @@ def test_get_bytes_returns_raw_body() -> None:
 
     client = make_client(handler)
     assert client.get_bytes("/assets/a/frame/10").startswith(b"\x89PNG")
+
+
+def test_die_adresse_kommt_aus_der_umgebung(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Der MCP-Server muss eine Laura auf einem ANDEREN Rechner erreichen koennen.
+
+    Bis 16.09.2026 war sie fest auf 127.0.0.1 verdrahtet. Fuer den Umzug auf den
+    Mini-PC muss sie aus der Umgebung kommen -- der MCP-Server selbst bleibt auf der
+    Windows-Kiste und spricht dann ueber das LAN.
+    """
+    monkeypatch.setenv("LAURA_API_URL", "http://192.168.178.65:8765/")
+    assert base_url() == "http://192.168.178.65:8765"  # Schraegstrich getrimmt
+
+
+def test_ohne_umgebung_bleibt_es_bei_der_lokalen_adresse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Die Desktop-Installation darf von der Aenderung nichts merken."""
+    monkeypatch.delenv("LAURA_API_URL", raising=False)
+    assert base_url() == DEFAULT_BASE_URL == "http://127.0.0.1:8765"
+
+
+def test_der_client_benutzt_die_konfigurierte_adresse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Die Naht: es reicht nicht, dass die Funktion stimmt -- der Client muss sie nehmen.
+
+    Ohne diese Zusicherung koennte `base_url()` richtig antworten, waehrend
+    `LauraClient` weiter auf die Konstante zeigt, und der Mini-PC bliebe unerreichbar.
+    """
+    monkeypatch.setenv("LAURA_API_URL", "http://192.168.178.65:8765")
+    client = LauraClient("t")
+    try:
+        assert str(client._http.base_url) == "http://192.168.178.65:8765"
+    finally:
+        client._http.close()

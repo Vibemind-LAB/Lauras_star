@@ -36,6 +36,26 @@ Before you start the Laura desktop application, set the environment variable `LA
 
 Use the same token value you set before launching Laura in both the `claude mcp add` command and the Claude Desktop `claude_desktop_config.json` configuration shown above.
 
+## Laura Elsewhere: `LAURA_API_URL`
+
+The server talks to `http://127.0.0.1:8765` by default. That default was hardwired
+for as long as Laura was a desktop application; it now runs as a container and may
+live on another machine (the mini PC). Set `LAURA_API_URL` in the MCP server's own
+environment to point it there — the server itself stays where it is and speaks over
+the LAN:
+
+```
+LAURA_API_URL=http://192.168.178.65:8765
+```
+
+The variable name is the one the marketing space already uses for the same API, so
+one address is configured one way everywhere. A trailing slash is trimmed.
+
+Note that this only moves the ADDRESS. Reaching Laura across the LAN also needs the
+port to be published beyond the host's loopback — under Docker Desktop on Windows a
+`mode: host` publish binds inside the WSL VM, so a port proxy is required, exactly as
+for qdrant.
+
 ## Escape Hatch: Direct API Access
 
 The server provides full access to the running Laura API via the `laura_api` tool, which allows you to invoke any Laura API endpoint directly. Note that this tool does not enforce schema validation on requests.
