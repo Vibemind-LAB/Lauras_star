@@ -832,6 +832,28 @@ class RenderExportOut(BaseModel):
     )
 
 
+class DownloadUrlOut(BaseModel):
+    """Ein Abruf-Link, der OHNE Zugangsdaten funktioniert.
+
+    Gebaut am 22.09.2026, nachdem ein Agent die Objekt-Adresse gesehen, sie "kein
+    direkt herunterladbarer Link" genannt und vorgeschlagen hatte, ein fertiges
+    Video NEU ZU RENDERN. Der Schluessel allein ist eine Tuer ohne Klinke: wer ihn
+    einloesen will, braeuchte den Service-Key -- und den darf ein Agent nie sehen.
+    """
+
+    url: str = Field(
+        description=(
+            "Vollstaendiger Abruf-Link. Traegt seine Berechtigung selbst, braucht "
+            "also keinen Schluessel und keine Kopfzeile. Gilt nur, solange die "
+            "Adresse des Objektspeichers erreichbar ist (heute im Tailnet)."
+        )
+    )
+    expires_in_seconds: int = Field(
+        description="Wie lange der Link gilt, ab dem Zeitpunkt dieser Antwort."
+    )
+    object_key: str = Field(description="Die Adresse, fuer die der Link gilt.")
+
+
 # --- sequence (stage 5) ------------------------------------------------------
 class SequenceItemOut(BaseModel):
     id: str

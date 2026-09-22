@@ -26,6 +26,7 @@ Three rules, each pinned by a test in ``tests/test_object_storage.py``:
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
@@ -101,6 +102,88 @@ class SupabaseStorage:
             # Already there: the same export rendered again. Overwrite.
             self._request("PUT", key, path, content_type)
         return f"{self.bucket}/{key}"
+
+    def signed_url(self, key: str, *, gueltig_sekunden: int = 3600) -> str:
+        """Ein Abruf-Link fuer ``key``, der OHNE Zugangsdaten funktioniert.
+
+        WARUM ES DAS BRAUCHT (gemessen 22.09.2026): ein Agent bekam die
+        Objekt-Adresse, nannte sie "kein direkt herunterladbarer Link" und schlug
+        vor, ein fertiges Video NEU ZU RENDERN, um an eine Datei zu kommen. Der
+        Schluessel allein ist eine Tuer ohne Klinke -- wer ihn einloesen will,
+        braeuchte den Service-Key, und den darf ein Agent nie sehen.
+
+        Der signierte Link traegt sich selbst: er gilt eine begrenzte Zeit, kommt
+        ohne Kopfzeilen aus und liefert genau dieses eine Objekt. Damit bleibt der
+        Service-Key dort, wo er hingehoert -- in diesem Prozess.
+
+        Der zurueckgegebene Link ist ABSOLUT, gebaut aus ``base_url``. Er gilt also
+        nur, wo diese Adresse erreichbar ist (heute: im Tailnet). Das ist eine
+        Eigenschaft des Netzes, keine des Links -- wer ihn anderswo braucht, muss
+        den Speicher anderswo erreichbar machen, nicht diese Funktion aendern.
+        """
+        ziel = f"{self.base_url}/object/sign/{self.bucket}/{key}"
+        request = Request(  # noqa: S310 - fixed scheme, url comes from settings
+            ziel,
+            data=json.dumps({"expiresIn": int(gueltig_sekunden)}).encode(),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(request, timeout=self.timeout) as antwort:  # noqa: S310
+            nutzlast = json.loads(antwort.read())
+        pfad = nutzlast["signedURL"]
+        return f"{self.base_url}{pfad}" if pfad.startswith("/") else pfad
+
+
+class SpeicherFehler(Exception):
+    """Warum ein Abruf-Link nicht ausgestellt werden konnte.
+
+    `grund` ist fuer einen Menschen, `art` fuer den Aufrufer, der daraus eine
+    HTTP-Antwort macht -- die Route soll nicht am Wortlaut entscheiden muessen.
+    """
+
+    def __init__(self, art: str, grund: str) -> None:
+        super().__init__(grund)
+        self.art = art
+        self.grund = grund
+
+
+def abruf_link(settings: Settings, object_key: str | None,
+               *, gueltig_sekunden: int = 3600) -> tuple[str, int]:
+    """Aus einer Objekt-Adresse einen Link machen, der ohne Zugangsdaten traegt.
+
+    `object_key` ist bucket-qualifiziert ("laura/assets/<id>.mp4"), wie ihn
+    `publish` zurueckgibt und die API in `object_key` herausreicht.
+
+    Gibt (link, gueltig_sekunden) zurueck. Wirft `SpeicherFehler` mit einer `art`,
+    die die Route auf einen Statuscode abbilden kann -- absichtlich getrennt, damit
+    niemand auf Fehlertexte prueft.
+    """
+    if not settings.storage_enabled:
+        raise SpeicherFehler("nicht_konfiguriert",
+                             "Es ist kein Objektspeicher konfiguriert.")
+    if not object_key:
+        raise SpeicherFehler(
+            "keine_kopie",
+            "Fuer dieses Material gibt es keine Kopie im Objektspeicher. "
+            "Assets, die vor dem 16.09.2026 importiert wurden, haben keine; "
+            "ein erneuter Import oder Render legt sie an.")
+    speicher = build_store(settings)
+    assert speicher is not None  # durch storage_enabled abgedeckt
+    praefix = speicher.bucket + "/"
+    if not object_key.startswith(praefix):
+        raise SpeicherFehler(
+            "fremder_eimer",
+            f"Die Adresse {object_key!r} gehoert nicht zum Eimer {speicher.bucket!r}.")
+    try:
+        link = speicher.signed_url(object_key[len(praefix):],
+                                   gueltig_sekunden=gueltig_sekunden)
+    except Exception as fehler:  # noqa: BLE001
+        raise SpeicherFehler("speicher_unerreichbar",
+                             f"Der Objektspeicher antwortet nicht: {fehler}") from fehler
+    return link, gueltig_sekunden
 
 
 def build_store(settings: Settings) -> SupabaseStorage | None:

@@ -58,12 +58,14 @@ from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from ..scenes.reconcile import reconcile_after_delete
 from ..sequences.flatten import SceneWindow, flatten_sequence, sequence_scene_windows
+from ..storage import SpeicherFehler, abruf_link
 from ..timebase.sampling import frame_to_sample
 from .models import (
     ApplyFixOut,
     ApplyFixRequest,
     ClipOut,
     ClipSourceOut,
+    DownloadUrlOut,
     DroppedShot,
     ExportOut,
     ExportRequest,
@@ -98,6 +100,28 @@ from .security import require_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["timelines"], dependencies=[Depends(require_token)])
+
+# Welche Fehlerart welchen Statuscode ergibt. Als Tabelle, damit beide Routen
+# dieselbe Antwort geben und niemand auf Fehlertexte prueft.
+_LINK_STATUS = {
+    "nicht_konfiguriert": status.HTTP_409_CONFLICT,
+    "keine_kopie": status.HTTP_404_NOT_FOUND,
+    "fremder_eimer": status.HTTP_409_CONFLICT,
+    "speicher_unerreichbar": status.HTTP_502_BAD_GATEWAY,
+}
+
+
+def _abruf_link_oder_fehler(request: Request, object_key: str | None) -> DownloadUrlOut:
+    try:
+        link, gueltig = abruf_link(request.app.state.settings, object_key)
+    except SpeicherFehler as fehler:
+        raise HTTPException(
+            _LINK_STATUS.get(fehler.art, status.HTTP_500_INTERNAL_SERVER_ERROR),
+            fehler.grund,
+        ) from fehler
+    assert object_key is not None  # abruf_link haette sonst geworfen
+    return DownloadUrlOut(url=link, expires_in_seconds=gueltig, object_key=object_key)
+
 
 
 # Request/response models for the L/J split-cut accept endpoint live here (not in the concurrently
@@ -1542,6 +1566,21 @@ def get_export(export_id: str, request: Request) -> RenderExportOut:
         quality_status=opts.get("quality_status"),  # type: ignore[arg-type]
         quality_verified=opts.get("quality_verified"),  # type: ignore[arg-type]
     )
+
+
+@router.get("/exports/{export_id}/download-url", response_model=DownloadUrlOut)
+def export_download_url(export_id: str, request: Request) -> DownloadUrlOut:
+    """Ein Link, mit dem ein ANDERER Rechner diesen fertigen Render holen kann.
+
+    Achtung: `status='ready'` heisst nicht, dass die Kopie schon im Bucket liegt --
+    der Render wird zuerst als fertig vermerkt, danach hochgeladen. Wer hier ein
+    404 'keine Kopie' bekommt, obwohl der Export fertig ist, wartet kurz und fragt
+    erneut.
+    """
+    e = repos.get_export(_db(request), export_id)
+    if e is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "export not found")
+    return _abruf_link_oder_fehler(request, e.get("object_key"))
 
 
 @router.post(

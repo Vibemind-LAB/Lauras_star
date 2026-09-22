@@ -39,6 +39,14 @@ def _get_export(client: LauraClient, *, export_id: str) -> Any:
     return client.request("GET", f"/exports/{export_id}")
 
 
+def _export_download_url(client: LauraClient, *, export_id: str) -> Any:
+    return client.request("GET", f"/exports/{export_id}/download-url")
+
+
+def _asset_download_url(client: LauraClient, *, asset_id: str) -> Any:
+    return client.request("GET", f"/assets/{asset_id}/download-url")
+
+
 def _auto_produce(
     client: LauraClient,
     *,
@@ -134,6 +142,35 @@ def register(mcp: FastMCP, client: LauraClient) -> None:
     def get_export(export_id: str) -> Any:
         """Get one export's status and metadata."""
         return _get_export(client, export_id=export_id)
+
+    @mcp.tool()
+    def download_url_for_asset(asset_id: str) -> Any:
+        """Get a ready-to-use download link for a SOURCE video.
+
+        USE THIS whenever someone asks how to obtain a video file. The `object_key`
+        you see on an asset is an address, not a link -- it cannot be fetched on its
+        own, because doing so needs a service key that agents never get. This tool
+        exchanges the address for a link that carries its own authorisation: it
+        works with no headers, no key, and expires after a while.
+
+        Do NOT re-render or re-export a video just to obtain a file. If the asset
+        already exists, this is the way to get it.
+
+        Returns url, expires_in_seconds and object_key. A 404 means there is no copy
+        in object storage yet (material imported before 2026-09-16 has none).
+        """
+        return _asset_download_url(client, asset_id=asset_id)
+
+    @mcp.tool()
+    def download_url_for_export(export_id: str) -> Any:
+        """Get a ready-to-use download link for a FINISHED RENDER.
+
+        Same idea as download_url_for_asset, for rendered exports. Note that an
+        export reaching status 'ready' does not yet mean the copy is in storage --
+        the render is recorded as finished first and uploaded afterwards. A 404 on a
+        fresh export usually means "wait a moment and ask again".
+        """
+        return _export_download_url(client, export_id=export_id)
 
     @mcp.tool()
     def auto_produce(

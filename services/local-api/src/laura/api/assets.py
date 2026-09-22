@@ -22,11 +22,41 @@ from ..ingest.proxy import build_thumbnail
 from ..ingest.ytdlp import expand_playlist, ytdlp_available
 from ..interchange.captions import segments_to_srt, segments_to_vtt
 from ..jobs.runner import enqueue
-from .models import AssetFileOut, AssetImport, AssetOut, ImportAccepted, ImportStatusOut
+from ..storage import SpeicherFehler, abruf_link
+from .models import (
+    AssetFileOut,
+    AssetImport,
+    AssetOut,
+    DownloadUrlOut,
+    ImportAccepted,
+    ImportStatusOut,
+)
 from .pagination import PageParams
 from .security import require_token
 
 router = APIRouter(tags=["assets"], dependencies=[Depends(require_token)])
+
+# Welche Fehlerart welchen Statuscode ergibt. Als Tabelle, damit beide Routen
+# dieselbe Antwort geben und niemand auf Fehlertexte prueft.
+_LINK_STATUS = {
+    "nicht_konfiguriert": status.HTTP_409_CONFLICT,
+    "keine_kopie": status.HTTP_404_NOT_FOUND,
+    "fremder_eimer": status.HTTP_409_CONFLICT,
+    "speicher_unerreichbar": status.HTTP_502_BAD_GATEWAY,
+}
+
+
+def _abruf_link_oder_fehler(request: Request, object_key: str | None) -> DownloadUrlOut:
+    try:
+        link, gueltig = abruf_link(request.app.state.settings, object_key)
+    except SpeicherFehler as fehler:
+        raise HTTPException(
+            _LINK_STATUS.get(fehler.art, status.HTTP_500_INTERNAL_SERVER_ERROR),
+            fehler.grund,
+        ) from fehler
+    assert object_key is not None  # abruf_link haette sonst geworfen
+    return DownloadUrlOut(url=link, expires_in_seconds=gueltig, object_key=object_key)
+
 
 
 def _db(request: Request) -> Database:
@@ -362,3 +392,18 @@ def asset_captions_srt(asset_id: str, request: Request) -> PlainTextResponse:
 @router.get("/assets/{asset_id}/captions.vtt")
 def asset_captions_vtt(asset_id: str, request: Request) -> PlainTextResponse:
     return PlainTextResponse(_captions(request, asset_id, "vtt"), media_type="text/vtt")
+
+
+@router.get("/assets/{asset_id}/download-url", response_model=DownloadUrlOut)
+def asset_download_url(asset_id: str, request: Request) -> DownloadUrlOut:
+    """Ein Link, mit dem ein ANDERER Rechner dieses Quellvideo holen kann.
+
+    `source_path` daneben zeigt auf Lauras Arbeitsplatte und bedeutet anderswo
+    nichts; `object_key` gilt ueberall, war aber bis zum 22.09.2026 nicht
+    einloesbar -- niemand ausser Laura kennt den Service-Key. Dieser Endpunkt
+    loest ihn ein, ohne den Schluessel herauszugeben.
+    """
+    asset = repos.get_asset(_db(request), asset_id)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "asset not found")
+    return _abruf_link_oder_fehler(request, asset.get("object_key"))
