@@ -57,7 +57,14 @@ services:
       # wie beim `laura-qdrant`, der seinen Alias `qdrant` nur zur Laufzeit
       # traegt. Ihr Port ist ohnehin veroeffentlicht (8896:8896), und dieser
       # Weg ueberlebt das Neuanlegen beider Seiten.
-      LAURA_ANALYSIS_URL: http://host.docker.internal:8896
+      #
+      # Seit dem Umzug auf den Mini-PC (22.09.2026) aus der Umgebung statt fest
+      # verdrahtet: `host.docker.internal` bedeutet auf JEDER Maschine etwas
+      # anderes -- auf der VM zeigte es auf die VM selbst, wo keine Laufzeit
+      # laeuft. Dieselbe Datei laeuft jetzt auf beiden Rechnern, nur deploy/.env
+      # unterscheidet sich (dort die Tailscale-Adresse des Windows-Rechners).
+      # Die Vorgabe bleibt der bisherige Wert, damit auf Windows nichts kippt.
+      LAURA_ANALYSIS_URL: ${LAURA_ANALYSIS_URL:-http://host.docker.internal:8896}
     extra_hosts:
       # Docker Desktop legt den Namen von selbst an; auf einem Linux-Host
       # nicht. Damit laeuft dieselbe Datei auf beiden.
