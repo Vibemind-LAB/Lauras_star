@@ -14,7 +14,7 @@ from typing import Any
 from ..db import repos
 from ..jobs.runner import JobContext, JobHandler
 from ..util import new_id
-from .backend import StubVideoGenerateBackend, VideoGenerateBackend
+from .backend import VideoGenerateBackend, resolve_video_generate_backend
 
 
 def handle_video_generate(
@@ -34,7 +34,7 @@ def handle_video_generate(
     if project is None:
         return {"ok": False, "error": "project not found", "project_id": project_id}
 
-    active: VideoGenerateBackend = backend or StubVideoGenerateBackend()
+    active: VideoGenerateBackend = backend or resolve_video_generate_backend()
     out_path = Path(str(project["workspace_root"])) / "generated" / f"{new_id()}.mp4"
     active.generate(
         prompt=prompt,
