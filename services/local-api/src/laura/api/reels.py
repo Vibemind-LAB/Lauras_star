@@ -12,6 +12,7 @@ from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
 from ..ledger import get_ledger_store, mint_short_run
 from ..ledger.recipe import RECIPE_EXCLUDED_KEYS
+from ..render.formate import UNTERTITEL_VORGABEN
 from .models import ReelRenderRequest
 from .quality_gate import evaluate_quality_gate
 from .security import require_token
@@ -82,6 +83,15 @@ def render_reel(
     if body.kennzeichnung == "auto":
         options["kennzeichnung"] = "auto"
         options["disclosure_text"] = None
+    # Format (Reels Stufe 2): nur abweichend vom Hochformat gespeichert. Die Untertitel-Vorgabe des
+    # Formats gilt nur, wenn der Aufrufer Schriftgroesse/Rand nicht ausdruecklich gesetzt hat.
+    if body.format is not None and body.format != "reel":
+        options["format"] = body.format
+        schrift, rand = UNTERTITEL_VORGABEN[body.format]
+        if "caption_fontsize" not in body.model_fields_set:
+            options["caption_fontsize"] = schrift
+        if "caption_safe_margin" not in body.model_fields_set:
+            options["caption_safe_margin"] = rand
 
     # Mint a short_run so the ledger tracks this build attempt from the moment it is enqueued.
     # Resolve the source asset for content-addressing (may be None for non-asset timelines).

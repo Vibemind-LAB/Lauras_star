@@ -842,6 +842,9 @@ class ReelRenderRequest(BaseModel):
     caption_schrift: str | None = None
     caption_akzent: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     hook_schrift: str | None = None
+    # Format (Reels Stufe 2, 22.10.2026): Groesse aus laura.render.formate.FORMATE. None/"reel" =
+    # bisheriges Hochformat 1080x1920, Optionen und Rezept-Hash bleiben dann byte-gleich.
+    format: Literal["reel", "quadrat", "quer"] | None = None
 
     @field_validator("caption_schrift", "hook_schrift")
     @classmethod

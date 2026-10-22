@@ -20,6 +20,7 @@ from ..db import repos
 from ..db.database import Database
 from ..jobs.queues import queue_for
 from ..jobs.runner import enqueue
+from ..render.formate import groesse as format_groesse
 
 router = APIRouter(tags=["bausteine"])
 _FARBE = r"^#[0-9a-fA-F]{6}$"
@@ -29,6 +30,8 @@ class StandbildRequest(BaseModel):
     asset_id: str
     dauer_s: float = Field(default=3.0, ge=1.0, le=10.0)
     bewegung: Literal["ruhig", "zoom_rein", "zoom_raus", "schwenk"] = "zoom_rein"
+    # Reels Stufe 2: Groesse aus laura.render.formate; None = "reel" (1080x1920 wie bisher).
+    format: Literal["reel", "quadrat", "quer"] | None = None
 
 
 class TitelkarteRequest(BaseModel):
@@ -40,6 +43,8 @@ class TitelkarteRequest(BaseModel):
     dauer_s: float = Field(default=2.5, ge=1.0, le=8.0)
     # Marke in Reels (C1): Anzeigeschrift der Marke (ID aus laura/assets/schriften); ohne = bisherige Schrift
     schrift: str | None = None
+    # Reels Stufe 2: Groesse aus laura.render.formate; None = "reel" (1080x1920 wie bisher).
+    format: Literal["reel", "quadrat", "quer"] | None = None
 
     @field_validator("schrift")
     @classmethod
@@ -69,6 +74,12 @@ def _bild(db: Database, project_id: str, asset_id: str) -> None:
                             "asset ist kein Bild (Import fertig? Typ muss 'image' sein)")
 
 
+def _nutzlast(project_id: str, body: StandbildRequest | TitelkarteRequest) -> dict[str, Any]:
+    """Job-Payload; ``format`` nur, wenn angegeben - ohne bleibt sie wie bisher."""
+    return {"project_id": project_id,
+            **body.model_dump(exclude=None if body.format else {"format"})}
+
+
 def _einstellen(db: Database, kind: str, payload: dict[str, Any]) -> dict[str, str]:
     return {"job_id": enqueue(db, queue=queue_for(kind), kind=kind, payload=payload,
                               max_attempts=2)}
@@ -82,7 +93,7 @@ def standbild(
     db = _db(request)
     _projekt(db, project_id)
     _bild(db, project_id, body.asset_id)
-    return _einstellen(db, "baustein.standbild", {"project_id": project_id, **body.model_dump()})
+    return _einstellen(db, "baustein.standbild", _nutzlast(project_id, body))
 
 
 @router.post("/projects/{project_id}/titelkarte", status_code=status.HTTP_202_ACCEPTED)
@@ -95,7 +106,7 @@ def titelkarte(
     if body.logo_asset_id:
         _bild(db, project_id, body.logo_asset_id)
     try:
-        umbrechen(body.text)
+        umbrechen(body.text, breite_px=format_groesse(body.format)[0])
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-    return _einstellen(db, "baustein.titelkarte", {"project_id": project_id, **body.model_dump()})
+    return _einstellen(db, "baustein.titelkarte", _nutzlast(project_id, body))

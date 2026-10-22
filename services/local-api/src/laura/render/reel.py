@@ -33,7 +33,8 @@ def reel_video_chain(
     Returns an empty string when no filters are requested.
 
     Filter order:
-    1. Reframe to 9:16 (1080 × 1920)              — when *vertical* is True.
+    1. Reframe to out_w × out_h (default 9:16, 1080 × 1920; formats in
+       ``laura.render.formate``)                  — when *vertical* is True.
        * Default (``reel_fit=False``): center-crop, clamped to the source
          (``crop='min(iw,ih*9/16)':'min(ih,iw*16/9)', scale=1080:1920``).  Fills the frame
          but may cut off content that is off-center.  The clamp keeps a source already

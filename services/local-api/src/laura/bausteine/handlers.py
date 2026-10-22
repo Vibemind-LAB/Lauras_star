@@ -1,6 +1,7 @@
 """Jobs ``baustein.standbild`` und ``baustein.titelkarte`` (Video-Claw, 17.10.2026).
 
-Beide rendern mit ffmpeg einen 1080x1920-Clip mit stiller Stereo-Tonspur (damit er sich
+Beide rendern mit ffmpeg einen Clip im Format des Auftrags (Vorgabe ``reel`` = 1080x1920,
+siehe ``laura.render.formate``) mit stiller Stereo-Tonspur (damit er sich
 mit tonfuehrenden Clips ohne Sonderfall verketten laesst) und legen ihn als normales
 Video-Asset mit Probe-Daten an - narrated-reel braucht die Dauer des Assets.
 Kein KI-Inhalt: die Assets sind NICHT synthetisch markiert.
@@ -17,11 +18,11 @@ from ..ingest.ffmpeg import run_ffmpeg
 from ..ingest.probe import probe_asset, sha256_file
 from ..jobs.runner import JobContext, JobHandler
 from ..render import schriften
+from ..render.formate import groesse as format_groesse
 from ..render.reel import _drawtext_pfad, resolve_font
 from ..util import new_id
 from .filter import farbe_ffmpeg, standbild_graph, titelkarte_graph, umbrechen
 
-BREITE, HOEHE = 1080, 1920
 _STILLE = ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
 _KODIERUNG = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
               "-movflags", "+faststart"]
@@ -63,11 +64,12 @@ def _als_asset(ctx: JobContext, project: dict[str, Any], datei: Path, name: str)
 
 
 def handle_standbild(ctx: JobContext) -> dict[str, Any]:
-    """Payload ``{project_id, asset_id, dauer_s, bewegung}``."""
+    """Payload ``{project_id, asset_id, dauer_s, bewegung, format?}``."""
     project = _projekt(ctx)
     bild = _bild(ctx, project, str(ctx.payload["asset_id"]))
     frames, fps = _frames(project, ctx.payload["dauer_s"])
-    graph = standbild_graph(str(ctx.payload["bewegung"]), frames, w=BREITE, h=HOEHE, fps=fps)
+    breite, hoehe = format_groesse(ctx.payload.get("format"))
+    graph = standbild_graph(str(ctx.payload["bewegung"]), frames, w=breite, h=hoehe, fps=fps)
     ziel = Path(project["workspace_root"]) / "bausteine" / f"{new_id()}.mp4"
     ziel.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -87,12 +89,14 @@ def titelkarte_schrift(p: dict[str, Any]) -> str:
 
 
 def handle_titelkarte(ctx: JobContext) -> dict[str, Any]:
-    """Payload ``{project_id, text, unterzeile?, hintergrund, textfarbe, logo_asset_id?, dauer_s}``."""
+    """Payload ``{project_id, text, unterzeile?, hintergrund, textfarbe, logo_asset_id?, dauer_s,
+    format?}``."""
     p = ctx.payload
     project = _projekt(ctx)
     frames, fps = _frames(project, p["dauer_s"])
     dauer = frames * int(project["sequence_rate_den"]) / int(project["sequence_rate_num"])
-    zeilen, groesse = umbrechen(str(p["text"]))
+    breite, hoehe = format_groesse(p.get("format"))
+    zeilen, groesse = umbrechen(str(p["text"]), breite_px=breite)
     logo = _bild(ctx, project, str(p["logo_asset_id"])) if p.get("logo_asset_id") else None
     kennung = new_id()
     ordner = Path(project["workspace_root"]) / "bausteine"
@@ -111,9 +115,9 @@ def handle_titelkarte(ctx: JobContext) -> dict[str, Any]:
         graph = titelkarte_graph(dateien, schriftgroesse=groesse, font=titelkarte_schrift(p),
                                  textfarbe=str(p.get("textfarbe") or "#ffffff"),
                                  unterzeile_datei=unter, mit_logo=logo is not None,
-                                 w=BREITE, h=HOEHE)
+                                 w=breite, h=hoehe)
         eingaenge = ["-f", "lavfi", "-i",
-                     f"color=c={farbe_ffmpeg(str(p['hintergrund']))}:s={BREITE}x{HOEHE}:r={fps}:d={dauer}"]
+                     f"color=c={farbe_ffmpeg(str(p['hintergrund']))}:s={breite}x{hoehe}:r={fps}:d={dauer}"]
         if logo is not None:
             eingaenge += ["-i", logo["source_path"]]
         ton = "2:a" if logo is not None else "1:a"

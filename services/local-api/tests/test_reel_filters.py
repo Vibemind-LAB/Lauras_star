@@ -7,6 +7,8 @@ the real-ffmpeg edge-case coverage (apostrophes, colons, %, unicode) lives in
 """
 from __future__ import annotations
 
+import re
+
 from laura.render.reel import reel_blur_fill_graph, reel_video_chain
 
 
@@ -139,3 +141,32 @@ def test_reel_video_chain_unchanged_when_blur_fill_off() -> None:
     assert "boxblur" not in chain_default
     assert "split" not in chain_default
     assert "overlay" not in chain_default
+
+
+# --- Formate (Reels Stufe 2, 22.10.2026) ----------------------------------------------
+
+def _crop_fenster(chain: str, iw: int, ih: int) -> tuple[float, float]:
+    """Wertet ``crop='min(iw,ih*a/b)':'min(ih,iw*b/a)'`` fuer eine Quelle iw x ih aus."""
+    treffer = re.search(r"crop='([^']+)':'([^']+)'", chain)
+    assert treffer is not None, chain
+    bw, bh = treffer.groups()
+    env = {"iw": iw, "ih": ih, "min": min}
+    return eval(bw, env), eval(bh, env)  # noqa: S307 - eigener, fester Ausdruck
+
+
+def test_quer_bildschirmaufnahme_ohne_zuschnitt() -> None:
+    """E5: 16:9-Material ins Ziel quer -> das Crop-Fenster ist das ganze Bild."""
+    chain = reel_video_chain(vertical=True, font="f.ttf", out_w=1920, out_h=1080)
+    assert "scale=1920:1080" in chain
+    assert _crop_fenster(chain, 1280, 720) == (1280, 720)
+    assert _crop_fenster(chain, 1920, 1080) == (1920, 1080)
+
+
+def test_quadrat_zuschnitt_nimmt_die_mitte() -> None:
+    chain = reel_video_chain(vertical=True, font="f.ttf", out_w=1080, out_h=1080)
+    assert "scale=1080:1080" in chain and _crop_fenster(chain, 1280, 720) == (720, 720)
+
+
+def test_quer_einpassen_auf_zielgroesse() -> None:
+    g = reel_blur_fill_graph("[a]", "[b]", out_w=1920, out_h=1080)
+    assert "crop=1920:1080" in g and "1080:1920" not in g

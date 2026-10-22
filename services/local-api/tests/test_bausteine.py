@@ -162,3 +162,50 @@ def test_api_titelkarte_formen_422(tmp_path: Path, koerper: dict[str, Any]) -> N
     client, _app = _client(tmp_path)
     pid = _projekt(client)
     assert client.post(f"/projects/{pid}/titelkarte", json=koerper).status_code == 422
+
+
+# --- Formate (Reels Stufe 2, 22.10.2026) ----------------------------------------------
+
+@pytest.mark.parametrize("w, h", [(1080, 1080), (1920, 1080)])
+def test_standbild_und_titelkarte_in_formatgroesse(w: int, h: int) -> None:
+    g = bf.standbild_graph("zoom_rein", 90, w=w, h=h)
+    assert f"s={w}x{h}" in g and "s=1080x1920" not in g
+    karte = bf.titelkarte_graph(["z0.txt"], schriftgroesse=96, font="f.ttf", textfarbe="#ffffff",
+                                mit_logo=True, w=w, h=h)
+    # Logo in einem flachen Kasten: trifft den mittigen Textblock der niedrigen Karte nicht.
+    kasten_h = (int(h * 0.18) // 2) * 2
+    assert f"[1:v]scale={(int(min(w, h) * 0.3) // 2) * 2}:{kasten_h}" in karte
+    assert "force_original_aspect_ratio=decrease" in karte
+
+
+def test_titelkarte_hochformat_unveraendert() -> None:
+    g = bf.titelkarte_graph(["z0.txt"], schriftgroesse=96, font="f.ttf", textfarbe="#ffffff",
+                            mit_logo=True)
+    assert g == bf.titelkarte_graph(["z0.txt"], schriftgroesse=96, font="f.ttf",
+                                    textfarbe="#ffffff", mit_logo=True, w=1080, h=1920)
+    assert "[1:v]scale=324:-2[logo]" in g and "overlay=(W-w)/2:192," in g
+
+
+def test_titelkarte_umbruch_quer_breiter() -> None:
+    text = "Was Unternehmen bei der bAV wirklich falsch machen"
+    assert bf.umbrechen(text) == bf.umbrechen(text, breite_px=1080)   # wie bisher
+    zeilen_hoch, gr_hoch = bf.umbrechen(text)
+    zeilen_quer, gr_quer = bf.umbrechen(text, breite_px=1920)
+    assert len(zeilen_quer) < len(zeilen_hoch) and gr_quer >= gr_hoch
+    assert max(len(z) for z in zeilen_quer) > 23                          # breitere Zeilen
+    # Was im Hochformat nicht mehr passt, passt quer.
+    lang = " ".join(["Wort"] * 18)
+    with pytest.raises(ValueError):
+        bf.umbrechen(lang)
+    assert len(bf.umbrechen(lang, breite_px=1920)[0]) <= 4
+
+
+def test_api_titelkarte_quer_nimmt_laengeren_text(tmp_path: Path) -> None:
+    client, _app = _client(tmp_path)
+    pid = _projekt(client)
+    lang = " ".join(["Wort"] * 18)
+    assert client.post(f"/projects/{pid}/titelkarte",
+                       json={"text": lang, "hintergrund": "#000000"}).status_code == 422
+    assert client.post(f"/projects/{pid}/titelkarte",
+                       json={"text": lang, "hintergrund": "#000000",
+                             "format": "quer"}).status_code == 202

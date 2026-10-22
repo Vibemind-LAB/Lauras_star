@@ -46,9 +46,11 @@ def _breite_hoehe(pfad: Path) -> tuple[int, int]:
 def einblenden(datei: Path, logo: Path, *, position: str = "oben_rechts",
                breite_prozent: int = 14) -> None:
     """Logo in ``datei`` einbrennen (ersetzt die Datei erst, wenn das Ergebnis da ist)."""
-    vb, _vh = _breite_hoehe(datei)
+    vb, vh = _breite_hoehe(datei)
     lb, lh_quelle = _breite_hoehe(logo)
-    graph = logo_graph(position, *logo_masse(vb, lb, lh_quelle, breite_prozent))
+    # Bezug ist die kurze Seite (Reels Stufe 2): im Hochformat die Breite wie bisher, im
+    # Querformat sonst ein 1,8-fach groesseres Logo.
+    graph = logo_graph(position, *logo_masse(min(vb, vh), lb, lh_quelle, breite_prozent))
     zwischen = datei.with_name(f"{datei.stem}.logo.mp4")
     try:
         run_ffmpeg(["-i", str(datei), "-i", str(logo), "-filter_complex", graph,

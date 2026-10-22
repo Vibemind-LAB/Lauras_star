@@ -50,17 +50,18 @@ def standbild_graph(bewegung: str, frames: int, *, w: int = 1080, h: int = 1920,
     )
 
 
-def umbrechen(text: str) -> tuple[list[str], int]:
+def umbrechen(text: str, *, breite_px: int = 1080) -> tuple[list[str], int]:
     """Text in hoechstens 4 Zeilen und die passende Schriftgroesse.
 
     Groesste Schrift zuerst; passt der Text nicht in deren Zeilenzahl, die naechst
-    kleinere. Ein einzelnes zu langes Wort wird hart getrennt.
+    kleinere. Ein einzelnes zu langes Wort wird hart getrennt. Die Zeichen je Zeile sind
+    fuer 1080 px Breite bemessen und wachsen mit der Kartenbreite (quer: 1920 px).
     """
     woerter = text.split()
     if not woerter:
         raise ValueError("Text ist leer")
     for groesse, breite, max_zeilen in ((96, 16, 2), (80, 19, 3), (68, 23, 4)):
-        zeilen = _zeilen(woerter, breite)
+        zeilen = _zeilen(woerter, breite * breite_px // 1080)
         if len(zeilen) <= max_zeilen:
             return zeilen, groesse
     raise ValueError("Text passt nicht auf die Karte (hoechstens 4 Zeilen)")
@@ -112,8 +113,17 @@ def titelkarte_graph(zeilen_dateien: list[str], *, schriftgroesse: int, font: st
                      f":fontcolor={farbe}@0.85:x=(w-text_w)/2:y={y}")
     kette = ",".join(teile)
     if mit_logo:
-        logo_breite = (int(w * 0.3) // 2) * 2
-        return (f"[1:v]scale={logo_breite}:-2[logo];[0:v]{kette}[t];"
+        # Bezug ist die kurze Seite (Reels Stufe 2): im Hochformat die Breite wie bisher.
+        logo_breite = (int(min(w, h) * 0.3) // 2) * 2
+        if h > w:
+            skalieren = f"scale={logo_breite}:-2"
+        else:
+            # Niedrige Karte (quadrat/quer): das Logo passt in einen flachen Kasten, damit es den
+            # mittigen Textblock nicht trifft.
+            kasten_h = (int(h * 0.18) // 2) * 2
+            skalieren = (f"scale={logo_breite}:{kasten_h}"
+                         ":force_original_aspect_ratio=decrease:force_divisible_by=2")
+        return (f"[1:v]{skalieren}[logo];[0:v]{kette}[t];"
                 f"[t][logo]overlay=(W-w)/2:{int(h * 0.1)},fade=t=in:st=0:d={einblenden_s},"
                 f"format=yuv420p[v]")
     return f"[0:v]{kette},fade=t=in:st=0:d={einblenden_s},format=yuv420p[v]"

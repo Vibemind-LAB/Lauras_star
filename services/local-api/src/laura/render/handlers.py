@@ -23,6 +23,7 @@ from .captions import build_ass, group_caption_lines
 from .captions_source import timeline_caption_words, voiceover_caption_words
 from .mp4 import _DEFAULT_DISCLOSURE, VideoTransition, render_clips_mp4, render_multilane_mp4
 from . import groesse, logo
+from .formate import FORMATE, UNTERTITEL_VORGABEN
 from .reel import kennzeichnung_text
 from .srt import sequence_transcript_to_srt
 from .sync import assert_or_fix_media_sync
@@ -491,6 +492,9 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
     )
 
     opts: dict[str, object] = exp.get("options") or {}
+    # Format (Reels Stufe 2): "reel" (auch ohne Angabe) laesst jeden Aufruf wie bisher.
+    fmt = _option_str(opts, "format", "reel", set(FORMATE))
+    zielgroesse: dict[str, Any] = {"out_size": FORMATE[fmt]} if fmt != "reel" else {}
 
     # Force disclosure overlay when the timeline has synthetic content and the caller
     # did not already supply a value. An explicit value (even blank) goes through
@@ -540,6 +544,11 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
             # margin than the portrait presets' 72/250 -- only applied when the caller
             # did not explicitly set caption_fontsize/caption_safe_margin.
             default_fontsize, default_margin_v = (54, 48) if preset == "wide" else (72, 250)
+            if fmt != "reel":
+                # Format (Reels Stufe 2): Leinwand = Ausgabegroesse (libass skaliert PlayRes auf
+                # das Bild, das Seitenverhaeltnis muss stimmen); Vorgabe je Format.
+                play_w, play_h = FORMATE[fmt]
+                default_fontsize, default_margin_v = UNTERTITEL_VORGABEN[fmt]
             caption_ass = build_ass(
                 lines,
                 rate_num=project["sequence_rate_num"],
@@ -617,7 +626,9 @@ def handle_render(ctx: JobContext) -> dict[str, Any]:
                 rate_den=project["sequence_rate_den"],
                 music_tracks=music_tracks if music_tracks else None,
                 audio_overlays=audio_overlays if audio_overlays else None,
-                vertical=bool(opts.get("vertical", False)),
+                # Format (Reels Stufe 2): ein Format verlangt die Zielgroesse, also immer umrahmen.
+                vertical=bool(opts.get("vertical", False)) or fmt != "reel",
+                **zielgroesse,
                 # Feinschliff (18.10.2026): nur gesetzt, wenn angefordert - sonst Aufruf wie bisher.
                 **({"reel_blur_fill": True} if opts.get("rahmung") == "einpassen" else {}),
                 **({"loudnorm": True} if opts.get("loudnorm") is True else {}),
